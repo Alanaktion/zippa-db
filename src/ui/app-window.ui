@@ -42,6 +42,8 @@
               <object class="GtkEntry" id="input_host">
                 <property name="visible">True</property>
                 <property name="can_focus">True</property>
+                <property name="activates_default">True</property>
+                <property name="placeholder_text" translatable="yes">localhost</property>
               </object>
               <packing>
                 <property name="left_attach">1</property>
@@ -64,6 +66,8 @@
               <object class="GtkEntry" id="input_user">
                 <property name="visible">True</property>
                 <property name="can_focus">True</property>
+                <property name="activates_default">True</property>
+                <property name="placeholder_text" translatable="yes">root</property>
               </object>
               <packing>
                 <property name="left_attach">1</property>
@@ -86,6 +90,9 @@
               <object class="GtkEntry" id="input_password">
                 <property name="visible">True</property>
                 <property name="can_focus">True</property>
+                <property name="visibility">False</property>
+                <property name="activates_default">True</property>
+                <property name="truncate_multiline">True</property>
                 <property name="input_purpose">password</property>
               </object>
               <packing>
@@ -98,6 +105,8 @@
                 <property name="label">gtk-connect</property>
                 <property name="visible">True</property>
                 <property name="can_focus">True</property>
+                <property name="can_default">True</property>
+                <property name="has_default">True</property>
                 <property name="receives_default">True</property>
                 <property name="use_stock">True</property>
                 <signal name="clicked" handler="on_connect" swapped="no"/>

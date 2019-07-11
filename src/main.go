@@ -19,22 +19,19 @@ func main() {
 		log.Fatal("Could not create application: ", err)
 	}
 
-	// Connect function to application startup event, this is not required.
 	application.Connect("startup", func() {
-		log.Println("application startup")
+		//
 	})
 
 	// Create initial window on activation
 	application.Connect("activate", func() {
-		log.Println("application activate")
-
 		win := createAppWindow(application)
 		win.Show()
 		application.AddWindow(win)
 	})
 
 	application.Connect("shutdown", func() {
-		log.Println("application shutdown")
+		//
 	})
 
 	// Run Gtk application
