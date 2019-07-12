@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"errors"
 	"log"
 	"os"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/gobuffalo/packr/v2"
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
+	"github.com/spf13/viper"
 )
 
 const appID = "io.zippa.db"
@@ -17,13 +17,14 @@ const appID = "io.zippa.db"
 var uiBox *packr.Box
 
 func main() {
+	uiBox = packr.New("ui", "./ui")
 	application, err := gtk.ApplicationNew(appID, glib.APPLICATION_FLAGS_NONE)
 	if err != nil {
 		log.Fatal("Could not create application: ", err)
 	}
 
 	application.Connect("startup", func() {
-		uiBox = packr.New("ui", "./ui")
+		configInit()
 	})
 
 	// Create initial window on activation
@@ -34,7 +35,7 @@ func main() {
 	})
 
 	application.Connect("shutdown", func() {
-		//
+		configSave()
 	})
 
 	// Run Gtk application
@@ -59,6 +60,9 @@ func createAppWindow(application *gtk.Application) *gtk.ApplicationWindow {
 			config.Passwd = builderObjectText(builder, "input_password")
 			config.Net = "tcp"
 			config.Addr = builderObjectText(builder, "input_host") + ":3306"
+			viper.Set("connections.default.host", config.Addr)
+			viper.Set("connections.default.user", config.User)
+			viper.Set("connections.default.password", config.Passwd)
 			onConnect(config)
 		},
 	}
@@ -68,19 +72,11 @@ func createAppWindow(application *gtk.Application) *gtk.ApplicationWindow {
 	if err != nil {
 		log.Fatal("Could not get window instance from builder: ", err)
 	}
-
-	win, err := isAppWindow(obj)
-	if err != nil {
-		log.Panic(err)
-	}
-	return win
-}
-
-func isAppWindow(obj glib.IObject) (*gtk.ApplicationWindow, error) {
 	if win, ok := obj.(*gtk.ApplicationWindow); ok {
-		return win, nil
+		return win
 	}
-	return nil, errors.New("not a *gtk.ApplicationWindow")
+	log.Fatal("Not a *gtk.ApplicationWindow: ", obj)
+	return nil
 }
 
 func builderObjectText(builder *gtk.Builder, id string) string {

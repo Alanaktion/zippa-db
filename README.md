@@ -4,16 +4,19 @@ A clean, simple database client for Linux, written in Go.
 
 ## Building
 
-Requires Go 1.8+ (1.12+ recommended), and GTK3+ development libraries. Install those, then continue.
+Requires Go 1.2+ and GTK3+ development libraries. Install those, then continue.
 
 Start by fetching our Go libraries:
 
 ```bash
 go get github.com/gotk3/gotk3/gtk
 go get -u github.com/go-sql-driver/mysql
+go get github.com/zpatrick/go-config
 go get -u github.com/gobuffalo/packr/v2/...
 go get -u github.com/gobuffalo/packr/v2/packr2
 ```
+
+Eventually I'll give in and use GOPATH properly so we don't manually handle dependencies, but I can't get over how terrible of a system it is so I'm fighting it. :P
 
 To build the app binary, we have a build script that builds the package in `src/`:
 
