@@ -47,7 +47,7 @@ func createAppWindow(application *gtk.Application) *gtk.ApplicationWindow {
 	str, err := uiBox.FindString("app-window.ui")
 	builder.AddFromString(str)
 	if err != nil {
-		log.Fatal("Could not initialize builder from glade file: ", err)
+		log.Fatal("Could not read packed glade file: ", err)
 	}
 
 	// Map the handlers to callback functions, and connect the signals to the
