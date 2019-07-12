@@ -7,11 +7,14 @@ import (
 	"os"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/gobuffalo/packr/v2"
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 )
 
 const appID = "io.zippa.db"
+
+var uiBox *packr.Box
 
 func main() {
 	application, err := gtk.ApplicationNew(appID, glib.APPLICATION_FLAGS_NONE)
@@ -20,7 +23,7 @@ func main() {
 	}
 
 	application.Connect("startup", func() {
-		//
+		uiBox = packr.New("ui", "./ui")
 	})
 
 	// Create initial window on activation
@@ -40,9 +43,9 @@ func main() {
 
 func createAppWindow(application *gtk.Application) *gtk.ApplicationWindow {
 	// Get the GtkBuilder UI definition in the glade file.
-	// TODO: find a clean way of determining the absolute path to the UI
-	// directory regardless of the current working directory on startup.
-	builder, err := gtk.BuilderNewFromFile("ui/app-window.ui")
+	builder, _ := gtk.BuilderNew()
+	str, err := uiBox.FindString("app-window.ui")
+	builder.AddFromString(str)
 	if err != nil {
 		log.Fatal("Could not initialize builder from glade file: ", err)
 	}

@@ -4,15 +4,24 @@ A clean, simple database client for Linux, written in Go.
 
 ## Building
 
-Requires Go 1.8+ (1.12+ recommended), and GTK3+ development libraries.
+Requires Go 1.8+ (1.12+ recommended), and GTK3+ development libraries. Install those, then continue.
 
-We have a build script that builds the package in `./src`:
+Start by fetching our Go libraries:
+
+```bash
+go get github.com/gotk3/gotk3/gtk
+go get -u github.com/go-sql-driver/mysql
+go get -u github.com/gobuffalo/packr/v2/...
+go get -u github.com/gobuffalo/packr/v2/packr2
+```
+
+To build the app binary, we have a build script that builds the package in `src/`:
 
 ```bash
 ./build.sh
 ```
 
-This will leave a `zippa-db` binary in the current directory.
+This will leave a `zippa-db` binary in the `build/` directory.
 
 ### Cross-compiling for Windows
 

@@ -1,2 +1,4 @@
+/build/**/*.exe
+/build/zippa-db
+/src/packrd
 /src/ui/*~
-/zippa-db
