@@ -2,6 +2,8 @@
 # application for Windows, but is currently untested.
 FROM archlinux/base
 
+# TODO: enable multilib repo and install wine
+
 # Install build tools + go + gtk
 RUN pacman -Syu --needed base-devel go gtk3
 RUN mkdir -p $HOME/aur
