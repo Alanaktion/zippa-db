@@ -14,6 +14,12 @@ We have a build script that builds the package in `./src`:
 
 This will leave a `zippa-db` binary in the current directory.
 
+### Cross-compiling for Windows
+
+We'll follow [gotk3's Cross Compiling wiki](https://github.com/gotk3/gotk3/wiki/Cross-Compiling). A Dockerfile is provided in `build/windows/` that *should* create an environment with all the build tools necessary, but is currently untested.
+
+Note that on Arch Linux, the mingw packages can be installed pre-compiled from [ownstuff's user repository](https://wiki.archlinux.org/index.php/unofficial_user_repositories#ownstuff), though they aren't working for me right now when trying to rebuild gotk3.
+
 ## Development
 
 ### Go source

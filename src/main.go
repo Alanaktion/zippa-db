@@ -40,6 +40,8 @@ func main() {
 
 func createAppWindow(application *gtk.Application) *gtk.ApplicationWindow {
 	// Get the GtkBuilder UI definition in the glade file.
+	// TODO: find a clean way of determining the absolute path to the UI
+	// directory regardless of the current working directory on startup.
 	builder, err := gtk.BuilderNewFromFile("ui/app-window.ui")
 	if err != nil {
 		log.Fatal("Could not initialize builder from glade file: ", err)
