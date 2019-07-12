@@ -11,7 +11,7 @@ Start by fetching our Go libraries:
 ```bash
 go get github.com/gotk3/gotk3/gtk
 go get -u github.com/go-sql-driver/mysql
-go get github.com/zpatrick/go-config
+go get github.com/spf13/viper
 go get -u github.com/gobuffalo/packr/v2/...
 go get -u github.com/gobuffalo/packr/v2/packr2
 ```
