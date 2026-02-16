@@ -1,5 +1,7 @@
 # ZippaDB
 
+[![Build](https://github.com/Alanaktion/zippa-db/actions/workflows/build.yml/badge.svg)](https://github.com/Alanaktion/zippa-db/actions/workflows/build.yml)
+
 A clean, simple database client for Linux, written in Go.
 
 ## Building
