@@ -4,7 +4,7 @@ A clean, simple database client for Linux, written in Go.
 
 ## Building
 
-Requires Go 1.16+ (for embed support) and GTK3+ development libraries.
+Requires Go 1.16+ (for embed support) and GTK3+ development libraries. This project is tested with the latest Go version.
 
 ### Install Dependencies
 
