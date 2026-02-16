@@ -2,11 +2,11 @@ package main
 
 import (
 	"database/sql"
+	"embed"
 	"log"
 	"os"
 
 	"github.com/go-sql-driver/mysql"
-	"github.com/gobuffalo/packr/v2"
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 	"github.com/spf13/viper"
@@ -14,10 +14,10 @@ import (
 
 const appID = "io.zippa.db"
 
-var uiBox *packr.Box
+//go:embed ui/*.ui
+var uiFiles embed.FS
 
 func main() {
-	uiBox = packr.New("ui", "./ui")
 	application, err := gtk.ApplicationNew(appID, glib.APPLICATION_FLAGS_NONE)
 	if err != nil {
 		log.Fatal("Could not create application: ", err)
@@ -45,10 +45,13 @@ func main() {
 func createAppWindow(application *gtk.Application) *gtk.ApplicationWindow {
 	// Get the GtkBuilder UI definition in the glade file.
 	builder, _ := gtk.BuilderNew()
-	str, err := uiBox.FindString("app-window.ui")
-	builder.AddFromString(str)
+	uiData, err := uiFiles.ReadFile("ui/app-window.ui")
 	if err != nil {
-		log.Fatal("Could not read packed glade file: ", err)
+		log.Fatal("Could not read UI file: ", err)
+	}
+	err = builder.AddFromString(string(uiData))
+	if err != nil {
+		log.Fatal("Could not load UI from string: ", err)
 	}
 
 	// Map the handlers to callback functions, and connect the signals to the
