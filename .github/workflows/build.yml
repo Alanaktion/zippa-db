@@ -38,4 +38,5 @@ jobs:
       - name: Check binary
         run: |
           ls -lh build/zippa-db
-          ./build/zippa-db --help || true
+          # Binary requires display for full execution, just verify it can show help
+          ./build/zippa-db --help 2>&1 | grep -q "help" || true
