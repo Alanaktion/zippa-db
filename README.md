@@ -1,0 +1,138 @@
+# ⚡ Zippa DB
+
+> A blazing-fast, lightweight, cross-platform database management tool built with **Rust** and **GPUI**.
+
+Zippa DB combines the raw performance of Zed's GPU-accelerated interface engine with the reliability of async Rust. Designed to compete with tools like TablePlus, Zippa DB aims for sub-millisecond tab switching, virtualized streaming for massive datasets, and native support for PostgreSQL, MySQL, and SQLite.
+
+> **Status:** early. You can save connections, connect to PostgreSQL, MySQL, or SQLite, switch databases, browse tables and views in the sidebar, open them in tabs, run queries, and read the results. Everything else in [TODO.md](TODO.md) is still ahead.
+
+---
+
+## 🌟 Planned Features
+
+* **GPU-Accelerated Data Grid:** Instant rendering and smooth scrolling over millions of rows with minimal memory usage.
+* **Inline Editing with Staging:** Edit table cells in-memory, review your staged SQL `UPDATE` queries, and commit changes atomically.
+* **Engine-Aware SQL Editor:** Query editor with auto-completion, multi-statement execution, and inline syntax highlighting.
+* **Native Drivers:** Built on top of `SQLx` with connection pooling, SSH tunneling, and SSL/TLS support.
+* **Cross-Platform:** Native look and feel across macOS, Linux, and Windows.
+
+---
+
+## 🛠 Tech Stack
+
+| Layer | Technology |
+| --- | --- |
+| **UI Framework** | [GPUI](https://www.gpui.rs/) (GPU-accelerated desktop framework) |
+| **Components** | [GPUI Kit](https://gpui-kit.com) (table, code editor, theming) |
+| **Database Engine** | [SQLx](https://github.com/launchbadge/sqlx) (Async SQL for Rust) |
+| **Async Runtime** | [Tokio](https://tokio.rs/), on a dedicated thread pool beside the UI |
+| **Secrets** | OS keychain via [keyring](https://github.com/open-source-cooperative/keyring-rs) |
+
+---
+
+## 📁 Project Layout
+
+```
+src/
+├── main.rs           # Entry point: opens the GPUI window
+├── app.rs            # Root view: connection manager or open session
+├── keymap.rs         # Key bindings (platform-aware via `secondary`)
+├── db/
+│   ├── mod.rs        # Engine, ConnectionConfig, Connection, query dispatch
+│   ├── postgres.rs   # Per-engine pool setup and value formatting
+│   ├── mysql.rs
+│   ├── sqlite.rs
+│   ├── query.rs      # QueryResult
+│   ├── runtime.rs    # Tokio runtime bridging sqlx futures back to GPUI
+│   └── store.rs      # connections.json + OS keychain
+└── ui/
+    ├── welcome.rs      # Connection manager
+    ├── session.rs      # Open connection: sidebar, query tabs, editor, grid
+    ├── query_editor.rs # SQL editor (Cmd+Enter to run)
+    ├── table_view.rs   # Table opened from the sidebar: grid, paging, sorting
+    └── data_grid.rs    # Read-only virtualized result grid
+```
+
+Connections are stored in `connections.json` under your OS config directory
+(`~/Library/Application Support/zippa-db` on macOS). Passwords are never written
+there — they go to the OS credential store, keyed by connection id.
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+* [Rust](https://www.rust-lang.org/) 1.85+ (this crate uses edition 2024)
+* OS dependencies:
+  * **macOS:** Xcode (not just the Command Line Tools) with the Metal toolchain installed — GPUI compiles Metal shaders at build time. If `xcrun --find metal` fails, run `xcodebuild -downloadComponent MetalToolchain`.
+  * **Linux:** `libxkbcommon`, plus Wayland or X11 dev libraries (`sudo apt install libxkbcommon-dev libwayland-dev`)
+  * **Windows:** Vulkan / Direct3D 12 drivers
+
+### Building
+
+```bash
+git clone https://github.com/Alanaktion/zippa-db.git
+cd zippa-db
+cargo run
+```
+
+Dependencies are compiled with optimizations even in the dev profile
+(`[profile.dev.package."*"]`), because GPUI's per-frame layout and text shaping
+are unusably slow otherwise. For the smoothest experience, run
+`cargo run --release`.
+
+On macOS, if your active developer directory still points at the Command Line Tools (`xcode-select -p`), the Metal compiler won't be found. Either point it at Xcode (`sudo xcode-select -s /Applications/Xcode.app`) or override it per build:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer cargo run
+```
+
+### Tests
+
+```bash
+cargo test
+```
+
+---
+
+## ⌨️ Shortcuts
+
+`Cmd` on macOS, `Ctrl` on Linux and Windows.
+
+| Action | Shortcut |
+| --- | --- |
+| Run the query in the active tab | `Cmd`/`Ctrl` + `Enter` |
+| New query tab | `Cmd`/`Ctrl` + `T` |
+| Close the active tab | `Cmd`/`Ctrl` + `W` |
+
+---
+
+## 🗺 Roadmap
+
+* [x] Initial GPUI window and layout setup
+* [x] Connection manager & driver abstractions (`PostgreSQL`, `MySQL`, `SQLite`)
+* [x] Read-only result grid: virtualized, dense, monospaced, auto-sized columns
+* [x] Resizable panes, database switcher, and table/view list in the sidebar
+* [x] Query tabs, each with its own editor and result set
+* [x] Regex filter over the sidebar's table list
+* [x] Dedicated table view: paging, row limit, and click-to-sort columns
+* [ ] Data grid pagination, row limits, and specialized cell renderers
+* [ ] Staged cell editing & batch commit execution
+* [x] SQL editor with SQL syntax highlighting (`Cmd+Enter` runs the buffer)
+* [ ] Query cancellation, multi-statement scripts, and completion
+* [ ] SSH tunneling & SSL configuration interface
+* [ ] Schema inspector & visual DDL builder
+
+Full feature breakdown lives in [TODO.md](TODO.md).
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome — open an issue or submit a pull request.
+
+1. Fork the project
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes
+4. Push the branch and open a pull request

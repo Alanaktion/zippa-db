@@ -1,0 +1,107 @@
+# TODO
+
+## 1. Connection & Security
+
+### Database Driver Support
+
+* [x] PostgreSQL (including CockroachDB / Redshift support)
+* [x] MySQL / MariaDB
+* [x] SQLite
+
+### Authentication & Security
+
+* [x] Native username/password authentication (passwords stored in the OS keychain)
+* [ ] SSH Tunneling (Password and Private Key / Agent support)
+* [ ] SSL/TLS connection modes (`disable`, `prefer`, `require`, `verify-full`)
+
+### Connection Management
+
+* [ ] Multi-environment tagging & color-coding (e.g., Red header for `Production`, Green for `Local`)
+* [ ] Grouping & categorizing connection workspaces
+* [ ] Workspace state persistence (reopen previous tabs on startup)
+
+---
+
+## 2. Tabular Data Grid (Data Browser)
+
+### High-Performance Virtual Scrolling
+
+* [ ] Fast rendering for 100k+ rows with low memory overhead (virtualized rendering is in; rows are still all held in memory as strings, untested at 100k)
+* [x] Fixed header, scrollable body, and adjustable column widths
+
+### Inline Data Editing (Buffer Model)
+
+* [ ] Staged edits (cell highlighting before committing)
+* [ ] Multi-cell selection, bulk editing, and batch `COMMIT` / `DISCARD` (`Cmd+S` / `Cmd+Z`)
+* [ ] Foreign key lookups directly from cells (click to jump to referenced row)
+
+### Filtering, Sorting & Pagination
+
+* [x] Single-column sorting (ascending / descending); multi-column still open
+* [ ] Quick search bar (global string matching across columns)
+* [ ] Advanced filtering GUI (e.g., `WHERE status = 'active' AND created_at > ...`)
+* [x] Configurable row limit & offset pagination (`LIMIT 100 OFFSET 0`) in the table view
+
+### Specialized Cell Renderers
+
+* [ ] Custom modals for `JSON` / `JSONB` viewing & formatting
+* [ ] Large text BLOB viewer with word-wrap
+* [ ] Date/Time picker for timestamp fields
+* [ ] Null state toggles (`NULL` vs. empty string `""`)
+
+## 3. SQL Query Editor
+
+### Text Editing Essentials
+
+* [ ] Syntax highlighting tailored per database engine dialect
+* [ ] Auto-complete (tables, columns, SQL keywords, schemas) powered by live introspection
+* [ ] Line numbers, code folding, and auto-indentation
+
+### Query Execution Engine
+
+* [ ] Run single query under cursor or selected text block (`Cmd+Enter` runs the whole buffer today)
+* [ ] Run entire script with multi-statement support
+* [x] Multi-tab editor (unlimited concurrent query tabs)
+* [ ] Cancellable query execution (kill running background tasks)
+
+### Result Sets & Output Diagnostics
+
+* [ ] Multi-result set tabs for queries returning multiple tables
+* [ ] Execution statistics banner (affected rows, execution time in `ms`)
+* [ ] Detailed error console with SQL error line highlighting
+
+## 4. Database Schema Browser & Modeler
+
+### Structure & Object Explorer
+
+* [ ] Left sidebar navigation tree: Databases $\rightarrow$ Schemas $\rightarrow$ Tables / Views / Functions / Procedures / Sequences (tables and views listed; database switcher in place)
+* [ ] Object searching / fuzzy filtering (`Cmd+K` quick switcher) — sidebar has a regex filter; the quick switcher is still open
+
+### Table Schema Inspector & DDL Generator
+
+* [ ] View and modify table structure (Columns, Types, Nullability, Default values)
+* [ ] Index manager (Primary Keys, Unique indexes, Composite indexes)
+* [ ] Foreign Key relationship builder
+* [ ] Live SQL preview generator (shows the `ALTER TABLE` statement before executing changes)
+
+### View & Routine Management
+
+* [ ] Stored procedure and function editor with argument syntax checking
+* [ ] View definition viewer and editor
+
+## 5. Utility & Productivity Features
+
+### Import & Export Tools
+
+* [ ] Export selected rows or entire tables to `CSV`, `JSON`, and SQL `INSERT` statements
+* [ ] Database backup dump (`pg_dump` / `mysqldump` integration) and SQL file restoration
+
+### Query History & Snippets
+
+* [ ] Local execution history log (searchable by date, database, or query string)
+* [ ] Reusable SQL code snippets library
+
+### App Customization
+
+* [ ] Dark and Light theme support (sync with OS system preferences)
+* [ ] Customizable keyboard shortcuts map
