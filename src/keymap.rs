@@ -7,7 +7,7 @@ use gpui_kit::{App, KeyBinding};
 
 use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
 use crate::ui::query_editor::RunQuery;
-use crate::ui::session::{CloseTab, NewTab, OpenFile, SaveFile, SaveFileAs};
+use crate::ui::session::{CloseTab, NewTab, OpenFile, Refresh, SaveFile, SaveFileAs};
 use crate::ui::settings_window::OpenSettings;
 
 pub fn bind(cx: &mut App) {
@@ -19,6 +19,9 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-enter", RunQuery, Some("QueryEditor")),
         KeyBinding::new("secondary-t", NewTab, Some("Session")),
         KeyBinding::new("secondary-w", CloseTab, Some("Session")),
+        // Reloads the schema, and the active table's rows; never re-runs a
+        // query tab's buffer, so it is safe even if that buffer is a write.
+        KeyBinding::new("secondary-r", Refresh, Some("Session")),
         // Connections are the outer tabs, so they take the shifted keys; the
         // workspace wraps every screen, so these work from all of them.
         KeyBinding::new("secondary-n", NewConnection, Some("Workspace")),

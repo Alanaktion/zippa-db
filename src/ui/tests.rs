@@ -192,15 +192,6 @@ fn sidebar_lists_objects_beside_the_panes(cx: &mut TestAppContext) {
                 row.bounds()
             );
         }
-
-        // SQLite is a single file, so the picker names the file itself.
-        let picker = window.find("database");
-        assert!(picker.visible());
-        assert!(
-            picker.bounds().right() <= sidebar.bounds().right(),
-            "the database picker spills out of the sidebar: {:?}",
-            picker.bounds()
-        );
     })
     .unwrap();
 }
@@ -1622,4 +1613,123 @@ fn disconnecting_returns_the_tab_to_the_manager(cx: &mut TestAppContext) {
         1,
         "the tab that was disconnected stays in front"
     );
+}
+
+#[gpui_kit::test]
+fn the_toolbar_buttons_are_disabled_without_a_connection(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+
+    // Disabled buttons still register a click; only their effect proves the
+    // disabled state, since gpui-component's Button does not surface it to
+    // the accessibility tree that the test harness reads.
+    click(cx, handle, "refresh");
+    click(cx, handle, "new-query");
+
+    assert_eq!(
+        titles(cx, handle),
+        ["New connection"],
+        "refresh and new-query should have no session to act on"
+    );
+}
+
+#[gpui_kit::test]
+fn the_toolbar_new_query_button_opens_a_tab(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let _database = connect(cx, handle);
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the active tab should be a session");
+    assert_eq!(
+        session.read_with(cx, |session, _| session.tab_titles()),
+        ["Query 1"]
+    );
+
+    click(cx, handle, "new-query");
+
+    assert_eq!(
+        session.read_with(cx, |session, _| session.tab_titles()),
+        ["Query 1", "Query 2"],
+        "the toolbar button should behave like the session's own new-tab button"
+    );
+}
+
+#[gpui_kit::test]
+fn refresh_reloads_the_schema_and_the_open_table_but_not_a_query_tab(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let database = connect(cx, handle);
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the active tab should be a session");
+    cx.run_until_parked();
+
+    // Open the table so refresh has rows to reread.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("object-items", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let view = session
+        .read_with(cx, |session, _| session.active_table_view())
+        .expect("clicking a table should open a table view");
+    let before = view.read_with(cx, |view, _| view.loaded_rows_for_test());
+    assert_eq!(before, 2, "the seed data has two rows");
+
+    // Insert a row from outside the app, the way an external client would.
+    let other = runtime::block_on(Connection::open(database.config(), None))
+        .expect("could not open a second connection to the test database");
+    runtime::block_on(other.run_query("insert into items values (3, 'gamma', 3.0, NULL)"))
+        .expect("could not insert the extra row");
+    runtime::block_on(other.close());
+
+    click(cx, handle, "refresh");
+    cx.run_until_parked();
+
+    let after = view.read_with(cx, |view, _| view.loaded_rows_for_test());
+    assert_eq!(after, 3, "refresh should reread the table's rows");
+
+    // A query tab's buffer is the user's own SQL; refresh must not re-run it.
+    click(cx, handle, "new-query");
+    session
+        .downgrade()
+        .update_in(cx, |session, window, cx| {
+            session.prepare_active_editor_for_test(
+                "insert into items values (4, 'delta', 4.0, NULL)",
+                window,
+                cx,
+            );
+        })
+        .unwrap();
+
+    click(cx, handle, "refresh");
+    cx.run_until_parked();
+
+    let count = runtime::block_on(other_count(&database));
+    assert_eq!(
+        count, 3,
+        "refresh must not execute a query tab's buffer, or it would have inserted a fourth row"
+    );
+}
+
+/// Reopen the test database and count the rows in `items`, the way the test
+/// above checks that refresh did not run an INSERT sitting in a query tab.
+async fn other_count(database: &TempDatabase) -> i64 {
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not reopen the test database");
+    let result = connection
+        .run_query("select count(*) as n from items")
+        .await
+        .expect("could not count the rows");
+    connection.close().await;
+    result.rows[0][0]
+        .as_ref()
+        .expect("count(*) should not be null")
+        .parse()
+        .expect("count(*) should be a number")
 }

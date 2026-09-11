@@ -31,7 +31,10 @@ use crate::ui::table_view::TableView;
 const SIDEBAR_WIDTH: f32 = 260.;
 const EDITOR_HEIGHT: f32 = 220.;
 
-actions!(zippa_db, [NewTab, CloseTab, OpenFile, SaveFile, SaveFileAs]);
+actions!(
+    zippa_db,
+    [NewTab, CloseTab, OpenFile, SaveFile, SaveFileAs, Refresh]
+);
 
 pub enum SessionEvent {
     /// The user closed the session; the workspace returns to the connection
@@ -101,7 +104,7 @@ impl EventEmitter<SessionEvent> for Session {}
 
 impl Session {
     pub fn new(connection: Arc<Connection>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter tables (regex)"));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter tables"));
         cx.subscribe_in(&filter, window, Self::on_filter_event)
             .detach();
 
@@ -214,6 +217,29 @@ impl Session {
 
     fn on_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         self.open_tab(None, String::new(), false, window, cx);
+    }
+
+    /// Same as [`Self::on_new_tab`], for the toolbar button which does not
+    /// have an `&NewTab` to hand it.
+    pub(crate) fn new_query_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_tab(None, String::new(), false, window, cx);
+    }
+
+    fn on_refresh(&mut self, _: &Refresh, _window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh(cx);
+    }
+
+    /// Reread the schema, and the rows of the table being looked at.
+    ///
+    /// A query tab is left alone on purpose: its buffer is the user's own
+    /// SQL, run verbatim, and re-running it could repeat a write.
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.reload_metadata(cx);
+        if let Some(TabContent::Table { view }) = self.tabs.get(self.active).map(|tab| &tab.content)
+        {
+            let view = view.clone();
+            view.update(cx, |view, cx| view.reload(cx));
+        }
     }
 
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -378,6 +404,16 @@ impl Session {
 
     pub fn connection(&self) -> Arc<Connection> {
         self.connection.clone()
+    }
+
+    /// The connection's name, for the titlebar.
+    pub(crate) fn display_name(&self) -> String {
+        self.connection.config.display_name()
+    }
+
+    /// The connection's target (host, or file path), for the titlebar.
+    pub(crate) fn display_target(&self) -> String {
+        self.connection.config.display_target()
     }
 
     /// Put the caret in the active tab's editor.
@@ -747,6 +783,7 @@ impl Session {
                 let middle_click = session.clone();
 
                 Tab::new()
+                    .px_1()
                     .label(tab.title.clone())
                     // Middle-click closes, the way it does in a browser.
                     .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
@@ -773,6 +810,7 @@ impl Session {
                 Button::new("new-tab")
                     .ghost()
                     .xsmall()
+                    .mr_1()
                     .icon(IconName::Plus)
                     .tooltip("New query tab")
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -781,25 +819,34 @@ impl Session {
             )
     }
 
-    fn render_database_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let current = self.connection.database().to_string();
+    /// The database dropdown, rendered by whoever owns the toolbar.
+    ///
+    /// Sized and styled here rather than by the caller: `dropdown_menu`
+    /// wraps the button in a popover that does not itself implement
+    /// [`Sizable`]/[`ButtonVariants`].
+    pub(crate) fn render_database_picker(
+        session: &Entity<Session>,
+        cx: &mut gpui_kit::App,
+    ) -> impl IntoElement {
+        let this = session.read(cx);
+        let current = this.connection.database().to_string();
 
         // A SQLite connection is one file: there is nothing to switch to, and
         // its "databases" (main, plus attachments) are not separate files.
-        if self.connection.config.engine.is_file_based() {
+        if this.connection.config.engine.is_file_based() {
             return Button::new("database")
                 .outline()
-                .small()
-                .w_full()
+                .xsmall()
+                .max_w(px(160.))
                 .label(crate::db::file_name(&current))
                 .disabled(true)
                 .into_any_element();
         }
 
-        let databases = self.databases.clone();
-        let session = cx.entity().downgrade();
+        let databases = this.databases.clone();
+        let weak = session.downgrade();
 
-        let label = if self.switching {
+        let label = if this.switching {
             "Switching…".to_string()
         } else if current.is_empty() {
             "No database".to_string()
@@ -809,8 +856,8 @@ impl Session {
 
         Button::new("database")
             .outline()
-            .small()
-            .w_full()
+            .xsmall()
+            .max_w(px(160.))
             .label(label)
             .dropdown_caret(true)
             .dropdown_menu(move |mut menu, _window, _cx| {
@@ -820,14 +867,14 @@ impl Session {
 
                 for database in &databases {
                     let name = database.clone();
-                    let session = session.clone();
+                    let weak = weak.clone();
 
                     menu = menu.item(
                         PopupMenuItem::new(database.clone())
                             .checked(*database == current)
                             .on_click(move |_, _window, cx| {
                                 let name = name.clone();
-                                if let Some(session) = session.upgrade() {
+                                if let Some(session) = weak.upgrade() {
                                     session.update(cx, |session, cx| {
                                         session.switch_database(name, cx)
                                     });
@@ -931,30 +978,15 @@ impl Session {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let config = &self.connection.config;
-
         v_flex()
             .id("sidebar")
             .test_support()
             .size_full()
-            .p_3()
+            .p_2()
             .gap_3()
             .bg(cx.theme().sidebar)
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(div().text_sm().truncate().child(config.display_name()))
-                    .child(
-                        div()
-                            .text_xs()
-                            .truncate()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(config.display_target()),
-                    ),
-            )
-            .child(self.render_database_picker(cx))
             .child(self.render_objects(cx))
             .child(
                 Button::new("disconnect")
@@ -1042,6 +1074,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_open_file))
             .on_action(cx.listener(Self::on_save_file))
             .on_action(cx.listener(Self::on_save_file_as))
+            .on_action(cx.listener(Self::on_refresh))
             .child(
                 h_resizable("session-columns")
                     .with_state(&self.columns)

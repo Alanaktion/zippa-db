@@ -76,7 +76,7 @@
 
 ### Structure & Object Explorer
 
-* [ ] Left sidebar navigation tree: Databases $\rightarrow$ Schemas $\rightarrow$ Tables / Views / Functions / Procedures / Sequences (tables and views listed; database switcher in place)
+* [ ] Left sidebar navigation tree: Databases > Schemas > Tables / Views / Functions / Procedures / Sequences (tables and views listed; database switcher in place)
 * [ ] Object searching / fuzzy filtering (`Cmd+K` quick switcher) — sidebar has a regex filter; the quick switcher is still open
 
 ### Table Schema Inspector & DDL Generator

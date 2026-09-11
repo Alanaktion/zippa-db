@@ -1,0 +1,10 @@
+- Alternating background row colors for results - toggle in preferences
+- Safety modes:
+	- Read-only (refuses to run INSERT/UPDATE/ALTER/DROP/SET GLOBAL...)
+	- Confirm before write (shows preview of query before a write commits)
+	- Staged inline edits (edits to result set or table view require confirmation before committing)
+	- Auto-apply (edits to table/result set apply immediately upon row losing focus)
+- Refresh should warn if there are un-applied edits to the current table data view
+- Double clicking connection from welcome view should open it immediately instead of just showing the connection settings
+- Support middle mouse drag in SQL editor for multi-line select, like Zed
+- macOS menu bar basic support (nothing significant since we don't have a menu bar on other platforms yet)

@@ -121,6 +121,7 @@ cargo test
 | Next / previous connection | `Cmd`/`Ctrl` + `Shift` + `]` / `[` |
 | New query tab | `Cmd`/`Ctrl` + `T` |
 | Close the active tab | `Cmd`/`Ctrl` + `W` |
+| Refresh the schema and the open table | `Cmd`/`Ctrl` + `R` |
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
 | Save the active tab | `Cmd`/`Ctrl` + `S` |
 | Save the active tab under a new name | `Cmd`/`Ctrl` + `Shift` + `S` |

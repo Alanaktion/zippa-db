@@ -62,10 +62,22 @@ pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {
         "JSON" => decode!(row, index, sqlx::types::JsonValue),
         "DATE" => decode!(row, index, chrono::NaiveDate),
         "DATETIME" | "TIMESTAMP" => decode!(row, index, chrono::NaiveDateTime),
-        "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BINARY" | "VARBINARY" => row
-            .try_get::<Vec<u8>, _>(index)
-            .ok()
-            .and_then(|bytes| query::blob(&bytes)),
+        // MySQL sets the wire protocol's BINARY column flag — which this
+        // display name is derived from — for any `_bin` collation, not just
+        // the true binary charset. So text columns using a `_bin` collation
+        // (MySQL 8's information_schema identifier columns, for one) land
+        // here too. sqlx's own `Type<MySql>::compatible` for `String`
+        // already checks the real collation rather than this flag, so defer
+        // to that: try a String decode first and only fall back to a
+        // byte-count summary when it's genuinely not text.
+        // https://github.com/launchbadge/sqlx/issues/3387
+        "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "BINARY" | "VARBINARY" => {
+            decode!(row, index, String).or_else(|| {
+                row.try_get::<Vec<u8>, _>(index)
+                    .ok()
+                    .and_then(|bytes| query::blob(&bytes))
+            })
+        }
         _ => decode!(row, index, String),
     };
 

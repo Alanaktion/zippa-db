@@ -111,7 +111,9 @@ impl TableView {
         sql
     }
 
-    fn reload(&mut self, cx: &mut Context<Self>) {
+    /// Rebuild the paging SQL and re-run it. Also the table half of the
+    /// session's refresh action.
+    pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
         cx.notify();
@@ -322,6 +324,10 @@ impl TableView {
 
     pub(crate) fn set_loaded_rows_for_test(&mut self, rows: usize) {
         self.loaded_rows = rows;
+    }
+
+    pub(crate) fn loaded_rows_for_test(&self) -> usize {
+        self.loaded_rows
     }
 
     pub(crate) fn can_page_for_test(&self) -> (bool, bool) {

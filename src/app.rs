@@ -9,12 +9,14 @@
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme, IconName, Sizable, v_flex};
-use gpui_kit::prelude::*;
-use gpui_kit::{
-    App, Context, Entity, FocusHandle, MouseButton, SharedString, Window, actions, div,
+use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
+use gpui_kit::component::{
+    ActiveTheme, Disableable, Icon, IconName, Sizable, TitleBar, h_flex, v_flex,
 };
+use gpui_kit::{
+    App, Context, Entity, FocusHandle, MouseButton, SharedString, Window, actions, div, px,
+};
+use gpui_kit::prelude::*;
 
 use crate::db::{Connection, runtime};
 use crate::settings;
@@ -260,6 +262,8 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
 
         TabBar::new("connection-tabs")
+            .with_variant(TabVariant::Pill)
+            .p_1()
             .selected_index(self.active)
             .on_click(
                 cx.listener(|this, index: &usize, window, cx| {
@@ -272,7 +276,10 @@ impl Workspace {
 
                 Tab::new()
                     .label(tab.title(cx))
-                    .when_some(tab.icon(cx), |this, icon| this.icon(icon))
+                    .px_3()
+                    // `.icon()` on this widget renders icon-only, so icon
+                    // goes in `.prefix()` instead
+                    .when_some(tab.icon(cx), |this, icon| this.prefix(Icon::new(icon)))
                     // Middle-click closes, the way it does in a browser.
                     .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
                         if let Some(workspace) = middle_click.upgrade() {
@@ -293,13 +300,115 @@ impl Workspace {
                             }),
                     )
             }))
-            .suffix(
-                Button::new("new-connection")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Plus)
-                    .tooltip("Open another connection")
-                    .on_click(cx.listener(|this, _, window, cx| this.open_connect_tab(window, cx))),
+    }
+
+    /// The session showing in the active tab, if any.
+    fn active_session(&self) -> Option<Entity<Session>> {
+        match self.tabs.get(self.active)? {
+            TabContent::Session(session) => Some(session.clone()),
+            TabContent::Connect(_) => None,
+        }
+    }
+
+    fn on_refresh_click(
+        &mut self,
+        _: &gpui_kit::ClickEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = self.active_session() {
+            session.update(cx, |session, cx| session.refresh(cx));
+        }
+    }
+
+    fn on_new_query_click(
+        &mut self,
+        _: &gpui_kit::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = self.active_session() {
+            session.update(cx, |session, cx| session.new_query_tab(window, cx));
+        }
+    }
+
+    /// The window's own bar: who we are connected to on the left, the actions
+    /// that apply to it on the right, OS buttons inset by the component.
+    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let session = self.active_session();
+        let connected = session.is_some();
+
+        TitleBar::new()
+            .w_full()
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .items_center()
+                    .gap_1()
+                    .when_some(session.clone(), |this, session| {
+                        let (name, target) = {
+                            let session = session.read(cx);
+                            (session.display_name(), session.display_target())
+                        };
+                        this.child(div().text_sm().truncate().max_w(px(130.)).child(name))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .truncate()
+                                    .max_w(px(200.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(target),
+                            )
+                            // The bar starts a window move on mouse-move while
+                            // held, so interactive children swallow their own
+                            // press to avoid dragging the window instead.
+                            .child(
+                                h_flex()
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .child(Session::render_database_picker(&session, cx)),
+                            )
+                    }),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .px_1()
+                    .flex_none()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Button::new("refresh")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::RefreshCw)
+                            .tooltip("Refresh")
+                            .disabled(!connected)
+                            .on_click(cx.listener(Self::on_refresh_click)),
+                    )
+                    .child(
+                        Button::new("new-query")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::FilePlus)
+                            .tooltip("New query")
+                            .disabled(!connected)
+                            .on_click(cx.listener(Self::on_new_query_click)),
+                    )
+                    .child(
+                        Button::new("new-connection")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::DatabasePlus)
+                            .tooltip("Open another connection")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.open_connect_tab(window, cx)
+                                }),
+                            ),
+                    ),
             )
     }
 }
@@ -326,6 +435,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_previous_connection))
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .child(self.render_title_bar(cx))
             .child(
                 div()
                     .w_full()
