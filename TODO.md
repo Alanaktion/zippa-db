@@ -17,6 +17,7 @@
 ### Connection Management
 
 * [ ] Multi-environment tagging & color-coding (e.g., Red header for `Production`, Green for `Local`)
+* [x] Several connections open at once, one tab each, with their own sessions
 * [ ] Grouping & categorizing connection workspaces
 * [ ] Workspace state persistence (reopen previous tabs on startup)
 
@@ -37,10 +38,10 @@
 
 ### Filtering, Sorting & Pagination
 
-* [x] Single-column sorting (ascending / descending); multi-column still open
+* [x] Single-column sorting: a header cycles descending, ascending, and back to the order the server sent; multi-column still open
 * [ ] Quick search bar (global string matching across columns)
 * [ ] Advanced filtering GUI (e.g., `WHERE status = 'active' AND created_at > ...`)
-* [x] Configurable row limit & offset pagination (`LIMIT 100 OFFSET 0`) in the table view
+* [x] Configurable row limit & offset pagination (`LIMIT 100 OFFSET 0`) in the table view, starting from the page size in the settings
 
 ### Specialized Cell Renderers
 
@@ -56,6 +57,7 @@
 * [ ] Syntax highlighting tailored per database engine dialect
 * [ ] Auto-complete (tables, columns, SQL keywords, schemas) powered by live introspection
 * [ ] Line numbers, code folding, and auto-indentation
+* [x] Open and save `.sql` files with the native file dialogs (no unsaved-changes tracking yet)
 
 ### Query Execution Engine
 
@@ -103,5 +105,6 @@
 
 ### App Customization
 
-* [ ] Dark and Light theme support (sync with OS system preferences)
+* [x] Dark and Light theme support (follows the OS, or pinned to one in the settings)
+* [x] Settings window (`Cmd+,`): page size, editor and grid font, theme per mode
 * [ ] Customizable keyboard shortcuts map

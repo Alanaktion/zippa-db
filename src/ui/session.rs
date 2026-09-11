@@ -1,6 +1,7 @@
 //! An open connection: object sidebar, query editor, and result grid, split by
 //! draggable panes.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt;
@@ -23,13 +24,14 @@ use regex::{Regex, RegexBuilder};
 use crate::db::{Connection, DatabaseObject, ObjectKind, runtime};
 use crate::ui::data_grid::DataGrid;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
+use crate::ui::sql_file;
 use crate::ui::table_view::TableView;
 
 /// Starting pane sizes; the user drags from here.
 const SIDEBAR_WIDTH: f32 = 260.;
 const EDITOR_HEIGHT: f32 = 220.;
 
-actions!(zippa_db, [NewTab, CloseTab]);
+actions!(zippa_db, [NewTab, CloseTab, OpenFile, SaveFile, SaveFileAs]);
 
 pub enum SessionEvent {
     /// The user closed the session; the workspace returns to the connection
@@ -51,6 +53,8 @@ enum TabContent {
         editor: Entity<QueryEditor>,
         grid: Entity<DataGrid>,
         status: Status,
+        /// The SQL file the buffer was read from or last written to.
+        path: Option<PathBuf>,
     },
     Table {
         view: Entity<TableView>,
@@ -145,6 +149,7 @@ impl Session {
                 editor,
                 grid: cx.new(|cx| DataGrid::new(window, cx)),
                 status: Status::Idle,
+                path: None,
             },
         });
         self.active = self.tabs.len() - 1;
@@ -215,8 +220,179 @@ impl Session {
         self.close_tab(self.active, window, cx);
     }
 
+    fn on_open_file(&mut self, _: &OpenFile, _window: &mut Window, cx: &mut Context<Self>) {
+        self.open_file(cx);
+    }
+
+    fn on_save_file(&mut self, _: &SaveFile, _window: &mut Window, cx: &mut Context<Self>) {
+        self.save(self.active, false, cx);
+    }
+
+    fn on_save_file_as(&mut self, _: &SaveFileAs, _window: &mut Window, cx: &mut Context<Self>) {
+        self.save(self.active, true, cx);
+    }
+
+    /// Ask for SQL files and give each one its own tab.
+    fn open_file(&mut self, cx: &mut Context<Self>) {
+        let prompt = sql_file::prompt_for_open(cx);
+
+        cx.spawn(async move |this, cx| {
+            let paths = match prompt.await {
+                Ok(Some(paths)) => paths,
+                Ok(None) => return,
+                Err(error) => {
+                    this.update(cx, |this, cx| this.report(error, cx)).ok();
+                    return;
+                }
+            };
+
+            for path in paths {
+                match cx.background_spawn(sql_file::read(path.clone())).await {
+                    Ok(sql) => {
+                        this.update_in(cx, |this, window, cx| {
+                            this.open_file_tab(path, sql, window, cx)
+                        })
+                        .ok();
+                    }
+                    Err(error) => {
+                        this.update(cx, |this, cx| this.report(error, cx)).ok();
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Show `sql` read from `path` in a new tab named after the file.
+    fn open_file_tab(
+        &mut self,
+        path: PathBuf,
+        sql: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_tab(None, sql, false, window, cx);
+        let index = self.active;
+        self.set_status(index, Status::Done(format!("Opened {}", path.display())));
+        self.set_file(index, path, cx);
+    }
+
+    /// Save the query tab at `index`.
+    ///
+    /// A tab with no file yet — or "Save As", with `ask` set — asks the
+    /// platform for a path first.
+    fn save(&mut self, index: usize, ask: bool, cx: &mut Context<Self>) {
+        // A table tab generates its own SQL and has no buffer to save.
+        let Some(TabContent::Query { editor, path, .. }) =
+            self.tabs.get(index).map(|tab| &tab.content)
+        else {
+            return;
+        };
+        let (editor, file) = (editor.clone(), path.clone());
+        let sql = editor.read(cx).sql(cx);
+
+        if let Some(path) = file.clone().filter(|_| !ask) {
+            self.write(editor, path, sql, cx);
+            return;
+        }
+
+        let prompt = sql_file::prompt_for_save(file.as_deref(), &self.tabs[index].title, cx);
+
+        cx.spawn(async move |this, cx| match prompt.await {
+            Ok(Some(path)) => {
+                this.update(cx, |this, cx| this.write(editor, path, sql, cx))
+                    .ok();
+            }
+            Ok(None) => {}
+            Err(error) => {
+                this.update(cx, |this, cx| this.report(error, cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Write `sql` to `path`, then bind the tab to it.
+    fn write(
+        &mut self,
+        editor: Entity<QueryEditor>,
+        path: PathBuf,
+        sql: String,
+        cx: &mut Context<Self>,
+    ) {
+        let task = cx.background_spawn(sql_file::write(path.clone(), sql));
+
+        cx.spawn(async move |this, cx| {
+            let written = task.await;
+            this.update(cx, |this, cx| {
+                // The tab may have been closed or moved while the file was written.
+                let Some(index) = this.query_tab_of(&editor) else {
+                    return;
+                };
+
+                match written {
+                    Ok(()) => {
+                        this.set_status(index, Status::Done(format!("Saved {}", path.display())));
+                        this.set_file(index, path, cx);
+                    }
+                    Err(error) => this.set_status(index, Status::Error(format!("{error:#}"))),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Bind the query tab at `index` to `path`, naming the tab after the file.
+    fn set_file(&mut self, index: usize, path: PathBuf, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return;
+        };
+        let TabContent::Query { path: slot, .. } = &mut tab.content else {
+            return;
+        };
+
+        tab.title = sql_file::label(&path).into();
+        *slot = Some(path);
+        cx.notify();
+    }
+
+    /// Put a file error where the user can see it.
+    ///
+    /// Only query tabs carry a status bar, so an error raised while a table
+    /// tab is in front goes to the query tab nearest it.
+    fn report(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
+        let Some(index) = self.nearest_query_tab() else {
+            return;
+        };
+        self.set_status(index, Status::Error(format!("{error:#}")));
+        cx.notify();
+    }
+
+    /// The active tab if it holds a query, else the next one that does.
+    fn nearest_query_tab(&self) -> Option<usize> {
+        (0..self.tabs.len())
+            .map(|offset| (self.active + offset) % self.tabs.len())
+            .find(|index| matches!(self.tabs[*index].content, TabContent::Query { .. }))
+    }
+
     pub fn connection(&self) -> Arc<Connection> {
         self.connection.clone()
+    }
+
+    /// Put the caret in the active tab's editor.
+    ///
+    /// Called when the session is brought forward, so `Cmd+Enter` runs the
+    /// query without having to click into the editor first.
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(TabContent::Query { editor, .. }) =
+            self.tabs.get(self.active).map(|tab| &tab.content)
+        else {
+            return;
+        };
+
+        let editor = editor.clone();
+        editor.update(cx, |editor, cx| editor.focus(window, cx));
     }
 
     /// Read the database list and the current database's tables and views.
@@ -350,11 +526,16 @@ impl Session {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let QueryEditorEvent::Run(sql) = event;
+        // A tab renders only while it is active, so its buttons act on it.
         let Some(index) = self.query_tab_of(editor) else {
             return;
         };
-        self.run(index, sql.clone(), cx);
+
+        match event {
+            QueryEditorEvent::Run(sql) => self.run(index, sql.clone(), cx),
+            QueryEditorEvent::Open => self.open_file(cx),
+            QueryEditorEvent::Save => self.save(index, false, cx),
+        }
     }
 
     /// Index of the query tab owning `editor`.
@@ -606,16 +787,11 @@ impl Session {
         // A SQLite connection is one file: there is nothing to switch to, and
         // its "databases" (main, plus attachments) are not separate files.
         if self.connection.config.engine.is_file_based() {
-            let file = std::path::Path::new(&current)
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or(current);
-
             return Button::new("database")
                 .outline()
                 .small()
                 .w_full()
-                .label(file)
+                .label(crate::db::file_name(&current))
                 .disabled(true)
                 .into_any_element();
         }
@@ -827,6 +1003,7 @@ impl Session {
                 editor,
                 grid,
                 status,
+                ..
             } => v_flex()
                 .size_full()
                 .child(
@@ -862,6 +1039,9 @@ impl Render for Session {
             .key_context("Session")
             .on_action(cx.listener(Self::on_new_tab))
             .on_action(cx.listener(Self::on_close_tab))
+            .on_action(cx.listener(Self::on_open_file))
+            .on_action(cx.listener(Self::on_save_file))
+            .on_action(cx.listener(Self::on_save_file_as))
             .child(
                 h_resizable("session-columns")
                     .with_state(&self.columns)

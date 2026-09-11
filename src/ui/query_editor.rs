@@ -10,11 +10,17 @@ use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, EventEmitter, Window, actions, div};
 
+use crate::settings;
+
 actions!(zippa_db, [RunQuery]);
 
 pub enum QueryEditorEvent {
     /// The user asked to run the statement in the buffer.
     Run(String),
+    /// The user asked to read a SQL file into a tab.
+    Open,
+    /// The user asked to write this buffer to its file.
+    Save,
 }
 
 pub struct QueryEditor {
@@ -43,7 +49,6 @@ impl QueryEditor {
     }
 
     /// Put the caret in the editor, as clicking it does.
-    #[cfg(test)]
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         use gpui_kit::Focusable as _;
         let handle = self.state.read(cx).focus_handle(cx);
@@ -58,7 +63,6 @@ impl QueryEditor {
     }
 
     /// The statement currently in the buffer.
-    #[cfg(test)]
     pub fn sql(&self, cx: &gpui_kit::App) -> String {
         self.state.read(cx).value().to_string()
     }
@@ -108,21 +112,49 @@ impl Render for QueryEditor {
                             .child("QUERY"),
                     )
                     .child(
-                        Button::new("run")
-                            .primary()
-                            .small()
-                            .icon(IconName::Play)
-                            .label(if self.running { "Running…" } else { "Run" })
-                            .disabled(self.running)
-                            .on_click(cx.listener(|this, _, _window, cx| this.emit_run(cx))),
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("open-file")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::FolderOpen)
+                                    .tooltip("Open a SQL file")
+                                    .on_click(cx.listener(|_this, _, _window, cx| {
+                                        cx.emit(QueryEditorEvent::Open)
+                                    })),
+                            )
+                            .child(
+                                Button::new("save-file")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::HardDrive)
+                                    .tooltip("Save to a SQL file")
+                                    .on_click(cx.listener(|_this, _, _window, cx| {
+                                        cx.emit(QueryEditorEvent::Save)
+                                    })),
+                            )
+                            .child(
+                                Button::new("run")
+                                    .primary()
+                                    .small()
+                                    .icon(IconName::Play)
+                                    .label(if self.running { "Running…" } else { "Run" })
+                                    .disabled(self.running)
+                                    .on_click(
+                                        cx.listener(|this, _, _window, cx| this.emit_run(cx)),
+                                    ),
+                            ),
                     ),
             )
             .child(
-                div()
-                    .flex_1()
-                    .px_1()
-                    .pb_1()
-                    .child(Editor::new(&self.state).h_full().appearance(false)),
+                div().flex_1().px_1().pb_1().child(
+                    Editor::new(&self.state)
+                        .h_full()
+                        .appearance(false)
+                        // Refines over the editor's own monospace default.
+                        .font_family(settings::editor_font(cx)),
+                ),
             )
     }
 }

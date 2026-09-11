@@ -1,6 +1,7 @@
 mod app;
 mod db;
 mod keymap;
+mod settings;
 mod ui;
 
 use gpui_kit::component::Root;
@@ -14,7 +15,12 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx: &mut App| {
             gpui_kit::init(cx);
+            // Themes first: a theme named in the settings has to be in the
+            // registry before the settings are applied.
+            settings::load_user_themes(cx);
+            settings::init(cx);
             keymap::bind(cx);
+            ui::settings_window::init(cx);
 
             let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
             let options = WindowOptions {

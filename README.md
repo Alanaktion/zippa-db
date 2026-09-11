@@ -35,7 +35,7 @@ Zippa DB combines the raw performance of Zed's GPU-accelerated interface engine 
 ```
 src/
 ├── main.rs           # Entry point: opens the GPUI window
-├── app.rs            # Root view: connection manager or open session
+├── app.rs            # Root view: one tab per open connection
 ├── keymap.rs         # Key bindings (platform-aware via `secondary`)
 ├── db/
 │   ├── mod.rs        # Engine, ConnectionConfig, Connection, query dispatch
@@ -45,10 +45,13 @@ src/
 │   ├── query.rs      # QueryResult
 │   ├── runtime.rs    # Tokio runtime bridging sqlx futures back to GPUI
 │   └── store.rs      # connections.json + OS keychain
+├── settings.rs       # Settings global, settings.json, theme/appearance
 └── ui/
     ├── welcome.rs      # Connection manager
     ├── session.rs      # Open connection: sidebar, query tabs, editor, grid
     ├── query_editor.rs # SQL editor (Cmd+Enter to run)
+    ├── sql_file.rs     # Native open/save dialogs for .sql files
+    ├── settings_window.rs # Settings window (Cmd+,)
     ├── table_view.rs   # Table opened from the sidebar: grid, paging, sorting
     └── data_grid.rs    # Read-only virtualized result grid
 ```
@@ -56,6 +59,16 @@ src/
 Connections are stored in `connections.json` under your OS config directory
 (`~/Library/Application Support/zippa-db` on macOS). Passwords are never written
 there — they go to the OS credential store, keyed by connection id.
+
+Connections open in tabs along the top of the window: the `+` opens the
+connection manager in a new one, connecting turns that tab into the session, and
+disconnecting turns it back. Each connection keeps its own sidebar, query tabs,
+and results, so switching between them picks up where you left off.
+
+Settings live beside it in `settings.json` and are written as you change them.
+Drop theme files into a `themes/` directory next to it — each one a
+`{"themes": [ … ]}` set in the component library's format — and they show up in
+the theme pickers.
 
 ---
 
@@ -103,8 +116,15 @@ cargo test
 | Action | Shortcut |
 | --- | --- |
 | Run the query in the active tab | `Cmd`/`Ctrl` + `Enter` |
+| Open another connection | `Cmd`/`Ctrl` + `N` |
+| Close the active connection | `Cmd`/`Ctrl` + `Shift` + `W` |
+| Next / previous connection | `Cmd`/`Ctrl` + `Shift` + `]` / `[` |
 | New query tab | `Cmd`/`Ctrl` + `T` |
 | Close the active tab | `Cmd`/`Ctrl` + `W` |
+| Open a SQL file | `Cmd`/`Ctrl` + `O` |
+| Save the active tab | `Cmd`/`Ctrl` + `S` |
+| Save the active tab under a new name | `Cmd`/`Ctrl` + `Shift` + `S` |
+| Settings | `Cmd`/`Ctrl` + `,` |
 
 ---
 
@@ -114,12 +134,15 @@ cargo test
 * [x] Connection manager & driver abstractions (`PostgreSQL`, `MySQL`, `SQLite`)
 * [x] Read-only result grid: virtualized, dense, monospaced, auto-sized columns
 * [x] Resizable panes, database switcher, and table/view list in the sidebar
+* [x] Connection tabs: several databases open at once, each with its own session
 * [x] Query tabs, each with its own editor and result set
 * [x] Regex filter over the sidebar's table list
 * [x] Dedicated table view: paging, row limit, and click-to-sort columns
 * [ ] Data grid pagination, row limits, and specialized cell renderers
 * [ ] Staged cell editing & batch commit execution
 * [x] SQL editor with SQL syntax highlighting (`Cmd+Enter` runs the buffer)
+* [x] Open and save `.sql` files through the native file dialogs
+* [x] Settings window: page size, editor and grid fonts, theme, light/dark
 * [ ] Query cancellation, multi-statement scripts, and completion
 * [ ] SSH tunneling & SSL configuration interface
 * [ ] Schema inspector & visual DDL builder

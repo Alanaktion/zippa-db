@@ -13,13 +13,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, Window, div, px};
 
 use crate::db::{Connection, DatabaseObject, quote_identifier, runtime};
+use crate::settings::{self, Settings};
 use crate::ui::data_grid::{DataGrid, SortRequested, Sorting};
-
-/// Rows per page until the user says otherwise.
-pub const DEFAULT_LIMIT: usize = 500;
-
-/// Keeps a typo in the limit box from asking for the whole table.
-const MAX_LIMIT: usize = 100_000;
 
 pub struct TableView {
     connection: Arc<Connection>,
@@ -47,8 +42,13 @@ impl TableView {
         cx.subscribe_in(&grid, window, Self::on_sort_requested)
             .detach();
 
-        let limit_input =
-            cx.new(|cx| InputState::new(window, cx).default_value(DEFAULT_LIMIT.to_string()));
+        // A table takes the page size the settings had when it was opened;
+        // changing the setting later leaves open tables where they are.
+        let limit = Settings::global(cx)
+            .page_size
+            .clamp(1, settings::MAX_PAGE_SIZE);
+
+        let limit_input = cx.new(|cx| InputState::new(window, cx).default_value(limit.to_string()));
         cx.subscribe_in(&limit_input, window, Self::on_limit_event)
             .detach();
 
@@ -57,7 +57,7 @@ impl TableView {
             object,
             grid,
             limit_input,
-            limit: DEFAULT_LIMIT,
+            limit,
             page: 0,
             sort: None,
             loaded_rows: 0,
@@ -127,8 +127,14 @@ impl TableView {
                 match result {
                     Ok(Ok(query_result)) => {
                         this.loaded_rows = query_result.row_count();
-                        this.grid
-                            .update(cx, |grid, cx| grid.set_result(query_result, cx));
+                        // The rows come back already ordered, so the grid is
+                        // told what order they are in: it rebuilds its headers
+                        // from scratch and would otherwise show the column as
+                        // unsorted and restart its cycle on the next click.
+                        let sort = this.sort.clone();
+                        this.grid.update(cx, |grid, cx| {
+                            grid.set_sorted_result(query_result, sort, cx)
+                        });
                     }
                     Ok(Err(error)) => {
                         this.loaded_rows = 0;
@@ -177,7 +183,7 @@ impl TableView {
         let Ok(limit) = input.read(cx).value().trim().parse::<usize>() else {
             return;
         };
-        let limit = limit.clamp(1, MAX_LIMIT);
+        let limit = limit.clamp(1, settings::MAX_PAGE_SIZE);
         if limit == self.limit {
             return;
         }
@@ -308,6 +314,10 @@ impl TableView {
         };
         self.page = 0;
         self.reload(cx);
+    }
+
+    pub(crate) fn grid_for_test(&self) -> Entity<DataGrid> {
+        self.grid.clone()
     }
 
     pub(crate) fn set_loaded_rows_for_test(&mut self, rows: usize) {

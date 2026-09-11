@@ -89,20 +89,33 @@ impl ConnectionConfig {
 
     /// Name to show when the user has not given the connection one.
     pub fn display_name(&self) -> String {
-        if self.name.trim().is_empty() {
-            self.display_target()
-        } else {
-            self.name.clone()
+        if !self.name.trim().is_empty() {
+            return self.name.clone();
         }
+
+        // Showing the whole path is the target line's job; a name wants to be
+        // short enough to sit in a tab.
+        if self.engine.is_file_based() {
+            return file_name(&self.database);
+        }
+        self.display_target()
     }
 
-    /// `localhost:5432/app`, or the file name for SQLite.
+    /// `localhost:5432/app`, or the file's path for SQLite.
     pub fn display_target(&self) -> String {
         if self.engine.is_file_based() {
             return self.database.clone();
         }
         format!("{}:{}/{}", self.host, self.port, self.database)
     }
+}
+
+/// The file's own name, or the whole path when it has none.
+pub(crate) fn file_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
 }
 
 impl Default for ConnectionConfig {

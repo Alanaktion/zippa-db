@@ -5,7 +5,6 @@
 
 use std::cmp::Ordering;
 use std::rc::Rc;
-use std::sync::OnceLock;
 
 use gpui_kit::component::table::{
     Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
@@ -17,6 +16,7 @@ use gpui_kit::{
 };
 
 use crate::db::query::{Cell, QueryResult};
+use crate::settings::{self, Settings};
 
 /// Rows read when sizing a column. Values further down are rare enough that
 /// paying for them on every result would cost more than the odd clipped cell.
@@ -35,37 +35,6 @@ const MAX_COLUMN_WIDTH: f32 = 420.;
 
 /// Width of the placeholder shown for SQL `NULL`.
 const NULL_WIDTH: usize = 4;
-
-/// The first monospace family the system actually has.
-///
-/// Looking through the installed families is slow enough to be worth doing
-/// once for the whole process.
-fn monospace_family(cx: &App) -> SharedString {
-    static FAMILY: OnceLock<String> = OnceLock::new();
-
-    FAMILY
-        .get_or_init(|| {
-            const CANDIDATES: [&str; 8] = [
-                "SF Mono",
-                "Menlo",
-                "Monaco",
-                "JetBrains Mono",
-                "Cascadia Mono",
-                "Consolas",
-                "DejaVu Sans Mono",
-                "Liberation Mono",
-            ];
-
-            let installed = cx.text_system().all_font_names();
-            CANDIDATES
-                .into_iter()
-                .find(|candidate| installed.iter().any(|family| family == candidate))
-                .unwrap_or("monospace")
-                .to_string()
-        })
-        .clone()
-        .into()
-}
 
 /// Size every column from its header and the first [`SAMPLE_ROWS`] values.
 fn measure_columns(result: &QueryResult) -> Vec<Pixels> {
@@ -114,15 +83,29 @@ pub struct SortRequested {
 
 struct ResultDelegate {
     result: QueryResult,
+    /// Row indices in display order. Sorting reorders this rather than the
+    /// rows themselves, so the order the rows arrived in is never lost.
+    order: Vec<usize>,
     widths: Vec<Pixels>,
     /// Row under the selected cell, so the whole row can be highlighted while
     /// the selection itself stays on one column.
     selected_row: Option<usize>,
     font: SharedString,
     sorting: Sorting,
-    /// Column the rows are sorted by, for the header arrow.
-    sorted_by: Option<(usize, ColumnSort)>,
+    /// Column the rows are sorted by, for the header arrow. Held by name, so
+    /// it survives a result whose columns moved.
+    sorted_by: Option<(String, ColumnSort)>,
     report_sort: SortReporter,
+}
+
+/// Stands in for a cell a short row does not have.
+static MISSING: Cell = None;
+
+/// The cell at `row_ix`/`col_ix`, or `NULL` where the row is short.
+fn cell_at(rows: &[Vec<Cell>], row_ix: usize, col_ix: usize) -> &Cell {
+    rows.get(row_ix)
+        .and_then(|row| row.get(col_ix))
+        .unwrap_or(&MISSING)
 }
 
 /// Compare two cells: numbers numerically, everything else as text, NULLs last.
@@ -144,7 +127,7 @@ impl TableDelegate for ResultDelegate {
     }
 
     fn rows_count(&self, _: &App) -> usize {
-        self.result.rows.len()
+        self.order.len()
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
@@ -155,8 +138,8 @@ impl TableDelegate for ResultDelegate {
             .copied()
             .unwrap_or(px(MIN_COLUMN_WIDTH));
 
-        let sort = match self.sorted_by {
-            Some((sorted_ix, sort)) if sorted_ix == col_ix => sort,
+        let sort = match &self.sorted_by {
+            Some((sorted, sort)) if *sorted == name => *sort,
             _ => ColumnSort::Default,
         };
 
@@ -167,6 +150,10 @@ impl TableDelegate for ResultDelegate {
             .sort(sort)
     }
 
+    /// Answer a header click.
+    ///
+    /// The table cycles a column through descending, ascending, and back to
+    /// unsorted, and hands the state it settled on here.
     fn perform_sort(
         &mut self,
         col_ix: usize,
@@ -174,26 +161,21 @@ impl TableDelegate for ResultDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        self.sorted_by = Some((col_ix, sort));
+        let Some(column) = self.result.columns.get(col_ix).cloned() else {
+            return;
+        };
+
+        self.sorted_by = match sort {
+            ColumnSort::Default => None,
+            sort => Some((column.clone(), sort)),
+        };
 
         match self.sorting {
             Sorting::InPlace => {
-                self.result.rows.sort_by(|left, right| {
-                    let ordering = compare(
-                        &left.get(col_ix).cloned().flatten(),
-                        &right.get(col_ix).cloned().flatten(),
-                    );
-                    match sort {
-                        ColumnSort::Descending => ordering.reverse(),
-                        _ => ordering,
-                    }
-                });
+                self.reorder(col_ix, sort);
                 cx.notify();
             }
             Sorting::Delegated => {
-                let Some(column) = self.result.columns.get(col_ix).cloned() else {
-                    return;
-                };
                 let report = self.report_sort.clone();
                 cx.defer(move |cx| report(column, sort, cx));
             }
@@ -235,7 +217,27 @@ impl TableDelegate for ResultDelegate {
 
 impl ResultDelegate {
     fn value(&self, row_ix: usize, col_ix: usize) -> Option<&String> {
+        let row_ix = *self.order.get(row_ix)?;
         self.result.rows.get(row_ix)?.get(col_ix)?.as_ref()
+    }
+
+    /// Put the display order where `sort` asks for; `Default` restores the
+    /// order the server sent.
+    fn reorder(&mut self, col_ix: usize, sort: ColumnSort) {
+        let mut order: Vec<usize> = (0..self.result.rows.len()).collect();
+
+        if sort != ColumnSort::Default {
+            let rows = &self.result.rows;
+            order.sort_by(|&left, &right| {
+                let ordering = compare(cell_at(rows, left, col_ix), cell_at(rows, right, col_ix));
+                match sort {
+                    ColumnSort::Descending => ordering.reverse(),
+                    _ => ordering,
+                }
+            });
+        }
+
+        self.order = order;
     }
 }
 
@@ -252,7 +254,7 @@ impl DataGrid {
     }
 
     pub fn with_sorting(sorting: Sorting, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let font = monospace_family(cx);
+        let font = settings::grid_font(cx);
 
         let grid = cx.entity().downgrade();
         let report_sort: SortReporter = Rc::new(move |column, sort, cx| {
@@ -265,6 +267,7 @@ impl DataGrid {
             TableState::new(
                 ResultDelegate {
                     result: QueryResult::default(),
+                    order: Vec::new(),
                     widths: Vec::new(),
                     selected_row: None,
                     font,
@@ -278,6 +281,19 @@ impl DataGrid {
             .cell_selectable(true)
             .row_selectable(true)
         });
+
+        // The grid's font is a setting, so it can change under a grid that is
+        // already on screen.
+        cx.observe_global::<Settings>(|this, cx| {
+            let font = settings::grid_font(cx);
+            this.table.update(cx, |table, cx| {
+                if table.delegate().font != font {
+                    table.delegate_mut().font = font;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
 
         // The table highlights the selected cell; the row it sits on is
         // highlighted from here so both are visible at once.
@@ -304,13 +320,29 @@ impl DataGrid {
     }
 
     pub fn set_result(&mut self, result: QueryResult, cx: &mut Context<Self>) {
+        self.set_sorted_result(result, None, cx);
+    }
+
+    /// Show `result`, marking its header as sorted by `sort`.
+    ///
+    /// The table rebuilds its headers from the delegate whenever the rows
+    /// change, so an owner that sorts on the server has to hand its sort back.
+    /// Without it the header returns to unsorted and the next click on it
+    /// starts the cycle over, which makes every click sort descending.
+    pub fn set_sorted_result(
+        &mut self,
+        result: QueryResult,
+        sort: Option<(String, ColumnSort)>,
+        cx: &mut Context<Self>,
+    ) {
         self.has_result = true;
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
             delegate.widths = measure_columns(&result);
+            delegate.order = (0..result.rows.len()).collect();
             delegate.result = result;
             delegate.selected_row = None;
-            delegate.sorted_by = None;
+            delegate.sorted_by = sort;
             table.clear_selection(cx);
             table.refresh(cx);
         });
@@ -322,6 +354,7 @@ impl DataGrid {
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
             delegate.result = QueryResult::default();
+            delegate.order = Vec::new();
             delegate.widths = Vec::new();
             delegate.selected_row = None;
             delegate.sorted_by = None;
@@ -368,16 +401,18 @@ impl DataGrid {
         });
     }
 
-    /// The first column of every row, in display order.
+    /// The column the header is marked as sorted by.
+    #[cfg(test)]
+    pub(crate) fn sorted_for_test(&self, cx: &App) -> Option<(String, ColumnSort)> {
+        self.table.read(cx).delegate().sorted_by.clone()
+    }
+
+    /// One column of every row, in display order.
     #[cfg(test)]
     pub(crate) fn column_values_for_test(&self, col_ix: usize, cx: &App) -> Vec<Option<String>> {
-        self.table
-            .read(cx)
-            .delegate()
-            .result
-            .rows
-            .iter()
-            .map(|row| row.get(col_ix).cloned().flatten())
+        let delegate = self.table.read(cx).delegate();
+        (0..delegate.order.len())
+            .map(|row_ix| delegate.value(row_ix, col_ix).cloned())
             .collect()
     }
 

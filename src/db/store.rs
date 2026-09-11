@@ -15,7 +15,8 @@ use super::ConnectionConfig;
 const SERVICE: &str = "zippa-db";
 const FILE_NAME: &str = "connections.json";
 
-fn config_dir() -> Result<PathBuf> {
+/// Where Zippa keeps its files: connections, settings, and user themes.
+pub(crate) fn config_dir() -> Result<PathBuf> {
     let dir = dirs::config_dir().context("no config directory for this platform")?;
     Ok(dir.join(SERVICE))
 }
