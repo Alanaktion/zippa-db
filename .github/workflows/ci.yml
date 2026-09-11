@@ -27,5 +27,5 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - run: cargo build --verbose
+      - run: cargo build --verbose --profile test
       - run: cargo test --verbose
