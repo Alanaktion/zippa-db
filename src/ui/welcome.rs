@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Window, div, px};
 use uuid::Uuid;
 
-use crate::db::{Connection, ConnectionConfig, Engine, runtime, store};
+use crate::db::{Connection, ConnectionConfig, Engine, SafetyMode, runtime, store};
 
 pub enum WelcomeEvent {
     /// A connection was opened and the session can start.
@@ -34,6 +34,7 @@ pub struct Welcome {
     /// `None` while editing a connection that has not been saved.
     selected: Option<Uuid>,
     engine: Engine,
+    safety: SafetyMode,
     name: Entity<InputState>,
     host: Entity<InputState>,
     port: Entity<InputState>,
@@ -57,6 +58,7 @@ impl Welcome {
             connections,
             selected: None,
             engine,
+            safety: SafetyMode::default(),
             name: cx.new(|cx| InputState::new(window, cx).placeholder("Local Postgres")),
             host: cx.new(|cx| InputState::new(window, cx).default_value("localhost")),
             port: cx.new(|cx| {
@@ -87,6 +89,7 @@ impl Welcome {
             port,
             username: self.username.read(cx).value().trim().to_string(),
             database: self.database.read(cx).value().trim().to_string(),
+            safety: self.safety,
         }
     }
 
@@ -114,6 +117,7 @@ impl Welcome {
 
         self.selected = Some(config.id);
         self.engine = config.engine;
+        self.safety = config.safety;
         self.set_field(&self.name.clone(), &config.name, window, cx);
         self.set_field(&self.host.clone(), &config.host, window, cx);
         self.set_field(&self.port.clone(), &config.port.to_string(), window, cx);
@@ -139,6 +143,7 @@ impl Welcome {
     fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = None;
         self.engine = Engine::Postgres;
+        self.safety = SafetyMode::default();
         self.set_field(&self.name.clone(), "", window, cx);
         self.set_field(&self.host.clone(), "localhost", window, cx);
         self.set_field(
@@ -332,6 +337,33 @@ impl Welcome {
         }))
     }
 
+    /// Pick how careful this connection is about writes.
+    fn render_safety(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Inline edits"),
+            )
+            .child(h_flex().gap_2().children(SafetyMode::ALL.map(|safety| {
+                let button = Button::new(SharedString::from(format!("safety-{safety:?}")))
+                    .label(safety.label())
+                    .tooltip(safety.description())
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.safety = safety;
+                        cx.notify();
+                    }));
+
+                if self.safety == safety {
+                    button.primary()
+                } else {
+                    button.outline()
+                }
+            })))
+    }
+
     fn render_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let file_based = self.engine.is_file_based();
 
@@ -358,6 +390,7 @@ impl Welcome {
                 )
                 .child(field("Database", &self.database, cx))
             })
+            .child(self.render_safety(cx))
     }
 
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {

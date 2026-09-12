@@ -16,7 +16,8 @@ use gpui_kit::{Context, Entity, Window, actions, div, px};
 
 use crate::db::query::{Cell, QueryResult};
 use crate::db::{
-    Connection, DatabaseObject, ObjectKind, RowKey, quote_identifier, runtime, typed_placeholder,
+    Connection, DatabaseObject, ObjectKind, RowKey, SafetyMode, quote_identifier, runtime,
+    typed_placeholder,
 };
 use crate::settings::{self, Settings};
 use crate::ui::data_grid::{DataGrid, GridEdit, SortRequested, Sorting, StagedRow};
@@ -25,6 +26,28 @@ actions!(
     zippa_db,
     [ApplyEdits, DiscardEdits, EditCell, SetNull, CancelEdit]
 );
+
+/// Something that would replace the rows in the grid, held back because the
+/// rows in hand have edits that have not been written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Pending {
+    Reload,
+    Page(usize),
+    Sort(Option<(String, ColumnSort)>),
+    Limit(usize),
+}
+
+impl Pending {
+    /// What this would do to the page, for the question in the footer.
+    fn label(&self) -> &'static str {
+        match self {
+            Pending::Reload => "Refreshing",
+            Pending::Page(_) => "Turning the page",
+            Pending::Sort(_) => "Sorting",
+            Pending::Limit(_) => "Changing the row limit",
+        }
+    }
+}
 
 pub struct TableView {
     connection: Arc<Connection>,
@@ -54,6 +77,8 @@ pub struct TableView {
     committing: bool,
     /// What the last write did, for the footer.
     notice: Option<String>,
+    /// An action waiting on an answer about the staged edits it would lose.
+    pending: Option<Pending>,
 }
 
 impl TableView {
@@ -96,6 +121,7 @@ impl TableView {
             key_type: None,
             committing: false,
             notice: None,
+            pending: None,
         };
         view.load_row_key(cx);
         view
@@ -365,6 +391,89 @@ impl TableView {
         ))
     }
 
+    /// Hold `action` back when the page has edits it would throw away.
+    ///
+    /// Returns true when it was held: the footer then asks what to do with the
+    /// edits, and the answer either runs the action or drops it.
+    fn hold(&mut self, action: Pending, cx: &mut Context<Self>) -> bool {
+        // What is half-typed counts as an edit too, so it is folded in before
+        // the question is asked.
+        self.grid.update(cx, |grid, cx| grid.commit_editor(cx));
+        if self.grid.read(cx).staged(cx).is_empty() {
+            return false;
+        }
+
+        self.pending = Some(action);
+        cx.notify();
+        true
+    }
+
+    /// Throw the staged edits away and do what was held back.
+    fn discard_and_continue(&mut self, cx: &mut Context<Self>) {
+        let Some(action) = self.pending.take() else {
+            return;
+        };
+
+        self.grid.update(cx, |grid, cx| grid.discard(cx));
+        // Nothing is staged now, so these run straight through their own
+        // guard rather than asking again.
+        match action {
+            Pending::Reload => self.reload(cx),
+            Pending::Page(page) => self.go(page, cx),
+            Pending::Sort(sort) => self.apply_sort(sort, cx),
+            Pending::Limit(limit) => self.set_limit(limit, cx),
+        }
+    }
+
+    /// Drop what was held back and leave the page as it is, edits and all.
+    fn keep_edits(&mut self, cx: &mut Context<Self>) {
+        let Some(action) = self.pending.take() else {
+            return;
+        };
+
+        // A header click moves the sort marker before the view hears about it,
+        // so a refused sort has to put the marker back on the sort the rows
+        // are really in.
+        if matches!(action, Pending::Sort(_)) {
+            let sort = self.sort.clone();
+            self.grid
+                .update(cx, |grid, cx| grid.set_sort_marker(sort, cx));
+        }
+        cx.notify();
+    }
+
+    /// Reread the page, asking first when that would lose staged edits.
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.hold(Pending::Reload, cx) {
+            return;
+        }
+        self.reload(cx);
+    }
+
+    /// Order the rows by `sort` on the server, from the first page.
+    fn apply_sort(&mut self, sort: Option<(String, ColumnSort)>, cx: &mut Context<Self>) {
+        if self.hold(Pending::Sort(sort.clone()), cx) {
+            return;
+        }
+
+        self.sort = sort;
+        // Sorting reorders the whole table, so the old page number is
+        // meaningless.
+        self.page = 0;
+        self.reload(cx);
+    }
+
+    /// Read `limit` rows a page, from the first page.
+    fn set_limit(&mut self, limit: usize, cx: &mut Context<Self>) {
+        if self.hold(Pending::Limit(limit), cx) {
+            return;
+        }
+
+        self.limit = limit;
+        self.page = 0;
+        self.reload(cx);
+    }
+
     /// Write every staged row.
     pub(crate) fn commit(&mut self, cx: &mut Context<Self>) {
         self.commit_rows(None, cx);
@@ -476,9 +585,16 @@ impl TableView {
         cx: &mut Context<Self>,
     ) {
         match event {
-            // Leaving a row is what writes it, the way a form field applies
-            // when you tab out of it.
-            GridEdit::RowLeft { row } => self.commit_rows(Some(&[*row]), cx),
+            // On an auto-apply connection, leaving a row is what writes it,
+            // the way a form field applies when you tab out of it. A staged
+            // connection keeps the edit until it is applied by hand.
+            GridEdit::RowLeft { row } => {
+                if self.connection.config.safety == SafetyMode::AutoApply {
+                    self.commit_rows(Some(&[*row]), cx);
+                } else {
+                    cx.notify();
+                }
+            }
             GridEdit::Staged => cx.notify(),
         }
     }
@@ -513,14 +629,11 @@ impl TableView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sort = match event.sort {
+        let sort = match event.sort {
             ColumnSort::Default => None,
             sort => Some((event.column.clone(), sort)),
         };
-        // Sorting reorders the whole table, so the old page number is
-        // meaningless.
-        self.page = 0;
-        self.reload(cx);
+        self.apply_sort(sort, cx);
     }
 
     fn on_limit_event(
@@ -544,9 +657,7 @@ impl TableView {
             return;
         }
 
-        self.limit = limit;
-        self.page = 0;
-        self.reload(cx);
+        self.set_limit(limit, cx);
     }
 
     fn has_previous(&self) -> bool {
@@ -562,6 +673,10 @@ impl TableView {
         if page == self.page {
             return;
         }
+        if self.hold(Pending::Page(page), cx) {
+            return;
+        }
+
         self.page = page;
         self.reload(cx);
     }
@@ -575,20 +690,26 @@ impl TableView {
         };
 
         let staged = self.grid.read(cx).staged(cx).len();
-        let pending = match staged {
+        let unit = if staged == 1 { "row" } else { "rows" };
+        let changed = match staged {
             0 => None,
-            1 => Some("1 row changed".to_string()),
-            rows => Some(format!("{rows} rows changed")),
+            rows => Some(format!("{rows} {unit} changed")),
         };
 
         let message = match (&self.error, self.loading, self.committing) {
             (Some(error), _, _) => (error.clone(), cx.theme().danger),
             (None, _, true) => ("Writing…".to_string(), cx.theme().muted_foreground),
             (None, true, _) => ("Loading…".to_string(), cx.theme().muted_foreground),
-            (None, false, _) => match (&pending, &self.notice) {
-                (Some(pending), _) => (pending.clone(), cx.theme().warning),
-                (None, Some(notice)) => (notice.clone(), cx.theme().muted_foreground),
-                (None, None) => (range, cx.theme().muted_foreground),
+            // The question comes first: it is the one thing here waiting on
+            // an answer.
+            (None, false, _) => match (&self.pending, &changed, &self.notice) {
+                (Some(action), _, _) => (
+                    format!("{} discards {staged} changed {unit}", action.label()),
+                    cx.theme().danger,
+                ),
+                (None, Some(changed), _) => (changed.clone(), cx.theme().warning),
+                (None, None, Some(notice)) => (notice.clone(), cx.theme().muted_foreground),
+                (None, None, None) => (range, cx.theme().muted_foreground),
             },
         };
 
@@ -645,7 +766,27 @@ impl TableView {
                                 .child(format!("Read-only: {reason}")),
                         )
                     })
-                    .when(staged > 0, |this| {
+                    .when_some(self.pending.clone(), |this, _| {
+                        this.child(
+                            Button::new("keep-edits")
+                                .ghost()
+                                .xsmall()
+                                .label("Keep editing")
+                                .tooltip("Leave the page as it is")
+                                .on_click(cx.listener(|this, _, _window, cx| this.keep_edits(cx))),
+                        )
+                        .child(
+                            Button::new("discard-and-continue")
+                                .danger()
+                                .xsmall()
+                                .label("Discard")
+                                .tooltip("Throw the edits away and carry on")
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.discard_and_continue(cx)
+                                })),
+                        )
+                    })
+                    .when(staged > 0 && self.pending.is_none(), |this| {
                         this.child(
                             Button::new("discard-edits")
                                 .ghost()
@@ -712,12 +853,15 @@ impl TableView {
     }
 
     pub(crate) fn sort_for_test(&mut self, column: &str, sort: ColumnSort, cx: &mut Context<Self>) {
-        self.sort = match sort {
+        let sort = match sort {
             ColumnSort::Default => None,
             sort => Some((column.to_string(), sort)),
         };
-        self.page = 0;
-        self.reload(cx);
+        self.apply_sort(sort, cx);
+    }
+
+    pub(crate) fn pending_for_test(&self) -> bool {
+        self.pending.is_some()
     }
 
     pub(crate) fn row_key_for_test(&self) -> Option<RowKey> {

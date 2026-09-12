@@ -21,7 +21,7 @@ use crate::ui::welcome::WelcomeEvent;
 
 use crate::db::query::QueryResult;
 use crate::db::tests::TempDatabase;
-use crate::db::{Connection, DatabaseObject, ObjectKind, runtime};
+use crate::db::{Connection, ConnectionConfig, DatabaseObject, ObjectKind, SafetyMode, runtime};
 use crate::ui::session::Session;
 use crate::ui::welcome::Welcome;
 
@@ -368,8 +368,20 @@ fn long_object_lists_scroll_inside_the_sidebar(cx: &mut TestAppContext) {
 fn session_with_objects(
     cx: &mut TestAppContext,
 ) -> (TempDatabase, gpui_kit::WindowHandle<Session>) {
+    session_with_safety(cx, SafetyMode::default())
+}
+
+/// The same, on a connection that handles inline edits the way `safety` says.
+fn session_with_safety(
+    cx: &mut TestAppContext,
+    safety: SafetyMode,
+) -> (TempDatabase, gpui_kit::WindowHandle<Session>) {
     let database = runtime::block_on(TempDatabase::new());
-    let connection = runtime::block_on(Connection::open(database.config(), None))
+    let config = ConnectionConfig {
+        safety,
+        ..database.config()
+    };
+    let connection = runtime::block_on(Connection::open(config, None))
         .expect("could not open the test database");
 
     cx.update(|cx| {
@@ -805,7 +817,19 @@ fn table_view(
     gpui_kit::WindowHandle<Session>,
     gpui_kit::Entity<crate::ui::table_view::TableView>,
 ) {
-    let (database, handle) = session_with_objects(cx);
+    table_view_with_safety(cx, SafetyMode::default())
+}
+
+/// The same, on a connection that handles inline edits the way `safety` says.
+fn table_view_with_safety(
+    cx: &mut TestAppContext,
+    safety: SafetyMode,
+) -> (
+    TempDatabase,
+    gpui_kit::WindowHandle<Session>,
+    gpui_kit::Entity<crate::ui::table_view::TableView>,
+) {
+    let (database, handle) = session_with_safety(cx, safety);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
@@ -1026,6 +1050,15 @@ impl Drop for ScratchDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+/// Draw the session and click a button in it by id.
+fn click_in_session(cx: &mut TestAppContext, handle: WindowHandle<Session>, id: &'static str) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click(id, cx);
+    })
+    .unwrap();
 }
 
 /// Draw the session and send it a keystroke; something inside it must already
@@ -1809,8 +1842,8 @@ fn a_table_with_a_primary_key_can_be_edited(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn editing_a_cell_and_leaving_the_row_writes_it(cx: &mut TestAppContext) {
-    let (database, _handle, view) = table_view(cx);
+fn leaving_the_row_writes_it_on_an_auto_apply_connection(cx: &mut TestAppContext) {
+    let (database, _handle, view) = table_view_with_safety(cx, SafetyMode::AutoApply);
     cx.run_until_parked();
 
     stage_cell(cx, &view, 0, 1, "renamed");
@@ -1833,6 +1866,42 @@ fn editing_a_cell_and_leaving_the_row_writes_it(cx: &mut TestAppContext) {
             .staged(cx)
             .is_empty()),
         "a written row should no longer be staged"
+    );
+}
+
+#[gpui_kit::test]
+fn leaving_the_row_keeps_the_edit_on_a_staged_connection(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view_with_safety(cx, SafetyMode::Staged);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "renamed");
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.select_cell_for_test(1, 1, cx));
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string()),
+        "a staged connection must not write until the edit is applied"
+    );
+    assert_eq!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .staged(cx)
+            .len()),
+        1,
+        "the edit should still be waiting"
+    );
+
+    // The edit is still there to apply by hand.
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-s");
+    cx.run_until_parked();
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("renamed".to_string()),
+        "applying by hand should write the staged row"
     );
 }
 
@@ -1900,36 +1969,118 @@ fn setting_a_cell_to_null_writes_null(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn paging_discards_staged_edits(cx: &mut TestAppContext) {
-    let (database, _handle, view) = table_view(cx);
+fn paging_asks_before_it_discards_staged_edits(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
     cx.run_until_parked();
 
     stage_cell(cx, &view, 0, 1, "never written");
 
-    // A new page is a new set of rows, so what was staged over the old ones
-    // goes with them.
-    view.update(cx, |view, cx| {
-        view.go_for_test(1, cx);
-    });
-    cx.run_until_parked();
-    view.update(cx, |view, cx| {
-        view.go_for_test(0, cx);
-    });
+    // A new page is a new set of rows, so the old ones' edits would go with
+    // them; the footer asks instead of turning the page.
+    view.update(cx, |view, cx| view.go_for_test(1, cx));
     cx.run_until_parked();
 
-    assert!(
-        view.read_with(cx, |view, cx| view
-            .grid_for_test()
-            .read(cx)
-            .staged(cx)
-            .is_empty()),
-        "paging should leave nothing staged"
-    );
+    view.update(cx, |view, cx| {
+        assert_eq!(view.page_for_test(), 0, "the page should be held back");
+        assert_eq!(
+            view.grid_for_test().read(cx).staged(cx).len(),
+            1,
+            "the edit should still be there while the question stands"
+        );
+    });
+
+    // Saying no leaves everything where it was.
+    click_in_session(cx, handle, "keep-edits");
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        assert_eq!(view.page_for_test(), 0);
+        assert_eq!(view.grid_for_test().read(cx).staged(cx).len(), 1);
+    });
+
+    // Saying yes throws the edit away and turns the page.
+    view.update(cx, |view, cx| view.go_for_test(1, cx));
+    cx.run_until_parked();
+    click_in_session(cx, handle, "discard-and-continue");
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        assert_eq!(view.page_for_test(), 1, "the page should turn now");
+        assert!(view.grid_for_test().read(cx).staged(cx).is_empty());
+    });
     assert_eq!(
         runtime::block_on(name_of(&database, 1)),
         Some("alpha".to_string()),
         "paging away from an edit must not write it"
     );
+}
+
+#[gpui_kit::test]
+fn refresh_asks_before_it_discards_staged_edits(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "never written");
+
+    handle
+        .update(cx, |session, _, cx| session.refresh(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .staged(cx)
+            .len()),
+        1,
+        "refresh should ask rather than reread the rows under the edit"
+    );
+
+    click_in_session(cx, handle, "discard-and-continue");
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        assert!(view.grid_for_test().read(cx).staged(cx).is_empty());
+        assert_eq!(
+            view.grid_for_test().read(cx).cell_for_test(0, 1, cx),
+            Some("alpha".to_string()),
+            "the page should be back to what the server has"
+        );
+    });
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string()),
+        "a refused edit must not reach the server"
+    );
+}
+
+#[gpui_kit::test]
+fn sorting_asks_and_puts_the_header_back_when_it_is_refused(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "never written");
+
+    view.update(cx, |view, cx| {
+        view.sort_for_test("name", ColumnSort::Descending, cx)
+    });
+    cx.run_until_parked();
+    assert!(
+        view.read_with(cx, |view, _| view.pending_for_test()),
+        "sorting should be held back while edits are waiting"
+    );
+
+    click_in_session(cx, handle, "keep-edits");
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.grid_for_test().read(cx).sorted_for_test(cx),
+            None,
+            "a refused sort should leave the header on the order the rows are in"
+        );
+        assert_eq!(view.grid_for_test().read(cx).staged(cx).len(), 1);
+    });
 }
 
 #[gpui_kit::test]

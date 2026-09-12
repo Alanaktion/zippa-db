@@ -238,7 +238,7 @@ impl Session {
         if let Some(TabContent::Table { view }) = self.tabs.get(self.active).map(|tab| &tab.content)
         {
             let view = view.clone();
-            view.update(cx, |view, cx| view.reload(cx));
+            view.update(cx, |view, cx| view.refresh(cx));
         }
     }
 

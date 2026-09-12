@@ -61,6 +61,37 @@ impl Engine {
     }
 }
 
+/// How much ceremony a connection asks for before a row is written.
+///
+/// Only the two inline-edit modes exist so far; refusing writes outright and
+/// previewing the statement first are in IDEAS.md.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SafetyMode {
+    /// Inline edits wait in the grid until they are applied by hand.
+    #[default]
+    Staged,
+    /// Inline edits are written as soon as the selection leaves the row.
+    AutoApply,
+}
+
+impl SafetyMode {
+    pub const ALL: [SafetyMode; 2] = [SafetyMode::Staged, SafetyMode::AutoApply];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SafetyMode::Staged => "Staged edits",
+            SafetyMode::AutoApply => "Auto-apply",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            SafetyMode::Staged => "Edits wait until you apply them",
+            SafetyMode::AutoApply => "Edits are written when you leave the row",
+        }
+    }
+}
+
 /// A saved connection as configured by the user.
 ///
 /// The password is not part of this struct: it lives in the OS keychain, keyed
@@ -75,6 +106,10 @@ pub struct ConnectionConfig {
     pub username: String,
     /// Database name, or the file path for SQLite.
     pub database: String,
+    /// How careful this connection is about writes. Absent in files written
+    /// before the setting existed, which read back as the safer mode.
+    #[serde(default)]
+    pub safety: SafetyMode,
 }
 
 impl ConnectionConfig {
@@ -87,6 +122,7 @@ impl ConnectionConfig {
             port: engine.default_port(),
             username: String::new(),
             database: String::new(),
+            safety: SafetyMode::default(),
         }
     }
 

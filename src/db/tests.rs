@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use super::query::Cell;
 use super::{
-    Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, RowKey, quote_identifier,
-    typed_placeholder,
+    Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, RowKey, SafetyMode,
+    quote_identifier, typed_placeholder,
 };
 
 pub(crate) struct TempDatabase {
@@ -343,6 +343,35 @@ async fn execute_reports_no_rows_for_a_missing_key() {
     assert_eq!(affected, 0);
 
     connection.close().await;
+}
+
+#[test]
+fn a_connection_saved_before_safety_modes_reads_back_as_staged() {
+    // The field is written by every save now, but files from before it
+    // existed have to keep working, and they get the careful mode.
+    let saved = r#"{
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "old",
+        "engine": "Postgres",
+        "host": "localhost",
+        "port": 5432,
+        "username": "postgres",
+        "database": "app"
+    }"#;
+
+    let config: ConnectionConfig =
+        serde_json::from_str(saved).expect("an older connection should still load");
+    assert_eq!(config.safety, SafetyMode::Staged);
+
+    let written = serde_json::to_string(&ConnectionConfig {
+        safety: SafetyMode::AutoApply,
+        ..ConnectionConfig::new(Engine::Postgres)
+    })
+    .expect("the config should serialize");
+    assert!(
+        written.contains("\"safety\":\"AutoApply\""),
+        "the mode belongs in the file: {written}"
+    );
 }
 
 #[test]

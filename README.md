@@ -143,7 +143,7 @@ cargo test
 * [x] Regex filter over the sidebar's table list
 * [x] Dedicated table view: paging, row limit, and click-to-sort columns
 * [ ] Data grid pagination, row limits, and specialized cell renderers
-* [x] Staged cell editing in a table tab, written on leaving the row or on `Cmd+S`
+* [x] Staged cell editing in a table tab, with a per-connection safety mode: apply by hand, or write when the selection leaves the row
 * [x] SQL editor with SQL syntax highlighting (`Cmd+Enter` runs the buffer)
 * [x] Open and save `.sql` files through the native file dialogs
 * [x] Settings window: page size, editor and grid fonts, theme, light/dark

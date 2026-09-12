@@ -663,6 +663,20 @@ impl DataGrid {
         cx.emit(GridEdit::Staged);
     }
 
+    /// Put the header's sort marker back where the rows actually are.
+    ///
+    /// The table moves the marker itself when a header is clicked, so an owner
+    /// that refuses the sort has to move it back.
+    pub fn set_sort_marker(&mut self, sort: Option<(String, ColumnSort)>, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            if table.delegate().sorted_by == sort {
+                return;
+            }
+            table.delegate_mut().sorted_by = sort;
+            cx.notify();
+        });
+    }
+
     /// Throw every staged edit away.
     pub fn discard(&mut self, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
