@@ -1,11 +1,13 @@
 //! SQLite driver (local file databases).
 
 use anyhow::{Context, Result};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteQueryResult, SqliteRow,
+};
 use sqlx::{Row, TypeInfo, ValueRef};
 
 use super::query::{self, Cell};
-use super::{ConnectionConfig, POOL_SIZE, decode};
+use super::{ConnectionConfig, POOL_SIZE, decode, quote_literal};
 
 /// A SQLite connection has one main database plus any attached ones.
 pub(crate) const DATABASES_SQL: &str = "SELECT name FROM pragma_database_list ORDER BY seq";
@@ -31,6 +33,21 @@ pub(crate) async fn connect(config: &ConnectionConfig) -> Result<SqlitePool> {
         .await
         .with_context(|| format!("could not open {}", config.database))?;
     Ok(pool)
+}
+
+/// Primary key columns of a table, in key order.
+///
+/// A `WITHOUT ROWID` table always has a primary key, so this answering with
+/// rows is what keeps the `rowid` fallback away from one.
+pub(crate) fn primary_key_sql(table: &str) -> String {
+    format!(
+        "SELECT name FROM pragma_table_info({}) WHERE pk > 0 ORDER BY pk",
+        quote_literal(table)
+    )
+}
+
+pub(crate) fn rows_affected(result: &SqliteQueryResult) -> u64 {
+    result.rows_affected()
 }
 
 pub(crate) fn cell(row: &SqliteRow, index: usize) -> Cell {

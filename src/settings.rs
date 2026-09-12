@@ -82,6 +82,9 @@ pub struct Settings {
     pub editor_font: Option<SharedString>,
     /// Font family for the result grid; `None` is the theme's monospace family.
     pub grid_font: Option<SharedString>,
+    /// Whether typing `NULL` into a cell stages SQL `NULL` rather than the
+    /// four characters. Off by default, so an edit means what it says.
+    pub coerce_null_literal: bool,
 }
 
 impl Default for Settings {
@@ -93,6 +96,7 @@ impl Default for Settings {
             dark_theme: None,
             editor_font: None,
             grid_font: None,
+            coerce_null_literal: false,
         }
     }
 }

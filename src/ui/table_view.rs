@@ -1,7 +1,9 @@
-//! A table opened from the sidebar: just the grid, paged, with no editor.
+//! A table opened from the sidebar: the grid, paged, with no editor.
 //!
-//! TODO.md section 2 ("Configurable row limit & offset pagination") and the
-//! sorting half of "Multi-column sorting".
+//! TODO.md section 2 ("Configurable row limit & offset pagination"), the
+//! sorting half of "Multi-column sorting", and the buffer model for inline
+//! edits: the grid stages what is typed into it and this view turns a row's
+//! staged cells into an `UPDATE`, on leaving the row or on demand.
 
 use std::sync::Arc;
 
@@ -10,11 +12,19 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::table::ColumnSort;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, Window, div, px};
+use gpui_kit::{Context, Entity, Window, actions, div, px};
 
-use crate::db::{Connection, DatabaseObject, quote_identifier, runtime};
+use crate::db::query::{Cell, QueryResult};
+use crate::db::{
+    Connection, DatabaseObject, ObjectKind, RowKey, quote_identifier, runtime, typed_placeholder,
+};
 use crate::settings::{self, Settings};
-use crate::ui::data_grid::{DataGrid, SortRequested, Sorting};
+use crate::ui::data_grid::{DataGrid, GridEdit, SortRequested, Sorting, StagedRow};
+
+actions!(
+    zippa_db,
+    [ApplyEdits, DiscardEdits, EditCell, SetNull, CancelEdit]
+);
 
 pub struct TableView {
     connection: Arc<Connection>,
@@ -29,6 +39,21 @@ pub struct TableView {
     loaded_rows: usize,
     loading: bool,
     error: Option<String>,
+    /// How a row of this table can be addressed by a write; `None` until the
+    /// server has been asked.
+    row_key: Option<RowKey>,
+    /// Column names and driver type names of the page in the grid, kept so a
+    /// write can quote its columns and cast its parameters.
+    columns: Vec<String>,
+    column_types: Vec<String>,
+    /// Row identifiers of the loaded page, when the key is one; indexed the
+    /// same way the grid indexes its rows.
+    key_values: Vec<Cell>,
+    /// Driver type name of that identifier, for the cast Postgres wants.
+    key_type: Option<String>,
+    committing: bool,
+    /// What the last write did, for the footer.
+    notice: Option<String>,
 }
 
 impl TableView {
@@ -41,6 +66,7 @@ impl TableView {
         let grid = cx.new(|cx| DataGrid::with_sorting(Sorting::Delegated, window, cx));
         cx.subscribe_in(&grid, window, Self::on_sort_requested)
             .detach();
+        cx.subscribe_in(&grid, window, Self::on_grid_edit).detach();
 
         // A table takes the page size the settings had when it was opened;
         // changing the setting later leaves open tables where they are.
@@ -63,8 +89,15 @@ impl TableView {
             loaded_rows: 0,
             loading: false,
             error: None,
+            row_key: None,
+            columns: Vec::new(),
+            column_types: Vec::new(),
+            key_values: Vec::new(),
+            key_type: None,
+            committing: false,
+            notice: None,
         };
-        view.reload(cx);
+        view.load_row_key(cx);
         view
     }
 
@@ -77,22 +110,83 @@ impl TableView {
         self.connection = connection;
         self.page = 0;
         self.sort = None;
-        self.reload(cx);
+        // A table of the same name in another database is another table, so
+        // the key is read again rather than carried over.
+        self.row_key = None;
+        self.load_row_key(cx);
     }
 
-    /// The statement this view runs for its current page and sort.
-    pub fn query(&self) -> String {
+    /// Ask the server how a row of this table can be addressed, then load it.
+    ///
+    /// Read once per table rather than per page: the answer only changes when
+    /// the table's own definition does.
+    fn load_row_key(&mut self, cx: &mut Context<Self>) {
+        self.loading = true;
+        cx.notify();
+
+        let connection = self.connection.clone();
+        let object = self.object.clone();
+        let task = runtime::spawn(async move { connection.row_key(&object).await });
+
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                // A table whose key could not be read is shown, just not
+                // written to; the reason sits in the footer.
+                this.row_key = Some(match result {
+                    Ok(Ok(key)) => key,
+                    Ok(Err(_)) | Err(_) => RowKey::Unavailable("the primary key could not be read"),
+                });
+
+                let editable = this.is_editable();
+                this.grid
+                    .update(cx, |grid, cx| grid.set_editable(editable, cx));
+                this.reload(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Whether rows of this table can be written back.
+    fn is_editable(&self) -> bool {
+        self.object.kind == ObjectKind::Table
+            && matches!(&self.row_key, Some(key) if key.is_available())
+    }
+
+    /// Why the table is read-only, when it is and the user should know.
+    fn read_only_reason(&self) -> Option<&'static str> {
+        match &self.row_key {
+            Some(RowKey::Unavailable(reason)) => Some(reason),
+            _ => None,
+        }
+    }
+
+    /// The table this view reads and writes, qualified and quoted.
+    fn target(&self) -> String {
         let engine = self.connection.config.engine;
-        let target = match &self.object.schema {
+        match &self.object.schema {
             Some(schema) => format!(
                 "{}.{}",
                 quote_identifier(schema, engine),
                 quote_identifier(&self.object.name, engine)
             ),
             None => quote_identifier(&self.object.name, engine),
-        };
+        }
+    }
 
-        let mut sql = format!("select * from {target}");
+    /// The statement this view runs for its current page and sort.
+    pub fn query(&self) -> String {
+        let engine = self.connection.config.engine;
+        let target = self.target();
+
+        // A table with no primary key is addressed by the engine's own row
+        // identifier, which `select *` leaves out, so it is asked for by name
+        // and taken back out of the result before the grid sees it.
+        let mut sql = match &self.row_key {
+            Some(RowKey::RowId(id)) => format!("select {id}, * from {target}"),
+            _ => format!("select * from {target}"),
+        };
         if let Some((column, sort)) = &self.sort {
             let direction = match sort {
                 ColumnSort::Descending => "desc",
@@ -116,6 +210,7 @@ impl TableView {
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
+        self.notice = None;
         cx.notify();
 
         let sql = self.query();
@@ -127,8 +222,11 @@ impl TableView {
             this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok(Ok(query_result)) => {
+                    Ok(Ok(mut query_result)) => {
+                        this.take_key_column(&mut query_result);
                         this.loaded_rows = query_result.row_count();
+                        this.columns = query_result.columns.clone();
+                        this.column_types = query_result.column_types.clone();
                         // The rows come back already ordered, so the grid is
                         // told what order they are in: it rebuilds its headers
                         // from scratch and would otherwise show the column as
@@ -140,6 +238,8 @@ impl TableView {
                     }
                     Ok(Err(error)) => {
                         this.loaded_rows = 0;
+                        this.columns.clear();
+                        this.column_types.clear();
                         this.error = Some(format!("{error:#}"));
                         this.grid.update(cx, |grid, cx| grid.clear(cx));
                     }
@@ -150,6 +250,260 @@ impl TableView {
             .ok();
         })
         .detach();
+    }
+
+    /// Take the row identifier column back out of a freshly loaded page.
+    ///
+    /// It was asked for so rows could be addressed, not so it could be shown,
+    /// so its values are kept here and the grid is handed the table's own
+    /// columns.
+    fn take_key_column(&mut self, result: &mut QueryResult) {
+        self.key_values.clear();
+        self.key_type = None;
+
+        if !matches!(self.row_key, Some(RowKey::RowId(_))) || result.columns.is_empty() {
+            return;
+        }
+
+        result.columns.remove(0);
+        if !result.column_types.is_empty() {
+            self.key_type = Some(result.column_types.remove(0));
+        }
+        for row in &mut result.rows {
+            if row.is_empty() {
+                self.key_values.push(None);
+                continue;
+            }
+            self.key_values.push(row.remove(0));
+        }
+    }
+
+    /// How a row is addressed in a write: the left-hand side, the type to cast
+    /// the parameter to, and the value itself.
+    fn key_for(&self, row: usize, cx: &gpui_kit::App) -> Option<Vec<(String, String, Cell)>> {
+        let engine = self.connection.config.engine;
+        match self.row_key.as_ref()? {
+            RowKey::Columns(columns) => {
+                let loaded = self.grid.read(cx).baseline_row(row, cx)?;
+                columns
+                    .iter()
+                    .map(|column| {
+                        let index = self.columns.iter().position(|name| name == column)?;
+                        let value = loaded.get(index)?.clone();
+                        // A NULL key would never match with `=`, and a key
+                        // column should not be NULL in the first place.
+                        value.as_ref()?;
+                        Some((
+                            quote_identifier(column, engine),
+                            self.column_types.get(index).cloned().unwrap_or_default(),
+                            value,
+                        ))
+                    })
+                    .collect()
+            }
+            RowKey::RowId(id) => {
+                let value = self.key_values.get(row)?.clone();
+                value.as_ref()?;
+                Some(vec![(
+                    id.to_string(),
+                    self.key_type.clone().unwrap_or_default(),
+                    value,
+                )])
+            }
+            RowKey::Unavailable(_) => None,
+        }
+    }
+
+    /// The `UPDATE` for one row's staged cells, and the values to bind to it.
+    fn update_statement(
+        &self,
+        staged: &StagedRow,
+        cx: &gpui_kit::App,
+    ) -> Option<(String, Vec<Cell>)> {
+        if staged.cells.is_empty() {
+            return None;
+        }
+        let engine = self.connection.config.engine;
+        let key = self.key_for(staged.row, cx)?;
+
+        let mut params: Vec<Cell> = Vec::with_capacity(staged.cells.len() + key.len());
+        let mut index = 0;
+
+        let assignments: Vec<String> = staged
+            .cells
+            .iter()
+            .map(|(column, value)| {
+                index += 1;
+                params.push(value.clone());
+                let name = self.columns.get(*column).cloned().unwrap_or_default();
+                let type_name = self.column_types.get(*column).cloned().unwrap_or_default();
+                format!(
+                    "{} = {}",
+                    quote_identifier(&name, engine),
+                    typed_placeholder(engine, index, &type_name)
+                )
+            })
+            .collect();
+
+        let conditions: Vec<String> = key
+            .into_iter()
+            .map(|(left, type_name, value)| {
+                index += 1;
+                params.push(value);
+                format!("{left} = {}", typed_placeholder(engine, index, &type_name))
+            })
+            .collect();
+
+        Some((
+            format!(
+                "update {} set {} where {}",
+                self.target(),
+                assignments.join(", "),
+                conditions.join(" and ")
+            ),
+            params,
+        ))
+    }
+
+    /// Write every staged row.
+    pub(crate) fn commit(&mut self, cx: &mut Context<Self>) {
+        self.commit_rows(None, cx);
+    }
+
+    /// Write the staged rows, or only `rows` when given.
+    fn commit_rows(&mut self, rows: Option<&[usize]>, cx: &mut Context<Self>) {
+        if self.committing {
+            return;
+        }
+
+        // Whatever is half-typed counts as an edit; folding it in first is
+        // what makes leaving a cell and leaving the row the same thing.
+        self.grid.update(cx, |grid, cx| grid.commit_editor(cx));
+
+        let staged: Vec<StagedRow> = self
+            .grid
+            .read(cx)
+            .staged(cx)
+            .into_iter()
+            .filter(|staged| rows.is_none_or(|rows| rows.contains(&staged.row)))
+            .collect();
+        if staged.is_empty() {
+            return;
+        }
+
+        let mut statements = Vec::with_capacity(staged.len());
+        for row in &staged {
+            let Some((sql, params)) = self.update_statement(row, cx) else {
+                self.error = Some("this row cannot be addressed, so it was not written".into());
+                cx.notify();
+                return;
+            };
+            statements.push((sql, params));
+        }
+
+        let written: Vec<usize> = staged.iter().map(|staged| staged.row).collect();
+        // Editing a key column changes what addresses the row, and Postgres
+        // moves a row's `ctid` when it rewrites it, so either way the page in
+        // hand is stale and has to be read again.
+        let stale = matches!(self.row_key, Some(RowKey::RowId("ctid")))
+            || staged.iter().any(|staged| self.touches_key(staged));
+
+        self.committing = true;
+        self.error = None;
+        self.notice = None;
+        cx.notify();
+
+        let connection = self.connection.clone();
+        let task = runtime::spawn(async move {
+            // There is no transaction on a connection yet, so a statement that
+            // fails leaves the ones before it written; the error says which.
+            for (position, (sql, params)) in statements.into_iter().enumerate() {
+                let affected = connection.execute(&sql, params).await?;
+                if affected != 1 {
+                    anyhow::bail!(
+                        "row {} matched {affected} rows instead of one; \
+                         it may have changed since it was read",
+                        position + 1
+                    );
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.committing = false;
+                match result {
+                    Ok(Ok(())) => {
+                        let rows = written.len();
+                        let unit = if rows == 1 { "row" } else { "rows" };
+                        this.notice = Some(format!("Wrote {rows} {unit}"));
+                        if stale {
+                            this.reload(cx);
+                        } else {
+                            this.grid
+                                .update(cx, |grid, cx| grid.apply_staged(&written, cx));
+                        }
+                    }
+                    Ok(Err(error)) => this.error = Some(format!("{error:#}")),
+                    Err(_) => this.error = Some("the write was cancelled".into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Whether a staged row changes a column the write addresses it by.
+    fn touches_key(&self, staged: &StagedRow) -> bool {
+        let Some(RowKey::Columns(key)) = &self.row_key else {
+            return false;
+        };
+        staged.cells.iter().any(|(column, _)| {
+            self.columns
+                .get(*column)
+                .is_some_and(|name| key.contains(name))
+        })
+    }
+
+    fn on_grid_edit(
+        &mut self,
+        _: &Entity<DataGrid>,
+        event: &GridEdit,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            // Leaving a row is what writes it, the way a form field applies
+            // when you tab out of it.
+            GridEdit::RowLeft { row } => self.commit_rows(Some(&[*row]), cx),
+            GridEdit::Staged => cx.notify(),
+        }
+    }
+
+    fn on_apply_edits(&mut self, _: &ApplyEdits, _window: &mut Window, cx: &mut Context<Self>) {
+        self.commit(cx);
+    }
+
+    fn on_discard_edits(&mut self, _: &DiscardEdits, _window: &mut Window, cx: &mut Context<Self>) {
+        self.grid.update(cx, |grid, cx| grid.discard(cx));
+        self.notice = None;
+        cx.notify();
+    }
+
+    fn on_edit_cell(&mut self, _: &EditCell, window: &mut Window, cx: &mut Context<Self>) {
+        self.grid
+            .update(cx, |grid, cx| grid.edit_selected(window, cx));
+    }
+
+    fn on_set_null(&mut self, _: &SetNull, _window: &mut Window, cx: &mut Context<Self>) {
+        self.grid.update(cx, |grid, cx| grid.set_null(cx));
+    }
+
+    fn on_cancel_edit(&mut self, _: &CancelEdit, _window: &mut Window, cx: &mut Context<Self>) {
+        self.grid.update(cx, |grid, cx| grid.cancel_editor(cx));
     }
 
     fn on_sort_requested(
@@ -220,10 +574,22 @@ impl TableView {
             format!("Rows {}–{}", first_row + 1, first_row + self.loaded_rows)
         };
 
-        let message = match (&self.error, self.loading) {
-            (Some(error), _) => (error.clone(), cx.theme().danger),
-            (None, true) => ("Loading…".to_string(), cx.theme().muted_foreground),
-            (None, false) => (range, cx.theme().muted_foreground),
+        let staged = self.grid.read(cx).staged(cx).len();
+        let pending = match staged {
+            0 => None,
+            1 => Some("1 row changed".to_string()),
+            rows => Some(format!("{rows} rows changed")),
+        };
+
+        let message = match (&self.error, self.loading, self.committing) {
+            (Some(error), _, _) => (error.clone(), cx.theme().danger),
+            (None, _, true) => ("Writing…".to_string(), cx.theme().muted_foreground),
+            (None, true, _) => ("Loading…".to_string(), cx.theme().muted_foreground),
+            (None, false, _) => match (&pending, &self.notice) {
+                (Some(pending), _) => (pending.clone(), cx.theme().warning),
+                (None, Some(notice)) => (notice.clone(), cx.theme().muted_foreground),
+                (None, None) => (range, cx.theme().muted_foreground),
+            },
         };
 
         h_flex()
@@ -271,6 +637,36 @@ impl TableView {
             .child(
                 h_flex()
                     .gap_2()
+                    .when_some(self.read_only_reason(), |this, reason| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("Read-only: {reason}")),
+                        )
+                    })
+                    .when(staged > 0, |this| {
+                        this.child(
+                            Button::new("discard-edits")
+                                .ghost()
+                                .xsmall()
+                                .label("Discard")
+                                .tooltip("Throw away the staged edits")
+                                .disabled(self.committing)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.on_discard_edits(&DiscardEdits, window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("apply-edits")
+                                .primary()
+                                .xsmall()
+                                .label("Apply")
+                                .tooltip("Write the staged edits")
+                                .disabled(self.committing)
+                                .on_click(cx.listener(|this, _, _window, cx| this.commit(cx))),
+                        )
+                    })
                     .child(
                         div()
                             .text_xs()
@@ -290,6 +686,12 @@ impl Render for TableView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
+            .key_context("TableView")
+            .on_action(cx.listener(Self::on_apply_edits))
+            .on_action(cx.listener(Self::on_discard_edits))
+            .on_action(cx.listener(Self::on_edit_cell))
+            .on_action(cx.listener(Self::on_set_null))
+            .on_action(cx.listener(Self::on_cancel_edit))
             .child(div().flex_1().min_h_0().child(self.grid.clone()))
             .child(self.render_footer(cx))
     }
@@ -316,6 +718,18 @@ impl TableView {
         };
         self.page = 0;
         self.reload(cx);
+    }
+
+    pub(crate) fn row_key_for_test(&self) -> Option<RowKey> {
+        self.row_key.clone()
+    }
+
+    pub(crate) fn is_editable_for_test(&self) -> bool {
+        self.is_editable()
+    }
+
+    pub(crate) fn error_for_test(&self) -> Option<String> {
+        self.error.clone()
     }
 
     pub(crate) fn grid_for_test(&self) -> Entity<DataGrid> {

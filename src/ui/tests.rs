@@ -1733,3 +1733,531 @@ async fn other_count(database: &TempDatabase) -> i64 {
         .parse()
         .expect("count(*) should be a number")
 }
+
+/// Stage `value` in a cell of the open table view's grid.
+///
+/// The selection and the editor are two separate frames on purpose: focus
+/// moves when a frame is drawn, so doing both at once would leave the table
+/// holding the focus and blur the editor straight back out again.
+fn stage_cell(
+    cx: &mut TestAppContext,
+    view: &gpui_kit::Entity<crate::ui::table_view::TableView>,
+    row: usize,
+    col: usize,
+    value: &str,
+) {
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    // Editing starts from a click in the grid, which focuses it and selects
+    // the cell.
+    grid.downgrade()
+        .update_in(cx, |grid, window, cx| {
+            grid.focus_for_test(window, cx);
+            grid.select_cell_for_test(row, col, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    // A double click on the selected cell opens the editor over it.
+    grid.downgrade()
+        .update_in(cx, |grid, window, cx| {
+            grid.begin_edit_for_test(row, col, window, cx);
+            grid.set_editor_value_for_test(value, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+}
+
+/// Put the focus back on the grid itself, the way clicking out of a cell
+/// editor and back onto the table does.
+fn focus_grid(cx: &mut TestAppContext, view: &gpui_kit::Entity<crate::ui::table_view::TableView>) {
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.downgrade()
+        .update_in(cx, |grid, window, cx| {
+            grid.commit_editor(cx);
+            grid.focus_for_test(window, cx);
+        })
+        .unwrap();
+}
+
+/// The `name` column of `items` for a row, read through a second connection.
+async fn name_of(database: &TempDatabase, id: i64) -> Option<String> {
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not reopen the test database");
+    let result = connection
+        .run_query(&format!("select name from items where id = {id}"))
+        .await
+        .expect("could not read the row");
+    connection.close().await;
+    result.rows[0][0].clone()
+}
+
+#[gpui_kit::test]
+fn a_table_with_a_primary_key_can_be_edited(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.row_key_for_test(),
+            Some(crate::db::RowKey::Columns(vec!["id".to_string()])),
+            "items is keyed by its primary key"
+        );
+        assert!(view.is_editable_for_test());
+        assert!(view.grid_for_test().read(cx).editable_for_test(cx));
+    });
+}
+
+#[gpui_kit::test]
+fn editing_a_cell_and_leaving_the_row_writes_it(cx: &mut TestAppContext) {
+    let (database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "renamed");
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+
+    // Moving the selection to another row is what applies the edit, the way a
+    // form field applies when you tab out of it.
+    grid.update(cx, |grid, cx| grid.select_cell_for_test(1, 1, cx));
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("renamed".to_string()),
+        "leaving the row should have written it"
+    );
+    assert!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .staged(cx)
+            .is_empty()),
+        "a written row should no longer be staged"
+    );
+}
+
+#[gpui_kit::test]
+fn applying_with_secondary_s_writes_the_row(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "applied");
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-s");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("applied".to_string()),
+        "the save key should write a table tab's staged edits"
+    );
+}
+
+#[gpui_kit::test]
+fn discarding_reverts_staged_edits_without_writing(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "thrown away");
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-z");
+    cx.run_until_parked();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.read_with(cx, |grid, cx| {
+        assert!(grid.staged(cx).is_empty(), "discard should drop the edits");
+        assert_eq!(
+            grid.cell_for_test(0, 1, cx),
+            Some("alpha".to_string()),
+            "the cell should show the loaded value again"
+        );
+    });
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string()),
+        "discard must not write anything"
+    );
+}
+
+#[gpui_kit::test]
+fn setting_a_cell_to_null_writes_null(cx: &mut TestAppContext) {
+    let (database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| {
+        grid.select_cell_for_test(0, 1, cx);
+        grid.set_null(cx);
+    });
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        None,
+        "the set null command should store SQL NULL"
+    );
+}
+
+#[gpui_kit::test]
+fn paging_discards_staged_edits(cx: &mut TestAppContext) {
+    let (database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "never written");
+
+    // A new page is a new set of rows, so what was staged over the old ones
+    // goes with them.
+    view.update(cx, |view, cx| {
+        view.go_for_test(1, cx);
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        view.go_for_test(0, cx);
+    });
+    cx.run_until_parked();
+
+    assert!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .staged(cx)
+            .is_empty()),
+        "paging should leave nothing staged"
+    );
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string()),
+        "paging away from an edit must not write it"
+    );
+}
+
+#[gpui_kit::test]
+fn a_view_is_read_only(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    handle
+        .update(cx, |session, _, cx| {
+            session.set_metadata_for_test(
+                vec!["main".to_string()],
+                vec![DatabaseObject {
+                    schema: None,
+                    name: "named_items".into(),
+                    kind: ObjectKind::View,
+                }],
+                cx,
+            );
+        })
+        .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click("object-named_items", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let view = handle
+        .update(cx, |session, _, _| session.active_table_view())
+        .unwrap()
+        .expect("clicking a view should open a table view");
+
+    view.update(cx, |view, cx| {
+        assert!(
+            !view.is_editable_for_test(),
+            "a view has no rows of its own to write back"
+        );
+        assert!(!view.grid_for_test().read(cx).editable_for_test(cx));
+    });
+}
+
+/// Run a statement through a second connection, the way another client would.
+fn run_external(database: &TempDatabase, sql: &str) {
+    runtime::block_on(async {
+        let connection = Connection::open(database.config(), None)
+            .await
+            .expect("could not open a second connection to the test database");
+        connection
+            .run_query(sql)
+            .await
+            .expect("the statement failed");
+        connection.close().await;
+    });
+}
+
+/// Open a table tab on a table the seed data does not have, created here.
+fn table_view_on(
+    cx: &mut TestAppContext,
+    name: &'static str,
+    create: &str,
+) -> (
+    TempDatabase,
+    gpui_kit::WindowHandle<Session>,
+    gpui_kit::Entity<crate::ui::table_view::TableView>,
+) {
+    let (database, handle) = session_with_objects(cx);
+    run_external(&database, create);
+
+    handle
+        .update(cx, |session, _, cx| {
+            session.set_metadata_for_test(
+                vec!["main".to_string()],
+                vec![DatabaseObject {
+                    schema: None,
+                    name: name.into(),
+                    kind: ObjectKind::Table,
+                }],
+                cx,
+            );
+        })
+        .unwrap();
+
+    let id = gpui_kit::SharedString::from(format!("object-{name}"));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click(id, cx);
+    })
+    .unwrap();
+
+    let view = handle
+        .update(cx, |session, _, _| session.active_table_view())
+        .unwrap()
+        .expect("clicking a table should open a table view");
+
+    (database, handle, view)
+}
+
+#[gpui_kit::test]
+fn a_table_without_a_primary_key_is_written_by_rowid(cx: &mut TestAppContext) {
+    let (database, _handle, view) = table_view_on(
+        cx,
+        "notes",
+        "create table notes (body text); insert into notes values ('first')",
+    );
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.row_key_for_test(),
+            Some(crate::db::RowKey::RowId("rowid")),
+            "a table with no primary key falls back to the engine's row id"
+        );
+        assert!(view.is_editable_for_test());
+        assert_eq!(
+            view.query(),
+            "select rowid, * from notes limit 500 offset 0",
+            "the row id has to be asked for by name: select * leaves it out"
+        );
+        // It is asked for so rows can be addressed, not so it can be shown.
+        assert_eq!(
+            view.grid_for_test().read(cx).cell_for_test(0, 0, cx),
+            Some("first".to_string()),
+            "the row id column should be taken back out before the grid sees it"
+        );
+    });
+
+    stage_cell(cx, &view, 0, 0, "rewritten");
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    let body = runtime::block_on(async {
+        let connection = Connection::open(database.config(), None)
+            .await
+            .expect("could not reopen the test database");
+        let result = connection
+            .run_query("select body from notes")
+            .await
+            .expect("could not read the row");
+        connection.close().await;
+        result.rows[0][0].clone()
+    });
+    assert_eq!(
+        body,
+        Some("rewritten".to_string()),
+        "a row addressed by its row id should still be written"
+    );
+}
+
+#[gpui_kit::test]
+fn a_binary_cell_cannot_be_typed_into(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // `payload` is a BLOB, and the grid only holds a description of it.
+    stage_cell(cx, &view, 0, 3, "not a blob");
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.read_with(cx, |grid, cx| {
+        assert!(
+            grid.staged(cx).is_empty(),
+            "a value the grid never read back must not be writable"
+        );
+        assert_eq!(
+            grid.cell_for_test(0, 3, cx),
+            Some("<3 bytes>".to_string()),
+            "the cell should still show what the driver said about it"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn escape_closes_the_editor_without_staging(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "abandoned");
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.editing_for_test(cx)),
+        Some((0, 1)),
+        "the editor should be open on the cell when escape arrives"
+    );
+
+    press(cx, handle, "escape");
+    cx.run_until_parked();
+
+    grid.read_with(cx, |grid, cx| {
+        assert!(
+            grid.staged(cx).is_empty(),
+            "escape should throw away what was being typed"
+        );
+        assert_eq!(
+            grid.cell_for_test(0, 1, cx),
+            Some("alpha".to_string()),
+            "the cell should show the loaded value again"
+        );
+    });
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string()),
+        "a cancelled edit must not reach the server"
+    );
+}
+
+#[gpui_kit::test]
+fn a_row_that_changed_underneath_is_reported_rather_than_written(cx: &mut TestAppContext) {
+    let (database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "too late");
+    // The row is gone by the time the write runs, so nothing matches it.
+    run_external(&database, "delete from items where id = 1");
+
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    let error = view
+        .read_with(cx, |view, _| view.error_for_test())
+        .expect("a write that matched no rows should be reported");
+    assert!(
+        error.contains("matched 0 rows"),
+        "the error should say what the write did: {error}"
+    );
+    assert!(
+        !view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .staged(cx)
+            .is_empty()),
+        "a write that failed should leave the edit staged to retry"
+    );
+}
+
+#[gpui_kit::test]
+fn typing_null_means_sql_null_only_when_the_setting_says_so(cx: &mut TestAppContext) {
+    let (database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // Off by default: an edit means the four characters that were typed.
+    stage_cell(cx, &view, 0, 1, "NULL");
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("NULL".to_string()),
+        "with the setting off, NULL is text"
+    );
+
+    cx.update(|cx| settings::update(cx, |settings| settings.coerce_null_literal = true));
+    stage_cell(cx, &view, 0, 1, "null");
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        None,
+        "with the setting on, typing null stores SQL NULL"
+    );
+}
+
+/// Select a cell the way clicking one does, with the grid holding the focus.
+fn select_cell(
+    cx: &mut TestAppContext,
+    view: &gpui_kit::Entity<crate::ui::table_view::TableView>,
+    row: usize,
+    col: usize,
+) {
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.downgrade()
+        .update_in(cx, |grid, window, cx| {
+            grid.focus_for_test(window, cx);
+            grid.select_cell_for_test(row, col, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn enter_opens_the_editor_on_the_selected_cell(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    select_cell(cx, &view, 0, 1);
+    press(cx, handle, "enter");
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .editing_for_test(cx)),
+        Some((0, 1)),
+        "enter should open the editor on the selected cell"
+    );
+}
+
+#[gpui_kit::test]
+fn applying_while_typing_folds_the_cell_in(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // The editor keeps the focus here, so the save key has to reach the table
+    // view from inside the input rather than from the grid.
+    stage_cell(cx, &view, 0, 1, "mid-edit");
+    press(cx, handle, "secondary-s");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("mid-edit".to_string()),
+        "applying while a cell is open should write what is being typed"
+    );
+}
+
+#[gpui_kit::test]
+fn the_null_shortcut_stages_sql_null(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    select_cell(cx, &view, 0, 1);
+    press(cx, handle, "secondary-shift-n");
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        None,
+        "the null shortcut should stage SQL NULL"
+    );
+}

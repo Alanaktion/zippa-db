@@ -123,7 +123,10 @@ cargo test
 | Close the active tab | `Cmd`/`Ctrl` + `W` |
 | Refresh the schema and the open table | `Cmd`/`Ctrl` + `R` |
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
-| Save the active tab | `Cmd`/`Ctrl` + `S` |
+| Edit the selected cell in a table tab | `Enter` |
+| Set the selected cell to `NULL` | `Cmd`/`Ctrl` + `Shift` + `N` |
+| Save the active tab, or write a table tab's staged edits | `Cmd`/`Ctrl` + `S` |
+| Discard a table tab's staged edits | `Cmd`/`Ctrl` + `Z` |
 | Save the active tab under a new name | `Cmd`/`Ctrl` + `Shift` + `S` |
 | Settings | `Cmd`/`Ctrl` + `,` |
 
@@ -133,14 +136,14 @@ cargo test
 
 * [x] Initial GPUI window and layout setup
 * [x] Connection manager & driver abstractions (`PostgreSQL`, `MySQL`, `SQLite`)
-* [x] Read-only result grid: virtualized, dense, monospaced, auto-sized columns
+* [x] Result grid: virtualized, dense, monospaced, auto-sized columns
 * [x] Resizable panes, database switcher, and table/view list in the sidebar
 * [x] Connection tabs: several databases open at once, each with its own session
 * [x] Query tabs, each with its own editor and result set
 * [x] Regex filter over the sidebar's table list
 * [x] Dedicated table view: paging, row limit, and click-to-sort columns
 * [ ] Data grid pagination, row limits, and specialized cell renderers
-* [ ] Staged cell editing & batch commit execution
+* [x] Staged cell editing in a table tab, written on leaving the row or on `Cmd+S`
 * [x] SQL editor with SQL syntax highlighting (`Cmd+Enter` runs the buffer)
 * [x] Open and save `.sql` files through the native file dialogs
 * [x] Settings window: page size, editor and grid fonts, theme, light/dark

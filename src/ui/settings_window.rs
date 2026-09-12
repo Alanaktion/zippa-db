@@ -160,6 +160,19 @@ fn data_page() -> SettingPage {
                 .default_value(settings::DEFAULT_PAGE_SIZE as f64),
             )
             .description("Rows a table opened from the sidebar reads at a time. Tables already open keep the limit they were opened with."),
+        )
+        .item(
+            SettingItem::new(
+                "Typing NULL means SQL NULL",
+                SettingField::switch(
+                    |cx| Settings::global(cx).coerce_null_literal,
+                    |value, cx| {
+                        settings::update(cx, |settings| settings.coerce_null_literal = value)
+                    },
+                )
+                .default_value(false),
+            )
+            .description("With this off, NULL typed into a cell is stored as the text; the Set Null command stores SQL NULL either way."),
         ),
     )
 }

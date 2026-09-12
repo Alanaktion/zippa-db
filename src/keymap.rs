@@ -9,6 +9,7 @@ use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnect
 use crate::ui::query_editor::RunQuery;
 use crate::ui::session::{CloseTab, NewTab, OpenFile, Refresh, SaveFile, SaveFileAs};
 use crate::ui::settings_window::OpenSettings;
+use crate::ui::table_view::{ApplyEdits, CancelEdit, DiscardEdits, EditCell, SetNull};
 
 pub fn bind(cx: &mut App) {
     cx.bind_keys([
@@ -33,6 +34,26 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-o", OpenFile, Some("Session")),
         KeyBinding::new("secondary-s", SaveFile, Some("Session")),
         KeyBinding::new("secondary-shift-s", SaveFileAs, Some("Session")),
+        // A table tab has staged edits rather than a file, so the save and
+        // undo keys apply and discard them. Both are bound on the table view,
+        // which sits below the session, so they win while it has focus.
+        KeyBinding::new("secondary-s", ApplyEdits, Some("TableView")),
+        // A cell editor is an input of its own, so the save key is bound on
+        // that node too: applying mid-edit folds in what is being typed.
+        KeyBinding::new(
+            "secondary-s",
+            ApplyEdits,
+            Some("TableView > DataTable > Input"),
+        ),
+        KeyBinding::new("secondary-z", DiscardEdits, Some("TableView")),
+        // The table binds the arrows, tab, and escape for its own selection
+        // but leaves `enter` free, so that opens the editor. Both are scoped
+        // under the table view, leaving query results read-only.
+        KeyBinding::new("enter", EditCell, Some("TableView > DataTable")),
+        KeyBinding::new("secondary-shift-n", SetNull, Some("TableView > DataTable")),
+        // Escape while typing in a cell closes the editor; without this the
+        // input's own escape, or the table's clear-selection, would take it.
+        KeyBinding::new("escape", CancelEdit, Some("TableView > DataTable > Input")),
         // No context: the settings belong to the app, not to a screen, and the
         // handler for it is registered on the app itself.
         KeyBinding::new("secondary-,", OpenSettings, None),

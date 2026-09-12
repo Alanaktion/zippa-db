@@ -1,11 +1,11 @@
 //! PostgreSQL driver (also covers CockroachDB / Redshift).
 
 use anyhow::Result;
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgQueryResult, PgRow};
 use sqlx::{Row, TypeInfo, ValueRef};
 
 use super::query::{self, Cell};
-use super::{ConnectionConfig, POOL_SIZE, decode};
+use super::{ConnectionConfig, POOL_SIZE, decode, quote_literal};
 
 /// Databases on this server the user can connect to.
 pub(crate) const DATABASES_SQL: &str = "SELECT datname FROM pg_database \
@@ -35,6 +35,26 @@ pub(crate) async fn connect(config: &ConnectionConfig, password: Option<&str>) -
         .connect_with(options)
         .await?;
     Ok(pool)
+}
+
+/// Primary key columns of a table, in key order.
+pub(crate) fn primary_key_sql(schema: &str, table: &str) -> String {
+    format!(
+        "SELECT kcu.column_name FROM information_schema.table_constraints tc \
+         JOIN information_schema.key_column_usage kcu \
+         ON kcu.constraint_name = tc.constraint_name \
+         AND kcu.constraint_schema = tc.constraint_schema \
+         AND kcu.table_name = tc.table_name \
+         WHERE tc.constraint_type = 'PRIMARY KEY' \
+         AND tc.table_schema = {} AND tc.table_name = {} \
+         ORDER BY kcu.ordinal_position",
+        quote_literal(schema),
+        quote_literal(table)
+    )
+}
+
+pub(crate) fn rows_affected(result: &PgQueryResult) -> u64 {
+    result.rows_affected()
 }
 
 pub(crate) fn cell(row: &PgRow, index: usize) -> Cell {

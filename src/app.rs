@@ -13,10 +13,10 @@ use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, TitleBar, h_flex, v_flex,
 };
+use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Context, Entity, FocusHandle, MouseButton, SharedString, Window, actions, div, px,
 };
-use gpui_kit::prelude::*;
 
 use crate::db::{Connection, runtime};
 use crate::settings;

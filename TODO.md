@@ -32,8 +32,9 @@
 
 ### Inline Data Editing (Buffer Model)
 
-* [ ] Staged edits (cell highlighting before committing)
-* [ ] Multi-cell selection, bulk editing, and batch `COMMIT` / `DISCARD` (`Cmd+S` / `Cmd+Z`)
+* [x] Staged edits (cell highlighting before committing), written by an `UPDATE` keyed on the primary key, or on `rowid` / `ctid` when there is none; views and MySQL tables without a key stay read-only
+* [x] Batch `COMMIT` / `DISCARD` (`Cmd+S` / `Cmd+Z`); multi-cell selection and bulk editing still open
+* [ ] Insert and delete rows
 * [ ] Foreign key lookups directly from cells (click to jump to referenced row)
 
 ### Filtering, Sorting & Pagination
@@ -48,7 +49,7 @@
 * [ ] Custom modals for `JSON` / `JSONB` viewing & formatting
 * [ ] Large text BLOB viewer with word-wrap
 * [ ] Date/Time picker for timestamp fields
-* [ ] Null state toggles (`NULL` vs. empty string `""`)
+* [x] Null state toggles (`NULL` vs. empty string `""`): `Cmd+Shift+N` sets `NULL`, and a setting decides whether typing `NULL` means the text or the value
 
 ## 3. SQL Query Editor
 

@@ -1,11 +1,11 @@
 //! MySQL / MariaDB driver.
 
 use anyhow::Result;
-use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow};
+use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlQueryResult, MySqlRow};
 use sqlx::{Row, TypeInfo, ValueRef};
 
 use super::query::{self, Cell};
-use super::{ConnectionConfig, POOL_SIZE, decode};
+use super::{ConnectionConfig, POOL_SIZE, decode, quote_literal};
 
 /// Schemas double as databases in MySQL; the server's own are hidden.
 pub(crate) const DATABASES_SQL: &str = "SELECT schema_name FROM information_schema.schemata \
@@ -36,6 +36,25 @@ pub(crate) async fn connect(
         .connect_with(options)
         .await?;
     Ok(pool)
+}
+
+/// Primary key columns of a table in the current database, in key order.
+pub(crate) fn primary_key_sql(table: &str) -> String {
+    format!(
+        "SELECT kcu.column_name FROM information_schema.table_constraints tc \
+         JOIN information_schema.key_column_usage kcu \
+         ON kcu.constraint_name = tc.constraint_name \
+         AND kcu.table_schema = tc.table_schema \
+         AND kcu.table_name = tc.table_name \
+         WHERE tc.constraint_type = 'PRIMARY KEY' \
+         AND tc.table_schema = DATABASE() AND tc.table_name = {} \
+         ORDER BY kcu.ordinal_position",
+        quote_literal(table)
+    )
+}
+
+pub(crate) fn rows_affected(result: &MySqlQueryResult) -> u64 {
+    result.rows_affected()
 }
 
 pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {

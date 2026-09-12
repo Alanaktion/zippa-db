@@ -17,7 +17,10 @@ use std::time::Instant;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use sqlx::{AssertSqlSafe, Column, Database, Executor, IntoArguments, Row, SqlSafeStr};
+use sqlx::{
+    AssertSqlSafe, Column, Database, Encode, Executor, IntoArguments, Row, SqlSafeStr, Type,
+    TypeInfo,
+};
 use uuid::Uuid;
 
 use query::{Cell, QueryResult};
@@ -179,6 +182,58 @@ pub fn quote_identifier(name: &str, engine: Engine) -> String {
     }
 }
 
+/// Quote `value` as a SQL string literal.
+///
+/// Used only for the metadata queries that cannot take a bind parameter (a
+/// `PRAGMA` table function, for one); user data goes through [`Connection::execute`].
+pub(crate) fn quote_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// The placeholder for the `index`-th bind parameter, counting from one.
+pub(crate) fn placeholder(engine: Engine, index: usize) -> String {
+    match engine {
+        Engine::Postgres => format!("${index}"),
+        Engine::MySql | Engine::Sqlite => "?".to_string(),
+    }
+}
+
+/// A placeholder that will be accepted where a `type_name` value belongs.
+///
+/// Every parameter is bound as text. MySQL and SQLite coerce that to the
+/// column's type on their own; Postgres refuses it outright, so its
+/// placeholder is cast. Type names come back from the driver (`INT4`,
+/// `TIMESTAMPTZ`, `INT4[]`), and all of them are castable as written — bar a
+/// user-defined type whose name is not lower case, which Postgres down-cases
+/// and then fails to find.
+pub(crate) fn typed_placeholder(engine: Engine, index: usize, type_name: &str) -> String {
+    let placeholder = placeholder(engine, index);
+    match engine {
+        Engine::Postgres if !type_name.is_empty() => {
+            format!("cast({placeholder} as {type_name})")
+        }
+        _ => placeholder,
+    }
+}
+
+/// How the rows of a table can be addressed by a generated `UPDATE`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowKey {
+    /// Primary key columns, in key order. Already part of `select *`.
+    Columns(Vec<String>),
+    /// The engine's own row identifier, selected alongside the row because
+    /// `select *` does not include it: `rowid` on SQLite, `ctid` on Postgres.
+    RowId(&'static str),
+    /// The rows cannot be addressed; the reason is shown to the user.
+    Unavailable(&'static str),
+}
+
+impl RowKey {
+    pub fn is_available(&self) -> bool {
+        !matches!(self, RowKey::Unavailable(_))
+    }
+}
+
 /// A live connection to one database.
 #[derive(Debug)]
 pub struct Connection {
@@ -280,6 +335,58 @@ impl Connection {
         }
     }
 
+    /// How the rows of `object` can be addressed by a write.
+    ///
+    /// Read once when a table is opened: the answer only changes when the
+    /// table itself does.
+    pub async fn row_key(&self, object: &DatabaseObject) -> Result<RowKey> {
+        if object.kind == ObjectKind::View {
+            return Ok(RowKey::Unavailable("a view cannot be edited"));
+        }
+
+        let engine = self.config.engine;
+        let sql = match engine {
+            // `objects` drops the schema when it is the default one, so an
+            // unqualified Postgres table is in `public`.
+            Engine::Postgres => postgres::primary_key_sql(
+                object.schema.as_deref().unwrap_or("public"),
+                &object.name,
+            ),
+            Engine::MySql => mysql::primary_key_sql(&object.name),
+            Engine::Sqlite => sqlite::primary_key_sql(&object.name),
+        };
+
+        let result = self.run_query(&sql).await?;
+        let columns: Vec<String> = result
+            .rows
+            .iter()
+            .filter_map(|row| row.first().cloned().flatten())
+            .collect();
+
+        if !columns.is_empty() {
+            return Ok(RowKey::Columns(columns));
+        }
+
+        Ok(match engine {
+            Engine::Postgres => RowKey::RowId("ctid"),
+            Engine::Sqlite => RowKey::RowId("rowid"),
+            // MySQL has no row identifier to fall back on.
+            Engine::MySql => RowKey::Unavailable("a table without a primary key cannot be edited"),
+        })
+    }
+
+    /// Run a write and report how many rows it matched.
+    ///
+    /// Every parameter is bound as text or `NULL`; see [`typed_placeholder`]
+    /// for why that is enough.
+    pub async fn execute(&self, sql: &str, params: Vec<Cell>) -> Result<u64> {
+        match &self.pool {
+            Pool::Postgres(pool) => execute_with(pool, sql, params, postgres::rows_affected).await,
+            Pool::MySql(pool) => execute_with(pool, sql, params, mysql::rows_affected).await,
+            Pool::Sqlite(pool) => execute_with(pool, sql, params, sqlite::rows_affected).await,
+        }
+    }
+
     pub async fn close(&self) {
         match &self.pool {
             Pool::Postgres(pool) => pool.close().await,
@@ -308,21 +415,11 @@ where
     let rows = sqlx::query(statement.clone()).fetch_all(pool).await?;
     let elapsed = started.elapsed();
 
-    let columns: Vec<String> = match rows.first() {
-        Some(row) => row
-            .columns()
-            .iter()
-            .map(|column| column.name().to_string())
-            .collect(),
+    let (columns, column_types): (Vec<String>, Vec<String>) = match rows.first() {
+        Some(row) => describe_columns(row.columns()),
         None => Executor::describe(pool, statement)
             .await
-            .map(|described| {
-                described
-                    .columns()
-                    .iter()
-                    .map(|column| column.name().to_string())
-                    .collect()
-            })
+            .map(|described| describe_columns(described.columns()))
             .unwrap_or_default(),
     };
 
@@ -333,9 +430,54 @@ where
 
     Ok(QueryResult {
         columns,
+        column_types,
         rows,
         elapsed,
     })
+}
+
+/// Split a driver's columns into their names and their type names.
+fn describe_columns<C: Column>(columns: &[C]) -> (Vec<String>, Vec<String>) {
+    columns
+        .iter()
+        .map(|column| {
+            (
+                column.name().to_string(),
+                column.type_info().name().to_string(),
+            )
+        })
+        .unzip()
+}
+
+/// Run a write, binding `params` in order, and report the rows it matched.
+///
+/// The count is the driver's own, which is matched rows rather than changed
+/// rows on all three engines: sqlx asks MySQL for `FOUND_ROWS` when it
+/// connects, so re-saving a row its own value still counts as one.
+async fn execute_with<DB>(
+    pool: &sqlx::Pool<DB>,
+    sql: &str,
+    params: Vec<Cell>,
+    rows_affected: fn(&DB::QueryResult) -> u64,
+) -> Result<u64>
+where
+    DB: Database,
+    for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> Option<String>: Encode<'q, DB>,
+    String: Type<DB>,
+{
+    // The statement is generated here rather than typed by the user, and the
+    // values in it are bound, so nothing in the string came from outside.
+    let statement = AssertSqlSafe(sql.to_string()).into_sql_str();
+
+    let mut query = sqlx::query(statement);
+    for param in params {
+        query = query.bind(param);
+    }
+
+    let result = query.execute(pool).await?;
+    Ok(rows_affected(&result))
 }
 
 /// Decode a column into a display string, or `None` when the decode fails.

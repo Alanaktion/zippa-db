@@ -10,6 +10,10 @@ pub type Cell = Option<String>;
 #[derive(Debug, Clone, Default)]
 pub struct QueryResult {
     pub columns: Vec<String>,
+    /// Driver type name per column, e.g. `INT4`, `TEXT`, `BLOB`. Kept so
+    /// generated writes can cast their parameters, and so the grid knows which
+    /// cells hold values it could not read back.
+    pub column_types: Vec<String>,
     pub rows: Vec<Vec<Cell>>,
     pub elapsed: Duration,
 }
@@ -35,4 +39,45 @@ pub fn unsupported(type_name: &str) -> Cell {
 /// Binary columns are summarized rather than dumped into the grid.
 pub fn blob(bytes: &[u8]) -> Cell {
     Some(format!("<{} bytes>", bytes.len()))
+}
+
+/// True for the `<3 bytes>` and `<TYPE>` stand-ins above.
+///
+/// The grid shows them, but they are a description of the value rather than
+/// the value itself, so writing one back would corrupt the row.
+pub fn is_placeholder(cell: &Cell) -> bool {
+    matches!(cell, Some(value) if value.starts_with('<') && value.ends_with('>'))
+}
+
+/// Column types whose values never survive a round trip through text.
+pub fn is_binary_type(type_name: &str) -> bool {
+    let name = type_name.trim_matches('"').to_ascii_uppercase();
+    name == "BYTEA"
+        || name.ends_with("BLOB")
+        || name == "BINARY"
+        || name == "VARBINARY"
+        || name == "GEOMETRY"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stand_ins_are_recognized() {
+        assert!(is_placeholder(&blob(b"abc")));
+        assert!(is_placeholder(&unsupported("XML")));
+        assert!(!is_placeholder(&Some("plain".into())));
+        assert!(!is_placeholder(&None));
+    }
+
+    #[test]
+    fn binary_types_are_recognized() {
+        for name in ["BLOB", "bytea", "LONGBLOB", "VarBinary"] {
+            assert!(is_binary_type(name), "{name} should be binary");
+        }
+        for name in ["TEXT", "INT4", "VARCHAR"] {
+            assert!(!is_binary_type(name), "{name} should not be binary");
+        }
+    }
 }

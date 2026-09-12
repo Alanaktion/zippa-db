@@ -308,7 +308,15 @@ impl Session {
     /// A tab with no file yet — or "Save As", with `ask` set — asks the
     /// platform for a path first.
     fn save(&mut self, index: usize, ask: bool, cx: &mut Context<Self>) {
-        // A table tab generates its own SQL and has no buffer to save.
+        // A table tab has no buffer to save, so saving it writes its staged
+        // edits instead. `TableView` binds the same key itself, which covers
+        // the grid having focus; this covers everywhere else in the session.
+        if let Some(TabContent::Table { view }) = self.tabs.get(index).map(|tab| &tab.content) {
+            let view = view.clone();
+            view.update(cx, |view, cx| view.commit(cx));
+            return;
+        }
+
         let Some(TabContent::Query { editor, path, .. }) =
             self.tabs.get(index).map(|tab| &tab.content)
         else {
