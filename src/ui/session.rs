@@ -21,7 +21,7 @@ use gpui_kit::{
 
 use regex::{Regex, RegexBuilder};
 
-use crate::db::{Connection, DatabaseObject, ObjectKind, runtime};
+use crate::db::{Connection, DatabaseObject, ObjectKind, runtime, statement};
 use crate::ui::data_grid::DataGrid;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
 use crate::ui::sql_file;
@@ -47,6 +47,10 @@ enum Status {
     Running,
     Done(String),
     Error(String),
+    /// A statement that writes, held back on a connection that confirms
+    /// writes. The buffer it came from is what the user reads; this is the
+    /// copy that runs if they say yes.
+    Confirm(String),
 }
 
 /// What a tab holds: a query editor with its result, or a table opened from
@@ -598,8 +602,53 @@ impl Session {
         }
     }
 
-    /// Run `sql` for the tab at `index`; its own grid and status follow it.
+    /// Run `sql` for the tab at `index`, asking first where the connection
+    /// says every write is confirmed.
     fn run(&mut self, index: usize, sql: String, cx: &mut Context<Self>) {
+        if self.connection.config.safety.confirms_writes() && statement::first_write(&sql).is_some()
+        {
+            self.set_status(index, Status::Confirm(sql));
+            cx.notify();
+            return;
+        }
+
+        self.run_now(index, sql, cx);
+    }
+
+    /// Run the statement that is waiting to be confirmed.
+    fn confirm_run(&mut self, cx: &mut Context<Self>) {
+        let index = self.active;
+        let Some(TabContent::Query {
+            status: Status::Confirm(sql),
+            ..
+        }) = self.tabs.get(index).map(|tab| &tab.content)
+        else {
+            return;
+        };
+
+        let sql = sql.clone();
+        self.run_now(index, sql, cx);
+    }
+
+    /// Leave the statement unrun; the buffer is untouched either way.
+    fn cancel_run(&mut self, cx: &mut Context<Self>) {
+        let index = self.active;
+        if !matches!(
+            self.tabs.get(index).map(|tab| &tab.content),
+            Some(TabContent::Query {
+                status: Status::Confirm(_),
+                ..
+            })
+        ) {
+            return;
+        }
+
+        self.set_status(index, Status::Done("Not run".into()));
+        cx.notify();
+    }
+
+    /// Send `sql` for the tab at `index`; its own grid and status follow it.
+    fn run_now(&mut self, index: usize, sql: String, cx: &mut Context<Self>) {
         let Some(TabContent::Query { editor, grid, .. }) =
             self.tabs.get(index).map(|tab| &tab.content)
         else {
@@ -763,6 +812,21 @@ impl Session {
                 ..
             }
         )
+    }
+
+    /// What the status bar says for the active tab, as plain text.
+    #[cfg(test)]
+    pub(crate) fn active_status_for_test(&self) -> String {
+        match &self.tabs[self.active].content {
+            TabContent::Query { status, .. } => match status {
+                Status::Idle => "Ready".to_string(),
+                Status::Running => "Running…".to_string(),
+                Status::Done(summary) => summary.clone(),
+                Status::Error(error) => error.clone(),
+                Status::Confirm(_) => "This statement writes. Run it?".to_string(),
+            },
+            TabContent::Table { .. } => String::new(),
+        }
     }
 
     /// Fill the sidebar without waiting on the server.
@@ -1014,6 +1078,10 @@ impl Session {
             Status::Running => ("Running…".to_string(), cx.theme().muted_foreground),
             Status::Done(summary) => (summary.clone(), cx.theme().muted_foreground),
             Status::Error(error) => (error.clone(), cx.theme().danger),
+            Status::Confirm(_) => (
+                "This statement writes. Run it?".to_string(),
+                cx.theme().warning,
+            ),
         };
 
         h_flex()
@@ -1021,6 +1089,8 @@ impl Session {
             .px_3()
             .py_1()
             .flex_none()
+            .gap_2()
+            .justify_between()
             .border_t_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().status_bar)
@@ -1035,6 +1105,29 @@ impl Session {
                     .text_color(color)
                     .child(message),
             )
+            // The statement itself is in the editor above, so the bar only has
+            // to carry the answer.
+            .when(matches!(status, Status::Confirm(_)), |this| {
+                this.child(
+                    h_flex()
+                        .flex_none()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-run")
+                                .ghost()
+                                .xsmall()
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, _window, cx| this.cancel_run(cx))),
+                        )
+                        .child(
+                            Button::new("confirm-run")
+                                .primary()
+                                .xsmall()
+                                .label("Run")
+                                .on_click(cx.listener(|this, _, _window, cx| this.confirm_run(cx))),
+                        ),
+                )
+            })
     }
 
     fn render_panes(&self, cx: &mut Context<Self>) -> impl IntoElement {

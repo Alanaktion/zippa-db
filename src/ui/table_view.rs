@@ -16,7 +16,7 @@ use gpui_kit::{Context, Entity, Window, actions, div, px};
 
 use crate::db::query::{Cell, QueryResult};
 use crate::db::{
-    Connection, DatabaseObject, ObjectKind, RowKey, SafetyMode, quote_identifier, runtime,
+    Connection, DatabaseObject, ObjectKind, RowKey, quote_identifier, quote_literal, runtime,
     typed_placeholder,
 };
 use crate::settings::{self, Settings};
@@ -24,8 +24,30 @@ use crate::ui::data_grid::{DataGrid, GridEdit, SortRequested, Sorting, StagedRow
 
 actions!(
     zippa_db,
-    [ApplyEdits, DiscardEdits, EditCell, SetNull, CancelEdit]
+    [
+        ApplyEdits,
+        DiscardEdits,
+        EditCell,
+        SetNull,
+        CancelEdit,
+        InsertRow
+    ]
 );
+
+/// A write built and waiting for the user to say yes, on a connection that
+/// confirms writes.
+#[derive(Debug, Clone)]
+struct Confirming {
+    /// Statements and the values bound to them, in the order they will run.
+    statements: Vec<(String, Vec<Cell>)>,
+    /// Rows the statements write, for the grid once they have run. Empty when
+    /// the page is read again instead.
+    rows: Vec<usize>,
+    /// Whether the page has to be read again afterwards.
+    stale: bool,
+    /// What the footer says once the statements have run.
+    summary: String,
+}
 
 /// Something that would replace the rows in the grid, held back because the
 /// rows in hand have edits that have not been written.
@@ -79,6 +101,8 @@ pub struct TableView {
     notice: Option<String>,
     /// An action waiting on an answer about the staged edits it would lose.
     pending: Option<Pending>,
+    /// A write waiting on an answer about whether to run at all.
+    confirming: Option<Confirming>,
 }
 
 impl TableView {
@@ -122,6 +146,7 @@ impl TableView {
             committing: false,
             notice: None,
             pending: None,
+            confirming: None,
         };
         view.load_row_key(cx);
         view
@@ -176,12 +201,16 @@ impl TableView {
 
     /// Whether rows of this table can be written back.
     fn is_editable(&self) -> bool {
-        self.object.kind == ObjectKind::Table
+        !self.connection.config.safety.is_read_only()
+            && self.object.kind == ObjectKind::Table
             && matches!(&self.row_key, Some(key) if key.is_available())
     }
 
     /// Why the table is read-only, when it is and the user should know.
     fn read_only_reason(&self) -> Option<&'static str> {
+        if self.connection.config.safety.is_read_only() {
+            return Some("this connection is read-only");
+        }
         match &self.row_key {
             Some(RowKey::Unavailable(reason)) => Some(reason),
             _ => None,
@@ -399,7 +428,7 @@ impl TableView {
         // What is half-typed counts as an edit too, so it is folded in before
         // the question is asked.
         self.grid.update(cx, |grid, cx| grid.commit_editor(cx));
-        if self.grid.read(cx).staged(cx).is_empty() {
+        if self.grid.read(cx).pending(cx) == 0 {
             return false;
         }
 
@@ -474,6 +503,57 @@ impl TableView {
         self.reload(cx);
     }
 
+    /// The `INSERT` for one row being built by hand, and its values.
+    ///
+    /// Columns nobody typed into are left out, so the server fills them in
+    /// itself: leaving them out is the only way to get a default or a
+    /// generated key.
+    fn insert_statement(&self, cells: &[(usize, Cell)]) -> Option<(String, Vec<Cell>)> {
+        if cells.is_empty() {
+            return None;
+        }
+
+        let engine = self.connection.config.engine;
+        let mut params: Vec<Cell> = Vec::with_capacity(cells.len());
+        let mut columns = Vec::with_capacity(cells.len());
+        let mut values = Vec::with_capacity(cells.len());
+
+        for (index, (column, value)) in cells.iter().enumerate() {
+            let name = self.columns.get(*column).cloned().unwrap_or_default();
+            if name.is_empty() {
+                return None;
+            }
+            let type_name = self.column_types.get(*column).cloned().unwrap_or_default();
+
+            params.push(value.clone());
+            columns.push(quote_identifier(&name, engine));
+            values.push(typed_placeholder(engine, index + 1, &type_name));
+        }
+
+        Some((
+            format!(
+                "insert into {} ({}) values ({})",
+                self.target(),
+                columns.join(", "),
+                values.join(", ")
+            ),
+            params,
+        ))
+    }
+
+    /// Start a row the user fills in by hand.
+    fn insert_row(&mut self, cx: &mut Context<Self>) {
+        if !self.is_editable() {
+            return;
+        }
+        self.notice = None;
+        self.grid.update(cx, |grid, cx| grid.add_draft(cx));
+    }
+
+    fn on_insert_row(&mut self, _: &InsertRow, _window: &mut Window, cx: &mut Context<Self>) {
+        self.insert_row(cx);
+    }
+
     /// Write every staged row.
     pub(crate) fn commit(&mut self, cx: &mut Context<Self>) {
         self.commit_rows(None, cx);
@@ -496,11 +576,20 @@ impl TableView {
             .into_iter()
             .filter(|staged| rows.is_none_or(|rows| rows.contains(&staged.row)))
             .collect();
-        if staged.is_empty() {
+
+        // A row being built by hand belongs to no row of the page, so it is
+        // written only when the whole page is.
+        let drafts: Vec<Vec<(usize, Cell)>> = if rows.is_none() {
+            self.grid.read(cx).drafts(cx)
+        } else {
+            Vec::new()
+        };
+
+        if staged.is_empty() && drafts.is_empty() {
             return;
         }
 
-        let mut statements = Vec::with_capacity(staged.len());
+        let mut statements = Vec::with_capacity(staged.len() + drafts.len());
         for row in &staged {
             let Some((sql, params)) = self.update_statement(row, cx) else {
                 self.error = Some("this row cannot be addressed, so it was not written".into());
@@ -510,12 +599,62 @@ impl TableView {
             statements.push((sql, params));
         }
 
-        let written: Vec<usize> = staged.iter().map(|staged| staged.row).collect();
+        let mut inserted = 0;
+        for draft in &drafts {
+            // A row with nothing typed into it has nothing to say; it stays on
+            // screen to be filled in.
+            let Some((sql, params)) = self.insert_statement(draft) else {
+                continue;
+            };
+            inserted += 1;
+            statements.push((sql, params));
+        }
+
+        if statements.is_empty() {
+            self.error = Some("the new row is empty, so there was nothing to write".into());
+            cx.notify();
+            return;
+        }
+
+        let rows: Vec<usize> = staged.iter().map(|staged| staged.row).collect();
         // Editing a key column changes what addresses the row, and Postgres
         // moves a row's `ctid` when it rewrites it, so either way the page in
-        // hand is stale and has to be read again.
-        let stale = matches!(self.row_key, Some(RowKey::RowId("ctid")))
+        // hand is stale and has to be read again. So is a page that gained a
+        // row: only the server knows what it ended up holding.
+        let stale = inserted > 0
+            || matches!(self.row_key, Some(RowKey::RowId("ctid")))
             || staged.iter().any(|staged| self.touches_key(staged));
+
+        let written = rows.len() + inserted;
+        let unit = if written == 1 { "row" } else { "rows" };
+        let write = Confirming {
+            summary: format!("Wrote {written} {unit}"),
+            statements,
+            rows,
+            stale,
+        };
+
+        // On a connection that confirms writes, the statements go on screen
+        // instead of to the server, and wait there for an answer.
+        if self.connection.config.safety.confirms_writes() {
+            self.error = None;
+            self.notice = None;
+            self.confirming = Some(write);
+            cx.notify();
+            return;
+        }
+
+        self.run_write(write, cx);
+    }
+
+    /// Run a built write and put what it did into the grid.
+    fn run_write(&mut self, write: Confirming, cx: &mut Context<Self>) {
+        let Confirming {
+            statements,
+            rows,
+            stale,
+            summary,
+        } = write;
 
         self.committing = true;
         self.error = None;
@@ -545,14 +684,12 @@ impl TableView {
                 this.committing = false;
                 match result {
                     Ok(Ok(())) => {
-                        let rows = written.len();
-                        let unit = if rows == 1 { "row" } else { "rows" };
-                        this.notice = Some(format!("Wrote {rows} {unit}"));
+                        this.notice = Some(summary);
                         if stale {
                             this.reload(cx);
                         } else {
                             this.grid
-                                .update(cx, |grid, cx| grid.apply_staged(&written, cx));
+                                .update(cx, |grid, cx| grid.apply_staged(&rows, cx));
                         }
                     }
                     Ok(Err(error)) => this.error = Some(format!("{error:#}")),
@@ -563,6 +700,83 @@ impl TableView {
             .ok();
         })
         .detach();
+    }
+
+    /// Ask about deleting the rows the grid has picked out.
+    ///
+    /// A delete is put in front of the user whatever the connection's mode
+    /// says: unlike an edit, there is nothing left to look at afterwards.
+    fn delete_selected(&mut self, cx: &mut Context<Self>) {
+        if self.committing || !self.is_editable() {
+            return;
+        }
+
+        let rows = self.grid.read(cx).selected_rows(cx);
+        if rows.is_empty() {
+            return;
+        }
+
+        let engine = self.connection.config.engine;
+        let mut statements = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let Some(key) = self.key_for(*row, cx) else {
+                self.error = Some("this row cannot be addressed, so it was not deleted".into());
+                cx.notify();
+                return;
+            };
+
+            let mut params: Vec<Cell> = Vec::with_capacity(key.len());
+            let conditions: Vec<String> = key
+                .into_iter()
+                .enumerate()
+                .map(|(index, (left, type_name, value))| {
+                    params.push(value);
+                    format!(
+                        "{left} = {}",
+                        typed_placeholder(engine, index + 1, &type_name)
+                    )
+                })
+                .collect();
+
+            statements.push((
+                format!(
+                    "delete from {} where {}",
+                    self.target(),
+                    conditions.join(" and ")
+                ),
+                params,
+            ));
+        }
+
+        let unit = if rows.len() == 1 { "row" } else { "rows" };
+        self.error = None;
+        self.notice = None;
+        // The rows are gone once this runs, so the page is read again rather
+        // than patched.
+        self.confirming = Some(Confirming {
+            summary: format!("Deleted {} {unit}", rows.len()),
+            statements,
+            rows: Vec::new(),
+            stale: true,
+        });
+        cx.notify();
+    }
+
+    /// Run the write that is waiting to be confirmed.
+    fn confirm_write(&mut self, cx: &mut Context<Self>) {
+        let Some(write) = self.confirming.take() else {
+            return;
+        };
+        self.run_write(write, cx);
+    }
+
+    /// Drop the write that is waiting; the edits stay staged to try again.
+    fn cancel_write(&mut self, cx: &mut Context<Self>) {
+        if self.confirming.take().is_none() {
+            return;
+        }
+        self.notice = Some("Not written".into());
+        cx.notify();
     }
 
     /// Whether a staged row changes a column the write addresses it by.
@@ -589,13 +803,14 @@ impl TableView {
             // the way a form field applies when you tab out of it. A staged
             // connection keeps the edit until it is applied by hand.
             GridEdit::RowLeft { row } => {
-                if self.connection.config.safety == SafetyMode::AutoApply {
+                if self.connection.config.safety.auto_applies() {
                     self.commit_rows(Some(&[*row]), cx);
                 } else {
                     cx.notify();
                 }
             }
             GridEdit::Staged => cx.notify(),
+            GridEdit::DeleteRequested => self.delete_selected(cx),
         }
     }
 
@@ -681,6 +896,113 @@ impl TableView {
         self.reload(cx);
     }
 
+    /// The statements waiting to be confirmed, as the user should read them.
+    ///
+    /// The values are shown beside the statement rather than pasted into it:
+    /// what runs is the statement with its parameters bound, and a preview
+    /// that pretended otherwise would be a different statement.
+    fn preview(&self) -> String {
+        let Some(write) = &self.confirming else {
+            return String::new();
+        };
+
+        write
+            .statements
+            .iter()
+            .map(|(sql, params)| {
+                let values: Vec<String> = params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        let value = match value {
+                            Some(value) => quote_literal(value),
+                            None => "NULL".to_string(),
+                        };
+                        format!("{}: {value}", index + 1)
+                    })
+                    .collect();
+
+                if values.is_empty() {
+                    sql.clone()
+                } else {
+                    format!("{sql}\n  {}", values.join(", "))
+                }
+            })
+            .collect::<Vec<String>>()
+            .join("\n\n")
+    }
+
+    /// The write waiting for an answer, above the footer.
+    fn render_confirm(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let statements = self
+            .confirming
+            .as_ref()
+            .map(|write| write.statements.len())
+            .unwrap_or_default();
+        let unit = if statements == 1 {
+            "statement"
+        } else {
+            "statements"
+        };
+
+        v_flex()
+            .w_full()
+            .flex_none()
+            .px_3()
+            .py_2()
+            .gap_2()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().secondary)
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().warning)
+                            .child(format!("Run {statements} {unit}?")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("cancel-write")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Cancel")
+                                    .tooltip("Leave the edits staged")
+                                    .on_click(
+                                        cx.listener(|this, _, _window, cx| this.cancel_write(cx)),
+                                    ),
+                            )
+                            .child(
+                                Button::new("confirm-write")
+                                    .primary()
+                                    .xsmall()
+                                    .label("Run")
+                                    .tooltip("Send the statements to the server")
+                                    .on_click(
+                                        cx.listener(|this, _, _window, cx| this.confirm_write(cx)),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .id("write-preview")
+                    .w_full()
+                    .max_h(px(120.))
+                    .overflow_y_scroll()
+                    .text_xs()
+                    .font_family(settings::grid_font(cx))
+                    .text_color(cx.theme().foreground)
+                    .child(self.preview()),
+            )
+    }
+
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let first_row = self.page * self.limit;
         let range = if self.loaded_rows == 0 {
@@ -689,7 +1011,7 @@ impl TableView {
             format!("Rows {}–{}", first_row + 1, first_row + self.loaded_rows)
         };
 
-        let staged = self.grid.read(cx).staged(cx).len();
+        let staged = self.grid.read(cx).pending(cx);
         let unit = if staged == 1 { "row" } else { "rows" };
         let changed = match staged {
             0 => None,
@@ -786,6 +1108,17 @@ impl TableView {
                                 })),
                         )
                     })
+                    .when(self.is_editable() && self.pending.is_none(), |this| {
+                        this.child(
+                            Button::new("insert-row")
+                                .ghost()
+                                .xsmall()
+                                .label("New row")
+                                .tooltip("Add a row to fill in")
+                                .disabled(self.committing)
+                                .on_click(cx.listener(|this, _, _window, cx| this.insert_row(cx))),
+                        )
+                    })
                     .when(staged > 0 && self.pending.is_none(), |this| {
                         this.child(
                             Button::new("discard-edits")
@@ -833,7 +1166,11 @@ impl Render for TableView {
             .on_action(cx.listener(Self::on_edit_cell))
             .on_action(cx.listener(Self::on_set_null))
             .on_action(cx.listener(Self::on_cancel_edit))
+            .on_action(cx.listener(Self::on_insert_row))
             .child(div().flex_1().min_h_0().child(self.grid.clone()))
+            .when(self.confirming.is_some(), |this| {
+                this.child(self.render_confirm(cx))
+            })
             .child(self.render_footer(cx))
     }
 }
@@ -862,6 +1199,11 @@ impl TableView {
 
     pub(crate) fn pending_for_test(&self) -> bool {
         self.pending.is_some()
+    }
+
+    /// The statements waiting to be confirmed, as the panel shows them.
+    pub(crate) fn preview_for_test(&self) -> Option<String> {
+        self.confirming.as_ref().map(|_| self.preview())
     }
 
     pub(crate) fn row_key_for_test(&self) -> Option<RowKey> {

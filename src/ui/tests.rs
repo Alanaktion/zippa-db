@@ -2412,3 +2412,479 @@ fn the_null_shortcut_stages_sql_null(cx: &mut TestAppContext) {
         "the null shortcut should stage SQL NULL"
     );
 }
+
+#[gpui_kit::test]
+fn a_read_only_connection_cannot_edit_the_grid(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view_with_safety(cx, SafetyMode::ReadOnly);
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        assert!(
+            !view.is_editable_for_test(),
+            "a read-only connection writes nothing"
+        );
+        assert!(!view.grid_for_test().read(cx).editable_for_test(cx));
+    });
+}
+
+#[gpui_kit::test]
+fn a_read_only_connection_reports_what_the_editor_refused(cx: &mut TestAppContext) {
+    let (database, handle) = session_with_safety(cx, SafetyMode::ReadOnly);
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.prepare_active_editor_for_test(
+                "insert into items values (5, 'five', 5.0, NULL)",
+                window,
+                cx,
+            );
+        })
+        .unwrap();
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    let status = handle
+        .update(cx, |session, _, _| session.active_status_for_test())
+        .unwrap();
+    assert!(
+        status.contains("read-only") && status.contains("INSERT"),
+        "the status bar should say what was refused: {status}"
+    );
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        2,
+        "the seed rows should be untouched"
+    );
+}
+
+#[gpui_kit::test]
+fn a_confirming_connection_shows_the_update_before_it_runs(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view_with_safety(cx, SafetyMode::ConfirmWrites);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "confirmed");
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    let preview = view
+        .read_with(cx, |view, _| view.preview_for_test())
+        .expect("the write should be waiting for an answer");
+    assert!(
+        preview.starts_with("update items set name =") && preview.contains("1: 'confirmed'"),
+        "the panel should show the statement and its values: {preview}"
+    );
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string()),
+        "nothing should have been sent yet"
+    );
+
+    // Saying no leaves the edit staged to try again.
+    click_in_session(cx, handle, "cancel-write");
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        assert!(view.preview_for_test().is_none());
+        assert_eq!(view.grid_for_test().read(cx).staged(cx).len(), 1);
+    });
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string()),
+        "cancelling must not write"
+    );
+
+    // Saying yes runs it.
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+    click_in_session(cx, handle, "confirm-write");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("confirmed".to_string()),
+        "confirming should write the row"
+    );
+    assert!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .staged(cx)
+            .is_empty()),
+        "a written row should no longer be staged"
+    );
+}
+
+#[gpui_kit::test]
+fn a_confirming_connection_asks_before_running_a_write_from_the_editor(cx: &mut TestAppContext) {
+    let (database, handle) = session_with_safety(cx, SafetyMode::ConfirmWrites);
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.prepare_active_editor_for_test(
+                "insert into items values (5, 'five', 5.0, NULL)",
+                window,
+                cx,
+            );
+        })
+        .unwrap();
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    assert_eq!(
+        handle
+            .update(cx, |session, _, _| session.active_status_for_test())
+            .unwrap(),
+        "This statement writes. Run it?"
+    );
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        2,
+        "the statement should be held until it is confirmed"
+    );
+
+    click_in_session(cx, handle, "confirm-run");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        3,
+        "confirming should run the statement"
+    );
+}
+
+#[gpui_kit::test]
+fn a_confirming_connection_leaves_a_cancelled_statement_unrun(cx: &mut TestAppContext) {
+    let (database, handle) = session_with_safety(cx, SafetyMode::ConfirmWrites);
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.prepare_active_editor_for_test("delete from items", window, cx);
+        })
+        .unwrap();
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    click_in_session(cx, handle, "cancel-run");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        2,
+        "cancelling must not run the statement"
+    );
+    assert_eq!(
+        handle
+            .update(cx, |session, _, _| session.active_status_for_test())
+            .unwrap(),
+        "Not run"
+    );
+}
+
+#[gpui_kit::test]
+fn a_read_from_the_editor_is_never_confirmed(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_safety(cx, SafetyMode::ConfirmWrites);
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.prepare_active_editor_for_test("select * from items", window, cx);
+        })
+        .unwrap();
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    let status = handle
+        .update(cx, |session, _, _| session.active_status_for_test())
+        .unwrap();
+    assert!(
+        !status.contains("Run it?"),
+        "a select should run without being asked about: {status}"
+    );
+}
+
+/// Press the left button on one row and drag across to another, the way a
+/// user sweeps a range of rows.
+fn sweep_rows(cx: &mut TestAppContext, handle: WindowHandle<Session>, from: usize, to: usize) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        let start = window.find(("row", from)).bounds().center();
+        let end = window.find(("row", to)).bounds().center();
+
+        window.dispatch_event(
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position: start,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseMoveEvent {
+                position: end,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position: end,
+                modifiers: Default::default(),
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn dragging_across_rows_selects_them(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    sweep_rows(cx, handle, 0, 1);
+
+    assert_eq!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .rows_selected_for_test(cx)),
+        vec![0, 1],
+        "dragging across two rows should take both"
+    );
+
+    // Pressing on one row alone starts again from there.
+    sweep_rows(cx, handle, 1, 1);
+    assert_eq!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .rows_selected_for_test(cx)),
+        vec![1],
+        "a press without a drag should select the one row"
+    );
+}
+
+#[gpui_kit::test]
+fn the_row_menu_deletes_the_selected_rows(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    sweep_rows(cx, handle, 0, 1);
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    let label = grid.update(cx, |grid, cx| grid.request_delete_for_test(0, cx));
+    assert_eq!(label, "Delete 2 rows", "the item should count the sweep");
+    cx.run_until_parked();
+
+    // A delete is shown before it runs whatever the connection's mode says.
+    let preview = view
+        .read_with(cx, |view, _| view.preview_for_test())
+        .expect("the delete should be waiting for an answer");
+    assert!(
+        preview.matches("delete from items where id =").count() == 2,
+        "both rows should be in the preview: {preview}"
+    );
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        2,
+        "nothing should be deleted yet"
+    );
+
+    click_in_session(cx, handle, "confirm-write");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        0,
+        "confirming should delete both rows"
+    );
+    assert_eq!(
+        view.read_with(cx, |view, _| view.loaded_rows_for_test()),
+        0,
+        "the page should be read again once the rows are gone"
+    );
+}
+
+#[gpui_kit::test]
+fn a_cancelled_delete_leaves_the_rows_alone(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    sweep_rows(cx, handle, 0, 0);
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.request_delete_for_test(0, cx));
+    cx.run_until_parked();
+
+    click_in_session(cx, handle, "cancel-write");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        2,
+        "cancelling must not delete anything"
+    );
+}
+
+#[gpui_kit::test]
+fn a_read_only_connection_has_no_delete_item(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view_with_safety(cx, SafetyMode::ReadOnly);
+    cx.run_until_parked();
+
+    sweep_rows(cx, handle, 0, 0);
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    // The menu is empty on a read-only grid; asking anyway changes nothing.
+    grid.update(cx, |grid, cx| grid.request_delete_for_test(0, cx));
+    cx.run_until_parked();
+
+    assert!(view.read_with(cx, |view, _| view.preview_for_test().is_none()));
+    assert_eq!(runtime::block_on(other_count(&database)), 2);
+}
+
+#[gpui_kit::test]
+fn a_new_row_is_filled_in_and_inserted(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    click_in_session(cx, handle, "insert-row");
+    cx.run_until_parked();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.row_count_for_test(cx)),
+        3,
+        "the new row should sit below the ones the server sent"
+    );
+
+    // The new row is the third one, after the two the seed data has.
+    stage_cell(cx, &view, 2, 0, "7");
+    stage_cell(cx, &view, 2, 1, "seven");
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(name_of(&database, 7)),
+        Some("seven".to_string()),
+        "applying should insert the row"
+    );
+    assert_eq!(
+        view.read_with(cx, |view, _| view.loaded_rows_for_test()),
+        3,
+        "the page should be read again so the row comes back from the server"
+    );
+}
+
+#[gpui_kit::test]
+fn a_column_nobody_typed_into_is_left_to_the_server(cx: &mut TestAppContext) {
+    // `items.id` is a SQLite row id, so leaving it out is what gets one.
+    let (database, handle, view) = table_view_with_safety(cx, SafetyMode::ConfirmWrites);
+    cx.run_until_parked();
+
+    click_in_session(cx, handle, "insert-row");
+    cx.run_until_parked();
+    stage_cell(cx, &view, 2, 1, "eight");
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    let preview = view
+        .read_with(cx, |view, _| view.preview_for_test())
+        .expect("the insert should be waiting for an answer");
+    assert!(
+        preview.starts_with("insert into items (name) values (?)"),
+        "only the column that was typed into belongs in the statement: {preview}"
+    );
+
+    click_in_session(cx, handle, "confirm-write");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        3,
+        "confirming should insert the row"
+    );
+}
+
+#[gpui_kit::test]
+fn an_empty_new_row_is_reported_rather_than_written(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    click_in_session(cx, handle, "insert-row");
+    cx.run_until_parked();
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    let error = view
+        .read_with(cx, |view, _| view.error_for_test())
+        .expect("an empty row should be reported");
+    assert!(error.contains("empty"), "{error}");
+    assert_eq!(runtime::block_on(other_count(&database)), 2);
+}
+
+#[gpui_kit::test]
+fn a_new_row_can_be_thrown_away(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    click_in_session(cx, handle, "insert-row");
+    cx.run_until_parked();
+    stage_cell(cx, &view, 2, 1, "never inserted");
+
+    // Its own menu item drops the one row.
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.discard_draft_for_test(2, cx));
+    cx.run_until_parked();
+
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.row_count_for_test(cx)),
+        2,
+        "the row should be gone from the grid"
+    );
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        2,
+        "a discarded row must never reach the server"
+    );
+
+    // So does the discard key, for a row left half-filled.
+    click_in_session(cx, handle, "insert-row");
+    cx.run_until_parked();
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-z");
+    cx.run_until_parked();
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.row_count_for_test(cx)),
+        2
+    );
+}
+
+#[gpui_kit::test]
+fn the_insert_shortcut_adds_a_row(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-shift-i");
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .row_count_for_test(cx)),
+        3
+    );
+}
+
+// The real right-click path — pointer over a cell, menu opens, item chosen —
+// was checked by hand against a running grid and by a throwaway test: the
+// assertions passed, but `PopupMenu` keeps itself alive through the
+// subscription its own context menu registers, so every such test ends in the
+// harness's leaked-entity panic. The menu's own logic is covered through
+// `request_delete_for_test` and `discard_draft_for_test`, which call exactly
+// what the items call.

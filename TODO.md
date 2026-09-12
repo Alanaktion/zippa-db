@@ -18,7 +18,7 @@
 
 * [ ] Multi-environment tagging & color-coding (e.g., Red header for `Production`, Green for `Local`)
 * [x] Several connections open at once, one tab each, with their own sessions
-* [x] Per-connection safety mode for inline edits: staged until applied, or written when the selection leaves the row (read-only and confirm-before-write modes are still open)
+* [x] Per-connection safety mode: read-only (refuses writes, and opens the session read-only at the server), confirm every write, stage inline edits until applied, or apply them when the selection leaves the row
 * [ ] Grouping & categorizing connection workspaces
 * [ ] Workspace state persistence (reopen previous tabs on startup)
 
@@ -36,7 +36,8 @@
 * [x] Staged edits (cell highlighting before committing), written by an `UPDATE` keyed on the primary key, or on `rowid` / `ctid` when there is none; views and MySQL tables without a key stay read-only
 * [x] Batch `COMMIT` / `DISCARD` (`Cmd+S` / `Cmd+Z`); multi-cell selection and bulk editing still open
 * [x] Refreshing, paging, sorting, and changing the row limit ask before they throw staged edits away
-* [ ] Insert and delete rows
+* [x] Insert rows in the grid (a row filled in by hand, written by an `INSERT` that leaves untyped columns to the server) and delete rows from the row's context menu, which always shows the statements first
+* [x] Multi-row selection by dragging across rows, or shift-clicking to the end of a range
 * [ ] Foreign key lookups directly from cells (click to jump to referenced row)
 
 ### Filtering, Sorting & Pagination

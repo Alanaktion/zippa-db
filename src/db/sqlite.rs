@@ -25,7 +25,10 @@ pub(crate) async fn connect(config: &ConnectionConfig) -> Result<SqlitePool> {
     // Opening a missing file would silently create an empty database.
     let options = SqliteConnectOptions::new()
         .filename(&config.database)
-        .create_if_missing(false);
+        .create_if_missing(false)
+        // A read-only connection is read-only at the file too, so nothing
+        // that slips past the client-side check can write.
+        .read_only(config.safety.is_read_only());
 
     let pool = SqlitePoolOptions::new()
         .max_connections(POOL_SIZE)

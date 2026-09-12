@@ -347,21 +347,27 @@ impl Welcome {
                     .text_color(cx.theme().muted_foreground)
                     .child("Inline edits"),
             )
-            .child(h_flex().gap_2().children(SafetyMode::ALL.map(|safety| {
-                let button = Button::new(SharedString::from(format!("safety-{safety:?}")))
-                    .label(safety.label())
-                    .tooltip(safety.description())
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.safety = safety;
-                        cx.notify();
-                    }));
+            // Four modes do not always fit one line of a narrow window.
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .children(SafetyMode::ALL.map(|safety| {
+                        let button = Button::new(SharedString::from(format!("safety-{safety:?}")))
+                            .label(safety.label())
+                            .tooltip(safety.description())
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.safety = safety;
+                                cx.notify();
+                            }));
 
-                if self.safety == safety {
-                    button.primary()
-                } else {
-                    button.outline()
-                }
-            })))
+                        if self.safety == safety {
+                            button.primary()
+                        } else {
+                            button.outline()
+                        }
+                    })),
+            )
     }
 
     fn render_form(&self, cx: &mut Context<Self>) -> impl IntoElement {

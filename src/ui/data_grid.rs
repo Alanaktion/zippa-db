@@ -6,17 +6,19 @@
 //! specialized cell renderers come later.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{
     Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
 };
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, Div, Entity, EventEmitter, Pixels, SharedString, Stateful, Window, div, px,
+    App, Context, Div, Entity, EventEmitter, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels,
+    SharedString, Stateful, Window, div, px,
 };
 
 use crate::db::query::{self, Cell, QueryResult};
@@ -78,6 +80,9 @@ pub enum Sorting {
 /// Hands a delegated sort back to the grid's owner.
 type SortReporter = Rc<dyn Fn(String, ColumnSort, &mut App)>;
 
+/// Hands a row context-menu choice back to the grid's owner.
+type MenuReporter = Rc<dyn Fn(&mut App)>;
+
 /// Emitted when the user clicks a column header on a [`Sorting::Delegated`]
 /// grid.
 pub struct SortRequested {
@@ -92,6 +97,8 @@ pub enum GridEdit {
     Staged,
     /// The selection left `row`, which has edits waiting on it.
     RowLeft { row: usize },
+    /// The user asked for the selected rows to be deleted.
+    DeleteRequested,
 }
 
 /// One row's staged cells, by column index, for the owner to turn into SQL.
@@ -122,6 +129,17 @@ struct ResultDelegate {
     edits: HashMap<(usize, usize), Cell>,
     /// Whether the owner can write this result back at all.
     editable: bool,
+    /// Rows picked out for a row-level action, in display coordinates. This
+    /// is the grid's own selection, separate from the table's selected cell.
+    rows_selected: HashSet<usize>,
+    /// Row a sweep started on, so a move can select the range between.
+    anchor: Option<usize>,
+    report_menu: MenuReporter,
+    /// Rows the user is building by hand, each one the cells typed into it so
+    /// far. They sit after the result's own rows and are written by an
+    /// `INSERT`, so a column nobody typed into is left out and takes whatever
+    /// default the server has for it.
+    drafts: Vec<HashMap<usize, Cell>>,
     /// Cell the text editor is open on, in display coordinates.
     editing: Option<(usize, usize)>,
     /// The editor itself, shared with the grid so it can be focused and read.
@@ -157,7 +175,8 @@ impl TableDelegate for ResultDelegate {
     }
 
     fn rows_count(&self, _: &App) -> usize {
-        self.order.len()
+        // The rows being built by hand sit after the ones the server sent.
+        self.order.len() + self.drafts.len()
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
@@ -212,17 +231,78 @@ impl TableDelegate for ResultDelegate {
         }
     }
 
+    /// Build the menu a right click on `row_ix` opens.
+    ///
+    /// Right-clicking a row outside the sweep acts on that row alone, the way
+    /// a file manager does. An empty menu is never shown, so a grid that
+    /// cannot be written to simply has none.
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        if !self.editable {
+            return menu;
+        }
+
+        // A draft row has nothing on the server to delete, so the menu drops
+        // the row itself instead.
+        if let Some(draft) = self.draft(row_ix) {
+            let table = cx.weak_entity();
+            return menu.item(PopupMenuItem::new("Discard new row").on_click(
+                move |_, _window, cx| {
+                    let Some(table) = table.upgrade() else {
+                        return;
+                    };
+                    table.update(cx, |table, cx| {
+                        table.delegate_mut().discard_draft(draft);
+                        table.refresh(cx);
+                    });
+                },
+            ));
+        }
+
+        let label = self.mark_for_menu(row_ix);
+        let report = self.report_menu.clone();
+        menu.item(PopupMenuItem::new(label).on_click(move |_, _window, cx| report(cx)))
+    }
+
     fn render_tr(
         &mut self,
         row_ix: usize,
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
+        let swept = self.rows_selected.contains(&row_ix);
+        let draft = self.draft(row_ix).is_some();
+
         div()
             .id(("row", row_ix))
-            .when(self.selected_row == Some(row_ix), |this| {
+            .when(draft, |this| this.bg(cx.theme().warning.opacity(0.1)))
+            .when(swept || self.selected_row == Some(row_ix), |this| {
                 this.bg(cx.theme().tokens.table_active)
             })
+            // Pressing on a row starts a sweep; dragging over the rows either
+            // side of it takes them in too.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |table, event: &MouseDownEvent, _, cx| {
+                    table
+                        .delegate_mut()
+                        .begin_sweep(row_ix, event.modifiers.shift);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(move |table, event: &MouseMoveEvent, _, cx| {
+                if event.pressed_button != Some(MouseButton::Left) {
+                    return;
+                }
+                if table.delegate_mut().extend_sweep(row_ix) {
+                    cx.notify();
+                }
+            }))
     }
 
     fn render_td(
@@ -248,13 +328,29 @@ impl TableDelegate for ResultDelegate {
                 .into_any_element();
         }
 
-        let cell = div().font_family(self.font.clone()).text_xs();
+        // The menu hangs off the cell as well as off the table's own row menu:
+        // the table clears the right-clicked row when the click lands on a
+        // cell, which leaves that menu empty — and an empty menu is not shown,
+        // so exactly one of the two ever appears.
+        let cell = div()
+            .font_family(self.font.clone())
+            .text_xs()
+            .context_menu(self.cell_menu(row_ix, cx));
         let staged = self.is_staged(row_ix, col_ix);
         let cell = if staged {
             cell.bg(cx.theme().warning.opacity(0.2))
         } else {
             cell
         };
+
+        // A draft cell nobody has typed into is not NULL: it is whatever the
+        // server puts there, so it says so rather than promising a value.
+        if self.is_untouched_draft(row_ix, col_ix) {
+            return cell
+                .text_color(cx.theme().muted_foreground)
+                .child("default")
+                .into_any_element();
+        }
 
         match self.cell(row_ix, col_ix) {
             Some(value) => cell.child(value.to_string()).into_any_element(),
@@ -275,8 +371,17 @@ static ABSENT: Cell = None;
 
 impl ResultDelegate {
     /// Index into the result's rows of the row shown at `row_ix`.
+    ///
+    /// `None` for a draft row, which the server has never seen.
     fn source(&self, row_ix: usize) -> Option<usize> {
         self.order.get(row_ix).copied()
+    }
+
+    /// Index into `drafts` of the row shown at `row_ix`, if it is one.
+    fn draft(&self, row_ix: usize) -> Option<usize> {
+        row_ix
+            .checked_sub(self.order.len())
+            .filter(|index| *index < self.drafts.len())
     }
 
     /// The value as it came from the server.
@@ -289,6 +394,10 @@ impl ResultDelegate {
 
     /// The value as it stands, staged edit included.
     fn cell(&self, row_ix: usize, col_ix: usize) -> &Cell {
+        if let Some(draft) = self.draft(row_ix) {
+            return self.drafts[draft].get(&col_ix).unwrap_or(&ABSENT);
+        }
+
         match self
             .source(row_ix)
             .and_then(|row_ix| self.edits.get(&(row_ix, col_ix)))
@@ -298,7 +407,93 @@ impl ResultDelegate {
         }
     }
 
+    /// Whether a draft row has nothing typed into this cell yet, so the
+    /// server's own default is what it would be written with.
+    fn is_untouched_draft(&self, row_ix: usize, col_ix: usize) -> bool {
+        self.draft(row_ix)
+            .is_some_and(|draft| !self.drafts[draft].contains_key(&col_ix))
+    }
+
+    /// The menu a right click on a cell of `row_ix` opens.
+    ///
+    /// Built when the menu opens rather than now, so it can say how many rows
+    /// the sweep holds at that moment.
+    fn cell_menu(
+        &self,
+        row_ix: usize,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let table = cx.weak_entity();
+
+        move |menu, window, cx| {
+            let Some(table) = table.upgrade() else {
+                return menu;
+            };
+            table.update(cx, |table, cx| {
+                table.delegate_mut().context_menu(row_ix, menu, window, cx)
+            })
+        }
+    }
+
+    /// Drop the row being built at `draft`, leaving the others alone.
+    fn discard_draft(&mut self, draft: usize) {
+        if draft < self.drafts.len() {
+            self.drafts.remove(draft);
+        }
+    }
+
+    /// Take `row_ix` into the selection if it is outside it, and say what the
+    /// delete item should be called.
+    fn mark_for_menu(&mut self, row_ix: usize) -> String {
+        if !self.rows_selected.contains(&row_ix) {
+            self.rows_selected = HashSet::from([row_ix]);
+            self.anchor = Some(row_ix);
+        }
+
+        match self.rows_selected.len() {
+            1 => "Delete row".to_string(),
+            rows => format!("Delete {rows} rows"),
+        }
+    }
+
+    /// Start a sweep on `row_ix`, or extend the last one when `extend` is set.
+    fn begin_sweep(&mut self, row_ix: usize, extend: bool) {
+        // Shift keeps the anchor where it was, so the click picks the far end
+        // of a range rather than starting a new one.
+        if extend && self.anchor.is_some() {
+            self.extend_sweep(row_ix);
+            return;
+        }
+
+        self.anchor = Some(row_ix);
+        self.rows_selected = HashSet::from([row_ix]);
+    }
+
+    /// Take every row between the anchor and `row_ix`; false if nothing moved.
+    fn extend_sweep(&mut self, row_ix: usize) -> bool {
+        let Some(anchor) = self.anchor else {
+            return false;
+        };
+
+        let (first, last) = if anchor <= row_ix {
+            (anchor, row_ix)
+        } else {
+            (row_ix, anchor)
+        };
+
+        let swept: HashSet<usize> = (first..=last).collect();
+        if swept == self.rows_selected {
+            return false;
+        }
+
+        self.rows_selected = swept;
+        true
+    }
+
     fn is_staged(&self, row_ix: usize, col_ix: usize) -> bool {
+        if let Some(draft) = self.draft(row_ix) {
+            return self.drafts[draft].contains_key(&col_ix);
+        }
         self.source(row_ix)
             .is_some_and(|row_ix| self.edits.contains_key(&(row_ix, col_ix)))
     }
@@ -308,20 +503,38 @@ impl ResultDelegate {
     /// A binary column and a value the driver could only describe (`<3 bytes>`,
     /// `<XML>`) are shown but not held, so writing one back would lose it.
     fn is_editable(&self, row_ix: usize, col_ix: usize) -> bool {
-        if !self.editable || self.source(row_ix).is_none() {
+        if !self.editable {
             return false;
         }
+
         let binary = self
             .result
             .column_types
             .get(col_ix)
             .is_some_and(|name| query::is_binary_type(name));
-        !binary && !query::is_placeholder(self.baseline(row_ix, col_ix))
+        if binary {
+            return false;
+        }
+
+        // A draft row has no value to lose, so only the column's type can
+        // stand in the way.
+        if self.draft(row_ix).is_some() {
+            return true;
+        }
+
+        self.source(row_ix).is_some() && !query::is_placeholder(self.baseline(row_ix, col_ix))
     }
 
     /// Stage `value` on a cell, or drop the edit when it matches the row as
     /// loaded, so typing a value back the way it was leaves nothing to write.
     fn stage(&mut self, row_ix: usize, col_ix: usize, value: Cell) {
+        // A draft has no loaded value behind it: what is typed is what the
+        // `INSERT` carries, and typing nothing leaves the column out of it.
+        if let Some(draft) = self.draft(row_ix) {
+            self.drafts[draft].insert(col_ix, value);
+            return;
+        }
+
         let Some(source) = self.source(row_ix) else {
             return;
         };
@@ -377,6 +590,16 @@ impl DataGrid {
             }
         });
 
+        let report_menu: MenuReporter = Rc::new({
+            let grid = cx.weak_entity();
+            move |cx: &mut App| {
+                let Some(grid) = grid.upgrade() else {
+                    return;
+                };
+                grid.update(cx, |_, cx| cx.emit(GridEdit::DeleteRequested));
+            }
+        });
+
         let editor = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
@@ -394,6 +617,10 @@ impl DataGrid {
                     report_sort,
                     edits: HashMap::new(),
                     editable: false,
+                    rows_selected: HashSet::new(),
+                    anchor: None,
+                    report_menu,
+                    drafts: Vec::new(),
                     editing: None,
                     editor: editor.clone(),
                 },
@@ -439,6 +666,10 @@ impl DataGrid {
         if let TableEvent::DoubleClickedCell(row_ix, col_ix) = event {
             self.begin_edit(*row_ix, *col_ix, window, cx);
             return;
+        }
+
+        if matches!(event, TableEvent::ClearSelection) {
+            self.clear_row_selection(cx);
         }
 
         let row = match event {
@@ -496,6 +727,7 @@ impl DataGrid {
             delegate.editing = None;
             if !editable {
                 delegate.edits.clear();
+                delegate.drafts.clear();
             }
             cx.notify();
         });
@@ -596,6 +828,70 @@ impl DataGrid {
         });
     }
 
+    /// Start a row the user fills in by hand, below the ones on screen.
+    pub fn add_draft(&mut self, cx: &mut Context<Self>) {
+        self.commit_editor(cx);
+        self.table.update(cx, |table, cx| {
+            if !table.delegate().editable {
+                return;
+            }
+            table.delegate_mut().drafts.push(HashMap::new());
+            table.refresh(cx);
+        });
+        cx.emit(GridEdit::Staged);
+    }
+
+    /// The rows being built by hand, each one the cells typed into it.
+    ///
+    /// A column nobody typed into is absent, so the `INSERT` can leave it out
+    /// and let the server put its own default there.
+    pub fn drafts(&self, cx: &App) -> Vec<Vec<(usize, Cell)>> {
+        self.table
+            .read(cx)
+            .delegate()
+            .drafts
+            .iter()
+            .map(|draft| {
+                let mut cells: Vec<(usize, Cell)> = draft
+                    .iter()
+                    .map(|(col, value)| (*col, value.clone()))
+                    .collect();
+                cells.sort_by_key(|(col, _)| *col);
+                cells
+            })
+            .collect()
+    }
+
+    /// How many rows are waiting to be written: edited ones and new ones.
+    pub fn pending(&self, cx: &App) -> usize {
+        self.staged(cx).len() + self.table.read(cx).delegate().drafts.len()
+    }
+
+    /// Rows the user has picked out, as indices into the result's own rows.
+    pub fn selected_rows(&self, cx: &App) -> Vec<usize> {
+        let delegate = self.table.read(cx).delegate();
+        let mut rows: Vec<usize> = delegate
+            .rows_selected
+            .iter()
+            .filter_map(|row_ix| delegate.source(*row_ix))
+            .collect();
+        rows.sort_unstable();
+        rows
+    }
+
+    /// Forget which rows were picked out.
+    pub fn clear_row_selection(&mut self, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            if delegate.rows_selected.is_empty() {
+                return;
+            }
+            delegate.rows_selected.clear();
+            delegate.anchor = None;
+            cx.notify();
+        });
+    }
+
     /// Edits waiting to be written, by row, in result order.
     pub fn staged(&self, cx: &App) -> Vec<StagedRow> {
         let delegate = self.table.read(cx).delegate();
@@ -677,16 +973,18 @@ impl DataGrid {
         });
     }
 
-    /// Throw every staged edit away.
+    /// Throw every staged edit and every row being built away.
     pub fn discard(&mut self, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
-            if delegate.edits.is_empty() && delegate.editing.is_none() {
+            if delegate.edits.is_empty() && delegate.editing.is_none() && delegate.drafts.is_empty()
+            {
                 return;
             }
             delegate.edits.clear();
             delegate.editing = None;
-            cx.notify();
+            delegate.drafts.clear();
+            table.refresh(cx);
         });
         cx.emit(GridEdit::Staged);
     }
@@ -719,6 +1017,9 @@ impl DataGrid {
             // refreshing all throw unwritten edits away.
             delegate.edits.clear();
             delegate.editing = None;
+            delegate.drafts.clear();
+            delegate.rows_selected.clear();
+            delegate.anchor = None;
             table.clear_selection(cx);
             table.refresh(cx);
         });
@@ -736,6 +1037,9 @@ impl DataGrid {
             delegate.sorted_by = None;
             delegate.edits.clear();
             delegate.editing = None;
+            delegate.drafts.clear();
+            delegate.rows_selected.clear();
+            delegate.anchor = None;
             table.clear_selection(cx);
             table.refresh(cx);
         });
@@ -793,6 +1097,56 @@ impl DataGrid {
     #[cfg(test)]
     pub(crate) fn cell_for_test(&self, row_ix: usize, col_ix: usize, cx: &App) -> Cell {
         self.table.read(cx).delegate().cell(row_ix, col_ix).clone()
+    }
+
+    /// Pick the delete item out of the row menu, the way right-clicking a row
+    /// and choosing it does.
+    #[cfg(test)]
+    pub(crate) fn request_delete_for_test(
+        &mut self,
+        row_ix: usize,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let label = self
+            .table
+            .update(cx, |table, _| table.delegate_mut().mark_for_menu(row_ix));
+        cx.emit(GridEdit::DeleteRequested);
+        label
+    }
+
+    /// Drop a row being built, the way its menu item does.
+    #[cfg(test)]
+    pub(crate) fn discard_draft_for_test(&mut self, row_ix: usize, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            let Some(draft) = table.delegate().draft(row_ix) else {
+                return;
+            };
+            table.delegate_mut().discard_draft(draft);
+            table.refresh(cx);
+        });
+        cx.emit(GridEdit::Staged);
+    }
+
+    /// How many rows the grid is showing, drafts included.
+    #[cfg(test)]
+    pub(crate) fn row_count_for_test(&self, cx: &App) -> usize {
+        let delegate = self.table.read(cx).delegate();
+        delegate.order.len() + delegate.drafts.len()
+    }
+
+    /// The rows a sweep has picked out, in display order.
+    #[cfg(test)]
+    pub(crate) fn rows_selected_for_test(&self, cx: &App) -> Vec<usize> {
+        let mut rows: Vec<usize> = self
+            .table
+            .read(cx)
+            .delegate()
+            .rows_selected
+            .iter()
+            .copied()
+            .collect();
+        rows.sort_unstable();
+        rows
     }
 
     /// Select a cell the way clicking one does.

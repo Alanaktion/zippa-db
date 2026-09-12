@@ -8,6 +8,7 @@ pub mod postgres;
 pub mod query;
 pub mod runtime;
 pub mod sqlite;
+pub mod statement;
 pub mod store;
 
 #[cfg(test)]
@@ -61,13 +62,19 @@ impl Engine {
     }
 }
 
-/// How much ceremony a connection asks for before a row is written.
+/// How much ceremony a connection asks for before anything is written.
 ///
-/// Only the two inline-edit modes exist so far; refusing writes outright and
-/// previewing the statement first are in IDEAS.md.
+/// One scale, from the most careful to the least: refuse writes, ask about
+/// each one, hold inline edits until they are applied, apply them as the user
+/// moves on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SafetyMode {
-    /// Inline edits wait in the grid until they are applied by hand.
+    /// Nothing may be written: the session is opened read-only and statements
+    /// that do not plainly read are refused before they are sent.
+    ReadOnly,
+    /// Every write is shown to the user before it runs.
+    ConfirmWrites,
+    /// Inline edits wait in the grid until they are applied.
     #[default]
     Staged,
     /// Inline edits are written as soon as the selection leaves the row.
@@ -75,10 +82,17 @@ pub enum SafetyMode {
 }
 
 impl SafetyMode {
-    pub const ALL: [SafetyMode; 2] = [SafetyMode::Staged, SafetyMode::AutoApply];
+    pub const ALL: [SafetyMode; 4] = [
+        SafetyMode::ReadOnly,
+        SafetyMode::ConfirmWrites,
+        SafetyMode::Staged,
+        SafetyMode::AutoApply,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
+            SafetyMode::ReadOnly => "Read-only",
+            SafetyMode::ConfirmWrites => "Confirm writes",
             SafetyMode::Staged => "Staged edits",
             SafetyMode::AutoApply => "Auto-apply",
         }
@@ -86,9 +100,23 @@ impl SafetyMode {
 
     pub fn description(self) -> &'static str {
         match self {
+            SafetyMode::ReadOnly => "Refuses anything that writes",
+            SafetyMode::ConfirmWrites => "Shows every write before it runs",
             SafetyMode::Staged => "Edits wait until you apply them",
             SafetyMode::AutoApply => "Edits are written when you leave the row",
         }
+    }
+
+    pub fn is_read_only(self) -> bool {
+        matches!(self, SafetyMode::ReadOnly)
+    }
+
+    pub fn confirms_writes(self) -> bool {
+        matches!(self, SafetyMode::ConfirmWrites)
+    }
+
+    pub fn auto_applies(self) -> bool {
+        matches!(self, SafetyMode::AutoApply)
     }
 }
 
@@ -364,6 +392,7 @@ impl Connection {
     }
 
     pub async fn run_query(&self, sql: &str) -> Result<QueryResult> {
+        self.refuse_write(sql)?;
         match &self.pool {
             Pool::Postgres(pool) => fetch_all(pool, sql, postgres::cell).await,
             Pool::MySql(pool) => fetch_all(pool, sql, mysql::cell).await,
@@ -411,11 +440,29 @@ impl Connection {
         })
     }
 
+    /// Refuse a statement a read-only connection must not run.
+    ///
+    /// The server is told to refuse writes as well when the pool is opened;
+    /// this is the half that can name the statement it stopped, and that
+    /// stops it before it costs a round trip.
+    fn refuse_write(&self, sql: &str) -> Result<()> {
+        if !self.config.safety.is_read_only() {
+            return Ok(());
+        }
+        if let Some(word) = statement::first_write(sql) {
+            anyhow::bail!("this connection is read-only, so the {word} statement was not run");
+        }
+        Ok(())
+    }
+
     /// Run a write and report how many rows it matched.
     ///
     /// Every parameter is bound as text or `NULL`; see [`typed_placeholder`]
     /// for why that is enough.
     pub async fn execute(&self, sql: &str, params: Vec<Cell>) -> Result<u64> {
+        if self.config.safety.is_read_only() {
+            anyhow::bail!("this connection is read-only");
+        }
         match &self.pool {
             Pool::Postgres(pool) => execute_with(pool, sql, params, postgres::rows_affected).await,
             Pool::MySql(pool) => execute_with(pool, sql, params, mysql::rows_affected).await,

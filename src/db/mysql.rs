@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlQueryResult, MySqlRow};
-use sqlx::{Row, TypeInfo, ValueRef};
+use sqlx::{Executor, Row, TypeInfo, ValueRef};
 
 use super::query::{self, Cell};
 use super::{ConnectionConfig, POOL_SIZE, decode, quote_literal};
@@ -31,10 +31,24 @@ pub(crate) async fn connect(
         options = options.password(password);
     }
 
-    let pool = MySqlPoolOptions::new()
-        .max_connections(POOL_SIZE)
-        .connect_with(options)
-        .await?;
+    let mut pool_options = MySqlPoolOptions::new().max_connections(POOL_SIZE);
+
+    // A read-only connection is read-only at the server too: the client-side
+    // check in `Connection::refuse_write` only speaks for statements it can
+    // recognise. MySQL has no connect option for it, so every connection the
+    // pool opens is told as it comes up.
+    if config.safety.is_read_only() {
+        pool_options = pool_options.after_connect(|connection, _| {
+            Box::pin(async move {
+                connection
+                    .execute("SET SESSION TRANSACTION READ ONLY")
+                    .await?;
+                Ok(())
+            })
+        });
+    }
+
+    let pool = pool_options.connect_with(options).await?;
     Ok(pool)
 }
 

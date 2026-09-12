@@ -9,7 +9,7 @@ use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnect
 use crate::ui::query_editor::RunQuery;
 use crate::ui::session::{CloseTab, NewTab, OpenFile, Refresh, SaveFile, SaveFileAs};
 use crate::ui::settings_window::OpenSettings;
-use crate::ui::table_view::{ApplyEdits, CancelEdit, DiscardEdits, EditCell, SetNull};
+use crate::ui::table_view::{ApplyEdits, CancelEdit, DiscardEdits, EditCell, InsertRow, SetNull};
 
 pub fn bind(cx: &mut App) {
     cx.bind_keys([
@@ -51,6 +51,13 @@ pub fn bind(cx: &mut App) {
         // under the table view, leaving query results read-only.
         KeyBinding::new("enter", EditCell, Some("TableView > DataTable")),
         KeyBinding::new("secondary-shift-n", SetNull, Some("TableView > DataTable")),
+        // Bound on the grid, like the other row commands: that is the node
+        // that holds the focus while the user is looking at rows.
+        KeyBinding::new(
+            "secondary-shift-i",
+            InsertRow,
+            Some("TableView > DataTable"),
+        ),
         // Escape while typing in a cell closes the editor; without this the
         // input's own escape, or the table's clear-selection, would take it.
         KeyBinding::new("escape", CancelEdit, Some("TableView > DataTable > Input")),

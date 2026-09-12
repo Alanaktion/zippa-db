@@ -30,6 +30,13 @@ pub(crate) async fn connect(config: &ConnectionConfig, password: Option<&str>) -
         options = options.password(password);
     }
 
+    // A read-only connection is read-only at the server too: the client-side
+    // check in `Connection::refuse_write` only speaks for statements it can
+    // recognise.
+    if config.safety.is_read_only() {
+        options = options.options([("default_transaction_read_only", "on")]);
+    }
+
     let pool = PgPoolOptions::new()
         .max_connections(POOL_SIZE)
         .connect_with(options)
