@@ -33,10 +33,10 @@
 
 ### Inline Data Editing (Buffer Model)
 
-* [x] Staged edits (cell highlighting before committing), written by an `UPDATE` keyed on the primary key, or on `rowid` / `ctid` when there is none; views and MySQL tables without a key stay read-only
+* [x] Staged edits, with every pending change coloured in the grid: green for an edited cell, blue for a new row, red for a row marked for deletion, written by an `UPDATE` keyed on the primary key, or on `rowid` / `ctid` when there is none; views and MySQL tables without a key stay read-only
 * [x] Batch `COMMIT` / `DISCARD` (`Cmd+S` / `Cmd+Z`); multi-cell selection and bulk editing still open
 * [x] Refreshing, paging, sorting, and changing the row limit ask before they throw staged edits away
-* [x] Insert rows in the grid (a row filled in by hand, written by an `INSERT` that leaves untyped columns to the server) and delete rows from the row's context menu, which always shows the statements first
+* [x] Insert rows in the grid (a row filled in by hand, written by an `INSERT` that leaves untyped columns to the server) and mark rows for deletion from the row's context menu; both wait with the edits until the changes are applied
 * [x] Multi-row selection by dragging across rows, or shift-clicking to the end of a range
 * [ ] Foreign key lookups directly from cells (click to jump to referenced row)
 

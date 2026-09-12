@@ -9,7 +9,9 @@ use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnect
 use crate::ui::query_editor::RunQuery;
 use crate::ui::session::{CloseTab, NewTab, OpenFile, Refresh, SaveFile, SaveFileAs};
 use crate::ui::settings_window::OpenSettings;
-use crate::ui::table_view::{ApplyEdits, CancelEdit, DiscardEdits, EditCell, InsertRow, SetNull};
+use crate::ui::table_view::{
+    ApplyEdits, CancelEdit, DeleteRows, DiscardEdits, EditCell, InsertRow, RestoreRows, SetNull,
+};
 
 pub fn bind(cx: &mut App) {
     cx.bind_keys([
@@ -56,6 +58,18 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new(
             "secondary-shift-i",
             InsertRow,
+            Some("TableView > DataTable"),
+        ),
+        // Deleting marks the rows rather than writing them away, so the key
+        // that takes the mark off again sits beside it.
+        KeyBinding::new(
+            "secondary-backspace",
+            DeleteRows,
+            Some("TableView > DataTable"),
+        ),
+        KeyBinding::new(
+            "secondary-shift-backspace",
+            RestoreRows,
             Some("TableView > DataTable"),
         ),
         // Escape while typing in a cell closes the editor; without this the

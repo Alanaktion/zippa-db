@@ -1812,6 +1812,23 @@ fn focus_grid(cx: &mut TestAppContext, view: &gpui_kit::Entity<crate::ui::table_
         .unwrap();
 }
 
+/// The `id` column of the `items` row with this name, read through a second
+/// connection.
+async fn id_of(database: &TempDatabase, name: &str) -> Option<String> {
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not reopen the test database");
+    let result = connection
+        .run_query(&format!(
+            "select id from items where name = {}",
+            crate::db::quote_literal(name)
+        ))
+        .await
+        .expect("could not read the row");
+    connection.close().await;
+    result.rows.first().and_then(|row| row[0].clone())
+}
+
 /// The `name` column of `items` for a row, read through a second connection.
 async fn name_of(database: &TempDatabase, id: i64) -> Option<String> {
     let connection = Connection::open(database.config(), None)
@@ -2466,12 +2483,10 @@ fn a_confirming_connection_shows_the_update_before_it_runs(cx: &mut TestAppConte
     view.update(cx, |view, cx| view.commit(cx));
     cx.run_until_parked();
 
-    let preview = view
-        .read_with(cx, |view, _| view.preview_for_test())
-        .expect("the write should be waiting for an answer");
-    assert!(
-        preview.starts_with("update items set name =") && preview.contains("1: 'confirmed'"),
-        "the panel should show the statement and its values: {preview}"
+    assert_eq!(
+        view.read_with(cx, |view, _| view.confirming_for_test()),
+        Some("1 edited row".to_string()),
+        "the panel should say what is about to be applied"
     );
     assert_eq!(
         runtime::block_on(name_of(&database, 1)),
@@ -2483,7 +2498,7 @@ fn a_confirming_connection_shows_the_update_before_it_runs(cx: &mut TestAppConte
     click_in_session(cx, handle, "cancel-write");
     cx.run_until_parked();
     view.update(cx, |view, cx| {
-        assert!(view.preview_for_test().is_none());
+        assert!(view.confirming_for_test().is_none());
         assert_eq!(view.grid_for_test().read(cx).staged(cx).len(), 1);
     });
     assert_eq!(
@@ -2671,38 +2686,37 @@ fn dragging_across_rows_selects_them(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_row_menu_deletes_the_selected_rows(cx: &mut TestAppContext) {
+fn deleting_rows_marks_them_until_the_changes_are_applied(cx: &mut TestAppContext) {
     let (database, handle, view) = table_view(cx);
     cx.run_until_parked();
 
     sweep_rows(cx, handle, 0, 1);
-
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
-    let label = grid.update(cx, |grid, cx| grid.request_delete_for_test(0, cx));
-    assert_eq!(label, "Delete 2 rows", "the item should count the sweep");
+    grid.update(cx, |grid, cx| grid.delete_selected(cx));
     cx.run_until_parked();
 
-    // A delete is shown before it runs whatever the connection's mode says.
-    let preview = view
-        .read_with(cx, |view, _| view.preview_for_test())
-        .expect("the delete should be waiting for an answer");
-    assert!(
-        preview.matches("delete from items where id =").count() == 2,
-        "both rows should be in the preview: {preview}"
-    );
+    // The rows stay on screen, marked, until the changes are applied.
+    view.update(cx, |view, cx| {
+        assert_eq!(view.grid_for_test().read(cx).deletions(cx), vec![0, 1]);
+        assert_eq!(
+            view.grid_for_test().read(cx).pending_counts(cx),
+            (0, 0, 2),
+            "two rows are waiting to be deleted"
+        );
+    });
     assert_eq!(
         runtime::block_on(other_count(&database)),
         2,
         "nothing should be deleted yet"
     );
 
-    click_in_session(cx, handle, "confirm-write");
+    view.update(cx, |view, cx| view.commit(cx));
     cx.run_until_parked();
 
     assert_eq!(
         runtime::block_on(other_count(&database)),
         0,
-        "confirming should delete both rows"
+        "applying should delete both rows"
     );
     assert_eq!(
         view.read_with(cx, |view, _| view.loaded_rows_for_test()),
@@ -2712,37 +2726,73 @@ fn the_row_menu_deletes_the_selected_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_cancelled_delete_leaves_the_rows_alone(cx: &mut TestAppContext) {
+fn a_marked_row_can_be_restored_or_discarded(cx: &mut TestAppContext) {
     let (database, handle, view) = table_view(cx);
     cx.run_until_parked();
 
-    sweep_rows(cx, handle, 0, 0);
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
-    grid.update(cx, |grid, cx| grid.request_delete_for_test(0, cx));
+
+    // Restoring takes the mark off the row again.
+    sweep_rows(cx, handle, 0, 0);
+    grid.update(cx, |grid, cx| grid.delete_selected(cx));
+    grid.update(cx, |grid, cx| grid.restore_selected(cx));
+    cx.run_until_parked();
+    assert!(grid.read_with(cx, |grid, cx| grid.deletions(cx).is_empty()));
+
+    // So does throwing the staged changes away.
+    grid.update(cx, |grid, cx| grid.delete_selected(cx));
+    cx.run_until_parked();
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-z");
     cx.run_until_parked();
 
-    click_in_session(cx, handle, "cancel-write");
-    cx.run_until_parked();
-
+    assert!(grid.read_with(cx, |grid, cx| grid.deletions(cx).is_empty()));
     assert_eq!(
         runtime::block_on(other_count(&database)),
         2,
-        "cancelling must not delete anything"
+        "a discarded delete must never reach the server"
     );
 }
 
 #[gpui_kit::test]
-fn a_read_only_connection_has_no_delete_item(cx: &mut TestAppContext) {
+fn the_delete_shortcut_marks_the_selected_rows(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    sweep_rows(cx, handle, 0, 1);
+    press(cx, handle, "secondary-backspace");
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, cx| view.grid_for_test().read(cx).deletions(cx)),
+        vec![0, 1]
+    );
+
+    press(cx, handle, "secondary-shift-backspace");
+    cx.run_until_parked();
+    assert!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .deletions(cx)
+            .is_empty()),
+        "the restore shortcut should take the mark off again"
+    );
+}
+
+#[gpui_kit::test]
+fn a_read_only_connection_deletes_nothing(cx: &mut TestAppContext) {
     let (database, handle, view) = table_view_with_safety(cx, SafetyMode::ReadOnly);
     cx.run_until_parked();
 
     sweep_rows(cx, handle, 0, 0);
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
-    // The menu is empty on a read-only grid; asking anyway changes nothing.
-    grid.update(cx, |grid, cx| grid.request_delete_for_test(0, cx));
+    grid.update(cx, |grid, cx| grid.delete_selected(cx));
     cx.run_until_parked();
 
-    assert!(view.read_with(cx, |view, _| view.preview_for_test().is_none()));
+    assert!(
+        grid.read_with(cx, |grid, cx| grid.deletions(cx).is_empty()),
+        "a read-only grid marks nothing"
+    );
     assert_eq!(runtime::block_on(other_count(&database)), 2);
 }
 
@@ -2791,12 +2841,10 @@ fn a_column_nobody_typed_into_is_left_to_the_server(cx: &mut TestAppContext) {
     view.update(cx, |view, cx| view.commit(cx));
     cx.run_until_parked();
 
-    let preview = view
-        .read_with(cx, |view, _| view.preview_for_test())
-        .expect("the insert should be waiting for an answer");
-    assert!(
-        preview.starts_with("insert into items (name) values (?)"),
-        "only the column that was typed into belongs in the statement: {preview}"
+    assert_eq!(
+        view.read_with(cx, |view, _| view.confirming_for_test()),
+        Some("1 new row".to_string()),
+        "the panel should say what is about to be applied"
     );
 
     click_in_session(cx, handle, "confirm-write");
@@ -2806,6 +2854,12 @@ fn a_column_nobody_typed_into_is_left_to_the_server(cx: &mut TestAppContext) {
         runtime::block_on(other_count(&database)),
         3,
         "confirming should insert the row"
+    );
+    // The key was left out of the statement, so the server picked one.
+    assert_eq!(
+        runtime::block_on(id_of(&database, "eight")),
+        Some("3".to_string()),
+        "the column nobody typed into should come from the server"
     );
 }
 
@@ -2888,3 +2942,83 @@ fn the_insert_shortcut_adds_a_row(cx: &mut TestAppContext) {
 // harness's leaked-entity panic. The menu's own logic is covered through
 // `request_delete_for_test` and `discard_draft_for_test`, which call exactly
 // what the items call.
+
+#[gpui_kit::test]
+fn changes_of_every_kind_are_counted_and_applied_together(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // Edit the first row, mark the second for deletion, add a third.
+    stage_cell(cx, &view, 0, 1, "edited");
+    sweep_rows(cx, handle, 1, 1);
+    press(cx, handle, "secondary-backspace");
+    click_in_session(cx, handle, "insert-row");
+    cx.run_until_parked();
+    // Two rows came from the server, so the new one is the third.
+    stage_cell(cx, &view, 2, 1, "added");
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.grid_for_test().read(cx).pending_counts(cx),
+            (1, 1, 1),
+            "one edited row, one new row, one deleted row"
+        );
+    });
+
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("edited".to_string()),
+        "the edit should have been written"
+    );
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        2,
+        "one row went, one row arrived"
+    );
+    assert_eq!(
+        runtime::block_on(id_of(&database, "added")),
+        Some("3".to_string()),
+        "the new row should be there"
+    );
+    assert!(
+        view.read_with(cx, |view, cx| view.grid_for_test().read(cx).pending(cx)
+            == 0),
+        "nothing should be left staged"
+    );
+}
+
+#[gpui_kit::test]
+fn an_edit_on_a_row_marked_for_deletion_goes_with_it(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "never written");
+    sweep_rows(cx, handle, 0, 0);
+    press(cx, handle, "secondary-backspace");
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.grid_for_test().read(cx).pending_counts(cx),
+            (0, 0, 1),
+            "the row counts once, as a deletion"
+        );
+    });
+
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        1,
+        "the row should be gone"
+    );
+    assert_eq!(
+        view.read_with(cx, |view, _| view.error_for_test()),
+        None,
+        "updating a row that is being deleted should never be attempted"
+    );
+}

@@ -80,8 +80,8 @@ pub enum Sorting {
 /// Hands a delegated sort back to the grid's owner.
 type SortReporter = Rc<dyn Fn(String, ColumnSort, &mut App)>;
 
-/// Hands a row context-menu choice back to the grid's owner.
-type MenuReporter = Rc<dyn Fn(&mut App)>;
+/// Tells the grid's owner that the staged changes moved.
+type ChangeReporter = Rc<dyn Fn(&mut App)>;
 
 /// Emitted when the user clicks a column header on a [`Sorting::Delegated`]
 /// grid.
@@ -97,8 +97,6 @@ pub enum GridEdit {
     Staged,
     /// The selection left `row`, which has edits waiting on it.
     RowLeft { row: usize },
-    /// The user asked for the selected rows to be deleted.
-    DeleteRequested,
 }
 
 /// One row's staged cells, by column index, for the owner to turn into SQL.
@@ -134,7 +132,12 @@ struct ResultDelegate {
     rows_selected: HashSet<usize>,
     /// Row a sweep started on, so a move can select the range between.
     anchor: Option<usize>,
-    report_menu: MenuReporter,
+    /// Row the last right click landed on, for the menu the grid opens.
+    menu_row: Option<usize>,
+    /// Rows marked for deletion, by their index into the result. They stay on
+    /// screen, struck through, until the owner writes them away.
+    deletions: HashSet<usize>,
+    report_change: ChangeReporter,
     /// Rows the user is building by hand, each one the cells typed into it so
     /// far. They sit after the result's own rows and are written by an
     /// `INSERT`, so a column nobody typed into is left out and takes whatever
@@ -231,44 +234,6 @@ impl TableDelegate for ResultDelegate {
         }
     }
 
-    /// Build the menu a right click on `row_ix` opens.
-    ///
-    /// Right-clicking a row outside the sweep acts on that row alone, the way
-    /// a file manager does. An empty menu is never shown, so a grid that
-    /// cannot be written to simply has none.
-    fn context_menu(
-        &mut self,
-        row_ix: usize,
-        menu: PopupMenu,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> PopupMenu {
-        if !self.editable {
-            return menu;
-        }
-
-        // A draft row has nothing on the server to delete, so the menu drops
-        // the row itself instead.
-        if let Some(draft) = self.draft(row_ix) {
-            let table = cx.weak_entity();
-            return menu.item(PopupMenuItem::new("Discard new row").on_click(
-                move |_, _window, cx| {
-                    let Some(table) = table.upgrade() else {
-                        return;
-                    };
-                    table.update(cx, |table, cx| {
-                        table.delegate_mut().discard_draft(draft);
-                        table.refresh(cx);
-                    });
-                },
-            ));
-        }
-
-        let label = self.mark_for_menu(row_ix);
-        let report = self.report_menu.clone();
-        menu.item(PopupMenuItem::new(label).on_click(move |_, _window, cx| report(cx)))
-    }
-
     fn render_tr(
         &mut self,
         row_ix: usize,
@@ -277,10 +242,15 @@ impl TableDelegate for ResultDelegate {
     ) -> Stateful<Div> {
         let swept = self.rows_selected.contains(&row_ix);
         let draft = self.draft(row_ix).is_some();
+        let deleted = self.is_deleted(row_ix);
 
         div()
             .id(("row", row_ix))
-            .when(draft, |this| this.bg(cx.theme().warning.opacity(0.1)))
+            // What will happen to a row is told by its colour: blue for a row
+            // being added, red for one being deleted. An edited cell carries
+            // its own green, since the rest of the row is untouched.
+            .when(draft, |this| this.bg(cx.theme().info.opacity(0.15)))
+            .when(deleted, |this| this.bg(cx.theme().danger.opacity(0.15)))
             .when(swept || self.selected_row == Some(row_ix), |this| {
                 this.bg(cx.theme().tokens.table_active)
             })
@@ -301,6 +271,14 @@ impl TableDelegate for ResultDelegate {
                 }
                 if table.delegate_mut().extend_sweep(row_ix) {
                     cx.notify();
+                }
+            }))
+            // The table answers a right click on a cell itself and stops it
+            // there, so the row this one landed on is noted in the capture
+            // phase, before that happens. The menu the grid opens reads it.
+            .capture_any_mouse_down(cx.listener(move |table, event: &MouseDownEvent, _, _cx| {
+                if event.button == MouseButton::Right {
+                    table.delegate_mut().menu_row = Some(row_ix);
                 }
             }))
     }
@@ -328,17 +306,14 @@ impl TableDelegate for ResultDelegate {
                 .into_any_element();
         }
 
-        // The menu hangs off the cell as well as off the table's own row menu:
-        // the table clears the right-clicked row when the click lands on a
-        // cell, which leaves that menu empty — and an empty menu is not shown,
-        // so exactly one of the two ever appears.
-        let cell = div()
-            .font_family(self.font.clone())
-            .text_xs()
-            .context_menu(self.cell_menu(row_ix, cx));
-        let staged = self.is_staged(row_ix, col_ix);
-        let cell = if staged {
-            cell.bg(cx.theme().warning.opacity(0.2))
+        let cell = div().font_family(self.font.clone()).text_xs();
+        let deleted = self.is_deleted(row_ix);
+        let cell = if deleted {
+            // A deleted row is going whatever its cells hold, so the value is
+            // shown as the server still has it, crossed out.
+            cell.line_through().text_color(cx.theme().muted_foreground)
+        } else if self.is_staged(row_ix, col_ix) && self.draft(row_ix).is_none() {
+            cell.bg(cx.theme().success.opacity(0.2))
         } else {
             cell
         };
@@ -414,24 +389,86 @@ impl ResultDelegate {
             .is_some_and(|draft| !self.drafts[draft].contains_key(&col_ix))
     }
 
-    /// The menu a right click on a cell of `row_ix` opens.
+    /// The items a right click on `row_ix` offers.
     ///
-    /// Built when the menu opens rather than now, so it can say how many rows
-    /// the sweep holds at that moment.
-    fn cell_menu(
-        &self,
+    /// Right-clicking a row outside the sweep acts on that row alone, the way
+    /// a file manager does. An empty menu is never shown, so a grid that
+    /// cannot be written to simply has none.
+    ///
+    /// This is deliberately not `TableDelegate::context_menu`: the table opens
+    /// a menu of its own for right clicks it handles itself, and leaving that
+    /// one empty is what keeps two menus from appearing at once.
+    fn row_menu_items(
+        &mut self,
         row_ix: usize,
+        menu: PopupMenu,
         cx: &mut Context<TableState<Self>>,
-    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
-        let table = cx.weak_entity();
+    ) -> PopupMenu {
+        if !self.editable {
+            return menu;
+        }
 
-        move |menu, window, cx| {
+        // A draft row has nothing on the server to delete, so the menu drops
+        // the row itself instead.
+        if let Some(draft) = self.draft(row_ix) {
+            let table = cx.weak_entity();
+            return menu.item(PopupMenuItem::new("Discard new row").on_click(
+                move |_, _window, cx| {
+                    let Some(table) = table.upgrade() else {
+                        return;
+                    };
+                    table.update(cx, |table, cx| {
+                        table.delegate_mut().discard_draft(draft);
+                        table.refresh(cx);
+                    });
+                },
+            ));
+        }
+
+        let deleted = self.is_deleted(row_ix);
+        let rows = self.mark_for_menu(row_ix);
+        let label = match (deleted, rows) {
+            (false, 1) => "Delete row".to_string(),
+            (false, rows) => format!("Delete {rows} rows"),
+            (true, 1) => "Restore row".to_string(),
+            (true, rows) => format!("Restore {rows} rows"),
+        };
+
+        let table = cx.weak_entity();
+        let report = self.report_change.clone();
+        menu.item(PopupMenuItem::new(label).on_click(move |_, _window, cx| {
             let Some(table) = table.upgrade() else {
-                return menu;
+                return;
             };
             table.update(cx, |table, cx| {
-                table.delegate_mut().context_menu(row_ix, menu, window, cx)
-            })
+                table.delegate_mut().set_deleted(!deleted);
+                cx.notify();
+            });
+            report(cx);
+        }))
+    }
+
+    /// Whether the row shown at `row_ix` is marked for deletion.
+    fn is_deleted(&self, row_ix: usize) -> bool {
+        self.source(row_ix)
+            .is_some_and(|source| self.deletions.contains(&source))
+    }
+
+    /// Mark every swept row for deletion, or take the mark off again.
+    ///
+    /// A row being built by hand is not in the result, so it is dropped
+    /// outright rather than marked.
+    fn set_deleted(&mut self, deleted: bool) {
+        let rows: Vec<usize> = self.rows_selected.iter().copied().collect();
+        for row_ix in rows {
+            let Some(source) = self.source(row_ix) else {
+                continue;
+            };
+            if deleted {
+                self.deletions.insert(source);
+            } else {
+                self.deletions.remove(&source);
+            }
         }
     }
 
@@ -442,18 +479,14 @@ impl ResultDelegate {
         }
     }
 
-    /// Take `row_ix` into the selection if it is outside it, and say what the
-    /// delete item should be called.
-    fn mark_for_menu(&mut self, row_ix: usize) -> String {
+    /// Take `row_ix` into the selection if it is outside it, and say how many
+    /// rows the menu is then about.
+    fn mark_for_menu(&mut self, row_ix: usize) -> usize {
         if !self.rows_selected.contains(&row_ix) {
             self.rows_selected = HashSet::from([row_ix]);
             self.anchor = Some(row_ix);
         }
-
-        match self.rows_selected.len() {
-            1 => "Delete row".to_string(),
-            rows => format!("Delete {rows} rows"),
-        }
+        self.rows_selected.len()
     }
 
     /// Start a sweep on `row_ix`, or extend the last one when `extend` is set.
@@ -520,6 +553,11 @@ impl ResultDelegate {
         // stand in the way.
         if self.draft(row_ix).is_some() {
             return true;
+        }
+
+        // A row on its way out is not worth typing into.
+        if self.is_deleted(row_ix) {
+            return false;
         }
 
         self.source(row_ix).is_some() && !query::is_placeholder(self.baseline(row_ix, col_ix))
@@ -590,13 +628,13 @@ impl DataGrid {
             }
         });
 
-        let report_menu: MenuReporter = Rc::new({
+        let report_change: ChangeReporter = Rc::new({
             let grid = cx.weak_entity();
             move |cx: &mut App| {
                 let Some(grid) = grid.upgrade() else {
                     return;
                 };
-                grid.update(cx, |_, cx| cx.emit(GridEdit::DeleteRequested));
+                grid.update(cx, |_, cx| cx.emit(GridEdit::Staged));
             }
         });
 
@@ -619,7 +657,9 @@ impl DataGrid {
                     editable: false,
                     rows_selected: HashSet::new(),
                     anchor: None,
-                    report_menu,
+                    menu_row: None,
+                    deletions: HashSet::new(),
+                    report_change,
                     drafts: Vec::new(),
                     editing: None,
                     editor: editor.clone(),
@@ -728,6 +768,7 @@ impl DataGrid {
             if !editable {
                 delegate.edits.clear();
                 delegate.drafts.clear();
+                delegate.deletions.clear();
             }
             cx.notify();
         });
@@ -864,16 +905,83 @@ impl DataGrid {
 
     /// How many rows are waiting to be written: edited ones and new ones.
     pub fn pending(&self, cx: &App) -> usize {
-        self.staged(cx).len() + self.table.read(cx).delegate().drafts.len()
+        let delegate = self.table.read(cx).delegate();
+        let edited = self
+            .staged(cx)
+            .into_iter()
+            .filter(|staged| !delegate.deletions.contains(&staged.row))
+            .count();
+        edited + delegate.drafts.len() + delegate.deletions.len()
     }
 
-    /// Rows the user has picked out, as indices into the result's own rows.
-    pub fn selected_rows(&self, cx: &App) -> Vec<usize> {
+    /// The changes waiting to be written, counted the way they are shown:
+    /// edited rows, new rows, deleted rows.
+    pub fn pending_counts(&self, cx: &App) -> (usize, usize, usize) {
         let delegate = self.table.read(cx).delegate();
-        let mut rows: Vec<usize> = delegate
-            .rows_selected
+        let edited = self
+            .staged(cx)
+            .into_iter()
+            .filter(|staged| !delegate.deletions.contains(&staged.row))
+            .count();
+        (edited, delegate.drafts.len(), delegate.deletions.len())
+    }
+
+    /// The menu a right click anywhere in the grid opens.
+    ///
+    /// Built when the menu opens rather than now, so it is about the row the
+    /// click landed on and knows how many rows the sweep holds by then.
+    fn row_menu(
+        &self,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let table = self.table.downgrade();
+
+        move |menu, _window, cx| {
+            let Some(table) = table.upgrade() else {
+                return menu;
+            };
+
+            // A click that landed on no row — the header, or the space below
+            // the last one — has nothing to offer.
+            let Some(row_ix) = table.read(cx).delegate().menu_row else {
+                return menu;
+            };
+
+            table.update(cx, |table, cx| {
+                table.delegate_mut().row_menu_items(row_ix, menu, cx)
+            })
+        }
+    }
+
+    /// Mark the swept rows for deletion, the way the row menu does.
+    pub fn delete_selected(&mut self, cx: &mut Context<Self>) {
+        self.set_selected_deleted(true, cx);
+    }
+
+    /// Take the deletion mark off the swept rows.
+    pub fn restore_selected(&mut self, cx: &mut Context<Self>) {
+        self.set_selected_deleted(false, cx);
+    }
+
+    fn set_selected_deleted(&mut self, deleted: bool, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            if !table.delegate().editable {
+                return;
+            }
+            table.delegate_mut().set_deleted(deleted);
+            cx.notify();
+        });
+        cx.emit(GridEdit::Staged);
+    }
+
+    /// Rows marked for deletion, as indices into the result's own rows.
+    pub fn deletions(&self, cx: &App) -> Vec<usize> {
+        let mut rows: Vec<usize> = self
+            .table
+            .read(cx)
+            .delegate()
+            .deletions
             .iter()
-            .filter_map(|row_ix| delegate.source(*row_ix))
+            .copied()
             .collect();
         rows.sort_unstable();
         rows
@@ -977,13 +1085,17 @@ impl DataGrid {
     pub fn discard(&mut self, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
-            if delegate.edits.is_empty() && delegate.editing.is_none() && delegate.drafts.is_empty()
+            if delegate.edits.is_empty()
+                && delegate.editing.is_none()
+                && delegate.drafts.is_empty()
+                && delegate.deletions.is_empty()
             {
                 return;
             }
             delegate.edits.clear();
             delegate.editing = None;
             delegate.drafts.clear();
+            delegate.deletions.clear();
             table.refresh(cx);
         });
         cx.emit(GridEdit::Staged);
@@ -1018,6 +1130,7 @@ impl DataGrid {
             delegate.edits.clear();
             delegate.editing = None;
             delegate.drafts.clear();
+            delegate.deletions.clear();
             delegate.rows_selected.clear();
             delegate.anchor = None;
             table.clear_selection(cx);
@@ -1038,6 +1151,7 @@ impl DataGrid {
             delegate.edits.clear();
             delegate.editing = None;
             delegate.drafts.clear();
+            delegate.deletions.clear();
             delegate.rows_selected.clear();
             delegate.anchor = None;
             table.clear_selection(cx);
@@ -1097,21 +1211,6 @@ impl DataGrid {
     #[cfg(test)]
     pub(crate) fn cell_for_test(&self, row_ix: usize, col_ix: usize, cx: &App) -> Cell {
         self.table.read(cx).delegate().cell(row_ix, col_ix).clone()
-    }
-
-    /// Pick the delete item out of the row menu, the way right-clicking a row
-    /// and choosing it does.
-    #[cfg(test)]
-    pub(crate) fn request_delete_for_test(
-        &mut self,
-        row_ix: usize,
-        cx: &mut Context<Self>,
-    ) -> String {
-        let label = self
-            .table
-            .update(cx, |table, _| table.delegate_mut().mark_for_menu(row_ix));
-        cx.emit(GridEdit::DeleteRequested);
-        label
     }
 
     /// Drop a row being built, the way its menu item does.
@@ -1225,8 +1324,12 @@ impl Render for DataGrid {
                 .into_any_element();
         }
 
+        // One menu for the whole grid, rather than one per cell: the row it is
+        // about is the one the click landed on, noted by the row itself.
         h_flex()
             .size_full()
+            .id("grid")
+            .context_menu(self.row_menu())
             .child(
                 DataTable::new(&self.table)
                     .xsmall()

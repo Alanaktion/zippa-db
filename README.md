@@ -126,6 +126,8 @@ cargo test
 | Edit the selected cell in a table tab | `Enter` |
 | Set the selected cell to `NULL` | `Cmd`/`Ctrl` + `Shift` + `N` |
 | Add a row to fill in | `Cmd`/`Ctrl` + `Shift` + `I` |
+| Mark the selected rows for deletion | `Cmd`/`Ctrl` + `Backspace` |
+| Take the deletion mark off again | `Cmd`/`Ctrl` + `Shift` + `Backspace` |
 | Save the active tab, or write a table tab's staged edits | `Cmd`/`Ctrl` + `S` |
 | Discard a table tab's staged edits | `Cmd`/`Ctrl` + `Z` |
 | Save the active tab under a new name | `Cmd`/`Ctrl` + `Shift` + `S` |
@@ -145,7 +147,7 @@ cargo test
 * [x] Dedicated table view: paging, row limit, and click-to-sort columns
 * [ ] Data grid pagination, row limits, and specialized cell renderers
 * [x] Staged cell editing in a table tab, with a per-connection safety mode: read-only, confirm every write, apply by hand, or write when the selection leaves the row
-* [x] Drag across rows to select them, delete them from the row's menu, and fill in new rows in the grid itself
+* [x] Drag across rows to select them, delete them from the row's menu, and fill in new rows in the grid itself — edited cells, new rows, and rows marked for deletion are coloured in the grid and written together when applied
 * [x] SQL editor with SQL syntax highlighting (`Cmd+Enter` runs the buffer)
 * [x] Open and save `.sql` files through the native file dialogs
 * [x] Settings window: page size, editor and grid fonts, theme, light/dark
