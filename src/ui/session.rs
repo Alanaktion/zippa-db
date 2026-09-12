@@ -718,7 +718,7 @@ impl Session {
     pub(crate) fn active_sql(&self, cx: &gpui_kit::App) -> String {
         match &self.tabs[self.active].content {
             TabContent::Query { editor, .. } => editor.read(cx).sql(cx),
-            TabContent::Table { view } => view.read(cx).query(),
+            TabContent::Table { view } => view.read(cx).query(cx),
         }
     }
 

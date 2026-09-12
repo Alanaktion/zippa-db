@@ -4,6 +4,7 @@
 //! own state and notifies independently of the rest of the window.
 
 pub mod data_grid;
+pub mod filter_bar;
 pub mod query_editor;
 pub mod session;
 pub mod settings_window;

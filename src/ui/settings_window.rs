@@ -136,6 +136,19 @@ fn appearance_page(cx: &App) -> SettingPage {
                     cx,
                 )),
         )
+        .group(
+            SettingGroup::new().title("Result grid").item(
+                SettingItem::new(
+                    "Striped rows",
+                    SettingField::switch(
+                        |cx| Settings::global(cx).stripe_rows,
+                        |value, cx| settings::update(cx, |settings| settings.stripe_rows = value),
+                    )
+                    .default_value(true),
+                )
+                .description("Tints every other row so a long row is easier to follow."),
+            ),
+        )
 }
 
 fn data_page() -> SettingPage {

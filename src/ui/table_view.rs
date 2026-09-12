@@ -16,10 +16,12 @@ use gpui_kit::{Context, Entity, Window, actions, div, px};
 
 use crate::db::query::{Cell, QueryResult};
 use crate::db::{
-    Connection, DatabaseObject, ObjectKind, RowKey, quote_identifier, runtime, typed_placeholder,
+    Connection, DatabaseObject, Engine, ObjectKind, RowKey, placeholder, quote_identifier, runtime,
+    typed_placeholder,
 };
 use crate::settings::{self, Settings};
 use crate::ui::data_grid::{DataGrid, GridEdit, SortRequested, Sorting, StagedRow};
+use crate::ui::filter_bar::{FilterBar, FilterSpec, FiltersChanged, Operator};
 
 actions!(
     zippa_db,
@@ -34,6 +36,15 @@ actions!(
         RestoreRows
     ]
 );
+
+/// The type a value is cast to when a filter needs text, per engine.
+fn text_type(engine: Engine) -> &'static str {
+    match engine {
+        // MySQL has no `text` in a cast; `char` is its stand-in for one.
+        Engine::MySql => "char",
+        Engine::Postgres | Engine::Sqlite => "text",
+    }
+}
 
 /// Count the changes in hand as the user sees them: new rows, edited rows,
 /// deleted rows. Parts with nothing in them are left out.
@@ -92,6 +103,7 @@ enum Pending {
     Page(usize),
     Sort(Option<(String, ColumnSort)>),
     Limit(usize),
+    Filter,
 }
 
 impl Pending {
@@ -102,12 +114,14 @@ impl Pending {
             Pending::Page(_) => "Turning the page",
             Pending::Sort(_) => "Sorting",
             Pending::Limit(_) => "Changing the row limit",
+            Pending::Filter => "Filtering",
         }
     }
 }
 
 pub struct TableView {
     connection: Arc<Connection>,
+    filters: Entity<FilterBar>,
     object: DatabaseObject,
     grid: Entity<DataGrid>,
     limit_input: Entity<InputState>,
@@ -152,6 +166,10 @@ impl TableView {
             .detach();
         cx.subscribe_in(&grid, window, Self::on_grid_edit).detach();
 
+        let filters = cx.new(|cx| FilterBar::new(window, cx));
+        cx.subscribe_in(&filters, window, Self::on_filters_changed)
+            .detach();
+
         // A table takes the page size the settings had when it was opened;
         // changing the setting later leaves open tables where they are.
         let limit = Settings::global(cx)
@@ -164,6 +182,7 @@ impl TableView {
 
         let mut view = Self {
             connection,
+            filters,
             object,
             grid,
             limit_input,
@@ -266,7 +285,17 @@ impl TableView {
     }
 
     /// The statement this view runs for its current page and sort.
-    pub fn query(&self) -> String {
+    #[cfg(test)]
+    pub fn query(&self, cx: &gpui_kit::App) -> String {
+        self.query_with_params(cx).0
+    }
+
+    /// The statement and the values bound to it.
+    ///
+    /// A filter's value is a parameter rather than text pasted into the
+    /// statement — except for `IN` and `NOT IN`, whose value is SQL the user
+    /// wrote and is meant to run as written.
+    pub fn query_with_params(&self, cx: &gpui_kit::App) -> (String, Vec<Cell>) {
         let engine = self.connection.config.engine;
         let target = self.target();
 
@@ -277,6 +306,12 @@ impl TableView {
             Some(RowKey::RowId(id)) => format!("select {id}, * from {target}"),
             _ => format!("select * from {target}"),
         };
+
+        let (conditions, params) = self.where_clause(cx);
+        if !conditions.is_empty() {
+            sql.push_str(&format!(" where {}", conditions.join(" and ")));
+        }
+
         if let Some((column, sort)) = &self.sort {
             let direction = match sort {
                 ColumnSort::Descending => "desc",
@@ -292,7 +327,71 @@ impl TableView {
             self.limit,
             self.page * self.limit
         ));
-        sql
+        (sql, params)
+    }
+
+    /// The filter bar's lines as SQL conditions, and the values to bind.
+    fn where_clause(&self, cx: &gpui_kit::App) -> (Vec<String>, Vec<Cell>) {
+        let engine = self.connection.config.engine;
+        let mut params: Vec<Cell> = Vec::new();
+        let mut conditions = Vec::new();
+
+        for spec in self.filters.read(cx).specs(cx) {
+            let Some(condition) = self.condition(&spec, engine, &mut params) else {
+                continue;
+            };
+            conditions.push(condition);
+        }
+
+        (conditions, params)
+    }
+
+    /// One filter as a condition, pushing whatever it binds onto `params`.
+    fn condition(
+        &self,
+        spec: &FilterSpec,
+        engine: Engine,
+        params: &mut Vec<Cell>,
+    ) -> Option<String> {
+        let column = quote_identifier(&spec.column, engine);
+        let type_name = self
+            .columns
+            .iter()
+            .position(|name| *name == spec.column)
+            .and_then(|index| self.column_types.get(index).cloned())
+            .unwrap_or_default();
+
+        Some(match spec.operator {
+            Operator::IsNull => format!("{column} is null"),
+            Operator::IsNotNull => format!("{column} is not null"),
+            // The value is a list or a subquery the user wrote, so it goes in
+            // as written; nothing else here does.
+            Operator::In => format!("{column} in ({})", spec.value),
+            Operator::NotIn => format!("{column} not in ({})", spec.value),
+            // A pattern is text whatever the column holds, so the column is
+            // the thing that gets cast here.
+            Operator::Like | Operator::NotLike => {
+                params.push(Some(spec.value.clone()));
+                let keyword = if spec.operator == Operator::Like {
+                    "like"
+                } else {
+                    "not like"
+                };
+                format!(
+                    "cast({column} as {}) {keyword} {}",
+                    text_type(engine),
+                    placeholder(engine, params.len())
+                )
+            }
+            operator => {
+                params.push(Some(spec.value.clone()));
+                format!(
+                    "{column} {} {}",
+                    operator.label(),
+                    typed_placeholder(engine, params.len(), &type_name)
+                )
+            }
+        })
     }
 
     /// Rebuild the paging SQL and re-run it. Also the table half of the
@@ -303,9 +402,9 @@ impl TableView {
         self.notice = None;
         cx.notify();
 
-        let sql = self.query();
+        let (sql, params) = self.query_with_params(cx);
         let connection = self.connection.clone();
-        let task = runtime::spawn(async move { connection.run_query(&sql).await });
+        let task = runtime::spawn(async move { connection.run_query_with(&sql, params).await });
 
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -317,6 +416,9 @@ impl TableView {
                         this.loaded_rows = query_result.row_count();
                         this.columns = query_result.columns.clone();
                         this.column_types = query_result.column_types.clone();
+                        let columns = this.columns.clone();
+                        this.filters
+                            .update(cx, |filters, cx| filters.set_columns(&columns, cx));
                         // The rows come back already ordered, so the grid is
                         // told what order they are in: it rebuilds its headers
                         // from scratch and would otherwise show the column as
@@ -486,6 +588,7 @@ impl TableView {
             Pending::Page(page) => self.go(page, cx),
             Pending::Sort(sort) => self.apply_sort(sort, cx),
             Pending::Limit(limit) => self.set_limit(limit, cx),
+            Pending::Filter => self.apply_filters(cx),
         }
     }
 
@@ -883,6 +986,29 @@ impl TableView {
         self.grid.update(cx, |grid, cx| grid.cancel_editor(cx));
     }
 
+    /// Re-run the page with the filters as they now stand.
+    fn on_filters_changed(
+        &mut self,
+        _: &Entity<FilterBar>,
+        _: &FiltersChanged,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_filters(cx);
+    }
+
+    /// Read the table again through the filter bar, from the first page.
+    fn apply_filters(&mut self, cx: &mut Context<Self>) {
+        if self.hold(Pending::Filter, cx) {
+            return;
+        }
+
+        // A filter changes which rows there are, so the page number it had is
+        // about a different set of rows.
+        self.page = 0;
+        self.reload(cx);
+    }
+
     fn on_sort_requested(
         &mut self,
         _: &Entity<DataGrid>,
@@ -1161,6 +1287,7 @@ impl Render for TableView {
             .on_action(cx.listener(Self::on_insert_row))
             .on_action(cx.listener(Self::on_delete_rows))
             .on_action(cx.listener(Self::on_restore_rows))
+            .child(self.filters.clone())
             .child(div().flex_1().min_h_0().child(self.grid.clone()))
             .when(self.confirming.is_some(), |this| {
                 this.child(self.render_confirm(cx))
@@ -1210,6 +1337,10 @@ impl TableView {
 
     pub(crate) fn error_for_test(&self) -> Option<String> {
         self.error.clone()
+    }
+
+    pub(crate) fn filters_for_test(&self) -> Entity<FilterBar> {
+        self.filters.clone()
     }
 
     pub(crate) fn grid_for_test(&self) -> Entity<DataGrid> {

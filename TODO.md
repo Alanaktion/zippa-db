@@ -19,7 +19,6 @@
 * [ ] Multi-environment tagging & color-coding (e.g., Red header for `Production`, Green for `Local`)
 * [x] Several connections open at once, one tab each, with their own sessions
 * [x] Per-connection safety mode: read-only (refuses writes, and opens the session read-only at the server), confirm every write, stage inline edits until applied, or apply them when the selection leaves the row
-* [ ] Grouping & categorizing connection workspaces
 * [ ] Workspace state persistence (reopen previous tabs on startup)
 
 ---
@@ -30,6 +29,7 @@
 
 * [ ] Fast rendering for 100k+ rows with low memory overhead (virtualized rendering is in; rows are still all held in memory as strings, untested at 100k)
 * [x] Fixed header, scrollable body, and adjustable column widths
+* [x] Striped rows, switchable in the settings
 
 ### Inline Data Editing (Buffer Model)
 
@@ -44,7 +44,7 @@
 
 * [x] Single-column sorting: a header cycles descending, ascending, and back to the order the server sent; multi-column still open
 * [ ] Quick search bar (global string matching across columns)
-* [ ] Advanced filtering GUI (e.g., `WHERE status = 'active' AND created_at > ...`)
+* [x] Advanced filtering GUI: a bar above the table with one line per filter — column, operator (`=`, `<>`, `>`, `>=`, `<`, `<=`, `LIKE`, `NOT LIKE`, `IN`, `NOT IN`, `IS NULL`, `IS NOT NULL`), and a value. Values are bound as parameters, except `IN` / `NOT IN`, which take SQL so a subquery can do the filtering
 * [x] Configurable row limit & offset pagination (`LIMIT 100 OFFSET 0`) in the table view, starting from the page size in the settings
 
 ### Specialized Cell Renderers

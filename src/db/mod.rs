@@ -392,11 +392,19 @@ impl Connection {
     }
 
     pub async fn run_query(&self, sql: &str) -> Result<QueryResult> {
+        self.run_query_with(sql, Vec::new()).await
+    }
+
+    /// The same, binding `params` in order.
+    ///
+    /// Used by the generated reads — a filtered table view, for one — so a
+    /// value the user typed stays a value rather than becoming SQL.
+    pub async fn run_query_with(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
         self.refuse_write(sql)?;
         match &self.pool {
-            Pool::Postgres(pool) => fetch_all(pool, sql, postgres::cell).await,
-            Pool::MySql(pool) => fetch_all(pool, sql, mysql::cell).await,
-            Pool::Sqlite(pool) => fetch_all(pool, sql, sqlite::cell).await,
+            Pool::Postgres(pool) => fetch_all(pool, sql, params, postgres::cell).await,
+            Pool::MySql(pool) => fetch_all(pool, sql, params, mysql::cell).await,
+            Pool::Sqlite(pool) => fetch_all(pool, sql, params, sqlite::cell).await,
         }
     }
 
@@ -483,11 +491,18 @@ impl Connection {
 ///
 /// Column names come from the returned rows; when a statement returns none,
 /// the server is asked to describe it so the grid can still show its shape.
-async fn fetch_all<DB, F>(pool: &sqlx::Pool<DB>, sql: &str, cell: F) -> Result<QueryResult>
+async fn fetch_all<DB, F>(
+    pool: &sqlx::Pool<DB>,
+    sql: &str,
+    params: Vec<Cell>,
+    cell: F,
+) -> Result<QueryResult>
 where
     DB: Database,
     for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
     <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> Option<String>: Encode<'q, DB>,
+    String: Type<DB>,
     F: Fn(&DB::Row, usize) -> Cell,
 {
     // The statement comes from the user's editor: running it verbatim is the
@@ -495,7 +510,11 @@ where
     let statement = AssertSqlSafe(sql.to_string()).into_sql_str();
 
     let started = Instant::now();
-    let rows = sqlx::query(statement.clone()).fetch_all(pool).await?;
+    let mut query = sqlx::query(statement.clone());
+    for param in params {
+        query = query.bind(param);
+    }
+    let rows = query.fetch_all(pool).await?;
     let elapsed = started.elapsed();
 
     let (columns, column_types): (Vec<String>, Vec<String>) = match rows.first() {

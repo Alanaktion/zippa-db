@@ -22,6 +22,7 @@ use crate::ui::welcome::WelcomeEvent;
 use crate::db::query::QueryResult;
 use crate::db::tests::TempDatabase;
 use crate::db::{Connection, ConnectionConfig, DatabaseObject, ObjectKind, SafetyMode, runtime};
+use crate::ui::filter_bar::Operator;
 use crate::ui::session::Session;
 use crate::ui::welcome::Welcome;
 
@@ -852,7 +853,7 @@ fn the_table_view_pages_through_rows(cx: &mut TestAppContext) {
     view.update(cx, |view, cx| {
         assert_eq!(view.page_for_test(), 0);
         assert_eq!(view.limit_for_test(), 500);
-        assert_eq!(view.query(), "select * from items limit 500 offset 0");
+        assert_eq!(view.query(cx), "select * from items limit 500 offset 0");
 
         // A short first page means there is nothing after it.
         view.set_loaded_rows_for_test(2);
@@ -864,7 +865,7 @@ fn the_table_view_pages_through_rows(cx: &mut TestAppContext) {
 
         view.go_for_test(1, cx);
         assert_eq!(view.page_for_test(), 1);
-        assert_eq!(view.query(), "select * from items limit 500 offset 500");
+        assert_eq!(view.query(cx), "select * from items limit 500 offset 500");
         assert!(view.can_page_for_test().0, "page 2 can go back");
     });
 }
@@ -879,7 +880,7 @@ fn sorting_the_table_view_reorders_on_the_server(cx: &mut TestAppContext) {
 
         view.sort_for_test("name", ColumnSort::Descending, cx);
         assert_eq!(
-            view.query(),
+            view.query(cx),
             "select * from items order by name desc limit 500 offset 0",
             "sorting should ask the server for ordered rows"
         );
@@ -890,7 +891,7 @@ fn sorting_the_table_view_reorders_on_the_server(cx: &mut TestAppContext) {
         );
 
         view.sort_for_test("name", ColumnSort::Default, cx);
-        assert_eq!(view.query(), "select * from items limit 500 offset 0");
+        assert_eq!(view.query(cx), "select * from items limit 500 offset 0");
     });
 }
 
@@ -1356,10 +1357,10 @@ fn a_table_opens_with_the_page_size_from_the_settings(cx: &mut TestAppContext) {
 
     let (_database, _handle, view) = table_view(cx);
 
-    view.update(cx, |view, _| {
+    view.update(cx, |view, cx| {
         assert_eq!(view.limit_for_test(), 25);
         assert_eq!(
-            view.query(),
+            view.query(cx),
             "select * from items limit 25 offset 0",
             "the page size should reach the statement"
         );
@@ -2212,7 +2213,7 @@ fn a_table_without_a_primary_key_is_written_by_rowid(cx: &mut TestAppContext) {
         );
         assert!(view.is_editable_for_test());
         assert_eq!(
-            view.query(),
+            view.query(cx),
             "select rowid, * from notes limit 500 offset 0",
             "the row id has to be asked for by name: select * leaves it out"
         );
@@ -3020,5 +3021,283 @@ fn an_edit_on_a_row_marked_for_deletion_goes_with_it(cx: &mut TestAppContext) {
         view.read_with(cx, |view, _| view.error_for_test()),
         None,
         "updating a row that is being deleted should never be attempted"
+    );
+}
+
+/// Put one saved SQLite connection in the manager's list.
+fn saved_connection(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Workspace>,
+) -> (TempDatabase, Uuid) {
+    let database = runtime::block_on(TempDatabase::new());
+    let config = database.config();
+    let id = config.id;
+
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("the active tab should be showing the connection manager");
+    welcome.update(cx, |welcome, cx| {
+        welcome.set_connections_for_test(vec![config], cx)
+    });
+
+    (database, id)
+}
+
+#[gpui_kit::test]
+fn double_clicking_a_saved_connection_opens_it(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let (_database, id) = saved_connection(cx, handle);
+    let target = gpui_kit::SharedString::from(format!("open-{id}"));
+
+    // One click only fills the form in, so the tab is still the manager.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click(target.clone(), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(
+        handle
+            .update(cx, |workspace, _, _| workspace
+                .active_welcome_for_test()
+                .is_some())
+            .unwrap(),
+        "a single click should not connect"
+    );
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.double_click(target.clone(), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert!(
+        handle
+            .update(cx, |workspace, _, _| workspace
+                .active_session_for_test()
+                .is_some())
+            .unwrap(),
+        "a double click should open the connection"
+    );
+}
+
+#[gpui_kit::test]
+fn striped_rows_follow_the_setting(cx: &mut TestAppContext) {
+    assert!(
+        Settings::default().stripe_rows,
+        "the grid stripes rows unless the setting says otherwise"
+    );
+
+    cx.update(|cx| {
+        cx.set_global(Settings {
+            stripe_rows: false,
+            ..Settings::default()
+        })
+    });
+
+    // The grid reads the setting as it draws, so drawing it is the check that
+    // the switch reaches the table at all.
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.loaded_rows_for_test()), 2);
+}
+
+/// Add a filter to the open table view, the way filling in a line of the bar
+/// does, and wait for the page it re-reads.
+fn add_filter(
+    cx: &mut TestAppContext,
+    view: &gpui_kit::Entity<crate::ui::table_view::TableView>,
+    column: &str,
+    operator: Operator,
+    value: &str,
+) {
+    let filters = view.read_with(cx, |view, _| view.filters_for_test());
+    let (column, value) = (column.to_string(), value.to_string());
+    filters
+        .downgrade()
+        .update_in(cx, |filters, window, cx| {
+            filters.add_filter_for_test(&column, operator, &value, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn a_filter_narrows_the_rows_the_table_shows(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    add_filter(cx, &view, "name", Operator::Equals, "alpha");
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where name = ? limit 500 offset 0",
+            "the value belongs in a parameter, not in the statement"
+        );
+        assert_eq!(view.loaded_rows_for_test(), 1, "only one row says alpha");
+    });
+}
+
+#[gpui_kit::test]
+fn filters_cover_the_operators_they_offer(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // `IS NULL` has no value to bind, so nothing is added to the statement.
+    add_filter(cx, &view, "name", Operator::IsNull, "");
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where name is null limit 500 offset 0"
+        );
+        assert_eq!(view.loaded_rows_for_test(), 1, "one row has no name");
+    });
+
+    let filters = view.read_with(cx, |view, _| view.filters_for_test());
+    filters.update(cx, |filters, cx| filters.clear(cx));
+    cx.run_until_parked();
+
+    // A pattern is text whatever the column holds, so the column is cast.
+    add_filter(cx, &view, "id", Operator::Like, "1%");
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where cast(id as text) like ? limit 500 offset 0"
+        );
+        assert_eq!(view.loaded_rows_for_test(), 1);
+    });
+
+    filters.update(cx, |filters, cx| filters.clear(cx));
+    cx.run_until_parked();
+
+    add_filter(cx, &view, "id", Operator::GreaterOrEqual, "2");
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where id >= ? limit 500 offset 0"
+        );
+        assert_eq!(view.loaded_rows_for_test(), 1);
+    });
+}
+
+#[gpui_kit::test]
+fn an_in_filter_takes_a_subquery(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // `IN` and `NOT IN` are the one place a value is SQL: it goes into the
+    // statement as written so a subquery can do the filtering.
+    add_filter(
+        cx,
+        &view,
+        "id",
+        Operator::In,
+        "select id from items where name is not null",
+    );
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where id in (select id from items where name is not null) \
+             limit 500 offset 0"
+        );
+        assert_eq!(view.loaded_rows_for_test(), 1, "one row has a name");
+        assert_eq!(view.error_for_test(), None);
+    });
+}
+
+#[gpui_kit::test]
+fn several_filters_are_joined_with_and(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    add_filter(cx, &view, "id", Operator::Greater, "0");
+    add_filter(cx, &view, "name", Operator::NotEquals, "alpha");
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where id > ? and name <> ? limit 500 offset 0"
+        );
+        // The row with a NULL name is not `<> 'alpha'` — SQL says nothing
+        // about it — so neither row comes back.
+        assert_eq!(view.loaded_rows_for_test(), 0);
+    });
+}
+
+#[gpui_kit::test]
+fn an_unfinished_filter_narrows_nothing(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // A line with no value typed into it yet is still being written.
+    add_filter(cx, &view, "name", Operator::Equals, "");
+
+    view.update(cx, |view, cx| {
+        assert_eq!(view.query(cx), "select * from items limit 500 offset 0");
+        assert_eq!(view.loaded_rows_for_test(), 2);
+    });
+
+    let filters = view.read_with(cx, |view, _| view.filters_for_test());
+    filters.read_with(cx, |filters, cx| {
+        assert_eq!(
+            filters.filter_count_for_test(),
+            1,
+            "the line is still there"
+        );
+        assert!(
+            filters.shows_value_for_test(0, cx),
+            "a filter that needs a value should show the box for it"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn a_null_filter_hides_its_value_box(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    add_filter(cx, &view, "name", Operator::IsNotNull, "");
+
+    let filters = view.read_with(cx, |view, _| view.filters_for_test());
+    filters.read_with(cx, |filters, cx| {
+        assert!(
+            !filters.shows_value_for_test(0, cx),
+            "IS NOT NULL has nothing to compare against"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn filtering_asks_before_it_discards_staged_edits(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "never written");
+    add_filter(cx, &view, "name", Operator::Equals, "alpha");
+
+    view.update(cx, |view, cx| {
+        assert!(view.pending_for_test(), "filtering should be held back");
+        assert_eq!(view.grid_for_test().read(cx).staged(cx).len(), 1);
+    });
+
+    click_in_session(cx, handle, "discard-and-continue");
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.loaded_rows_for_test(),
+            1,
+            "the filter should be in force"
+        );
+        assert!(view.grid_for_test().read(cx).staged(cx).is_empty());
+    });
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string()),
+        "a discarded edit must not reach the server"
     );
 }

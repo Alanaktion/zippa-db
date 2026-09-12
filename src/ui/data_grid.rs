@@ -681,6 +681,9 @@ impl DataGrid {
                     cx.notify();
                 }
             });
+            // The stripe setting is read while the grid renders, so a change
+            // to it only shows once the grid is drawn again.
+            cx.notify();
         })
         .detach();
 
@@ -1333,7 +1336,7 @@ impl Render for DataGrid {
             .child(
                 DataTable::new(&self.table)
                     .xsmall()
-                    .stripe(true)
+                    .stripe(Settings::global(cx).stripe_rows)
                     .bordered(false),
             )
             .into_any_element()

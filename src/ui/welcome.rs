@@ -12,7 +12,7 @@ use gpui_kit::component::{
     ActiveTheme, Disableable, IconName, Selectable, Sizable, h_flex, v_flex,
 };
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Window, div, px};
+use gpui_kit::{App, ClickEvent, Context, Entity, EventEmitter, SharedString, Window, div, px};
 use uuid::Uuid;
 
 use crate::db::{Connection, ConnectionConfig, Engine, SafetyMode, runtime, store};
@@ -105,6 +105,18 @@ impl Welcome {
         });
     }
 
+    /// Answer a click on a saved connection: one click fills the form in, a
+    /// double click goes straight on to connect with it.
+    fn open(&mut self, id: Uuid, connect: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.load(id, window, cx);
+
+        // A password that could not be read leaves the form in its error
+        // state, and connecting from there would only bury the reason.
+        if connect && !matches!(self.status, Status::Error(_)) {
+            self.connect(window, cx);
+        }
+    }
+
     fn load(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         let Some(config) = self
             .connections
@@ -123,6 +135,15 @@ impl Welcome {
         self.set_field(&self.port.clone(), &config.port.to_string(), window, cx);
         self.set_field(&self.username.clone(), &config.username, window, cx);
         self.set_field(&self.database.clone(), &config.database, window, cx);
+
+        // A file database has no password to look up, and asking the keychain
+        // for one it never stored can prompt the user for nothing.
+        if config.engine.is_file_based() {
+            self.set_field(&self.password.clone(), "", window, cx);
+            self.status = Status::Idle;
+            cx.notify();
+            return;
+        }
 
         // Reading the keychain can prompt the user, so only do it on demand.
         match store::password(&config.id) {
@@ -246,6 +267,17 @@ impl Welcome {
     }
 
     /// Put the footer into its error state without a live connection attempt.
+    /// Fill the saved list without touching the on-disk store.
+    #[cfg(test)]
+    pub(crate) fn set_connections_for_test(
+        &mut self,
+        connections: Vec<ConnectionConfig>,
+        cx: &mut Context<Self>,
+    ) {
+        self.connections = connections;
+        cx.notify();
+    }
+
     #[cfg(test)]
     pub(crate) fn show_error_for_test(
         &mut self,
@@ -297,9 +329,9 @@ impl Welcome {
                                 config.display_name(),
                                 config.engine.label()
                             ))
-                            .on_click(
-                                cx.listener(move |this, _, window, cx| this.load(id, window, cx)),
-                            ),
+                            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                this.open(id, event.click_count() >= 2, window, cx)
+                            })),
                     )
                     .child(
                         Button::new(SharedString::from(format!("delete-{id}")))

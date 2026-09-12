@@ -85,6 +85,8 @@ pub struct Settings {
     /// Whether typing `NULL` into a cell stages SQL `NULL` rather than the
     /// four characters. Off by default, so an edit means what it says.
     pub coerce_null_literal: bool,
+    /// Whether the result grid tints every other row.
+    pub stripe_rows: bool,
 }
 
 impl Default for Settings {
@@ -97,6 +99,7 @@ impl Default for Settings {
             editor_font: None,
             grid_font: None,
             coerce_null_literal: false,
+            stripe_rows: true,
         }
     }
 }

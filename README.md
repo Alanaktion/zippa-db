@@ -144,13 +144,13 @@ cargo test
 * [x] Connection tabs: several databases open at once, each with its own session
 * [x] Query tabs, each with its own editor and result set
 * [x] Regex filter over the sidebar's table list
-* [x] Dedicated table view: paging, row limit, and click-to-sort columns
+* [x] Dedicated table view: paging, row limit, click-to-sort columns, and a filter bar (including `IN` with a subquery)
 * [ ] Data grid pagination, row limits, and specialized cell renderers
 * [x] Staged cell editing in a table tab, with a per-connection safety mode: read-only, confirm every write, apply by hand, or write when the selection leaves the row
 * [x] Drag across rows to select them, delete them from the row's menu, and fill in new rows in the grid itself — edited cells, new rows, and rows marked for deletion are coloured in the grid and written together when applied
 * [x] SQL editor with SQL syntax highlighting (`Cmd+Enter` runs the buffer)
 * [x] Open and save `.sql` files through the native file dialogs
-* [x] Settings window: page size, editor and grid fonts, theme, light/dark
+* [x] Settings window: page size, editor and grid fonts, striped rows, theme, light/dark
 * [ ] Query cancellation, multi-statement scripts, and completion
 * [ ] SSH tunneling & SSL configuration interface
 * [ ] Schema inspector & visual DDL builder
