@@ -49,7 +49,7 @@
 
 ### Specialized Cell Renderers
 
-* [x] Value window (`Cmd+Shift+V`, "View value" in the row menu, or a double click on a value a cell cannot show): `JSON` / `JSONB` laid out over several lines, a text box that fills the window, and Save to stage the value back in the grid
+* [x] Value dialog (`Cmd+Shift+V`, "View value" in the row menu, or a double click on a value a cell cannot show): `JSON` / `JSONB` laid out over several lines, a text box that fills the dialog, `Cmd+Enter` to stage the value back in the grid, `Escape` to close
 * [ ] Date/Time picker for timestamp fields
 * [x] Null state toggles (`NULL` vs. empty string `""`): `Cmd+Shift+N` sets `NULL`, and a setting decides whether typing `NULL` means the text or the value
 
@@ -64,15 +64,15 @@
 
 ### Query Execution Engine
 
-* [ ] Run single query under cursor or selected text block (`Cmd+Enter` runs the whole buffer today)
-* [ ] Run entire script with multi-statement support
+* [x] Run single query under cursor or selected text block (`Cmd+Enter`)
+* [x] Run entire script with multi-statement support (`Cmd+Shift+Enter`), one result per statement
 * [x] Multi-tab editor (unlimited concurrent query tabs)
-* [ ] Cancellable query execution (kill running background tasks)
+* [x] Cancellable query execution (`Cmd+.` drops the task on the database runtime)
 
 ### Result Sets & Output Diagnostics
 
-* [ ] Multi-result set tabs for queries returning multiple tables
-* [ ] Execution statistics banner (affected rows, execution time in `ms`)
+* [x] Multi-result set tabs for scripts returning several results
+* [x] Execution statistics banner (rows returned or affected, statements run, time in `ms`)
 * [ ] Detailed error console with SQL error line highlighting
 
 ## 4. Database Schema Browser & Modeler

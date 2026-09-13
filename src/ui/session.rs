@@ -21,6 +21,7 @@ use gpui_kit::{
 
 use regex::{Regex, RegexBuilder};
 
+use crate::db::query::QueryResult;
 use crate::db::{Connection, DatabaseObject, ObjectKind, runtime, statement};
 use crate::ui::data_grid::DataGrid;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
@@ -33,7 +34,15 @@ const EDITOR_HEIGHT: f32 = 220.;
 
 actions!(
     zippa_db,
-    [NewTab, CloseTab, OpenFile, SaveFile, SaveFileAs, Refresh]
+    [
+        NewTab,
+        CloseTab,
+        OpenFile,
+        SaveFile,
+        SaveFileAs,
+        Refresh,
+        CancelQuery
+    ]
 );
 
 pub enum SessionEvent {
@@ -62,6 +71,13 @@ enum TabContent {
         status: Status,
         /// The SQL file the buffer was read from or last written to.
         path: Option<PathBuf>,
+        /// Every result the last run produced. A script that selects twice
+        /// leaves two here, and the grid shows one of them at a time.
+        results: Vec<QueryResult>,
+        /// Which of them the grid is showing.
+        result: usize,
+        /// Handle on the run in flight, so it can be given up on.
+        running: Option<tokio::task::AbortHandle>,
     },
     Table {
         view: Entity<TableView>,
@@ -157,6 +173,9 @@ impl Session {
                 grid: cx.new(|cx| DataGrid::new(window, cx)),
                 status: Status::Idle,
                 path: None,
+                results: Vec::new(),
+                result: 0,
+                running: None,
             },
         });
         self.active = self.tabs.len() - 1;
@@ -581,6 +600,7 @@ impl Session {
 
         match event {
             QueryEditorEvent::Run(sql) => self.run(index, sql.clone(), cx),
+            QueryEditorEvent::RunScript(sql) => self.run_script(index, sql.clone(), cx),
             QueryEditorEvent::Open => self.open_file(cx),
             QueryEditorEvent::Save => self.save(index, false, cx),
         }
@@ -615,6 +635,20 @@ impl Session {
         self.run_now(index, sql, cx);
     }
 
+    /// Run every statement in `sql`, one after another.
+    fn run_script(&mut self, index: usize, sql: String, cx: &mut Context<Self>) {
+        // A script is confirmed as a whole: what the user is being asked about
+        // is the buffer they are about to run.
+        if self.connection.config.safety.confirms_writes() && statement::first_write(&sql).is_some()
+        {
+            self.set_status(index, Status::Confirm(sql));
+            cx.notify();
+            return;
+        }
+
+        self.send(index, sql, true, cx);
+    }
+
     /// Run the statement that is waiting to be confirmed.
     fn confirm_run(&mut self, cx: &mut Context<Self>) {
         let index = self.active;
@@ -647,8 +681,16 @@ impl Session {
         cx.notify();
     }
 
-    /// Send `sql` for the tab at `index`; its own grid and status follow it.
+    /// Send one statement for the tab at `index`.
     fn run_now(&mut self, index: usize, sql: String, cx: &mut Context<Self>) {
+        self.send(index, sql, false, cx);
+    }
+
+    /// Send `sql` for the tab at `index`; its own grid and status follow it.
+    ///
+    /// A script comes back as one result per statement; a single statement
+    /// comes back as one result, so both land in the same place.
+    fn send(&mut self, index: usize, sql: String, script: bool, cx: &mut Context<Self>) {
         let Some(TabContent::Query { editor, grid, .. }) =
             self.tabs.get(index).map(|tab| &tab.content)
         else {
@@ -661,7 +703,14 @@ impl Session {
         cx.notify();
 
         let connection = self.connection.clone();
-        let task = runtime::spawn(async move { connection.run_query(&sql).await });
+        let task = runtime::spawn(async move {
+            if script {
+                connection.run_script(&sql).await
+            } else {
+                connection.run_query(&sql).await.map(|result| vec![result])
+            }
+        });
+        self.set_running(index, task.abort_handle());
 
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -672,25 +721,144 @@ impl Session {
                 };
 
                 editor.update(cx, |editor, cx| editor.set_running(false, cx));
+                this.set_running(index, None);
 
                 match result {
-                    Ok(Ok(query_result)) => {
-                        this.set_status(index, Status::Done(query_result.summary()));
-                        grid.update(cx, |grid, cx| grid.set_result(query_result, cx));
-                    }
+                    Ok(Ok(results)) => this.show_results(index, results, cx),
                     Ok(Err(error)) => {
                         this.set_status(index, Status::Error(format!("{error:#}")));
                         grid.update(cx, |grid, cx| grid.clear(cx));
                     }
-                    Err(_) => {
-                        this.set_status(index, Status::Error("the query was cancelled".into()))
-                    }
+                    // The sender is dropped when the run is given up on, which
+                    // is what cancelling does.
+                    Err(_) => this.set_status(index, Status::Done("Cancelled".into())),
                 }
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Remember what is running in the tab at `index`, so it can be cancelled.
+    fn set_running(&mut self, index: usize, handle: Option<tokio::task::AbortHandle>) {
+        if let Some(TabContent::Query { running, .. }) =
+            self.tabs.get_mut(index).map(|tab| &mut tab.content)
+        {
+            *running = handle;
+        }
+    }
+
+    /// Put a finished run's results in the tab at `index`.
+    fn show_results(&mut self, index: usize, results: Vec<QueryResult>, cx: &mut Context<Self>) {
+        let Some(TabContent::Query {
+            grid,
+            results: slot,
+            result,
+            ..
+        }) = self.tabs.get_mut(index).map(|tab| &mut tab.content)
+        else {
+            return;
+        };
+
+        let grid = grid.clone();
+        *slot = results;
+        *result = 0;
+
+        let summary = self.result_summary(index);
+        self.set_status(index, Status::Done(summary));
+
+        // A statement that returned no rows at all — an `update`, say — leaves
+        // the grid empty rather than showing the rows of the run before it.
+        let first = match self.tabs.get(index).map(|tab| &tab.content) {
+            Some(TabContent::Query { results, .. }) => results.first().cloned(),
+            _ => None,
+        };
+        match first {
+            Some(result) => grid.update(cx, |grid, cx| grid.set_result(result, cx)),
+            None => grid.update(cx, |grid, cx| grid.clear(cx)),
+        }
+    }
+
+    /// Show another of the results the last run produced.
+    fn show_result(&mut self, index: usize, which: usize, cx: &mut Context<Self>) {
+        let Some(TabContent::Query {
+            grid,
+            results,
+            result,
+            ..
+        }) = self.tabs.get_mut(index).map(|tab| &mut tab.content)
+        else {
+            return;
+        };
+
+        let Some(chosen) = results.get(which).cloned() else {
+            return;
+        };
+        let grid = grid.clone();
+        *result = which;
+
+        grid.update(cx, |grid, cx| grid.set_result(chosen, cx));
+        let summary = self.result_summary(index);
+        self.set_status(index, Status::Done(summary));
+        cx.notify();
+    }
+
+    /// What the status bar says about the run that just finished.
+    fn result_summary(&self, index: usize) -> String {
+        let Some(TabContent::Query {
+            results, result, ..
+        }) = self.tabs.get(index).map(|tab| &tab.content)
+        else {
+            return String::new();
+        };
+
+        let Some(shown) = results.get(*result) else {
+            return "Nothing to show".to_string();
+        };
+
+        if results.len() == 1 {
+            return shown.summary();
+        }
+
+        let total: u128 = results
+            .iter()
+            .map(|result| result.elapsed.as_millis())
+            .sum();
+        format!(
+            "{} statements in {total} ms · result {} of {}: {}",
+            results.len(),
+            result + 1,
+            results.len(),
+            shown.summary()
+        )
+    }
+
+    /// Give up on the run in the active tab.
+    fn cancel_query(&mut self, _: &CancelQuery, _window: &mut Window, cx: &mut Context<Self>) {
+        let index = self.active;
+        let Some(TabContent::Query {
+            editor,
+            running,
+            status,
+            ..
+        }) = self.tabs.get_mut(index).map(|tab| &mut tab.content)
+        else {
+            return;
+        };
+
+        if !matches!(status, Status::Running) {
+            return;
+        }
+
+        let editor = editor.clone();
+        if let Some(running) = running.take() {
+            running.abort();
+        }
+
+        *status = Status::Done("Cancelled".into());
+        editor.update(cx, |editor, cx| editor.set_running(false, cx));
+        cx.notify();
     }
 
     /// Feed the grid a result without going through a live query.
@@ -791,6 +959,43 @@ impl Session {
             editor.set_sql(sql, window, cx);
             editor.focus(window, cx);
         });
+    }
+
+    /// The editor of the active tab, for a test to drive.
+    #[cfg(test)]
+    pub(crate) fn active_editor_for_test(&self) -> Option<Entity<QueryEditor>> {
+        match &self.tabs[self.active].content {
+            TabContent::Query { editor, .. } => Some(editor.clone()),
+            TabContent::Table { .. } => None,
+        }
+    }
+
+    /// How many results the last run left, and which one is showing.
+    #[cfg(test)]
+    pub(crate) fn results_for_test(&self) -> (usize, usize) {
+        match &self.tabs[self.active].content {
+            TabContent::Query {
+                results, result, ..
+            } => (results.len(), *result),
+            TabContent::Table { .. } => (0, 0),
+        }
+    }
+
+    /// Put the active tab into its running state, the way a query in flight
+    /// does. Under test a query finishes before anything can be cancelled, so
+    /// this is what the cancel path is driven with.
+    #[cfg(test)]
+    pub(crate) fn mark_running_for_test(&mut self, cx: &mut Context<Self>) {
+        let index = self.active;
+        let Some(TabContent::Query { editor, .. }) = self.tabs.get(index).map(|tab| &tab.content)
+        else {
+            return;
+        };
+
+        let editor = editor.clone();
+        self.set_status(index, Status::Running);
+        editor.update(cx, |editor, cx| editor.set_running(true, cx));
+        cx.notify();
     }
 
     /// Reach the active tab's grid from a test.
@@ -1130,12 +1335,47 @@ impl Session {
             })
     }
 
+    /// One button per result the last run produced.
+    fn render_result_bar(
+        &self,
+        results: usize,
+        shown: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .flex_none()
+            .px_2()
+            .py_1()
+            .gap_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().status_bar)
+            .children((0..results).map(|index| {
+                let button = Button::new(SharedString::from(format!("result-{index}")))
+                    .xsmall()
+                    .label(format!("Result {}", index + 1))
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        let active = this.active;
+                        this.show_result(active, index, cx);
+                    }));
+
+                if index == shown {
+                    button.primary()
+                } else {
+                    button.ghost()
+                }
+            }))
+    }
+
     fn render_panes(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body = match &self.tabs[self.active].content {
             TabContent::Query {
                 editor,
                 grid,
                 status,
+                results,
+                result,
                 ..
             } => v_flex()
                 .size_full()
@@ -1149,7 +1389,23 @@ impl Session {
                                     .size_range(px(120.)..px(720.))
                                     .child(editor.clone()),
                             )
-                            .child(resizable_panel().child(grid.clone())),
+                            .child(
+                                resizable_panel().child(
+                                    v_flex()
+                                        .size_full()
+                                        // A script leaves one result per
+                                        // statement; a single query leaves one,
+                                        // and the bar for it would say nothing.
+                                        .when(results.len() > 1, |this| {
+                                            this.child(self.render_result_bar(
+                                                results.len(),
+                                                *result,
+                                                cx,
+                                            ))
+                                        })
+                                        .child(div().flex_1().min_h_0().child(grid.clone())),
+                                ),
+                            ),
                     ),
                 )
                 .child(self.render_status_bar(status, cx))
@@ -1176,6 +1432,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_save_file))
             .on_action(cx.listener(Self::on_save_file_as))
             .on_action(cx.listener(Self::on_refresh))
+            .on_action(cx.listener(Self::cancel_query))
             .child(
                 h_resizable("session-columns")
                     .with_state(&self.columns)

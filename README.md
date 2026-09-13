@@ -52,7 +52,7 @@ src/
     ├── query_editor.rs # SQL editor (Cmd+Enter to run)
     ├── sql_file.rs     # Native open/save dialogs for .sql files
     ├── settings_window.rs # Settings window (Cmd+,)
-    ├── value_window.rs # One cell's value, in full (Cmd+Shift+V)
+    ├── value_dialog.rs # One cell's value, in full (Cmd+Shift+V)
     ├── table_view.rs   # Table opened from the sidebar: grid, paging, sorting
     └── data_grid.rs    # Read-only virtualized result grid
 ```
@@ -116,7 +116,9 @@ cargo test
 
 | Action | Shortcut |
 | --- | --- |
-| Run the query in the active tab | `Cmd`/`Ctrl` + `Enter` |
+| Run the selection, or the statement the caret is in | `Cmd`/`Ctrl` + `Enter` |
+| Run every statement in the buffer | `Cmd`/`Ctrl` + `Shift` + `Enter` |
+| Give up on a running query | `Cmd`/`Ctrl` + `.` |
 | Open another connection | `Cmd`/`Ctrl` + `N` |
 | Close the active connection | `Cmd`/`Ctrl` + `Shift` + `W` |
 | Next / previous connection | `Cmd`/`Ctrl` + `Shift` + `]` / `[` |
@@ -126,7 +128,8 @@ cargo test
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
 | Edit the selected cell in a table tab | `Enter` |
 | Set the selected cell to `NULL` | `Cmd`/`Ctrl` + `Shift` + `N` |
-| Open the selected cell's value in a window | `Cmd`/`Ctrl` + `Shift` + `V` |
+| Open the selected cell's value in a dialog | `Cmd`/`Ctrl` + `Shift` + `V` |
+| Save the value dialog | `Cmd`/`Ctrl` + `Enter` |
 | Add a row to fill in | `Cmd`/`Ctrl` + `Shift` + `I` |
 | Mark the selected rows for deletion | `Cmd`/`Ctrl` + `Backspace` |
 | Take the deletion mark off again | `Cmd`/`Ctrl` + `Shift` + `Backspace` |
@@ -150,10 +153,11 @@ cargo test
 * [ ] Data grid pagination, row limits, and specialized cell renderers
 * [x] Staged cell editing in a table tab, with a per-connection safety mode: read-only, confirm every write, apply by hand, or write when the selection leaves the row
 * [x] Drag across rows to select them, delete them from the row's menu, and fill in new rows in the grid itself — edited cells, new rows, and rows marked for deletion are coloured in the grid and written together when applied
-* [x] SQL editor with SQL syntax highlighting (`Cmd+Enter` runs the buffer)
+* [x] SQL editor with SQL syntax highlighting: `Cmd+Enter` runs the statement the caret is in, `Cmd+Shift+Enter` the whole buffer, `Cmd+.` gives up on a run
 * [x] Open and save `.sql` files through the native file dialogs
 * [x] Settings window: page size, editor and grid fonts, striped rows, theme, light/dark
-* [ ] Query cancellation, multi-statement scripts, and completion
+* [x] Query cancellation and multi-statement scripts, with a result tab per statement
+* [ ] Auto-completion from live introspection
 * [ ] SSH tunneling & SSL configuration interface
 * [ ] Schema inspector & visual DDL builder
 

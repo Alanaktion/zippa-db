@@ -20,18 +20,71 @@ const READING: [&str; 8] = [
 /// `WITH ... INSERT` or an `EXPLAIN ANALYZE DELETE` is not mistaken for a read.
 const WRITING: [&str; 4] = ["INSERT", "UPDATE", "DELETE", "MERGE"];
 
+/// One statement of a buffer, and where it sits in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Statement {
+    /// The statement itself, without the semicolon that ended it.
+    pub text: String,
+    /// Byte range of `text` in the buffer it came from.
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Split `sql` into the statements it holds.
+///
+/// Empty statements — a stray semicolon, trailing whitespace — are left out,
+/// so running the result runs exactly what the user wrote.
+pub fn split(sql: &str) -> Vec<Statement> {
+    statements(sql)
+        .into_iter()
+        .filter_map(|(_, start, end)| {
+            let text = sql[start..end].trim();
+            if text.is_empty() {
+                return None;
+            }
+
+            // Trimming moved the edges, so the range follows the text.
+            let offset = sql[start..end].find(text).unwrap_or_default();
+            Some(Statement {
+                text: text.to_string(),
+                start: start + offset,
+                end: start + offset + text.len(),
+            })
+        })
+        .collect()
+}
+
+/// The statement the caret at `cursor` is in.
+///
+/// A caret sitting between statements — on the blank line after one — belongs
+/// to the statement before it, the way running the line you just typed does.
+pub fn at_cursor(sql: &str, cursor: usize) -> Option<Statement> {
+    let statements = split(sql);
+    statements
+        .iter()
+        .find(|statement| cursor >= statement.start && cursor <= statement.end)
+        .or_else(|| {
+            statements
+                .iter()
+                .rev()
+                .find(|statement| statement.end <= cursor)
+        })
+        .or_else(|| statements.first())
+        .cloned()
+}
+
 /// The first statement in `sql` that is not plainly a read.
 ///
 /// The answer is the word the statement starts with, upper-cased, for a
 /// message that can say what was refused. `None` means every statement in the
 /// buffer reads.
 pub fn first_write(sql: &str) -> Option<String> {
-    statements(sql).into_iter().find_map(|statement| {
-        if reads(&statement) {
+    statements(sql).into_iter().find_map(|(words, _, _)| {
+        if reads(&words) {
             return None;
         }
         Some(
-            statement
+            words
                 .first()
                 .cloned()
                 .unwrap_or_else(|| "statement".to_string()),
@@ -67,17 +120,26 @@ fn reads(words: &[String]) -> bool {
     true
 }
 
-/// Split `sql` into statements, each one the words it is made of, upper-cased.
+/// Split `sql` into statements: the words each one is made of, upper-cased,
+/// and the byte range it covers.
 ///
 /// Comments and the insides of quoted strings and identifiers are dropped on
 /// the way through, so neither a semicolon nor a keyword hiding in one can
 /// change the answer. Words keep only the characters an identifier can have;
 /// `=` is the one piece of punctuation kept, for `PRAGMA`.
-fn statements(sql: &str) -> Vec<Vec<String>> {
+fn statements(sql: &str) -> Vec<(Vec<String>, usize, usize)> {
     let mut statements = Vec::new();
     let mut words = Vec::new();
     let mut word = String::new();
     let characters: Vec<char> = sql.chars().collect();
+    // Byte offset of each character, so a range can be cut out of `sql` again.
+    let offsets: Vec<usize> = sql
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain(std::iter::once(sql.len()))
+        .collect();
+    let byte = |index: usize| offsets.get(index).copied().unwrap_or(sql.len());
+    let mut start = 0;
     let mut index = 0;
 
     // A word ends wherever the character after it cannot continue it.
@@ -121,8 +183,9 @@ fn statements(sql: &str) -> Vec<Vec<String>> {
             }
             ';' => {
                 end_word!();
-                statements.push(std::mem::take(&mut words));
+                statements.push((std::mem::take(&mut words), byte(start), byte(index)));
                 index += 1;
+                start = index;
             }
             '=' => {
                 end_word!();
@@ -141,8 +204,10 @@ fn statements(sql: &str) -> Vec<Vec<String>> {
     }
 
     end_word!();
-    if !words.is_empty() {
-        statements.push(words);
+    // Whatever follows the last semicolon is a statement of its own, even
+    // without one to end it.
+    if start < characters.len() {
+        statements.push((words, byte(start), sql.len()));
     }
     statements
 }
@@ -202,6 +267,40 @@ fn dollar_tag(characters: &[char], index: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_buffer_splits_into_its_statements() {
+        let sql = "select 1;\nselect 2\n";
+        let statements = split(sql);
+        assert_eq!(
+            statements
+                .iter()
+                .map(|statement| statement.text.as_str())
+                .collect::<Vec<_>>(),
+            ["select 1", "select 2"]
+        );
+        // The range is where the statement sits in the buffer it came from.
+        assert_eq!(&sql[statements[1].start..statements[1].end], "select 2");
+
+        // A semicolon inside a string does not end anything.
+        assert_eq!(split("select 'a; b'").len(), 1);
+        // Stray semicolons and blank space run nothing.
+        assert!(split(" ; \n ;").is_empty());
+    }
+
+    #[test]
+    fn the_caret_picks_the_statement_it_is_in() {
+        let sql = "select 1;\nselect 2;\nselect 3;";
+        let at = |cursor| at_cursor(sql, cursor).map(|statement| statement.text);
+
+        assert_eq!(at(0).as_deref(), Some("select 1"));
+        assert_eq!(at(3).as_deref(), Some("select 1"));
+        // Between two statements: the one that was just typed.
+        assert_eq!(at(9).as_deref(), Some("select 1"));
+        assert_eq!(at(12).as_deref(), Some("select 2"));
+        assert_eq!(at(sql.len()).as_deref(), Some("select 3"));
+        assert_eq!(at_cursor("", 0), None);
+    }
 
     #[test]
     fn plain_reads_are_reads() {

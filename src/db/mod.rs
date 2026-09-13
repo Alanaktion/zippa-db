@@ -16,8 +16,10 @@ pub(crate) mod tests;
 
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
+use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
+use sqlx::Either;
 use sqlx::{
     AssertSqlSafe, Column, Database, Encode, Executor, IntoArguments, Row, SqlSafeStr, Type,
     TypeInfo,
@@ -402,10 +404,34 @@ impl Connection {
     pub async fn run_query_with(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
         self.refuse_write(sql)?;
         match &self.pool {
-            Pool::Postgres(pool) => fetch_all(pool, sql, params, postgres::cell).await,
-            Pool::MySql(pool) => fetch_all(pool, sql, params, mysql::cell).await,
-            Pool::Sqlite(pool) => fetch_all(pool, sql, params, sqlite::cell).await,
+            Pool::Postgres(pool) => {
+                fetch_all(pool, sql, params, postgres::cell, postgres::rows_affected).await
+            }
+            Pool::MySql(pool) => {
+                fetch_all(pool, sql, params, mysql::cell, mysql::rows_affected).await
+            }
+            Pool::Sqlite(pool) => {
+                fetch_all(pool, sql, params, sqlite::cell, sqlite::rows_affected).await
+            }
         }
+    }
+
+    /// Run every statement in `sql`, in order.
+    ///
+    /// Each one's rows come back on their own, so a script that selects twice
+    /// answers with two results. A statement that fails stops the run, and the
+    /// ones before it have already happened: there is no transaction around
+    /// this yet.
+    pub async fn run_script(&self, sql: &str) -> Result<Vec<QueryResult>> {
+        let mut results = Vec::new();
+        for (position, statement) in statement::split(sql).into_iter().enumerate() {
+            let result = self
+                .run_query(&statement.text)
+                .await
+                .with_context(|| format!("statement {}", position + 1))?;
+            results.push(result);
+        }
+        Ok(results)
     }
 
     /// How the rows of `object` can be addressed by a write.
@@ -496,6 +522,7 @@ async fn fetch_all<DB, F>(
     sql: &str,
     params: Vec<Cell>,
     cell: F,
+    rows_affected: fn(&DB::QueryResult) -> u64,
 ) -> Result<QueryResult>
 where
     DB: Database,
@@ -514,7 +541,24 @@ where
     for param in params {
         query = query.bind(param);
     }
-    let rows = query.fetch_all(pool).await?;
+
+    // Rows and counts come back in one stream: a statement can both change
+    // rows and return them, as `insert ... returning` does. The deprecation on
+    // `fetch_many` is about running several statements in one prepared
+    // statement; a script is split into single statements before it gets here.
+    #[allow(deprecated)]
+    let mut results = query.fetch_many(pool);
+    let mut rows = Vec::new();
+    let mut affected: Option<u64> = None;
+    while let Some(result) = results.next().await {
+        match result? {
+            Either::Left(done) => {
+                *affected.get_or_insert(0) += rows_affected(&done);
+            }
+            Either::Right(row) => rows.push(row),
+        }
+    }
+    drop(results);
     let elapsed = started.elapsed();
 
     let (columns, column_types): (Vec<String>, Vec<String>) = match rows.first() {
@@ -535,6 +579,7 @@ where
         column_types,
         rows,
         elapsed,
+        affected,
     })
 }
 

@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1"
 chrono = "0.4"
 dirs = "7"
+futures = "0.3.34"
 # One dependency pulls in GPUI (Zed's preview channel), gpui-base, the styled
 # component library, and the default icon set.
 gpui-kit = { version = "0.6", features = ["tree-sitter-sql"] }

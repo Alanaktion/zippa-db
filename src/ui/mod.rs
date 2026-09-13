@@ -10,7 +10,7 @@ pub mod session;
 pub mod settings_window;
 pub mod sql_file;
 pub mod table_view;
-pub mod value_window;
+pub mod value_dialog;
 pub mod welcome;
 
 #[cfg(test)]

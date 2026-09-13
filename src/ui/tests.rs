@@ -9,8 +9,8 @@ use gpui_kit::component::table::ColumnSort;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext as _, Bounds, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, TestAppContext, WindowHandle, point, px, size,
+    AppContext as _, Bounds, InputEvent as _, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, TestAppContext, WindowHandle, point, px, size,
 };
 use uuid::Uuid;
 
@@ -1270,13 +1270,15 @@ fn clicking_a_column_header_cycles_the_sort_and_comes_back(cx: &mut TestAppConte
         .unwrap()
         .expect("a query tab should have a grid");
 
-    // The sort control sits at the right-hand end of the header cell.
+    // The sort control sits at the right-hand end of the header cell. Column
+    // 0 in the table is the row-pick column, so the first data column's header
+    // is the one after it.
     let click_sort = |cx: &mut TestAppContext| {
         cx.update_window(handle.into(), |_, window, cx| {
             window.draw(cx).clear(cx);
-            let size = window.find(("col-header", 0usize)).bounds().size;
+            let size = window.find(("col-header", 1usize)).bounds().size;
             window.click_at(
-                ("col-header", 0usize),
+                ("col-header", 1usize),
                 point(size.width - px(8.), size.height / 2.),
                 cx,
             );
@@ -2616,19 +2618,31 @@ fn a_read_from_the_editor_is_never_confirmed(cx: &mut TestAppContext) {
     );
 }
 
-/// Press the left button on one row and drag across to another, the way a
-/// user sweeps a range of rows.
-fn sweep_rows(cx: &mut TestAppContext, handle: WindowHandle<Session>, from: usize, to: usize) {
+/// Click the pick box beside `row_ix`, the way a user checks a row out.
+fn pick_row(cx: &mut TestAppContext, handle: WindowHandle<Session>, row_ix: usize) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
-        let start = window.find(("row", from)).bounds().center();
-        let end = window.find(("row", to)).bounds().center();
+        window.click(("pick", row_ix), cx);
+    })
+    .unwrap();
+}
+
+/// Shift-click `row_ix`'s pick box, which takes everything between it and the
+/// last row picked.
+fn pick_through(cx: &mut TestAppContext, handle: WindowHandle<Session>, row_ix: usize) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        let position = window.find(("pick", row_ix)).bounds().center();
+        let modifiers = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
 
         window.dispatch_event(
             MouseDownEvent {
                 button: MouseButton::Left,
-                position: start,
-                modifiers: Default::default(),
+                position,
+                modifiers,
                 click_count: 1,
                 first_mouse: false,
             }
@@ -2636,19 +2650,10 @@ fn sweep_rows(cx: &mut TestAppContext, handle: WindowHandle<Session>, from: usiz
             cx,
         );
         window.dispatch_event(
-            MouseMoveEvent {
-                position: end,
-                pressed_button: Some(MouseButton::Left),
-                modifiers: Default::default(),
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.dispatch_event(
             MouseUpEvent {
                 button: MouseButton::Left,
-                position: end,
-                modifiers: Default::default(),
+                position,
+                modifiers,
                 click_count: 1,
             }
             .to_platform_input(),
@@ -2659,11 +2664,12 @@ fn sweep_rows(cx: &mut TestAppContext, handle: WindowHandle<Session>, from: usiz
 }
 
 #[gpui_kit::test]
-fn dragging_across_rows_selects_them(cx: &mut TestAppContext) {
+fn checking_rows_selects_them_and_shift_takes_the_range(cx: &mut TestAppContext) {
     let (_database, handle, view) = table_view(cx);
     cx.run_until_parked();
 
-    sweep_rows(cx, handle, 0, 1);
+    pick_row(cx, handle, 0);
+    pick_through(cx, handle, 1);
 
     assert_eq!(
         view.read_with(cx, |view, cx| view
@@ -2671,18 +2677,18 @@ fn dragging_across_rows_selects_them(cx: &mut TestAppContext) {
             .read(cx)
             .rows_selected_for_test(cx)),
         vec![0, 1],
-        "dragging across two rows should take both"
+        "the pick boxes of the two rows should both be checked"
     );
 
-    // Pressing on one row alone starts again from there.
-    sweep_rows(cx, handle, 1, 1);
+    // Checking one that is already checked takes it back out.
+    pick_row(cx, handle, 1);
     assert_eq!(
         view.read_with(cx, |view, cx| view
             .grid_for_test()
             .read(cx)
             .rows_selected_for_test(cx)),
-        vec![1],
-        "a press without a drag should select the one row"
+        vec![0],
+        "checking a checked row should uncheck it"
     );
 }
 
@@ -2691,7 +2697,8 @@ fn deleting_rows_marks_them_until_the_changes_are_applied(cx: &mut TestAppContex
     let (database, handle, view) = table_view(cx);
     cx.run_until_parked();
 
-    sweep_rows(cx, handle, 0, 1);
+    pick_row(cx, handle, 0);
+    pick_through(cx, handle, 1);
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.delete_selected(cx));
     cx.run_until_parked();
@@ -2734,7 +2741,7 @@ fn a_marked_row_can_be_restored_or_discarded(cx: &mut TestAppContext) {
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
 
     // Restoring takes the mark off the row again.
-    sweep_rows(cx, handle, 0, 0);
+    pick_row(cx, handle, 0);
     grid.update(cx, |grid, cx| grid.delete_selected(cx));
     grid.update(cx, |grid, cx| grid.restore_selected(cx));
     cx.run_until_parked();
@@ -2760,7 +2767,9 @@ fn the_delete_shortcut_marks_the_selected_rows(cx: &mut TestAppContext) {
     let (_database, handle, view) = table_view(cx);
     cx.run_until_parked();
 
-    sweep_rows(cx, handle, 0, 1);
+    pick_row(cx, handle, 0);
+    pick_through(cx, handle, 1);
+    focus_grid(cx, &view);
     press(cx, handle, "secondary-backspace");
     cx.run_until_parked();
     assert_eq!(
@@ -2768,6 +2777,7 @@ fn the_delete_shortcut_marks_the_selected_rows(cx: &mut TestAppContext) {
         vec![0, 1]
     );
 
+    focus_grid(cx, &view);
     press(cx, handle, "secondary-shift-backspace");
     cx.run_until_parked();
     assert!(
@@ -2785,7 +2795,7 @@ fn a_read_only_connection_deletes_nothing(cx: &mut TestAppContext) {
     let (database, handle, view) = table_view_with_safety(cx, SafetyMode::ReadOnly);
     cx.run_until_parked();
 
-    sweep_rows(cx, handle, 0, 0);
+    pick_row(cx, handle, 0);
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.delete_selected(cx));
     cx.run_until_parked();
@@ -2951,7 +2961,8 @@ fn changes_of_every_kind_are_counted_and_applied_together(cx: &mut TestAppContex
 
     // Edit the first row, mark the second for deletion, add a third.
     stage_cell(cx, &view, 0, 1, "edited");
-    sweep_rows(cx, handle, 1, 1);
+    pick_row(cx, handle, 1);
+    focus_grid(cx, &view);
     press(cx, handle, "secondary-backspace");
     click_in_session(cx, handle, "insert-row");
     cx.run_until_parked();
@@ -2997,7 +3008,8 @@ fn an_edit_on_a_row_marked_for_deletion_goes_with_it(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     stage_cell(cx, &view, 0, 1, "never written");
-    sweep_rows(cx, handle, 0, 0);
+    pick_row(cx, handle, 0);
+    focus_grid(cx, &view);
     press(cx, handle, "secondary-backspace");
     cx.run_until_parked();
 
@@ -3302,65 +3314,32 @@ fn filtering_asks_before_it_discards_staged_edits(cx: &mut TestAppContext) {
     );
 }
 
-/// The value window that is open, and what it is showing.
-fn open_value_window(
-    cx: &mut TestAppContext,
-) -> gpui_kit::Entity<crate::ui::value_window::ValueView> {
-    cx.update(|cx| crate::ui::value_window::open_view(cx))
-        .expect("no value window is open")
+/// What the grid asked to be shown in the value dialog.
+fn pending_value(cx: &mut TestAppContext) -> crate::ui::value_dialog::ValueRequest {
+    cx.update(|cx| crate::ui::value_dialog::pending(cx))
+        .expect("no value is waiting to be shown")
 }
 
 #[gpui_kit::test]
-fn a_value_opens_in_a_window_of_its_own(cx: &mut TestAppContext) {
-    let (database, _handle, view) = table_view(cx);
+fn a_value_is_handed_to_the_dialog(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
     cx.run_until_parked();
 
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
     cx.run_until_parked();
 
-    let window = open_value_window(cx);
-    window.read_with(cx, |window, cx| {
-        assert_eq!(window.column_for_test(), "name");
-        assert_eq!(window.value_for_test(cx), "alpha");
-        assert!(
-            window.is_editable_for_test(),
-            "a row of a writable table can be edited in the window"
-        );
-    });
-
-    // Saving stages the value in the grid, the way typing into the cell does.
-    window
-        .downgrade()
-        .update_in(cx, |window, w, cx| {
-            window.set_value_for_test("from the window", w, cx);
-            window.save_for_test(w, cx);
-        })
-        .unwrap();
-    cx.run_until_parked();
-
-    assert_eq!(
-        grid.read_with(cx, |grid, cx| grid.cell_for_test(0, 1, cx)),
-        Some("from the window".to_string()),
-        "the saved value should be staged in the cell"
-    );
+    let request = pending_value(cx);
+    assert_eq!(request.column, "name");
+    assert_eq!(request.text, "alpha");
     assert!(
-        cx.update(|cx| crate::ui::value_window::open_view(cx))
-            .is_none(),
-        "saving should close the window"
-    );
-
-    view.update(cx, |view, cx| view.commit(cx));
-    cx.run_until_parked();
-    assert_eq!(
-        runtime::block_on(name_of(&database, 1)),
-        Some("from the window".to_string()),
-        "applying should write what the window staged"
+        request.save.is_some(),
+        "a row of a writable table can be edited in the dialog"
     );
 }
 
 #[gpui_kit::test]
-fn the_value_shortcut_opens_the_selected_cell(cx: &mut TestAppContext) {
+fn the_value_shortcut_hands_over_the_selected_cell(cx: &mut TestAppContext) {
     let (_database, handle, view) = table_view(cx);
     cx.run_until_parked();
 
@@ -3368,19 +3347,13 @@ fn the_value_shortcut_opens_the_selected_cell(cx: &mut TestAppContext) {
     press(cx, handle, "secondary-shift-v");
     cx.run_until_parked();
 
-    let window = open_value_window(cx);
-    window.read_with(cx, |window, cx| {
-        assert_eq!(window.column_for_test(), "name");
-        assert_eq!(
-            window.value_for_test(cx),
-            "NULL",
-            "the second row has no name"
-        );
-    });
+    let request = pending_value(cx);
+    assert_eq!(request.column, "name");
+    assert_eq!(request.text, "NULL", "the second row has no name");
 }
 
 #[gpui_kit::test]
-fn the_window_lays_json_out_and_cannot_edit_a_query_result(cx: &mut TestAppContext) {
+fn json_is_laid_out_and_a_query_result_cannot_be_edited(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
 
     handle
@@ -3404,19 +3377,16 @@ fn the_window_lays_json_out_and_cannot_edit_a_query_result(cx: &mut TestAppConte
     grid.update(cx, |grid, cx| grid.view_cell(0, 0, cx));
     cx.run_until_parked();
 
-    let window = open_value_window(cx);
-    window.read_with(cx, |window, cx| {
-        assert_eq!(window.column_for_test(), "document");
-        assert_eq!(
-            window.value_for_test(cx),
-            "{\n  \"name\": \"alpha\",\n  \"tags\": [\n    1,\n    2\n  ]\n}",
-            "JSON should be laid out over several lines"
-        );
-        assert!(
-            !window.is_editable_for_test(),
-            "a query result has no owner that could write it back"
-        );
-    });
+    let request = pending_value(cx);
+    assert_eq!(request.column, "document");
+    assert_eq!(
+        request.text, "{\n  \"name\": \"alpha\",\n  \"tags\": [\n    1,\n    2\n  ]\n}",
+        "JSON should be laid out over several lines"
+    );
+    assert!(
+        request.save.is_none(),
+        "a query result has no owner that could write it back"
+    );
 }
 
 #[gpui_kit::test]
@@ -3429,18 +3399,195 @@ fn a_value_that_was_never_read_says_so(cx: &mut TestAppContext) {
     grid.update(cx, |grid, cx| grid.view_cell(0, 3, cx));
     cx.run_until_parked();
 
-    let window = open_value_window(cx);
-    window.read_with(cx, |window, cx| {
-        assert!(window.value_for_test(cx).contains("not read back"));
-        assert!(
-            !window.is_editable_for_test(),
-            "there is nothing to write back"
-        );
-    });
+    let request = pending_value(cx);
+    assert!(request.text.contains("not read back"));
+    assert!(request.save.is_none(), "there is nothing to write back");
+}
+
+/// Open a table tab inside a workspace, which is what builds the dialog.
+fn workspace_table(
+    cx: &mut TestAppContext,
+) -> (
+    TempDatabase,
+    WindowHandle<Workspace>,
+    gpui_kit::Entity<crate::ui::table_view::TableView>,
+) {
+    let handle = workspace(cx);
+    let database = connect(cx, handle);
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the active tab should be a session");
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("object-items", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let view = session
+        .read_with(cx, |session, _| session.active_table_view())
+        .expect("clicking a table should open a table view");
+
+    (database, handle, view)
+}
+
+/// Draw the workspace, which is what picks the value up and builds the dialog.
+fn draw_workspace(cx: &mut TestAppContext, handle: WindowHandle<Workspace>) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
 }
 
 #[gpui_kit::test]
-fn double_clicking_picks_the_editor_or_the_window(_cx: &mut TestAppContext) {
+fn the_dialog_saves_with_the_platform_shortcut(cx: &mut TestAppContext) {
+    let (database, handle, view) = workspace_table(cx);
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
+    draw_workspace(cx, handle);
+
+    let dialog = handle
+        .update(cx, |workspace, _, _| workspace.value_dialog_for_test())
+        .unwrap()
+        .expect("the dialog should be open over the window");
+    dialog.read_with(cx, |dialog, cx| {
+        assert_eq!(dialog.column_for_test(), "name");
+        assert_eq!(dialog.value_for_test(cx), "alpha");
+        assert!(dialog.is_editable_for_test());
+    });
+
+    dialog
+        .downgrade()
+        .update_in(cx, |dialog, window, cx| {
+            dialog.set_value_for_test("from the dialog", window, cx);
+        })
+        .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.press("secondary-enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert!(
+        handle
+            .update(cx, |workspace, _, _| workspace
+                .value_dialog_for_test()
+                .is_none())
+            .unwrap(),
+        "saving should close the dialog"
+    );
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.cell_for_test(0, 1, cx)),
+        Some("from the dialog".to_string()),
+        "the saved value should be staged in the cell"
+    );
+
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("from the dialog".to_string()),
+        "applying should write what the dialog staged"
+    );
+}
+
+#[gpui_kit::test]
+fn escape_closes_the_dialog_without_saving(cx: &mut TestAppContext) {
+    let (database, handle, view) = workspace_table(cx);
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
+    draw_workspace(cx, handle);
+
+    let dialog = handle
+        .update(cx, |workspace, _, _| workspace.value_dialog_for_test())
+        .unwrap()
+        .expect("the dialog should be open");
+    dialog
+        .downgrade()
+        .update_in(cx, |dialog, window, cx| {
+            dialog.set_value_for_test("thrown away", window, cx);
+        })
+        .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert!(
+        handle
+            .update(cx, |workspace, _, _| workspace
+                .value_dialog_for_test()
+                .is_none())
+            .unwrap(),
+        "escape should close the dialog"
+    );
+    assert!(
+        grid.read_with(cx, |grid, cx| grid.staged(cx).is_empty()),
+        "closing must not stage anything"
+    );
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn a_click_inside_the_dialog_never_reaches_the_grid(cx: &mut TestAppContext) {
+    let (_database, handle, view) = workspace_table(cx);
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    // Put the grid's selection on the first row, the way a user just had it.
+    grid.downgrade()
+        .update_in(cx, |grid, window, cx| {
+            grid.focus_for_test(window, cx);
+            grid.select_cell_for_test(0, 1, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let before = grid.read_with(cx, |grid, cx| grid.selection_for_test(cx));
+
+    grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
+    draw_workspace(cx, handle);
+
+    // Clicking into the dialog's box would land on whatever grid cell lies
+    // under it, if the overlay let the click through.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click("value-dialog-body", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert!(
+        handle
+            .update(cx, |workspace, _, _| workspace
+                .value_dialog_for_test()
+                .is_some())
+            .unwrap(),
+        "clicking inside the dialog must not close it"
+    );
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.selection_for_test(cx)),
+        before,
+        "the grid behind the dialog must not receive the click"
+    );
+}
+
+#[gpui_kit::test]
+fn double_clicking_picks_the_editor_or_the_dialog(_cx: &mut TestAppContext) {
     use crate::db::query::{blob, unsupported};
     use crate::ui::data_grid::needs_a_window;
 
@@ -3448,7 +3595,7 @@ fn double_clicking_picks_the_editor_or_the_window(_cx: &mut TestAppContext) {
     assert!(!needs_a_window(&Some("alpha".to_string()), "TEXT"));
     assert!(!needs_a_window(&None, "TEXT"));
 
-    // Everything a cell cannot show goes to the window.
+    // Everything a cell cannot show goes to the dialog.
     assert!(needs_a_window(&Some("one\ntwo".to_string()), "TEXT"));
     assert!(needs_a_window(&Some("x".repeat(201)), "TEXT"));
     assert!(needs_a_window(&Some(r#"{"a":1}"#.to_string()), "TEXT"));
@@ -3458,4 +3605,180 @@ fn double_clicking_picks_the_editor_or_the_window(_cx: &mut TestAppContext) {
 
     // A value that only looks like JSON is still a value.
     assert!(!needs_a_window(&Some("{not json".to_string()), "TEXT"));
+}
+
+/// Put `sql` in the active editor and the caret at `cursor`.
+fn prepare_editor(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Session>,
+    sql: &str,
+    cursor: usize,
+) {
+    handle
+        .update(cx, |session, window, cx| {
+            session.prepare_active_editor_for_test(sql, window, cx);
+            if let Some(editor) = session.active_editor_for_test() {
+                editor.update(cx, |editor, cx| editor.set_cursor_for_test(cursor, cx));
+            }
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_run_shortcut_sends_only_the_statement_the_caret_is_in(cx: &mut TestAppContext) {
+    let (database, handle) = session_with_objects(cx);
+
+    let sql = "insert into items values (3, 'gamma', 3.0, NULL);\n\
+               insert into items values (4, 'delta', 4.0, NULL);";
+    // The caret sits in the second statement.
+    prepare_editor(cx, handle, sql, sql.len());
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        3,
+        "only the statement the caret is in should have run"
+    );
+    assert_eq!(
+        runtime::block_on(name_of(&database, 4)),
+        Some("delta".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn a_selection_is_what_runs(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    let sql = "select * from items;\nselect 1;";
+    prepare_editor(cx, handle, sql, 0);
+    handle
+        .update(cx, |session, _, cx| {
+            let editor = session
+                .active_editor_for_test()
+                .expect("a query tab has an editor");
+            editor.update(cx, |editor, cx| {
+                // Select the second statement, caret notwithstanding.
+                editor.select_for_test(21..30, cx);
+                // A selection runs as written, semicolon and all.
+                assert_eq!(editor.statement_for_test(cx).as_deref(), Some("select 1;"));
+            });
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_script_shortcut_runs_every_statement(cx: &mut TestAppContext) {
+    let (database, handle) = session_with_objects(cx);
+
+    let sql = "insert into items values (3, 'gamma', 3.0, NULL);\n\
+               select * from items;\n\
+               select name from items where id = 1;";
+    prepare_editor(cx, handle, sql, 0);
+    press(cx, handle, "secondary-shift-enter");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        3,
+        "the insert should have run as part of the script"
+    );
+
+    let (results, shown) = handle
+        .update(cx, |session, _, _| session.results_for_test())
+        .unwrap();
+    assert_eq!(results, 3, "one result per statement");
+    assert_eq!(shown, 0, "the first one is showing");
+
+    let status = handle
+        .update(cx, |session, _, _| session.active_status_for_test())
+        .unwrap();
+    assert!(
+        status.starts_with("3 statements in") && status.contains("result 1 of 3"),
+        "the banner should count the statements: {status}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_result_tab_shows_that_statements_rows(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    prepare_editor(
+        cx,
+        handle,
+        "select * from items;\nselect name from items where id = 1;",
+        0,
+    );
+    press(cx, handle, "secondary-shift-enter");
+    cx.run_until_parked();
+
+    click_in_session(cx, handle, "result-1");
+    cx.run_until_parked();
+
+    let (_, shown) = handle
+        .update(cx, |session, _, _| session.results_for_test())
+        .unwrap();
+    assert_eq!(shown, 1, "the second result should be showing");
+
+    let grid = handle
+        .update(cx, |session, _, _| session.active_grid())
+        .unwrap()
+        .expect("a query tab has a grid");
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.column_values_for_test(0, cx)),
+        vec![Some("alpha".to_string())],
+        "the grid should hold the second statement's rows"
+    );
+}
+
+#[gpui_kit::test]
+fn a_write_reports_the_rows_it_changed(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    prepare_editor(cx, handle, "update items set score = 9.0", 0);
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    let status = handle
+        .update(cx, |session, _, _| session.active_status_for_test())
+        .unwrap();
+    assert!(
+        status.starts_with("2 rows affected in"),
+        "a write should say what it changed: {status}"
+    );
+}
+
+#[gpui_kit::test]
+fn cancelling_stops_waiting_on_a_query(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    // Something has to hold the caret for a keystroke to reach the session.
+    prepare_editor(cx, handle, "select 1", 0);
+
+    // A query finishes before anything can be cancelled under test, so the
+    // running state is set by hand and the cancel path driven from there.
+    handle
+        .update(cx, |session, _, cx| session.mark_running_for_test(cx))
+        .unwrap();
+    assert!(
+        handle
+            .update(cx, |session, _, _| session.active_is_running())
+            .unwrap()
+    );
+
+    press(cx, handle, "secondary-.");
+    cx.run_until_parked();
+
+    assert_eq!(
+        handle
+            .update(cx, |session, _, _| session.active_status_for_test())
+            .unwrap(),
+        "Cancelled"
+    );
+    assert!(
+        !handle
+            .update(cx, |session, _, _| session.active_is_running())
+            .unwrap(),
+        "the editor should stop saying it is running"
+    );
 }

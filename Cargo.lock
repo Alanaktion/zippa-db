@@ -9570,6 +9570,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs 7.0.0",
+ "futures",
  "gpui-kit",
  "keyring",
  "regex",

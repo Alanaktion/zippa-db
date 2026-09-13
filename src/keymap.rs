@@ -7,13 +7,13 @@ use gpui_kit::{App, KeyBinding};
 
 use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
 use crate::ui::data_grid::ViewCell;
-use crate::ui::query_editor::RunQuery;
-use crate::ui::session::{CloseTab, NewTab, OpenFile, Refresh, SaveFile, SaveFileAs};
+use crate::ui::query_editor::{RunQuery, RunScript};
+use crate::ui::session::{CancelQuery, CloseTab, NewTab, OpenFile, Refresh, SaveFile, SaveFileAs};
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::table_view::{
     ApplyEdits, CancelEdit, DeleteRows, DiscardEdits, EditCell, InsertRow, RestoreRows, SetNull,
 };
-use crate::ui::value_window::CloseValue;
+use crate::ui::value_dialog::{CloseValue, SaveValue};
 
 pub fn bind(cx: &mut App) {
     cx.bind_keys([
@@ -21,6 +21,19 @@ pub fn bind(cx: &mut App) {
         // (it would insert a newline), so this binds the more specific
         // "Input inside a QueryEditor" to win at that node.
         KeyBinding::new("secondary-enter", RunQuery, Some("QueryEditor > Input")),
+        // Running the whole buffer is the rarer of the two, so it takes the
+        // extra modifier.
+        KeyBinding::new(
+            "secondary-shift-enter",
+            RunScript,
+            Some("QueryEditor > Input"),
+        ),
+        KeyBinding::new("secondary-shift-enter", RunScript, Some("QueryEditor")),
+        // Give up on a query that is taking too long.
+        KeyBinding::new("secondary-.", CancelQuery, Some("Session")),
+        // The caret is usually in the editor, whose own context claims keys
+        // before the session sees them.
+        KeyBinding::new("secondary-.", CancelQuery, Some("QueryEditor > Input")),
         KeyBinding::new("secondary-enter", RunQuery, Some("QueryEditor")),
         KeyBinding::new("secondary-t", NewTab, Some("Session")),
         KeyBinding::new("secondary-w", CloseTab, Some("Session")),
@@ -83,7 +96,12 @@ pub fn bind(cx: &mut App) {
         // No context: the settings belong to the app, not to a screen, and the
         // handler for it is registered on the app itself.
         KeyBinding::new("secondary-,", OpenSettings, None),
-        // The value window is a window of its own, so escape closes it there.
-        KeyBinding::new("escape", CloseValue, Some("ValueWindow")),
+        // The value dialog covers the window while it is open. Enter belongs
+        // to its text box, which is multi-line, so saving takes the modifier.
+        KeyBinding::new("escape", CloseValue, Some("ValueDialog")),
+        KeyBinding::new("secondary-enter", SaveValue, Some("ValueDialog")),
+        // The caret is in the text box, whose own context binds this key, so
+        // the dialog's binding has to name that node to win there.
+        KeyBinding::new("secondary-enter", SaveValue, Some("ValueDialog > Input")),
     ]);
 }

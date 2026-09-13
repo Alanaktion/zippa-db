@@ -21,6 +21,7 @@ use gpui_kit::{
 use crate::db::{Connection, runtime};
 use crate::settings;
 use crate::ui::session::{Session, SessionEvent};
+use crate::ui::value_dialog::{self, Dismissed, ValueView};
 use crate::ui::welcome::{Welcome, WelcomeEvent};
 
 actions!(
@@ -64,6 +65,8 @@ impl TabContent {
 pub struct Workspace {
     tabs: Vec<TabContent>,
     active: usize,
+    /// The value dialog, while one is open over the window.
+    value: Option<Entity<ValueView>>,
     /// Held by the window itself, so the connection shortcuts answer even when
     /// nothing inside a tab has the caret.
     focus: FocusHandle,
@@ -84,6 +87,7 @@ impl Workspace {
         let mut workspace = Self {
             tabs: Vec::new(),
             active: 0,
+            value: None,
             focus,
         };
         workspace.open_connect_tab(window, cx);
@@ -205,6 +209,27 @@ impl Workspace {
         // from where the last one was.
         self.tabs[index] = TabContent::Connect(Self::welcome(window, cx));
         cx.notify();
+    }
+
+    /// Show the value a grid asked for, if one is waiting.
+    ///
+    /// A cell has no window to build a text box with, so it leaves the value
+    /// in a global and the dialog is built here, where there is one.
+    fn take_value_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(request) = value_dialog::take(cx) else {
+            return;
+        };
+
+        let view = cx.new(|cx| ValueView::new(request, window, cx));
+        cx.subscribe_in(&view, window, |this, _, _: &Dismissed, window, cx| {
+            this.value = None;
+            this.focus_active(window, cx);
+            cx.notify();
+        })
+        .detach();
+
+        view.update(cx, |view, cx| view.focus(window, cx));
+        self.value = Some(view);
     }
 
     fn tab_of(&self, held_by: impl Fn(&TabContent) -> bool) -> Option<usize> {
@@ -419,7 +444,9 @@ fn close(connection: Arc<Connection>) {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.take_value_dialog(window, cx);
+
         let body = match &self.tabs[self.active] {
             TabContent::Connect(welcome) => welcome.clone().into_any_element(),
             TabContent::Session(session) => session.clone().into_any_element(),
@@ -444,7 +471,16 @@ impl Render for Workspace {
                     .border_color(cx.theme().border)
                     .child(self.render_tab_bar(cx)),
             )
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                // The dialog covers the window rather than a pane of it, so
+                // it sits beside the body in a stack of its own.
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(div().size_full().child(body))
+                    .children(self.value.clone()),
+            )
     }
 }
 
@@ -462,6 +498,10 @@ impl Workspace {
     }
 
     /// The connection manager in the active tab, to connect from.
+    pub(crate) fn value_dialog_for_test(&self) -> Option<Entity<ValueView>> {
+        self.value.clone()
+    }
+
     pub(crate) fn active_welcome_for_test(&self) -> Option<Entity<Welcome>> {
         match self.tabs.get(self.active)? {
             TabContent::Connect(welcome) => Some(welcome.clone()),

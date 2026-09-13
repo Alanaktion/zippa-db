@@ -9,6 +9,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{
@@ -17,15 +18,15 @@ use gpui_kit::component::table::{
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, Div, Entity, EventEmitter, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels,
-    SharedString, Stateful, Window, div, px,
+    App, Context, Div, Entity, EventEmitter, MouseButton, MouseDownEvent, Pixels, SharedString,
+    Stateful, Window, div, px,
 };
 
 use gpui_kit::actions;
 
 use crate::db::query::{self, Cell, QueryResult};
 use crate::settings::{self, Settings};
-use crate::ui::value_window;
+use crate::ui::value_dialog::{self, ValueRequest};
 
 /// Rows read when sizing a column. Values further down are rare enough that
 /// paying for them on every result would cost more than the odd clipped cell.
@@ -128,7 +129,7 @@ fn pretty_json(text: &str) -> Option<String> {
     serde_json::to_string_pretty(&value).ok()
 }
 
-/// How a click on a column header is answered./// How a click on a column header is answered.
+/// How a click on a column header is answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sorting {
     /// Reorder the rows already in hand. Used for ad-hoc query results, where
@@ -240,9 +241,16 @@ fn compare(left: &Cell, right: &Cell) -> Ordering {
     }
 }
 
+/// The column of checkboxes the table draws before the result's own.
+const PICK_COLUMN: usize = 0;
+
+/// Width of that column.
+const PICK_WIDTH: f32 = 34.;
+
 impl TableDelegate for ResultDelegate {
     fn columns_count(&self, _: &App) -> usize {
-        self.result.columns.len()
+        // The checkbox column sits in front of the result's own columns.
+        self.result.columns.len() + 1
     }
 
     fn rows_count(&self, _: &App) -> usize {
@@ -251,10 +259,21 @@ impl TableDelegate for ResultDelegate {
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
-        let name = self.result.columns.get(col_ix).cloned().unwrap_or_default();
+        let Some(data_ix) = self.data_column(col_ix) else {
+            // Picking rows is not a value, so its column neither sorts nor
+            // resizes.
+            return Column::new("", "").width(px(PICK_WIDTH)).resizable(false);
+        };
+
+        let name = self
+            .result
+            .columns
+            .get(data_ix)
+            .cloned()
+            .unwrap_or_default();
         let width = self
             .widths
-            .get(col_ix)
+            .get(data_ix)
             .copied()
             .unwrap_or(px(MIN_COLUMN_WIDTH));
 
@@ -281,7 +300,10 @@ impl TableDelegate for ResultDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        let Some(column) = self.result.columns.get(col_ix).cloned() else {
+        let Some(data_ix) = self.data_column(col_ix) else {
+            return;
+        };
+        let Some(column) = self.result.columns.get(data_ix).cloned() else {
             return;
         };
 
@@ -292,7 +314,7 @@ impl TableDelegate for ResultDelegate {
 
         match self.sorting {
             Sorting::InPlace => {
-                self.reorder(col_ix, sort);
+                self.reorder(data_ix, sort);
                 cx.notify();
             }
             Sorting::Delegated => {
@@ -308,7 +330,7 @@ impl TableDelegate for ResultDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        let swept = self.rows_selected.contains(&row_ix);
+        let picked = self.rows_selected.contains(&row_ix);
         let draft = self.draft(row_ix).is_some();
         let deleted = self.is_deleted(row_ix);
 
@@ -319,28 +341,9 @@ impl TableDelegate for ResultDelegate {
             // its own green, since the rest of the row is untouched.
             .when(draft, |this| this.bg(cx.theme().info.opacity(0.15)))
             .when(deleted, |this| this.bg(cx.theme().danger.opacity(0.15)))
-            .when(swept || self.selected_row == Some(row_ix), |this| {
+            .when(picked || self.selected_row == Some(row_ix), |this| {
                 this.bg(cx.theme().tokens.table_active)
             })
-            // Pressing on a row starts a sweep; dragging over the rows either
-            // side of it takes them in too.
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |table, event: &MouseDownEvent, _, cx| {
-                    table
-                        .delegate_mut()
-                        .begin_sweep(row_ix, event.modifiers.shift);
-                    cx.notify();
-                }),
-            )
-            .on_mouse_move(cx.listener(move |table, event: &MouseMoveEvent, _, cx| {
-                if event.pressed_button != Some(MouseButton::Left) {
-                    return;
-                }
-                if table.delegate_mut().extend_sweep(row_ix) {
-                    cx.notify();
-                }
-            }))
             // The table answers a right click on a cell itself and stops it
             // there, so the row this one landed on is noted in the capture
             // phase, before that happens. The menu the grid opens reads it.
@@ -365,6 +368,10 @@ impl TableDelegate for ResultDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let Some(col_ix) = self.data_column(col_ix) else {
+            return self.render_pick(row_ix, cx).into_any_element();
+        };
+
         if self.editing == Some((row_ix, col_ix)) {
             // The table paints its selected-cell tint over this, so the editor
             // carries its own background to stay readable underneath it.
@@ -423,7 +430,46 @@ impl TableDelegate for ResultDelegate {
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {
-        self.cell(row_ix, col_ix).clone().unwrap_or_default()
+        match self.data_column(col_ix) {
+            Some(col_ix) => self.cell(row_ix, col_ix).clone().unwrap_or_default(),
+            None => String::new(),
+        }
+    }
+
+    /// The header of the checkbox column picks every row at once.
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        if self.data_column(col_ix).is_some() {
+            return div()
+                .size_full()
+                .child(self.column(col_ix, cx).name.clone())
+                .into_any_element();
+        }
+
+        let rows = self.rows_count(cx);
+        let all = rows > 0 && self.rows_selected.len() == rows;
+
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(Checkbox::new("pick-all").checked(all).on_click(cx.listener(
+                move |table, checked: &bool, _window, cx| {
+                    let delegate = table.delegate_mut();
+                    delegate.rows_selected = match checked {
+                        true => (0..rows).collect(),
+                        false => HashSet::new(),
+                    };
+                    delegate.anchor = None;
+                    cx.notify();
+                },
+            )))
+            .into_any_element()
     }
 }
 
@@ -589,38 +635,56 @@ impl ResultDelegate {
         self.rows_selected.len()
     }
 
-    /// Start a sweep on `row_ix`, or extend the last one when `extend` is set.
-    fn begin_sweep(&mut self, row_ix: usize, extend: bool) {
-        // Shift keeps the anchor where it was, so the click picks the far end
-        // of a range rather than starting a new one.
-        if extend && self.anchor.is_some() {
-            self.extend_sweep(row_ix);
+    /// Pick `row_ix` out, or put it back; shift takes the rows between it and
+    /// the last one picked.
+    fn pick(&mut self, row_ix: usize, extend: bool) {
+        if extend && let Some(anchor) = self.anchor {
+            let (first, last) = if anchor <= row_ix {
+                (anchor, row_ix)
+            } else {
+                (row_ix, anchor)
+            };
+            self.rows_selected.extend(first..=last);
             return;
         }
 
+        if !self.rows_selected.remove(&row_ix) {
+            self.rows_selected.insert(row_ix);
+        }
         self.anchor = Some(row_ix);
-        self.rows_selected = HashSet::from([row_ix]);
     }
 
-    /// Take every row between the anchor and `row_ix`; false if nothing moved.
-    fn extend_sweep(&mut self, row_ix: usize) -> bool {
-        let Some(anchor) = self.anchor else {
-            return false;
-        };
+    /// The checkbox that picks one row out.
+    fn render_pick(&self, row_ix: usize, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
+        let picked = self.rows_selected.contains(&row_ix);
 
-        let (first, last) = if anchor <= row_ix {
-            (anchor, row_ix)
-        } else {
-            (row_ix, anchor)
-        };
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                Checkbox::new(("pick", row_ix))
+                    .checked(picked)
+                    .on_click(cx.listener(move |table, _checked: &bool, window, cx| {
+                        let extend = window.modifiers().shift;
+                        table.delegate_mut().pick(row_ix, extend);
+                        cx.notify();
+                    })),
+            )
+    }
 
-        let swept: HashSet<usize> = (first..=last).collect();
-        if swept == self.rows_selected {
-            return false;
-        }
+    /// Index into the result's columns of the column shown at `col_ix`.
+    ///
+    /// `None` for the checkbox column, which belongs to no value.
+    fn data_column(&self, col_ix: usize) -> Option<usize> {
+        col_ix.checked_sub(PICK_COLUMN + 1)
+    }
 
-        self.rows_selected = swept;
-        true
+    /// Where the column at `data_ix` is shown.
+    #[cfg(test)]
+    fn shown_column(data_ix: usize) -> usize {
+        data_ix + PICK_COLUMN + 1
     }
 
     fn is_staged(&self, row_ix: usize, col_ix: usize) -> bool {
@@ -819,7 +883,12 @@ impl DataGrid {
         cx: &mut Context<Self>,
     ) {
         if let TableEvent::DoubleClickedCell(row_ix, col_ix) = event {
-            let (row_ix, col_ix) = (*row_ix, *col_ix);
+            let row_ix = *row_ix;
+            // The table counts the checkbox column; everything below counts
+            // the result's own columns.
+            let Some(col_ix) = table.read(cx).delegate().data_column(*col_ix) else {
+                return;
+            };
             // A value a grid cell cannot show is opened in full instead of
             // being typed into through a one-line box.
             let delegate = table.read(cx).delegate();
@@ -939,16 +1008,23 @@ impl DataGrid {
             .update(cx, |editor, cx| editor.focus(window, cx));
     }
 
+    /// The selected cell, counted in the result's own columns.
+    fn selected_cell(&self, cx: &App) -> Option<(usize, usize)> {
+        let table = self.table.read(cx);
+        let (row_ix, col_ix) = table.selected_cell()?;
+        Some((row_ix, table.delegate().data_column(col_ix)?))
+    }
+
     /// Open the editor on the selected cell.
     pub fn edit_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((row_ix, col_ix)) = self.table.read(cx).selected_cell() {
+        if let Some((row_ix, col_ix)) = self.selected_cell(cx) {
             self.begin_edit(row_ix, col_ix, window, cx);
         }
     }
 
     /// Stage SQL `NULL` on the selected cell, whatever is in the editor.
     pub fn set_null(&mut self, cx: &mut Context<Self>) {
-        let Some((row_ix, col_ix)) = self.table.read(cx).selected_cell() else {
+        let Some((row_ix, col_ix)) = self.selected_cell(cx) else {
             return;
         };
         if !self.table.read(cx).delegate().is_editable(row_ix, col_ix) {
@@ -1113,22 +1189,30 @@ impl DataGrid {
             None
         };
 
-        let save: Option<value_window::Save> = delegate.is_editable(row_ix, col_ix).then(|| {
+        let save: Option<value_dialog::Save> = delegate.is_editable(row_ix, col_ix).then(|| {
             let grid = cx.weak_entity();
             Rc::new(move |text: String, cx: &mut App| {
                 let Some(grid) = grid.upgrade() else {
                     return;
                 };
                 grid.update(cx, |grid, cx| grid.stage_value(row_ix, col_ix, text, cx));
-            }) as value_window::Save
+            }) as value_dialog::Save
         });
 
-        value_window::open(&column, &format_value(&value, &type_name), note, save, cx);
+        value_dialog::open(
+            ValueRequest {
+                column: column.into(),
+                text: format_value(&value, &type_name),
+                note: note.map(Into::into),
+                save,
+            },
+            cx,
+        );
     }
 
     /// Show the selected cell's value.
     pub fn view_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some((row_ix, col_ix)) = self.table.read(cx).selected_cell() {
+        if let Some((row_ix, col_ix)) = self.selected_cell(cx) {
             self.view_cell(row_ix, col_ix, cx);
         }
     }
@@ -1449,6 +1533,7 @@ impl DataGrid {
         col_ix: usize,
         cx: &mut Context<Self>,
     ) {
+        let col_ix = ResultDelegate::shown_column(col_ix);
         self.table
             .update(cx, |table, cx| table.set_selected_cell(row_ix, col_ix, cx));
     }
@@ -1456,8 +1541,10 @@ impl DataGrid {
     /// The row currently highlighted, and the cell the selection sits on.
     #[cfg(test)]
     pub(crate) fn selection_for_test(&self, cx: &App) -> (Option<usize>, Option<(usize, usize)>) {
-        let table = self.table.read(cx);
-        (table.delegate().selected_row, table.selected_cell())
+        (
+            self.table.read(cx).delegate().selected_row,
+            self.selected_cell(cx),
+        )
     }
 
     /// Sort by a column the way clicking its header does.
@@ -1469,6 +1556,7 @@ impl DataGrid {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let col_ix = ResultDelegate::shown_column(col_ix);
         self.table.update(cx, |table, cx| {
             table.delegate_mut().perform_sort(col_ix, sort, window, cx)
         });

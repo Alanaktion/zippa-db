@@ -16,6 +16,9 @@ pub struct QueryResult {
     pub column_types: Vec<String>,
     pub rows: Vec<Vec<Cell>>,
     pub elapsed: Duration,
+    /// Rows the statement changed, when the server said. A `select` reports
+    /// nothing here; an `insert` or an `update` reports what it wrote.
+    pub affected: Option<u64>,
 }
 
 impl QueryResult {
@@ -25,9 +28,20 @@ impl QueryResult {
 
     /// `"12 rows in 4 ms"`, for the status bar.
     pub fn summary(&self) -> String {
+        let milliseconds = self.elapsed.as_millis();
+
+        // A statement that returned rows is described by them; one that only
+        // changed rows is described by how many.
+        if self.rows.is_empty()
+            && let Some(affected) = self.affected
+        {
+            let unit = if affected == 1 { "row" } else { "rows" };
+            return format!("{affected} {unit} affected in {milliseconds} ms");
+        }
+
         let rows = self.row_count();
         let unit = if rows == 1 { "row" } else { "rows" };
-        format!("{rows} {unit} in {} ms", self.elapsed.as_millis())
+        format!("{rows} {unit} in {milliseconds} ms")
     }
 }
 

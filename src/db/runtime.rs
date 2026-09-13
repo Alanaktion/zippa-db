@@ -5,7 +5,9 @@
 //! to the UI over a oneshot channel that GPUI can await.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::OnceLock;
+use std::task::{Context, Poll};
 
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::oneshot;
@@ -22,6 +24,35 @@ fn runtime() -> &'static Runtime {
     })
 }
 
+/// A database future that is on its way back to the UI.
+///
+/// Awaiting it yields what the future returned. Giving up on it — the user
+/// cancelling a long query — drops the work on the runtime, which is what
+/// closes the connection sqlx was using and lets the pool open a fresh one.
+pub struct Task<T> {
+    receiver: oneshot::Receiver<T>,
+    /// `None` under test, where the work has already run to completion.
+    running: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl<T> Task<T> {
+    /// A handle that can stop the work after the task itself has been moved
+    /// into whatever is awaiting it.
+    ///
+    /// `None` under test, where the work has already run.
+    pub fn abort_handle(&self) -> Option<tokio::task::AbortHandle> {
+        self.running.as_ref().map(|running| running.abort_handle())
+    }
+}
+
+impl<T> Future for Task<T> {
+    type Output = Result<T, oneshot::error::RecvError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.receiver).poll(cx)
+    }
+}
+
 /// Run `future` on the database runtime.
 ///
 /// Await the returned receiver from a GPUI task:
@@ -34,18 +65,22 @@ fn runtime() -> &'static Runtime {
 /// .detach();
 /// ```
 #[cfg(not(test))]
-pub fn spawn<F>(future: F) -> oneshot::Receiver<F::Output>
+pub fn spawn<F>(future: F) -> Task<F::Output>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
     let (tx, rx) = oneshot::channel();
-    runtime().spawn(async move {
+    let running = runtime().spawn(async move {
         let output = future.await;
         // The receiver is dropped when the UI stops caring about the result.
         let _ = tx.send(output);
     });
-    rx
+
+    Task {
+        receiver: rx,
+        running: Some(running),
+    }
 }
 
 /// Under test the future runs to completion on the calling thread.
@@ -55,14 +90,18 @@ where
 /// runtime does when its result arrives. Running the work inline keeps every
 /// wake-up on the test thread, and makes database results deterministic.
 #[cfg(test)]
-pub fn spawn<F>(future: F) -> oneshot::Receiver<F::Output>
+pub fn spawn<F>(future: F) -> Task<F::Output>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
     let (tx, rx) = oneshot::channel();
     let _ = tx.send(runtime().block_on(future));
-    rx
+
+    Task {
+        receiver: rx,
+        running: None,
+    }
 }
 
 /// Block the current thread on `future`. Tests only: the UI never blocks.
