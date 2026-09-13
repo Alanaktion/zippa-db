@@ -21,8 +21,11 @@ use gpui_kit::{
     SharedString, Stateful, Window, div, px,
 };
 
+use gpui_kit::actions;
+
 use crate::db::query::{self, Cell, QueryResult};
 use crate::settings::{self, Settings};
+use crate::ui::value_window;
 
 /// Rows read when sizing a column. Values further down are rare enough that
 /// paying for them on every result would cost more than the odd clipped cell.
@@ -66,7 +69,66 @@ fn measure_columns(result: &QueryResult) -> Vec<Pixels> {
         .collect()
 }
 
-/// How a click on a column header is answered.
+actions!(zippa_db, [ViewCell]);
+
+/// Lay a cell out for the viewer: JSON is indented, everything else is shown
+/// as it stands.
+///
+/// The grid holds display strings rather than the values themselves, so a
+/// value the driver could only describe says so instead of pretending.
+pub fn format_value(value: &Cell, type_name: &str) -> String {
+    let Some(text) = value else {
+        return "NULL".to_string();
+    };
+
+    if query::is_placeholder(value) {
+        return format!(
+            "{text}\n\nThis value was not read back from the server, so there is \
+             nothing to show here."
+        );
+    }
+
+    // A column typed as JSON is laid out even when the value is a bare
+    // string; anything else has to look like JSON before it is reformatted.
+    let json = type_name.to_ascii_uppercase().starts_with("JSON")
+        || text.trim_start().starts_with(['{', '[']);
+    if json && let Some(pretty) = pretty_json(text) {
+        return pretty;
+    }
+
+    text.clone()
+}
+
+/// Values longer than this are read in a window rather than a grid cell.
+const LONG_VALUE: usize = 200;
+
+/// Whether a value wants a window of its own rather than the one-line editor.
+///
+/// Several lines, JSON, something the driver only described, or simply too
+/// much text to read through a cell.
+pub fn needs_a_window(value: &Cell, type_name: &str) -> bool {
+    if query::is_placeholder(value) || query::is_binary_type(type_name) {
+        return true;
+    }
+
+    let Some(text) = value else {
+        return false;
+    };
+
+    text.contains('\n')
+        || text.chars().count() > LONG_VALUE
+        || (type_name.to_ascii_uppercase().starts_with("JSON")
+            || text.trim_start().starts_with(['{', '[']))
+            && pretty_json(text).is_some()
+}
+
+/// `text` laid out over several lines, if it is JSON at all.
+fn pretty_json(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    serde_json::to_string_pretty(&value).ok()
+}
+
+/// How a click on a column header is answered./// How a click on a column header is answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sorting {
     /// Reorder the rows already in hand. Used for ad-hoc query results, where
@@ -82,6 +144,9 @@ type SortReporter = Rc<dyn Fn(String, ColumnSort, &mut App)>;
 
 /// Tells the grid's owner that the staged changes moved.
 type ChangeReporter = Rc<dyn Fn(&mut App)>;
+
+/// Opens the value viewer on a cell, from the menu the delegate built.
+type ViewReporter = Rc<dyn Fn(usize, usize, &mut App)>;
 
 /// Emitted when the user clicks a column header on a [`Sorting::Delegated`]
 /// grid.
@@ -134,10 +199,13 @@ struct ResultDelegate {
     anchor: Option<usize>,
     /// Row the last right click landed on, for the menu the grid opens.
     menu_row: Option<usize>,
+    /// Cell it landed on, when it landed on one at all.
+    menu_cell: Option<(usize, usize)>,
     /// Rows marked for deletion, by their index into the result. They stay on
     /// screen, struck through, until the owner writes them away.
     deletions: HashSet<usize>,
     report_change: ChangeReporter,
+    report_view: ViewReporter,
     /// Rows the user is building by hand, each one the cells typed into it so
     /// far. They sit after the result's own rows and are written by an
     /// `INSERT`, so a column nobody typed into is left out and takes whatever
@@ -278,7 +346,14 @@ impl TableDelegate for ResultDelegate {
             // phase, before that happens. The menu the grid opens reads it.
             .capture_any_mouse_down(cx.listener(move |table, event: &MouseDownEvent, _, _cx| {
                 if event.button == MouseButton::Right {
-                    table.delegate_mut().menu_row = Some(row_ix);
+                    let delegate = table.delegate_mut();
+                    delegate.menu_row = Some(row_ix);
+                    // The cell is filled in by the cell's own handler, which
+                    // runs after this one. A click beside the cells — the row
+                    // header, the space after the last column — leaves it
+                    // empty, so the menu is about the row alone rather than
+                    // about whatever was clicked last time.
+                    delegate.menu_cell = None;
                 }
             }))
     }
@@ -306,7 +381,18 @@ impl TableDelegate for ResultDelegate {
                 .into_any_element();
         }
 
-        let cell = div().font_family(self.font.clone()).text_xs();
+        // The menu is built on the frame after the click, but an event from
+        // the table only reaches its owner after that, so the cell the menu is
+        // about is noted here — in the capture phase, before the table answers
+        // the click itself.
+        let cell = div()
+            .font_family(self.font.clone())
+            .text_xs()
+            .capture_any_mouse_down(cx.listener(move |table, event: &MouseDownEvent, _, _cx| {
+                if event.button == MouseButton::Right {
+                    table.delegate_mut().menu_cell = Some((row_ix, col_ix));
+                }
+            }));
         let deleted = self.is_deleted(row_ix);
         let cell = if deleted {
             // A deleted row is going whatever its cells hold, so the value is
@@ -404,6 +490,20 @@ impl ResultDelegate {
         menu: PopupMenu,
         cx: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
+        // Looking at a value is not editing it, so this one is offered even on
+        // a read-only grid — and on a query result, which has no owner that
+        // could write it back.
+        let menu = match self.menu_cell.filter(|(row, _)| *row == row_ix) {
+            Some((row, col)) => {
+                let report = self.report_view.clone();
+                menu.item(
+                    PopupMenuItem::new("View value")
+                        .on_click(move |_, _window, cx| report(row, col, cx)),
+                )
+            }
+            None => menu,
+        };
+
         if !self.editable {
             return menu;
         }
@@ -638,6 +738,16 @@ impl DataGrid {
             }
         });
 
+        let report_view: ViewReporter = Rc::new({
+            let grid = cx.weak_entity();
+            move |row_ix: usize, col_ix: usize, cx: &mut App| {
+                let Some(grid) = grid.upgrade() else {
+                    return;
+                };
+                grid.update(cx, |grid, cx| grid.view_cell(row_ix, col_ix, cx));
+            }
+        });
+
         let editor = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
@@ -658,8 +768,10 @@ impl DataGrid {
                     rows_selected: HashSet::new(),
                     anchor: None,
                     menu_row: None,
+                    menu_cell: None,
                     deletions: HashSet::new(),
                     report_change,
+                    report_view,
                     drafts: Vec::new(),
                     editing: None,
                     editor: editor.clone(),
@@ -707,7 +819,23 @@ impl DataGrid {
         cx: &mut Context<Self>,
     ) {
         if let TableEvent::DoubleClickedCell(row_ix, col_ix) = event {
-            self.begin_edit(*row_ix, *col_ix, window, cx);
+            let (row_ix, col_ix) = (*row_ix, *col_ix);
+            // A value a grid cell cannot show is opened in full instead of
+            // being typed into through a one-line box.
+            let delegate = table.read(cx).delegate();
+            let type_name = delegate
+                .result
+                .column_types
+                .get(col_ix)
+                .cloned()
+                .unwrap_or_default();
+            let big = needs_a_window(delegate.cell(row_ix, col_ix), &type_name);
+
+            if big {
+                self.view_cell(row_ix, col_ix, cx);
+            } else {
+                self.begin_edit(row_ix, col_ix, window, cx);
+            }
             return;
         }
 
@@ -953,6 +1081,68 @@ impl DataGrid {
                 table.delegate_mut().row_menu_items(row_ix, menu, cx)
             })
         }
+    }
+
+    fn on_view_cell(&mut self, _: &ViewCell, _window: &mut Window, cx: &mut Context<Self>) {
+        self.view_selected(cx);
+    }
+
+    /// Show a cell's whole value in a window of its own.
+    pub fn view_cell(&mut self, row_ix: usize, col_ix: usize, cx: &mut Context<Self>) {
+        self.commit_editor(cx);
+
+        let delegate = self.table.read(cx).delegate();
+        let Some(column) = delegate.result.columns.get(col_ix).cloned() else {
+            return;
+        };
+        let type_name = delegate
+            .result
+            .column_types
+            .get(col_ix)
+            .cloned()
+            .unwrap_or_default();
+        let value = delegate.cell(row_ix, col_ix).clone();
+
+        // The stand-ins the driver hands back describe a value rather than
+        // holding it, so there is nothing to edit and the window says why.
+        let note = if query::is_placeholder(&value) {
+            Some("This value was not read back from the server.")
+        } else if !delegate.is_editable(row_ix, col_ix) {
+            Some("This value cannot be edited here.")
+        } else {
+            None
+        };
+
+        let save: Option<value_window::Save> = delegate.is_editable(row_ix, col_ix).then(|| {
+            let grid = cx.weak_entity();
+            Rc::new(move |text: String, cx: &mut App| {
+                let Some(grid) = grid.upgrade() else {
+                    return;
+                };
+                grid.update(cx, |grid, cx| grid.stage_value(row_ix, col_ix, text, cx));
+            }) as value_window::Save
+        });
+
+        value_window::open(&column, &format_value(&value, &type_name), note, save, cx);
+    }
+
+    /// Show the selected cell's value.
+    pub fn view_selected(&mut self, cx: &mut Context<Self>) {
+        if let Some((row_ix, col_ix)) = self.table.read(cx).selected_cell() {
+            self.view_cell(row_ix, col_ix, cx);
+        }
+    }
+
+    /// Stage what the value window was saved with.
+    fn stage_value(&mut self, row_ix: usize, col_ix: usize, value: String, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            if !table.delegate().is_editable(row_ix, col_ix) {
+                return;
+            }
+            table.delegate_mut().stage(row_ix, col_ix, Some(value));
+            cx.notify();
+        });
+        cx.emit(GridEdit::Staged);
     }
 
     /// Mark the swept rows for deletion, the way the row menu does.
@@ -1332,6 +1522,9 @@ impl Render for DataGrid {
         h_flex()
             .size_full()
             .id("grid")
+            .relative()
+            .key_context("DataGrid")
+            .on_action(cx.listener(Self::on_view_cell))
             .context_menu(self.row_menu())
             .child(
                 DataTable::new(&self.table)
@@ -1346,6 +1539,37 @@ impl Render for DataGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_is_laid_out_for_reading() {
+        // Keys keep the order the server sent them in.
+        let value = Some(r#"{"b":1,"a":[1,2]}"#.to_string());
+        assert_eq!(
+            format_value(&value, "JSONB"),
+            "{\n  \"b\": 1,\n  \"a\": [\n    1,\n    2\n  ]\n}"
+        );
+
+        // A column typed as JSON holding a bare string is still JSON.
+        assert_eq!(format_value(&Some("\"hi\"".to_string()), "JSON"), "\"hi\"");
+    }
+
+    #[test]
+    fn everything_else_is_left_as_it_is() {
+        let text = "a long line of plain text".to_string();
+        assert_eq!(format_value(&Some(text.clone()), "TEXT"), text);
+        assert_eq!(format_value(&None, "TEXT"), "NULL");
+
+        // Something that starts like JSON but is not stays as typed.
+        let broken = "{not json".to_string();
+        assert_eq!(format_value(&Some(broken.clone()), "TEXT"), broken);
+    }
+
+    #[test]
+    fn a_value_that_was_never_read_says_so() {
+        let described = format_value(&query::blob(b"abc"), "BLOB");
+        assert!(described.starts_with("<3 bytes>"), "{described}");
+        assert!(described.contains("not read back"), "{described}");
+    }
 
     fn result(columns: &[&str], rows: Vec<Vec<Option<&str>>>) -> QueryResult {
         QueryResult {

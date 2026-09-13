@@ -52,6 +52,7 @@ src/
     ├── query_editor.rs # SQL editor (Cmd+Enter to run)
     ├── sql_file.rs     # Native open/save dialogs for .sql files
     ├── settings_window.rs # Settings window (Cmd+,)
+    ├── value_window.rs # One cell's value, in full (Cmd+Shift+V)
     ├── table_view.rs   # Table opened from the sidebar: grid, paging, sorting
     └── data_grid.rs    # Read-only virtualized result grid
 ```
@@ -125,6 +126,7 @@ cargo test
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
 | Edit the selected cell in a table tab | `Enter` |
 | Set the selected cell to `NULL` | `Cmd`/`Ctrl` + `Shift` + `N` |
+| Open the selected cell's value in a window | `Cmd`/`Ctrl` + `Shift` + `V` |
 | Add a row to fill in | `Cmd`/`Ctrl` + `Shift` + `I` |
 | Mark the selected rows for deletion | `Cmd`/`Ctrl` + `Backspace` |
 | Take the deletion mark off again | `Cmd`/`Ctrl` + `Shift` + `Backspace` |

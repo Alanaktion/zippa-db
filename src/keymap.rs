@@ -6,12 +6,14 @@
 use gpui_kit::{App, KeyBinding};
 
 use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
+use crate::ui::data_grid::ViewCell;
 use crate::ui::query_editor::RunQuery;
 use crate::ui::session::{CloseTab, NewTab, OpenFile, Refresh, SaveFile, SaveFileAs};
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::table_view::{
     ApplyEdits, CancelEdit, DeleteRows, DiscardEdits, EditCell, InsertRow, RestoreRows, SetNull,
 };
+use crate::ui::value_window::CloseValue;
 
 pub fn bind(cx: &mut App) {
     cx.bind_keys([
@@ -72,11 +74,16 @@ pub fn bind(cx: &mut App) {
             RestoreRows,
             Some("TableView > DataTable"),
         ),
+        // Looking at a whole value works on any grid, so these are bound on
+        // the grid rather than on the table view.
+        KeyBinding::new("secondary-shift-v", ViewCell, Some("DataGrid > DataTable")),
         // Escape while typing in a cell closes the editor; without this the
         // input's own escape, or the table's clear-selection, would take it.
         KeyBinding::new("escape", CancelEdit, Some("TableView > DataTable > Input")),
         // No context: the settings belong to the app, not to a screen, and the
         // handler for it is registered on the app itself.
         KeyBinding::new("secondary-,", OpenSettings, None),
+        // The value window is a window of its own, so escape closes it there.
+        KeyBinding::new("escape", CloseValue, Some("ValueWindow")),
     ]);
 }

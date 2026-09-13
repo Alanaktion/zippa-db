@@ -49,8 +49,7 @@
 
 ### Specialized Cell Renderers
 
-* [ ] Custom modals for `JSON` / `JSONB` viewing & formatting
-* [ ] Large text BLOB viewer with word-wrap
+* [x] Value window (`Cmd+Shift+V`, "View value" in the row menu, or a double click on a value a cell cannot show): `JSON` / `JSONB` laid out over several lines, a text box that fills the window, and Save to stage the value back in the grid
 * [ ] Date/Time picker for timestamp fields
 * [x] Null state toggles (`NULL` vs. empty string `""`): `Cmd+Shift+N` sets `NULL`, and a setting decides whether typing `NULL` means the text or the value
 
