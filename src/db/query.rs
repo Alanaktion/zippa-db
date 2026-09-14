@@ -50,6 +50,12 @@ pub fn unsupported(type_name: &str) -> Cell {
     Some(format!("<{type_name}>"))
 }
 
+/// `1` / `0`, which every engine reads back as a boolean and which matches how
+/// MySQL and SQLite store one in the first place.
+pub fn boolean(value: bool) -> String {
+    if value { "1" } else { "0" }.to_string()
+}
+
 /// Binary columns are summarized rather than dumped into the grid.
 pub fn blob(bytes: &[u8]) -> Cell {
     Some(format!("<{} bytes>", bytes.len()))
@@ -107,6 +113,12 @@ mod tests {
         // An `xml` document is a value, not a description of one.
         assert!(!is_placeholder(&Some("<a>hi</a>".into())));
         assert!(!is_placeholder(&Some("<>".into())));
+    }
+
+    #[test]
+    fn booleans_are_digits() {
+        assert_eq!(boolean(true), "1");
+        assert_eq!(boolean(false), "0");
     }
 
     #[test]

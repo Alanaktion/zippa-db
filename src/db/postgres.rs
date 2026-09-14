@@ -103,7 +103,7 @@ pub(crate) fn cell(row: &PgRow, index: usize) -> Cell {
     }
 
     let value = match base {
-        "BOOL" => value!(bool),
+        "BOOL" => value!(bool, query::boolean),
         "INT2" => value!(i16),
         "INT4" => value!(i32),
         "INT8" => value!(i64),

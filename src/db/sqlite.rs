@@ -65,7 +65,7 @@ pub(crate) fn cell(row: &SqliteRow, index: usize) -> Cell {
     let value = match type_name.as_str() {
         "INTEGER" => decode!(row, index, i64),
         "REAL" => decode!(row, index, f64),
-        "BOOLEAN" => decode!(row, index, bool),
+        "BOOLEAN" => row.try_get::<bool, _>(index).ok().map(query::boolean),
         "BLOB" => row
             .try_get::<Vec<u8>, _>(index)
             .ok()
