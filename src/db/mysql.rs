@@ -81,7 +81,8 @@ pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {
     let type_name = raw.type_info().name().to_string();
 
     let value = match type_name.as_str() {
-        "BOOLEAN" | "TINYINT" => decode!(row, index, i8),
+
+        "BOOLEAN" | "TINYINT" => decode!(row, index, i8).or_else(|| decode!(row, index, u8)),
         "TINYINT UNSIGNED" => decode!(row, index, u8),
         "SMALLINT" => decode!(row, index, i16),
         "SMALLINT UNSIGNED" => decode!(row, index, u16),
