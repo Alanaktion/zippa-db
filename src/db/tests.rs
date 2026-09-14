@@ -475,3 +475,41 @@ async fn the_other_modes_still_write() {
         connection.close().await;
     }
 }
+
+#[test]
+fn a_width_free_cast_stands_in_for_one_that_would_truncate() {
+    // `cast($1 as CHAR)` is `character(1)`, and `cast($1 as BIT)` is `bit(1)`,
+    // so neither may be used for a column wider than that.
+    assert_eq!(
+        typed_placeholder(Engine::Postgres, 1, "CHAR"),
+        "cast($1 as text)"
+    );
+    assert_eq!(
+        typed_placeholder(Engine::Postgres, 2, "BIT"),
+        "cast($2 as varbit)"
+    );
+    assert_eq!(
+        typed_placeholder(Engine::Postgres, 3, "VARBIT"),
+        "cast($3 as varbit)"
+    );
+    // Everything else is cast to the column's own type.
+    assert_eq!(
+        typed_placeholder(Engine::Postgres, 1, "TIMESTAMPTZ"),
+        "cast($1 as TIMESTAMPTZ)"
+    );
+    assert_eq!(
+        typed_placeholder(Engine::Postgres, 1, "INT4[]"),
+        "cast($1 as INT4[])"
+    );
+    assert_eq!(typed_placeholder(Engine::Postgres, 1, ""), "$1");
+}
+
+#[test]
+fn mysql_bit_digits_are_converted_rather_than_stored_as_text() {
+    assert_eq!(
+        typed_placeholder(Engine::MySql, 1, "BIT"),
+        "cast(conv(?, 2, 10) as unsigned)"
+    );
+    assert_eq!(typed_placeholder(Engine::MySql, 1, "DATETIME"), "?");
+    assert_eq!(typed_placeholder(Engine::Sqlite, 1, "DATETIME"), "?");
+}

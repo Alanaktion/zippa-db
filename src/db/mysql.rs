@@ -94,7 +94,27 @@ pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {
         "DECIMAL" => decode!(row, index, sqlx::types::BigDecimal),
         "JSON" => decode!(row, index, sqlx::types::JsonValue),
         "DATE" => decode!(row, index, chrono::NaiveDate),
-        "DATETIME" | "TIMESTAMP" => decode!(row, index, chrono::NaiveDateTime),
+        "YEAR" => decode!(row, index, u16),
+        // A `BIT(n)` is shown as its digits rather than as a number, which is
+        // also what `typed_placeholder` converts back on the way in — MySQL
+        // reads a string bound to a `BIT` column as raw bytes otherwise.
+        "BIT" => row
+            .try_get::<u64, _>(index)
+            .ok()
+            .map(|bits| format!("{bits:b}")),
+        "DATETIME" => decode!(row, index, chrono::NaiveDateTime),
+        // A `TIMESTAMP` only decodes through an offset-aware type, but the
+        // server sends the same wall clock a `DATETIME` would, so the two are
+        // shown alike rather than labelled with an offset the server never
+        // gave.
+        "TIMESTAMP" => row
+            .try_get::<chrono::DateTime<chrono::Utc>, _>(index)
+            .ok()
+            .map(|value| value.naive_utc().to_string()),
+        // `TIME` is a signed span of up to 838 hours, so it only falls back to
+        // the driver's own type when it is outside a clock time.
+        "TIME" => decode!(row, index, chrono::NaiveTime)
+            .or_else(|| decode!(row, index, sqlx::mysql::types::MySqlTime)),
         // MySQL sets the wire protocol's BINARY column flag — which this
         // display name is derived from — for any `_bin` collation, not just
         // the true binary charset. So text columns using a `_bin` collation

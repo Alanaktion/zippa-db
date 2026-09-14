@@ -59,13 +59,33 @@ pub fn blob(bytes: &[u8]) -> Cell {
 ///
 /// The grid shows them, but they are a description of the value rather than
 /// the value itself, so writing one back would corrupt the row.
+///
+/// Angle brackets alone are not enough to go on: a real value can be wrapped
+/// in them too, `<a>hi</a>` from an `xml` column being the everyday case. A
+/// stand-in holds one type name, or a byte count, and so never brackets
+/// anything of its own.
 pub fn is_placeholder(cell: &Cell) -> bool {
-    matches!(cell, Some(value) if value.starts_with('<') && value.ends_with('>'))
+    let Some(value) = cell else {
+        return false;
+    };
+    let Some(inner) = value.strip_prefix('<').and_then(|v| v.strip_suffix('>')) else {
+        return false;
+    };
+    if inner.contains(['<', '>']) {
+        return false;
+    }
+    match inner.split_once(' ') {
+        Some((count, "bytes")) => count.chars().all(|c| c.is_ascii_digit()),
+        // A type name is one word; `INT4[]` and `double precision` included.
+        Some(_) | None => !inner.is_empty(),
+    }
 }
 
 /// Column types whose values never survive a round trip through text.
 pub fn is_binary_type(type_name: &str) -> bool {
     let name = type_name.trim_matches('"').to_ascii_uppercase();
+    // An array of a binary type is no more readable than one value of it.
+    let name = name.strip_suffix("[]").unwrap_or(&name);
     name == "BYTEA"
         || name.ends_with("BLOB")
         || name == "BINARY"
@@ -81,13 +101,17 @@ mod tests {
     fn stand_ins_are_recognized() {
         assert!(is_placeholder(&blob(b"abc")));
         assert!(is_placeholder(&unsupported("XML")));
+        assert!(is_placeholder(&unsupported("INT4[]")));
         assert!(!is_placeholder(&Some("plain".into())));
         assert!(!is_placeholder(&None));
+        // An `xml` document is a value, not a description of one.
+        assert!(!is_placeholder(&Some("<a>hi</a>".into())));
+        assert!(!is_placeholder(&Some("<>".into())));
     }
 
     #[test]
     fn binary_types_are_recognized() {
-        for name in ["BLOB", "bytea", "LONGBLOB", "VarBinary"] {
+        for name in ["BLOB", "bytea", "LONGBLOB", "VarBinary", "BYTEA[]"] {
             assert!(is_binary_type(name), "{name} should be binary");
         }
         for name in ["TEXT", "INT4", "VARCHAR"] {

@@ -275,10 +275,32 @@ pub(crate) fn placeholder(engine: Engine, index: usize) -> String {
 pub(crate) fn typed_placeholder(engine: Engine, index: usize, type_name: &str) -> String {
     let placeholder = placeholder(engine, index);
     match engine {
+        // A `BIT` shows as its digits, which MySQL would otherwise store as
+        // the bytes of the digits themselves.
+        Engine::MySql if type_name.eq_ignore_ascii_case("BIT") => {
+            format!("cast(conv({placeholder}, 2, 10) as unsigned)")
+        }
         Engine::Postgres if !type_name.is_empty() => {
-            format!("cast({placeholder} as {type_name})")
+            format!("cast({placeholder} as {})", cast_target(type_name))
         }
         _ => placeholder,
+    }
+}
+
+/// The type a Postgres parameter is cast to on its way into a `type_name`
+/// column.
+///
+/// Usually the column's own type, but a driver type name carries no length:
+/// `CHAR` alone means `character(1)` and `BIT` alone means `bit(1)`, so casting
+/// to either would quietly cut the value down to one character or one bit.
+/// Both have a width-free relative that the column accepts on assignment and
+/// compares against, so the cast goes through that instead and the column
+/// itself decides the width.
+fn cast_target(type_name: &str) -> &str {
+    match type_name.to_ascii_uppercase().as_str() {
+        "CHAR" | "BPCHAR" => "text",
+        "BIT" | "VARBIT" => "varbit",
+        _ => type_name,
     }
 }
 

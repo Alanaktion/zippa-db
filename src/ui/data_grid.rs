@@ -91,8 +91,10 @@ pub fn format_value(value: &Cell, type_name: &str) -> String {
 
     // A column typed as JSON is laid out even when the value is a bare
     // string; anything else has to look like JSON before it is reformatted.
-    let json = type_name.to_ascii_uppercase().starts_with("JSON")
-        || text.trim_start().starts_with(['{', '[']);
+    // An array is written in braces of its own and is never JSON.
+    let upper = type_name.to_ascii_uppercase();
+    let json = !upper.ends_with("[]")
+        && (upper.starts_with("JSON") || text.trim_start().starts_with(['{', '[']));
     if json && let Some(pretty) = pretty_json(text) {
         return pretty;
     }
