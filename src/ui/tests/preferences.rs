@@ -79,7 +79,7 @@ fn the_toolbar_button_opens_the_settings(cx: &mut TestAppContext) {
         "only the main window should be open to start with"
     );
 
-    click(cx, handle, "settings");
+    click(cx, &handle, "settings");
     assert_eq!(
         cx.update(|cx| cx.windows().len()),
         2,

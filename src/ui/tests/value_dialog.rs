@@ -92,7 +92,7 @@ fn the_dialog_saves_with_the_platform_shortcut(cx: &mut TestAppContext) {
 
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
-    draw_workspace(cx, handle);
+    draw_workspace(cx, &handle);
 
     let dialog = handle
         .update(cx, |workspace, _, _| workspace.value_dialog_for_test())
@@ -111,7 +111,7 @@ fn the_dialog_saves_with_the_platform_shortcut(cx: &mut TestAppContext) {
         })
         .unwrap();
 
-    cx.update_window(handle.into(), |_, window, cx| {
+    cx.update_window(handle.window.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
         window.press("secondary-enter", cx);
     })
@@ -147,7 +147,7 @@ fn escape_closes_the_dialog_without_saving(cx: &mut TestAppContext) {
 
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
-    draw_workspace(cx, handle);
+    draw_workspace(cx, &handle);
 
     let dialog = handle
         .update(cx, |workspace, _, _| workspace.value_dialog_for_test())
@@ -160,7 +160,7 @@ fn escape_closes_the_dialog_without_saving(cx: &mut TestAppContext) {
         })
         .unwrap();
 
-    cx.update_window(handle.into(), |_, window, cx| {
+    cx.update_window(handle.window.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
         window.press("escape", cx);
     })
@@ -202,11 +202,11 @@ fn a_click_inside_the_dialog_never_reaches_the_grid(cx: &mut TestAppContext) {
     let before = grid.read_with(cx, |grid, cx| grid.selection_for_test(cx));
 
     grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
-    draw_workspace(cx, handle);
+    draw_workspace(cx, &handle);
 
     // Clicking into the dialog's box would land on whatever grid cell lies
     // under it, if the overlay let the click through.
-    cx.update_window(handle.into(), |_, window, cx| {
+    cx.update_window(handle.window.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
         window.click("value-dialog-body", cx);
     })

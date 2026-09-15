@@ -11,11 +11,12 @@ use std::sync::Arc;
 
 use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::table::ColumnSort;
-use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::component::{Root, Theme, ThemeMode};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext as _, Bounds, InputEvent as _, Modifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, TestAppContext, WindowHandle, point, px, size,
+    AppContext as _, Bounds, Context, Entity, InputEvent as _, Modifiers, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, TestAppContext, Window, WindowHandle,
+    point, px, size,
 };
 use uuid::Uuid;
 
@@ -208,21 +209,47 @@ fn scores() -> QueryResult {
     }
 }
 
-/// A workspace window, which starts on the connection manager.
-fn workspace(cx: &mut TestAppContext) -> WindowHandle<Workspace> {
+/// A workspace window, the way `main` opens one: the workspace inside a
+/// `Root`, so the layer a dialog opens into is really there.
+struct WorkspaceWindow {
+    window: WindowHandle<Root>,
+    view: Entity<Workspace>,
+}
+
+impl WorkspaceWindow {
+    /// Reach the workspace itself, with the window the `Root` holds it in.
+    fn update<R>(
+        &self,
+        cx: &mut TestAppContext,
+        update: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> R,
+    ) -> gpui_kit::Result<R> {
+        self.window.update(cx, |_, window, cx| {
+            self.view
+                .update(cx, |workspace, cx| update(workspace, window, cx))
+        })
+    }
+}
+
+fn workspace(cx: &mut TestAppContext) -> WorkspaceWindow {
     cx.update(|cx| {
         gpui_kit::component::init(cx);
         crate::keymap::bind(cx);
     });
 
-    cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
-        Workspace::new(window, cx)
-    })
+    let view = std::cell::RefCell::new(None);
+    let window = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
+        let workspace = cx.new(|cx| Workspace::new(window, cx));
+        *view.borrow_mut() = Some(workspace.clone());
+        Root::new(workspace, window, cx)
+    });
+    let view = view.into_inner().expect("the workspace is built above");
+
+    WorkspaceWindow { window, view }
 }
 
 /// Open a connection to a database of its own from the active tab, the way
 /// the connection manager does when its Connect button succeeds.
-fn connect(cx: &mut TestAppContext, handle: WindowHandle<Workspace>) -> TempDatabase {
+fn connect(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> TempDatabase {
     let database = runtime::block_on(TempDatabase::new());
     let connection = Arc::new(
         runtime::block_on(Connection::open(database.config(), None))
@@ -240,20 +267,20 @@ fn connect(cx: &mut TestAppContext, handle: WindowHandle<Workspace>) -> TempData
     database
 }
 
-fn titles(cx: &mut TestAppContext, handle: WindowHandle<Workspace>) -> Vec<String> {
+fn titles(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> Vec<String> {
     handle
         .update(cx, |workspace, _, cx| workspace.tab_titles_for_test(cx))
         .unwrap()
 }
 
-fn active(cx: &mut TestAppContext, handle: WindowHandle<Workspace>) -> usize {
+fn active(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> usize {
     handle
         .update(cx, |workspace, _, _| workspace.active_for_test())
         .unwrap()
 }
 
-fn click(cx: &mut TestAppContext, handle: WindowHandle<Workspace>, id: &'static str) {
-    cx.update_window(handle.into(), |_, window, cx| {
+fn click(cx: &mut TestAppContext, handle: &WorkspaceWindow, id: &'static str) {
+    cx.update_window(handle.window.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
         window.click(id, cx);
     })
@@ -480,10 +507,7 @@ fn pick_through(cx: &mut TestAppContext, handle: WindowHandle<Session>, row_ix: 
 // what the items call.
 
 /// Put one saved SQLite connection in the manager's list.
-fn saved_connection(
-    cx: &mut TestAppContext,
-    handle: WindowHandle<Workspace>,
-) -> (TempDatabase, Uuid) {
+fn saved_connection(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> (TempDatabase, Uuid) {
     let database = runtime::block_on(TempDatabase::new());
     let config = database.config();
     let id = config.id;
@@ -530,11 +554,11 @@ fn workspace_table(
     cx: &mut TestAppContext,
 ) -> (
     TempDatabase,
-    WindowHandle<Workspace>,
+    WorkspaceWindow,
     gpui_kit::Entity<crate::ui::table_view::TableView>,
 ) {
     let handle = workspace(cx);
-    let database = connect(cx, handle);
+    let database = connect(cx, &handle);
 
     let session = handle
         .update(cx, |workspace, _, _| workspace.active_session_for_test())
@@ -542,7 +566,7 @@ fn workspace_table(
         .expect("the active tab should be a session");
     cx.run_until_parked();
 
-    cx.update_window(handle.into(), |_, window, cx| {
+    cx.update_window(handle.window.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("object-items", cx);
     })
@@ -557,8 +581,8 @@ fn workspace_table(
 }
 
 /// Draw the workspace, which is what picks the value up and builds the dialog.
-fn draw_workspace(cx: &mut TestAppContext, handle: WindowHandle<Workspace>) {
-    cx.update_window(handle.into(), |_, window, cx| {
+fn draw_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow) {
+    cx.update_window(handle.window.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
     })
     .unwrap();

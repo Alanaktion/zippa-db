@@ -401,7 +401,7 @@ fn middle_clicking_a_tab_closes_it(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn refresh_reloads_the_schema_and_the_open_table_but_not_a_query_tab(cx: &mut TestAppContext) {
     let handle = workspace(cx);
-    let database = connect(cx, handle);
+    let database = connect(cx, &handle);
 
     let session = handle
         .update(cx, |workspace, _, _| workspace.active_session_for_test())
@@ -410,7 +410,7 @@ fn refresh_reloads_the_schema_and_the_open_table_but_not_a_query_tab(cx: &mut Te
     cx.run_until_parked();
 
     // Open the table so refresh has rows to reread.
-    cx.update_window(handle.into(), |_, window, cx| {
+    cx.update_window(handle.window.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("object-items", cx);
     })
@@ -430,14 +430,14 @@ fn refresh_reloads_the_schema_and_the_open_table_but_not_a_query_tab(cx: &mut Te
         .expect("could not insert the extra row");
     runtime::block_on(other.close());
 
-    click(cx, handle, "refresh");
+    click(cx, &handle, "refresh");
     cx.run_until_parked();
 
     let after = view.read_with(cx, |view, _| view.loaded_rows_for_test());
     assert_eq!(after, 3, "refresh should reread the table's rows");
 
     // A query tab's buffer is the user's own SQL; refresh must not re-run it.
-    click(cx, handle, "new-query");
+    click(cx, &handle, "new-query");
     session
         .downgrade()
         .update_in(cx, |session, window, cx| {
@@ -449,7 +449,7 @@ fn refresh_reloads_the_schema_and_the_open_table_but_not_a_query_tab(cx: &mut Te
         })
         .unwrap();
 
-    click(cx, handle, "refresh");
+    click(cx, &handle, "refresh");
     cx.run_until_parked();
 
     let count = runtime::block_on(other_count(&database));
