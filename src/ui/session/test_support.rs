@@ -38,6 +38,18 @@ impl Session {
         self.tabs.iter().map(|tab| tab.title.to_string()).collect()
     }
 
+    /// Whether the tab at `index` has unsaved changes.
+    #[cfg(test)]
+    pub(crate) fn tab_is_dirty_for_test(&self, index: usize, cx: &gpui_kit::App) -> bool {
+        self.tabs[index].is_dirty(cx)
+    }
+
+    /// The tab waiting on an answer about its unsaved changes, if any.
+    #[cfg(test)]
+    pub(crate) fn closing_for_test(&self) -> Option<usize> {
+        self.closing
+    }
+
     #[cfg(test)]
     pub(crate) fn active_sql(&self, cx: &gpui_kit::App) -> String {
         match &self.tabs[self.active].content {

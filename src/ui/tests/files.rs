@@ -38,6 +38,52 @@ fn opening_a_sql_file_puts_it_in_its_own_tab(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_file_just_opened_or_saved_is_not_dirty(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let scratch = ScratchDir::new();
+    let file = scratch.file("report.sql", "SELECT 1;\n");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click("object-filter", cx);
+    })
+    .unwrap();
+    press(cx, handle, "secondary-o");
+
+    cx.simulate_path_prompt_response(|_| Some(vec![file]));
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |session, _, cx| {
+            assert!(
+                !session.tab_is_dirty_for_test(1, cx),
+                "a tab just loaded from a file has nothing unsaved"
+            );
+        })
+        .unwrap();
+
+    // Editing it dirties it again, and saving clears it once more.
+    handle
+        .update(cx, |session, window, cx| {
+            session.activate_tab_for_test(1, cx);
+            session.prepare_active_editor_for_test("SELECT 2;", window, cx);
+            assert!(session.tab_is_dirty_for_test(1, cx));
+        })
+        .unwrap();
+    press(cx, handle, "secondary-s");
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |session, _, cx| {
+            assert!(
+                !session.tab_is_dirty_for_test(1, cx),
+                "saving should clear the dirty state"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
 fn cancelling_the_open_dialog_opens_nothing(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
 

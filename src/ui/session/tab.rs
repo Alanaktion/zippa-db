@@ -53,6 +53,9 @@ pub(crate) enum TabContent {
         result: usize,
         /// Handle on the run in flight, so it can be given up on.
         running: Option<tokio::task::AbortHandle>,
+        /// The buffer's content as last opened or saved, to tell dirty from
+        /// clean.
+        baseline: String,
     },
     Table {
         view: Entity<TableView>,
@@ -70,6 +73,17 @@ impl SessionTab {
         match &self.content {
             TabContent::Table { view } => Some(view.read(cx).object().clone()),
             TabContent::Query { .. } => None,
+        }
+    }
+
+    /// Whether a query tab's buffer has changed since it was opened or last
+    /// saved. A table tab has no buffer, so it is never dirty.
+    pub(crate) fn is_dirty(&self, cx: &gpui_kit::App) -> bool {
+        match &self.content {
+            TabContent::Query {
+                editor, baseline, ..
+            } => &editor.read(cx).sql(cx) != baseline,
+            TabContent::Table { .. } => false,
         }
     }
 }

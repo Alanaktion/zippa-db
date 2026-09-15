@@ -1,2 +1,5 @@
-- Support middle mouse drag in SQL editor for multi-line select, like Zed
-- macOS menu bar basic support (nothing significant since we don't have a menu bar on other platforms yet)
+# Ideas
+
+- [ ] Support middle mouse drag in SQL editor for multi-line select, like Zed
+- [ ] Customizable keyboard shortcuts map
+- [ ] Multi-column table sorting

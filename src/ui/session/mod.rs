@@ -76,6 +76,9 @@ pub struct Session {
     /// Set when the schema could not be read; queries still work.
     metadata_error: Option<String>,
     switching: bool,
+    /// A tab close waiting on an answer, because the buffer it would lose has
+    /// unsaved changes.
+    closing: Option<usize>,
 }
 
 impl EventEmitter<SessionEvent> for Session {}
@@ -99,6 +102,7 @@ impl Session {
             matcher: None,
             metadata_error: None,
             switching: false,
+            closing: None,
         };
         session.open_tab(None, String::new(), false, window, cx);
         session.reload_metadata(cx);
@@ -134,6 +138,7 @@ impl Session {
                 results: Vec::new(),
                 result: 0,
                 running: None,
+                baseline: sql.clone(),
             },
         });
         self.active = self.tabs.len() - 1;
@@ -172,12 +177,54 @@ impl Session {
         cx.notify();
     }
 
+    /// Close a tab, asking first if it holds unsaved changes.
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if index >= self.tabs.len() {
             return;
         }
 
+        if self.tabs[index].is_dirty(cx) {
+            self.closing = Some(index);
+            cx.notify();
+            return;
+        }
+
+        self.close_tab_now(index, window, cx);
+    }
+
+    /// Leave the tab open; the buffer it would have lost is untouched either
+    /// way.
+    fn cancel_close(&mut self, cx: &mut Context<Self>) {
+        self.closing = None;
+        cx.notify();
+    }
+
+    /// Close the tab waiting on an answer about its unsaved changes.
+    fn close_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.closing.take() else {
+            return;
+        };
+        self.close_tab_now(index, window, cx);
+    }
+
+    /// Remove a tab outright; the caller has already decided unsaved changes
+    /// do not matter.
+    fn close_tab_now(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
+            return;
+        }
+
         self.tabs.remove(index);
+        // A pending confirmation about another tab still points at the one
+        // meant, once the tabs after it have shifted down.
+        if let Some(closing) = self.closing {
+            self.closing = match closing.cmp(&index) {
+                std::cmp::Ordering::Less => Some(closing),
+                std::cmp::Ordering::Equal => None,
+                std::cmp::Ordering::Greater => Some(closing - 1),
+            };
+        }
+
         if self.tabs.is_empty() {
             // The session always shows one editor.
             self.open_tab(None, String::new(), false, window, cx);
@@ -363,7 +410,7 @@ impl Session {
         sql: String,
         cx: &mut Context<Self>,
     ) {
-        let task = cx.background_spawn(sql_file::write(path.clone(), sql));
+        let task = cx.background_spawn(sql_file::write(path.clone(), sql.clone()));
 
         cx.spawn(async move |this, cx| {
             let written = task.await;
@@ -377,6 +424,7 @@ impl Session {
                     Ok(()) => {
                         this.set_status(index, Status::Done(format!("Saved {}", path.display())));
                         this.set_file(index, path, cx);
+                        this.set_baseline(index, sql);
                     }
                     Err(error) => this.set_status(index, Status::Error(format!("{error:#}"))),
                 }
@@ -399,6 +447,15 @@ impl Session {
         tab.title = sql_file::label(&path).into();
         *slot = Some(path);
         cx.notify();
+    }
+
+    /// Mark `sql` as the query tab at `index`'s clean state, as a save does.
+    fn set_baseline(&mut self, index: usize, sql: String) {
+        if let Some(TabContent::Query { baseline, .. }) =
+            self.tabs.get_mut(index).map(|tab| &mut tab.content)
+        {
+            *baseline = sql;
+        }
     }
 
     /// Put a file error where the user can see it.
@@ -829,10 +886,16 @@ impl Session {
                 let session = session.clone();
 
                 let middle_click = session.clone();
+                let dirty = tab.is_dirty(cx);
+                let label = if dirty {
+                    format!("\u{25cf} {}", tab.title)
+                } else {
+                    tab.title.to_string()
+                };
 
                 Tab::new()
                     .px_1()
-                    .label(tab.title.clone())
+                    .label(label)
                     // Middle-click closes, the way it does in a browser.
                     .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
                         if let Some(session) = middle_click.upgrade() {
@@ -844,7 +907,11 @@ impl Session {
                             .ghost()
                             .xsmall()
                             .icon(IconName::Close)
-                            .accessibility_label(format!("Close the tab {}", tab.title))
+                            .accessibility_label(if dirty {
+                                format!("Close the tab {} (unsaved changes)", tab.title)
+                            } else {
+                                format!("Close the tab {}", tab.title)
+                            })
                             .tooltip_with_action("Close tab", &CloseTab, Some("Session"))
                             .on_click(move |_, window, cx| {
                                 if let Some(session) = session.upgrade() {
@@ -1025,6 +1092,54 @@ impl Session {
             }))
     }
 
+    /// The bar asking whether to close a tab with unsaved changes.
+    fn render_close_confirm(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = self
+            .tabs
+            .get(index)
+            .map(|tab| tab.title.clone())
+            .unwrap_or_default();
+
+        h_flex()
+            .w_full()
+            .flex_none()
+            .px_3()
+            .py_1()
+            .gap_3()
+            .justify_between()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().status_bar)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().warning)
+                    .child(format!("\"{title}\" has unsaved changes.")),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("keep-tab")
+                            .ghost()
+                            .xsmall()
+                            .label("Keep tab")
+                            .tooltip("Leave the tab open")
+                            .on_click(cx.listener(|this, _, _window, cx| this.cancel_close(cx))),
+                    )
+                    .child(
+                        Button::new("close-tab-anyway")
+                            .danger()
+                            .xsmall()
+                            .label("Close Without Saving")
+                            .tooltip("Throw the changes away and close the tab")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_confirmed(window, cx)),
+                            ),
+                    ),
+            )
+    }
+
     fn render_panes(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let body = match &self.tabs[self.active].content {
             TabContent::Query {
@@ -1074,6 +1189,9 @@ impl Session {
         v_flex()
             .size_full()
             .child(self.render_tab_bar(cx))
+            .when_some(self.closing, |this, index| {
+                this.child(self.render_close_confirm(index, cx))
+            })
             .child(div().flex_1().min_h_0().child(body))
     }
 }

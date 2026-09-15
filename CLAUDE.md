@@ -53,3 +53,10 @@ Two ordering rules make the row menu work, both learned the hard way: the cell a
 **Accessibility rules of thumb.** An icon-only `Button` has no name for a screen reader unless it is given one, so every one of them carries `.accessibility_label(...)`; the same goes for a bare `Checkbox`. Where an action has a keybinding, use `.tooltip_with_action(text, &Action, Some("Context"))` rather than `.tooltip(text)` — the component renders the bound key, which is how a shortcut becomes discoverable. Anything clickable should be a `Button` rather than a `div` with `on_click`, so it is reachable by tab and answers the keyboard; the sidebar's object list is the worked example. State told by colour must also be told some other way: errors say `Error: …` in words, staged cells are underlined, deleted rows are struck through.
 
 **Tests.** `src/ui/tests/` is one file per area (`editing`, `rows`, `paging`, `safety`, `filters`, `running`, `session`, `sorting`, `layout`, `files`, `workspace`, `value_dialog`, `preferences`), with every shared fixture in `mod.rs` and each file opening with `use super::*;`. Put a new test in the file that matches what it is about, and a new fixture in `mod.rs` — a helper that only one file uses still belongs there, so the next area can find it.
+
+### Accessibility
+
+* Every icon-only button and checkbox carries a name for a screen reader
+* Tooltips show the keystroke an action is bound to, so shortcuts are discoverable from the UI
+* The sidebar's object list is reachable by keyboard
+* Nothing is told by color alone: errors say so in words, staged cells are underlined, deleted rows are struck through

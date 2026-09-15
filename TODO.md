@@ -2,12 +2,6 @@
 
 ## 1. Connection & Security
 
-### Database Driver Support
-
-* [x] PostgreSQL (including CockroachDB / Redshift support)
-* [x] MySQL / MariaDB
-* [x] SQLite
-
 ### Authentication & Security
 
 * [x] Native username/password authentication (passwords stored in the OS keychain)
@@ -17,7 +11,6 @@
 ### Connection Management
 
 * [ ] Multi-environment tagging & color-coding (e.g., Red header for `Production`, Green for `Local`)
-* [x] Several connections open at once, one tab each, with their own sessions
 * [x] Per-connection safety mode: read-only (refuses writes, and opens the session read-only at the server), confirm every write, stage inline edits until applied, or apply them when the selection leaves the row
 * [ ] Workspace state persistence (reopen previous tabs on startup)
 
@@ -28,25 +21,14 @@
 ### High-Performance Virtual Scrolling
 
 * [ ] Fast rendering for 100k+ rows with low memory overhead (virtualized rendering is in; rows are still all held in memory as strings, untested at 100k)
-* [x] Fixed header, scrollable body, and adjustable column widths
-* [x] Striped rows, switchable in the settings
-* [x] Scrollbars that stay on screen, so a wide result can be scrolled sideways with a mouse; switchable in the settings
 
 ### Inline Data Editing (Buffer Model)
 
-* [x] Staged edits, with every pending change marked in the grid: an edited cell tinted green and underlined, a new row blue, a row marked for deletion red and struck through, written by an `UPDATE` keyed on the primary key, or on `rowid` / `ctid` when there is none; views and MySQL tables without a key stay read-only
-* [x] Batch `COMMIT` / `DISCARD` (`Cmd+S` / `Cmd+Z`); multi-cell selection and bulk editing still open
-* [x] Refreshing, paging, sorting, and changing the row limit ask before they throw staged edits away
-* [x] Insert rows in the grid (a row filled in by hand, written by an `INSERT` that leaves untyped columns to the server) and mark rows for deletion from the row's context menu or with `Cmd+Backspace`, which also discards a selected new row; both wait with the edits until the changes are applied
-* [x] Multi-row selection by dragging across rows, or shift-clicking to the end of a range
 * [ ] Foreign key lookups directly from cells (click to jump to referenced row)
 
 ### Filtering, Sorting & Pagination
 
-* [x] Single-column sorting: a header cycles descending, ascending, and back to the order the server sent; multi-column still open
 * [ ] Quick search bar (global string matching across columns)
-* [x] Advanced filtering GUI: a bar above the table with one line per filter — column, operator (`=`, `<>`, `>`, `>=`, `<`, `<=`, `LIKE`, `NOT LIKE`, `IN`, `NOT IN`, `IS NULL`, `IS NOT NULL`), and a value. Values are bound as parameters, except `IN` / `NOT IN`, which take SQL so a subquery can do the filtering
-* [x] Configurable row limit & offset pagination (`LIMIT 100 OFFSET 0`) in the table view, starting from the page size in the settings
 
 ### Specialized Cell Renderers
 
@@ -62,27 +44,16 @@
 * [ ] Syntax highlighting tailored per database engine dialect
 * [ ] Auto-complete (tables, columns, SQL keywords, schemas) powered by live introspection
 * [ ] Line numbers, code folding, and auto-indentation
-* [x] Open and save `.sql` files with the native file dialogs (no unsaved-changes tracking yet)
-
-### Query Execution Engine
-
-* [x] Run single query under cursor or selected text block (`Cmd+Enter`)
-* [x] Run entire script with multi-statement support (`Cmd+Shift+Enter`), one result per statement
-* [x] Multi-tab editor (unlimited concurrent query tabs)
-* [x] Cancellable query execution (`Cmd+.` drops the task on the database runtime)
 
 ### Result Sets & Output Diagnostics
 
-* [x] Multi-result set tabs for scripts returning several results
-* [x] Execution statistics banner (rows returned or affected, statements run, time in `ms`)
-* [ ] Detailed error console with SQL error line highlighting
+* [ ] Detailed console with run queries including syntax highlighting, and their result status (error, warnings, number of rows returned/affected)
 
 ## 4. Database Schema Browser & Modeler
 
 ### Structure & Object Explorer
 
 * [ ] Left sidebar navigation tree: Databases > Schemas > Tables / Views / Functions / Procedures / Sequences (tables and views listed; database switcher in place)
-* [x] Object searching / fuzzy filtering (`Cmd+K` quick switcher): quick switcher modal using `gpui_kit::component::command` to search & switch across open tabs, tables & views, actions (New Query Tab, Open SQL File, Refresh), and databases
 
 ### Table Schema Inspector & DDL Generator
 
@@ -108,17 +79,8 @@
 * [ ] Local execution history log (searchable by date, database, or query string)
 * [ ] Reusable SQL code snippets library
 
-### App Customization
-
-* [x] Dark and Light theme support (follows the OS, or pinned to one in the settings)
-* [x] Settings window (`Cmd+,`, or the gear in the title bar): page size, editor and grid font, theme per mode, striped rows, always-visible scrollbars
-* [ ] Customizable keyboard shortcuts map
 
 ### Accessibility
 
-* [x] Every icon-only button and checkbox carries a name for a screen reader
-* [x] Tooltips show the keystroke an action is bound to, so shortcuts are discoverable from the UI
-* [x] The sidebar's object list is reachable by keyboard
-* [x] Nothing is told by colour alone: errors say so in words, staged cells are underlined, deleted rows are struck through
 * [ ] Keyboard access to the grid's row context menu
 * [ ] A full audit against a screen reader on each platform
