@@ -30,13 +30,14 @@
 * [ ] Fast rendering for 100k+ rows with low memory overhead (virtualized rendering is in; rows are still all held in memory as strings, untested at 100k)
 * [x] Fixed header, scrollable body, and adjustable column widths
 * [x] Striped rows, switchable in the settings
+* [x] Scrollbars that stay on screen, so a wide result can be scrolled sideways with a mouse; switchable in the settings
 
 ### Inline Data Editing (Buffer Model)
 
-* [x] Staged edits, with every pending change coloured in the grid: green for an edited cell, blue for a new row, red for a row marked for deletion, written by an `UPDATE` keyed on the primary key, or on `rowid` / `ctid` when there is none; views and MySQL tables without a key stay read-only
+* [x] Staged edits, with every pending change marked in the grid: an edited cell tinted green and underlined, a new row blue, a row marked for deletion red and struck through, written by an `UPDATE` keyed on the primary key, or on `rowid` / `ctid` when there is none; views and MySQL tables without a key stay read-only
 * [x] Batch `COMMIT` / `DISCARD` (`Cmd+S` / `Cmd+Z`); multi-cell selection and bulk editing still open
 * [x] Refreshing, paging, sorting, and changing the row limit ask before they throw staged edits away
-* [x] Insert rows in the grid (a row filled in by hand, written by an `INSERT` that leaves untyped columns to the server) and mark rows for deletion from the row's context menu; both wait with the edits until the changes are applied
+* [x] Insert rows in the grid (a row filled in by hand, written by an `INSERT` that leaves untyped columns to the server) and mark rows for deletion from the row's context menu or with `Cmd+Backspace`, which also discards a selected new row; both wait with the edits until the changes are applied
 * [x] Multi-row selection by dragging across rows, or shift-clicking to the end of a range
 * [ ] Foreign key lookups directly from cells (click to jump to referenced row)
 
@@ -110,5 +111,14 @@
 ### App Customization
 
 * [x] Dark and Light theme support (follows the OS, or pinned to one in the settings)
-* [x] Settings window (`Cmd+,`): page size, editor and grid font, theme per mode
+* [x] Settings window (`Cmd+,`, or the gear in the title bar): page size, editor and grid font, theme per mode, striped rows, always-visible scrollbars
 * [ ] Customizable keyboard shortcuts map
+
+### Accessibility
+
+* [x] Every icon-only button and checkbox carries a name for a screen reader
+* [x] Tooltips show the keystroke an action is bound to, so shortcuts are discoverable from the UI
+* [x] The sidebar's object list is reachable by keyboard
+* [x] Nothing is told by colour alone: errors say so in words, staged cells are underlined, deleted rows are struck through
+* [ ] Keyboard access to the grid's row context menu
+* [ ] A full audit against a screen reader on each platform

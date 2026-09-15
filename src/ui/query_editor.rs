@@ -12,6 +12,7 @@ use gpui_kit::{Context, Entity, EventEmitter, Window, actions, div};
 
 use crate::db::statement;
 use crate::settings;
+use crate::ui::session::{OpenFile, SaveFile};
 
 actions!(zippa_db, [RunQuery, RunScript]);
 
@@ -178,7 +179,12 @@ impl Render for QueryEditor {
                                     .ghost()
                                     .small()
                                     .icon(IconName::FolderOpen)
-                                    .tooltip("Open a SQL file")
+                                    .accessibility_label("Open a SQL file")
+                                    .tooltip_with_action(
+                                        "Open a SQL file",
+                                        &OpenFile,
+                                        Some("Session"),
+                                    )
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.emit(QueryEditorEvent::Open)
                                     })),
@@ -188,7 +194,12 @@ impl Render for QueryEditor {
                                     .ghost()
                                     .small()
                                     .icon(IconName::HardDrive)
-                                    .tooltip("Save to a SQL file")
+                                    .accessibility_label("Save to a SQL file")
+                                    .tooltip_with_action(
+                                        "Save to a SQL file",
+                                        &SaveFile,
+                                        Some("Session"),
+                                    )
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.emit(QueryEditorEvent::Save)
                                     })),
@@ -198,7 +209,12 @@ impl Render for QueryEditor {
                                     .ghost()
                                     .small()
                                     .icon(IconName::SquareTerminal)
-                                    .tooltip("Run every statement in the buffer")
+                                    .accessibility_label("Run every statement in the buffer")
+                                    .tooltip_with_action(
+                                        "Run every statement in the buffer",
+                                        &RunScript,
+                                        Some("QueryEditor"),
+                                    )
                                     .disabled(self.running)
                                     .on_click(
                                         cx.listener(|this, _, _window, cx| {
@@ -212,7 +228,11 @@ impl Render for QueryEditor {
                                     .small()
                                     .icon(IconName::Play)
                                     .label(if self.running { "Running…" } else { "Run" })
-                                    .tooltip("Run the selection, or the statement the caret is in")
+                                    .tooltip_with_action(
+                                        "Run the selection, or the statement the caret is in",
+                                        &RunQuery,
+                                        Some("QueryEditor"),
+                                    )
                                     .disabled(self.running)
                                     .on_click(
                                         cx.listener(|this, _, _window, cx| this.emit_run(cx)),
