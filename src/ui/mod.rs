@@ -6,6 +6,7 @@
 pub mod data_grid;
 pub mod filter_bar;
 pub mod query_editor;
+pub mod quick_switcher;
 pub mod session;
 pub mod settings_window;
 pub mod sql_file;

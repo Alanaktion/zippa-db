@@ -20,7 +20,7 @@ use gpui_kit::{
 
 use crate::db::{Connection, runtime};
 use crate::settings;
-use crate::ui::session::{NewTab, Refresh, Session, SessionEvent};
+use crate::ui::session::{NewTab, QuickSwitcher, Refresh, Session, SessionEvent};
 use crate::ui::settings_window::{self, OpenSettings};
 use crate::ui::value_dialog::{self, Dismissed, ValueView};
 use crate::ui::welcome::{Welcome, WelcomeEvent};
@@ -163,6 +163,7 @@ impl Workspace {
             self.active -= 1;
         }
         self.active = self.active.min(self.tabs.len() - 1);
+        self.focus_active(window, cx);
         cx.notify();
     }
 
@@ -214,6 +215,7 @@ impl Workspace {
         // Disconnecting keeps the tab, so another connection can be opened
         // from where the last one was.
         self.tabs[index] = TabContent::Connect(Self::welcome(window, cx));
+        self.focus_active(window, cx);
         cx.notify();
     }
 
@@ -377,6 +379,28 @@ impl Workspace {
         }
     }
 
+    fn on_quick_switcher_click(
+        &mut self,
+        _: &gpui_kit::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = self.active_session() {
+            crate::ui::quick_switcher::open(session, window, cx);
+        }
+    }
+
+    fn on_quick_switcher(
+        &mut self,
+        _: &QuickSwitcher,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = self.active_session() {
+            crate::ui::quick_switcher::open(session, window, cx);
+        }
+    }
+
     fn on_refresh_click(
         &mut self,
         _: &gpui_kit::ClickEvent,
@@ -449,6 +473,16 @@ impl Workspace {
                     // Every button here is icon-only, so each one carries the
                     // name a screen reader announces: without it there is
                     // nothing to announce but the icon's file.
+                    .child(
+                        Button::new("quick-switcher")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Search)
+                            .accessibility_label("Quick switcher")
+                            .tooltip_with_action("Quick switcher", &QuickSwitcher, Some("Session"))
+                            .disabled(!connected)
+                            .on_click(cx.listener(Self::on_quick_switcher_click)),
+                    )
                     .child(
                         Button::new("refresh")
                             .ghost()
@@ -526,6 +560,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_connection))
             .on_action(cx.listener(Self::on_next_connection))
             .on_action(cx.listener(Self::on_previous_connection))
+            .on_action(cx.listener(Self::on_quick_switcher))
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))

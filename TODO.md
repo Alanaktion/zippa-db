@@ -82,7 +82,7 @@
 ### Structure & Object Explorer
 
 * [ ] Left sidebar navigation tree: Databases > Schemas > Tables / Views / Functions / Procedures / Sequences (tables and views listed; database switcher in place)
-* [ ] Object searching / fuzzy filtering (`Cmd+K` quick switcher) — sidebar has a regex filter; the quick switcher is still open
+* [x] Object searching / fuzzy filtering (`Cmd+K` quick switcher): quick switcher modal using `gpui_kit::component::command` to search & switch across open tabs, tables & views, actions (New Query Tab, Open SQL File, Refresh), and databases
 
 ### Table Schema Inspector & DDL Generator
 

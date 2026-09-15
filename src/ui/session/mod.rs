@@ -27,7 +27,7 @@ use crate::ui::sql_file;
 use crate::ui::table_view::TableView;
 
 mod sidebar;
-mod tab;
+pub(crate) mod tab;
 #[cfg(test)]
 mod test_support;
 
@@ -46,7 +46,8 @@ actions!(
         SaveFile,
         SaveFileAs,
         Refresh,
-        CancelQuery
+        CancelQuery,
+        QuickSwitcher,
     ]
 );
 
@@ -108,7 +109,7 @@ impl Session {
     ///
     /// `title` defaults to a running "Query N"; `run` executes `sql` right
     /// away, which is how the sidebar opens a table.
-    fn open_tab(
+    pub(crate) fn open_tab(
         &mut self,
         title: Option<String>,
         sql: String,
@@ -144,10 +145,9 @@ impl Session {
     }
 
     /// Open a table or view from the sidebar in its own tab.
-    /// Open a table or view from the sidebar in its own tab.
     ///
     /// A table already open is brought forward rather than opened twice.
-    fn open_object(
+    pub(crate) fn open_object(
         &mut self,
         object: &DatabaseObject,
         window: &mut Window,
@@ -188,11 +188,27 @@ impl Session {
         cx.notify();
     }
 
-    fn activate_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(crate) fn activate_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.tabs.len() && index != self.active {
             self.active = index;
             cx.notify();
         }
+    }
+
+    pub(crate) fn tabs(&self) -> &[SessionTab] {
+        &self.tabs
+    }
+
+    pub(crate) fn active_tab_index(&self) -> usize {
+        self.active
+    }
+
+    pub(crate) fn objects(&self) -> &[DatabaseObject] {
+        &self.objects
+    }
+
+    pub(crate) fn databases(&self) -> &[String] {
+        &self.databases
     }
 
     fn on_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -215,11 +231,25 @@ impl Session {
     /// SQL, run verbatim, and re-running it could repeat a write.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         self.reload_metadata(cx);
+        self.reload_active_table(cx);
+    }
+
+    pub(crate) fn reload_active_table(&mut self, cx: &mut Context<Self>) {
         if let Some(TabContent::Table { view }) = self.tabs.get(self.active).map(|tab| &tab.content)
         {
             let view = view.clone();
             view.update(cx, |view, cx| view.refresh(cx));
         }
+    }
+
+    fn on_quick_switcher(
+        &mut self,
+        _: &QuickSwitcher,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = cx.entity().clone();
+        crate::ui::quick_switcher::open(session, window, cx);
     }
 
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -239,7 +269,7 @@ impl Session {
     }
 
     /// Ask for SQL files and give each one its own tab.
-    fn open_file(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn open_file(&mut self, cx: &mut Context<Self>) {
         let prompt = sql_file::prompt_for_open(cx);
 
         cx.spawn(async move |this, cx| {
@@ -420,7 +450,7 @@ impl Session {
     }
 
     /// Read the database list and the current database's tables and views.
-    fn reload_metadata(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn reload_metadata(&mut self, cx: &mut Context<Self>) {
         let connection = self.connection.clone();
         let task =
             runtime::spawn(
@@ -1060,6 +1090,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_save_file_as))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::cancel_query))
+            .on_action(cx.listener(Self::on_quick_switcher))
             .child(
                 h_resizable("session-columns")
                     .with_state(&self.columns)

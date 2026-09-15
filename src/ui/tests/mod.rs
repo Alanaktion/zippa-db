@@ -38,6 +38,7 @@ mod filters;
 mod layout;
 mod paging;
 mod preferences;
+mod quick_switcher;
 mod rows;
 mod running;
 mod safety;
