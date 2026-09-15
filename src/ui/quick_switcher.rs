@@ -49,7 +49,6 @@ pub fn open(session: Entity<Session>, window: &mut Window, cx: &mut App) {
 
     let switcher = cx.new(|cx| QuickSwitcherView::new(session, window, cx));
     let state = switcher.read(cx).state.clone();
-    state.update(cx, |state, cx| state.focus(window, cx));
 
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
@@ -61,6 +60,8 @@ pub fn open(session: Entity<Session>, window: &mut Window, cx: &mut App) {
             .keyboard(true)
             .child(switcher.clone())
     });
+
+    state.update(cx, |state, cx| state.focus(window, cx));
 }
 
 impl Render for QuickSwitcherView {
