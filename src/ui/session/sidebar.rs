@@ -5,9 +5,10 @@
 //! kept apart from the session that owns them.
 
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::list::ListItem;
+use gpui_kit::component::tree::{TreeItem, tree};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, SharedString, Window, div};
@@ -31,6 +32,7 @@ impl Session {
 
         let pattern = filter.read(cx).value().trim().to_string();
         self.matcher = compile_filter(&pattern);
+        self.rebuild_tree(cx);
         cx.notify();
     }
 
@@ -44,6 +46,34 @@ impl Session {
             })
             .collect()
     }
+
+    /// Refill the tree from whatever the filter currently lets through, then
+    /// point its selection at the active tab again — new items mean a fresh
+    /// [`TreeState`], which forgets which one was selected.
+    pub(super) fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
+        let items = self
+            .visible_objects()
+            .into_iter()
+            .map(|object| TreeItem::new(object.label(), object.label()))
+            .collect::<Vec<_>>();
+        self.objects_tree
+            .update(cx, |tree, cx| tree.set_items(items, cx));
+        self.sync_tree_selection(cx);
+    }
+
+    /// Highlight the table the active tab shows, or nothing for a query tab.
+    pub(super) fn sync_tree_selection(&mut self, cx: &mut Context<Self>) {
+        let label = self
+            .tabs
+            .get(self.active)
+            .and_then(|tab| tab.object(cx))
+            .map(|object| object.label());
+        self.objects_tree.update(cx, |tree, cx| {
+            let index = label.and_then(|label| tree.index_of(&SharedString::from(label)));
+            tree.set_selected_index(index, cx);
+        });
+    }
+
     fn render_objects(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let objects = self.visible_objects();
         let filtering = self.matcher.is_some();
@@ -71,6 +101,8 @@ impl Session {
             "TABLES & VIEWS".to_string()
         };
 
+        let session = cx.entity();
+
         v_flex()
             .flex_1()
             .min_h_0()
@@ -92,34 +124,21 @@ impl Session {
                 this.child(div().px_1().text_xs().text_color(color).child(message))
             })
             .child(
-                div()
-                    .id("objects")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .child(
-                        v_flex()
-                            .w_full()
-                            // A button rather than a clickable row: the list
-                            // is then reachable by tab, answers the keyboard,
-                            // and announces a name of its own.
-                            .children(objects.into_iter().map(|object| {
-                                let label = object.label();
-                                let kind = object.kind;
-                                let object = object.clone();
-                                let what = match kind {
-                                    ObjectKind::View => "view",
-                                    ObjectKind::Table => "table",
-                                };
+                div().id("objects").flex_1().min_h_0().child(
+                    tree(
+                        &self.objects_tree,
+                        move |_ix, entry, selected, _window, cx| {
+                            session.update(cx, |this, cx| {
+                                let label = entry.item().label.clone();
+                                let object = this
+                                    .objects
+                                    .iter()
+                                    .find(|object| object.label() == label.as_ref())
+                                    .cloned();
+                                let kind = object.as_ref().map(|object| object.kind);
 
-                                Button::new(SharedString::from(format!("object-{label}")))
-                                    .ghost()
-                                    .small()
-                                    .w_full()
-                                    // The name is a child rather than the
-                                    // button's own label so it can sit at the
-                                    // left, where a list of names is read
-                                    // from; a button's label is centred.
+                                ListItem::new(SharedString::from(format!("object-{label}")))
+                                    .selected(selected)
                                     .child(
                                         h_flex()
                                             .w_full()
@@ -127,7 +146,7 @@ impl Session {
                                             .gap_2()
                                             .justify_between()
                                             .child(div().text_sm().truncate().child(label.clone()))
-                                            .when(kind == ObjectKind::View, |this| {
+                                            .when(kind == Some(ObjectKind::View), |this| {
                                                 this.child(
                                                     div()
                                                         .flex_none()
@@ -137,13 +156,16 @@ impl Session {
                                                 )
                                             }),
                                     )
-                                    .accessibility_label(format!("Open the {what} {label}"))
-                                    .tooltip(format!("Open the {what} {label}"))
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_object(&object, window, cx)
+                                        if let Some(object) = object.clone() {
+                                            this.open_object(&object, window, cx);
+                                        }
                                     }))
-                            })),
-                    ),
+                            })
+                        },
+                    )
+                    .size_full(),
+                ),
             )
     }
 

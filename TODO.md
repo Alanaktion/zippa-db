@@ -32,10 +32,7 @@
 
 ### Specialized Cell Renderers
 
-* [x] Value dialog (`Cmd+Shift+V`, "View value" in the row menu, or a double click on a value a cell cannot show): `JSON` / `JSONB` laid out over several lines, a text box that fills the dialog, `Cmd+Enter` to stage the value back in the grid, `Escape` to close
-* [x] Non-string types shown and edited as the text the server reads back: booleans, dates, times, timestamps (with the offset where the column carries one), intervals, numerics, money, UUIDs, network and MAC addresses, bit strings, XML, and Postgres arrays of any of them
 * [ ] Date/Time picker for timestamp fields
-* [x] Null state toggles (`NULL` vs. empty string `""`): `Cmd+Shift+N` sets `NULL`, and a setting decides whether typing `NULL` means the text or the value
 
 ## 3. SQL Query Editor
 

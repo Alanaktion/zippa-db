@@ -8,5 +8,5 @@ indent_size = 4
 [*.svg]
 indent_size = 2
 
-[*.json]
+[{*.json,*.yml}]
 indent_size = 2

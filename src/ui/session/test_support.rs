@@ -207,6 +207,16 @@ impl Session {
         self.databases = databases;
         self.objects = objects;
         self.metadata_error = None;
+        self.rebuild_tree(cx);
         cx.notify();
+    }
+
+    /// The sidebar tree's highlighted object, if any.
+    #[cfg(test)]
+    pub(crate) fn selected_object_label_for_test(&self, cx: &gpui_kit::App) -> Option<String> {
+        self.objects_tree
+            .read(cx)
+            .selected_item()
+            .map(|item| item.id.to_string())
     }
 }

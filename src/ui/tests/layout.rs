@@ -289,9 +289,10 @@ fn long_object_lists_scroll_inside_the_sidebar(cx: &mut TestAppContext) {
             first.bounds()
         );
 
-        // The 200th row is far past the sidebar, so it must be scrolled out of
-        // view rather than stretching the panel.
-        assert!(!window.find("object-table_199").visible());
+        // The 200th row is far past the sidebar; the tree virtualizes its
+        // rows, so a row this far out of view is not rendered at all rather
+        // than merely hidden.
+        assert!(window.try_find("object-table_199").is_none());
     })
     .unwrap();
 }

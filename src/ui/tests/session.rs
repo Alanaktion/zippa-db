@@ -99,6 +99,48 @@ fn opening_the_same_table_twice_focuses_the_open_tab(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_sidebar_highlights_the_table_the_active_tab_shows(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    handle
+        .update(cx, |session, _, cx| {
+            assert_eq!(
+                session.selected_object_label_for_test(cx),
+                None,
+                "a fresh query tab highlights nothing"
+            );
+        })
+        .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click("object-items", cx);
+    })
+    .unwrap();
+
+    handle
+        .update(cx, |session, window, cx| {
+            assert_eq!(
+                session.selected_object_label_for_test(cx),
+                Some("items".to_string()),
+                "opening a table should highlight it in the sidebar"
+            );
+
+            // Back to a query tab: nothing in the sidebar should stay lit.
+            session.open_tab_for_test(window, cx);
+            assert_eq!(session.selected_object_label_for_test(cx), None);
+
+            // Switching back to the table tab restores the highlight.
+            session.activate_tab_for_test(1, cx);
+            assert_eq!(
+                session.selected_object_label_for_test(cx),
+                Some("items".to_string())
+            );
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
 fn each_tab_keeps_its_own_result(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
 

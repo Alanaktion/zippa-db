@@ -339,7 +339,7 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
 
         TabBar::new("connection-tabs")
-            .with_variant(TabVariant::Pill)
+            .with_variant(TabVariant::Outline)
             .p_1()
             .selected_index(self.active)
             .on_click(

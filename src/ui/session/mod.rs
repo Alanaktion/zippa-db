@@ -8,6 +8,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::tree::TreeState;
 use gpui_kit::component::{
     ActiveTheme, Disableable, IconName, ResizableState, Sizable, h_flex, h_resizable,
     resizable_panel, v_flex, v_resizable,
@@ -73,6 +74,9 @@ pub struct Session {
     filter: Entity<InputState>,
     /// Compiled form of the filter; `None` means "show everything".
     matcher: Option<Regex>,
+    /// The sidebar's object list; its selection follows the active tab's
+    /// table, cleared for a query tab.
+    objects_tree: Entity<TreeState>,
     /// Set when the schema could not be read; queries still work.
     metadata_error: Option<String>,
     switching: bool,
@@ -100,6 +104,7 @@ impl Session {
             objects: Vec::new(),
             filter,
             matcher: None,
+            objects_tree: cx.new(|cx| TreeState::new(cx)),
             metadata_error: None,
             switching: false,
             closing: None,
@@ -142,6 +147,7 @@ impl Session {
             },
         });
         self.active = self.tabs.len() - 1;
+        self.sync_tree_selection(cx);
 
         if run && !sql.trim().is_empty() {
             self.run(self.active, sql, cx);
@@ -174,6 +180,7 @@ impl Session {
             content: TabContent::Table { view },
         });
         self.active = self.tabs.len() - 1;
+        self.sync_tree_selection(cx);
         cx.notify();
     }
 
@@ -232,12 +239,14 @@ impl Session {
         }
 
         self.active = self.active.min(self.tabs.len() - 1);
+        self.sync_tree_selection(cx);
         cx.notify();
     }
 
     pub(crate) fn activate_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.tabs.len() && index != self.active {
             self.active = index;
+            self.sync_tree_selection(cx);
             cx.notify();
         }
     }
@@ -531,6 +540,7 @@ impl Session {
                     }
                     Err(_) => this.metadata_error = Some("reading the schema was cancelled".into()),
                 }
+                this.rebuild_tree(cx);
                 cx.notify();
             })
             .ok();
@@ -569,6 +579,7 @@ impl Session {
                         runtime::spawn(async move { previous.close().await });
 
                         this.objects.clear();
+                        this.rebuild_tree(cx);
                         let connection = this.connection.clone();
                         for index in 0..this.tabs.len() {
                             match &this.tabs[index].content {
