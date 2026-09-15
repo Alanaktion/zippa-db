@@ -11,18 +11,24 @@ use std::sync::Arc;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, TitleBar, h_flex, v_flex,
+    ActiveTheme, Disableable, Icon, IconName, Root, Sizable, TitleBar, WindowExt, h_flex, v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, Entity, FocusHandle, MouseButton, SharedString, Window, actions, div, px,
+    App, Context, Entity, FocusHandle, MouseButton, Pixels, SharedString, Window, actions, div, px,
 };
 
 use crate::db::{Connection, runtime};
 use crate::settings;
-use crate::ui::session::{Session, SessionEvent};
+use crate::ui::session::{NewTab, QuickSwitcher, Refresh, Session, SessionEvent};
+use crate::ui::settings_window::{self, OpenSettings};
 use crate::ui::value_dialog::{self, Dismissed, ValueView};
 use crate::ui::welcome::{Welcome, WelcomeEvent};
+
+/// The value dialog is a reading pane rather than a prompt, so it is wider
+/// and taller than a dialog's default.
+const VALUE_DIALOG_WIDTH: Pixels = px(640.);
+const VALUE_DIALOG_HEIGHT: Pixels = px(416.);
 
 actions!(
     zippa_db,
@@ -157,6 +163,7 @@ impl Workspace {
             self.active -= 1;
         }
         self.active = self.active.min(self.tabs.len() - 1);
+        self.focus_active(window, cx);
         cx.notify();
     }
 
@@ -208,25 +215,57 @@ impl Workspace {
         // Disconnecting keeps the tab, so another connection can be opened
         // from where the last one was.
         self.tabs[index] = TabContent::Connect(Self::welcome(window, cx));
+        self.focus_active(window, cx);
         cx.notify();
     }
 
     /// Show the value a grid asked for, if one is waiting.
     ///
     /// A cell has no window to build a text box with, so it leaves the value
-    /// in a global and the dialog is built here, where there is one.
+    /// in a global and the dialog is opened here, where there is one. The
+    /// surface is `gpui_kit`'s `Dialog`, so the focus trap and the overlay
+    /// that keeps mouse events off the grid behind come with it; the view
+    /// this workspace holds is only the body inside it.
     fn take_value_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(request) = value_dialog::take(cx) else {
             return;
         };
 
         let view = cx.new(|cx| ValueView::new(request, window, cx));
+        // Saving or dismissing from inside the body closes the dialog from
+        // this side; the routes the dialog answers itself (its close button,
+        // a press on the overlay) come back through `on_close` below.
         cx.subscribe_in(&view, window, |this, _, _: &Dismissed, window, cx| {
             this.value = None;
+            window.close_dialog(cx);
             this.focus_active(window, cx);
             cx.notify();
         })
         .detach();
+
+        let workspace = cx.entity().downgrade();
+        let body = view.clone();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let workspace = workspace.clone();
+            dialog
+                // The body carries its own heading and its own buttons, so
+                // the dialog contributes the surface alone.
+                .w(VALUE_DIALOG_WIDTH)
+                .h(VALUE_DIALOG_HEIGHT)
+                .close_button(false)
+                // `enter` is the text box's own key and the box is
+                // multi-line, so the dialog's keys are left to `ValueDialog`.
+                .keyboard(false)
+                .on_close(move |_, _window, cx| {
+                    workspace
+                        .update(cx, |this, cx| {
+                            this.value = None;
+                            cx.notify();
+                        })
+                        .ok();
+                })
+                .child(body.clone())
+        });
 
         view.update(cx, |view, cx| view.focus(window, cx));
         self.value = Some(view);
@@ -316,7 +355,12 @@ impl Workspace {
                             .ghost()
                             .xsmall()
                             .icon(IconName::Close)
-                            .tooltip("Close connection")
+                            .accessibility_label(format!("Close {}", tab.title(cx)))
+                            .tooltip_with_action(
+                                "Close connection",
+                                &CloseConnection,
+                                Some("Workspace"),
+                            )
                             .on_click(move |_, window, cx| {
                                 if let Some(workspace) = close_button.upgrade() {
                                     workspace
@@ -332,6 +376,28 @@ impl Workspace {
         match self.tabs.get(self.active)? {
             TabContent::Session(session) => Some(session.clone()),
             TabContent::Connect(_) => None,
+        }
+    }
+
+    fn on_quick_switcher_click(
+        &mut self,
+        _: &gpui_kit::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = self.active_session() {
+            crate::ui::quick_switcher::open(session, window, cx);
+        }
+    }
+
+    fn on_quick_switcher(
+        &mut self,
+        _: &QuickSwitcher,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = self.active_session() {
+            crate::ui::quick_switcher::open(session, window, cx);
         }
     }
 
@@ -404,12 +470,26 @@ impl Workspace {
                     .px_1()
                     .flex_none()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    // Every button here is icon-only, so each one carries the
+                    // name a screen reader announces: without it there is
+                    // nothing to announce but the icon's file.
+                    .child(
+                        Button::new("quick-switcher")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Search)
+                            .accessibility_label("Quick switcher")
+                            .tooltip_with_action("Quick switcher", &QuickSwitcher, Some("Session"))
+                            .disabled(!connected)
+                            .on_click(cx.listener(Self::on_quick_switcher_click)),
+                    )
                     .child(
                         Button::new("refresh")
                             .ghost()
                             .xsmall()
                             .icon(gpui_kit::assets::IconName::RefreshCw)
-                            .tooltip("Refresh")
+                            .accessibility_label("Refresh")
+                            .tooltip_with_action("Refresh", &Refresh, Some("Session"))
                             .disabled(!connected)
                             .on_click(cx.listener(Self::on_refresh_click)),
                     )
@@ -418,7 +498,8 @@ impl Workspace {
                             .ghost()
                             .xsmall()
                             .icon(gpui_kit::assets::IconName::FilePlus)
-                            .tooltip("New query")
+                            .accessibility_label("New query")
+                            .tooltip_with_action("New query", &NewTab, Some("Session"))
                             .disabled(!connected)
                             .on_click(cx.listener(Self::on_new_query_click)),
                     )
@@ -427,12 +508,28 @@ impl Workspace {
                             .ghost()
                             .xsmall()
                             .icon(gpui_kit::assets::IconName::DatabasePlus)
-                            .tooltip("Open another connection")
+                            .accessibility_label("Open another connection")
+                            .tooltip_with_action(
+                                "Open another connection",
+                                &NewConnection,
+                                Some("Workspace"),
+                            )
                             .on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.open_connect_tab(window, cx)
                                 }),
                             ),
+                    )
+                    // The settings used to be reachable only by a keystroke
+                    // nobody is told about, so they get a button of their own.
+                    .child(
+                        Button::new("settings")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Settings)
+                            .accessibility_label("Settings")
+                            .tooltip_with_action("Settings", &OpenSettings, None)
+                            .on_click(|_, _window, cx| settings_window::open(cx)),
                     ),
             )
     }
@@ -446,6 +543,9 @@ fn close(connection: Arc<Connection>) {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.take_value_dialog(window, cx);
+        // Taking it first puts the dialog in the root's list in time for this
+        // layer, so it is on screen in the frame that asked for it.
+        let dialogs = Root::render_dialog_layer(window, cx);
 
         let body = match &self.tabs[self.active] {
             TabContent::Connect(welcome) => welcome.clone().into_any_element(),
@@ -460,6 +560,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_connection))
             .on_action(cx.listener(Self::on_next_connection))
             .on_action(cx.listener(Self::on_previous_connection))
+            .on_action(cx.listener(Self::on_quick_switcher))
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
@@ -471,16 +572,10 @@ impl Render for Workspace {
                     .border_color(cx.theme().border)
                     .child(self.render_tab_bar(cx)),
             )
-            .child(
-                // The dialog covers the window rather than a pane of it, so
-                // it sits beside the body in a stack of its own.
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .child(div().size_full().child(body))
-                    .children(self.value.clone()),
-            )
+            .child(div().flex_1().min_h_0().child(body))
+            // The value dialog lives in the window's `Root` rather than in the
+            // tree above, so it covers the whole window and takes the focus.
+            .children(dialogs)
     }
 }
 

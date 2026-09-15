@@ -17,7 +17,7 @@ use crate::app::Workspace;
 
 // The default component bundle carries only the 101 icons the components
 // themselves use; the toolbar wants a few more from the wider Lucide catalog.
-gpui_kit::assets::icon_assets!(ToolbarIcons, [RefreshCw, FilePlus, DatabasePlus]);
+gpui_kit::assets::icon_assets!(ToolbarIcons, [RefreshCw, FilePlus, DatabasePlus, Settings]);
 
 #[derive(Clone, Copy, Default)]
 struct AppAssets;

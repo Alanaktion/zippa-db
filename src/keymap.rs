@@ -8,7 +8,9 @@ use gpui_kit::{App, KeyBinding};
 use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
 use crate::ui::data_grid::ViewCell;
 use crate::ui::query_editor::{RunQuery, RunScript};
-use crate::ui::session::{CancelQuery, CloseTab, NewTab, OpenFile, Refresh, SaveFile, SaveFileAs};
+use crate::ui::session::{
+    CancelQuery, CloseTab, NewTab, OpenFile, QuickSwitcher, Refresh, SaveFile, SaveFileAs,
+};
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::table_view::{
     ApplyEdits, CancelEdit, DeleteRows, DiscardEdits, EditCell, InsertRow, RestoreRows, SetNull,
@@ -17,6 +19,19 @@ use crate::ui::value_dialog::{CloseValue, SaveValue};
 
 pub fn bind(cx: &mut App) {
     cx.bind_keys([
+        // Quick switcher / fuzzy object palette across tabs, tables, views, databases, and actions.
+        KeyBinding::new("secondary-k", QuickSwitcher, Some("Session")),
+        KeyBinding::new("secondary-k", QuickSwitcher, Some("QueryEditor > Input")),
+        KeyBinding::new("secondary-k", QuickSwitcher, Some("QueryEditor")),
+        KeyBinding::new("secondary-k", QuickSwitcher, Some("TableView")),
+        KeyBinding::new("secondary-k", QuickSwitcher, Some("TableView > DataTable")),
+        KeyBinding::new(
+            "secondary-k",
+            QuickSwitcher,
+            Some("TableView > DataTable > Input"),
+        ),
+        KeyBinding::new("secondary-k", QuickSwitcher, Some("DataGrid > DataTable")),
+        KeyBinding::new("secondary-k", QuickSwitcher, Some("Workspace")),
         // The editor's own `Input` context already binds `secondary-enter`
         // (it would insert a newline), so this binds the more specific
         // "Input inside a QueryEditor" to win at that node.

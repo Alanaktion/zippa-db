@@ -338,6 +338,7 @@ impl Welcome {
                             .ghost()
                             .xsmall()
                             .icon(IconName::Close)
+                            .accessibility_label(format!("Delete {}", config.display_name()))
                             .tooltip("Delete connection")
                             .on_click(
                                 cx.listener(move |this, _, window, cx| this.delete(id, window, cx)),
@@ -436,7 +437,9 @@ impl Welcome {
             Status::Idle => (String::new(), cx.theme().muted_foreground),
             Status::Connecting => ("Connecting…".to_string(), cx.theme().muted_foreground),
             Status::Message(message) => (message.clone(), cx.theme().muted_foreground),
-            Status::Error(error) => (error.clone(), cx.theme().danger),
+            // Named rather than only coloured, the way the session's own
+            // status bar names its errors.
+            Status::Error(error) => (format!("Error: {error}"), cx.theme().danger),
         };
 
         v_flex()

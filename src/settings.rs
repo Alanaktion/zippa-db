@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::{LazyLock, OnceLock};
 
 use anyhow::{Context as _, Result};
+use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, Global, SharedString, Window, WindowAppearance};
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,12 @@ pub struct Settings {
     pub coerce_null_literal: bool,
     /// Whether the result grid tints every other row.
     pub stripe_rows: bool,
+    /// Whether scrollbars stay on screen instead of fading out when idle.
+    ///
+    /// On by default: a wide result is scrolled sideways by dragging its
+    /// scrollbar, and a bar that is only there while it is already moving
+    /// cannot be grabbed with a mouse.
+    pub always_show_scrollbars: bool,
 }
 
 impl Default for Settings {
@@ -100,6 +107,7 @@ impl Default for Settings {
             grid_font: None,
             coerce_null_literal: false,
             stripe_rows: true,
+            always_show_scrollbars: true,
         }
     }
 }
@@ -181,6 +189,21 @@ fn apply(window: Option<&mut Window>, cx: &mut App) {
         .unwrap_or_else(|| cx.window_appearance());
 
     Theme::change(mode_for(settings.appearance, system), window, cx);
+    apply_scrollbars(settings.always_show_scrollbars, cx);
+}
+
+/// Put the scrollbar setting into effect.
+///
+/// `Theme::change` rebuilds the projection the scrollbars read, so this runs
+/// after it rather than only when the setting is changed. Turning it off hands
+/// the decision back to the system, which is what the component library does
+/// on its own.
+fn apply_scrollbars(always: bool, cx: &mut App) {
+    if always {
+        Theme::set_scrollbar_mode(ScrollbarMode::Always, cx);
+    } else {
+        Theme::sync_scrollbar_appearance(cx);
+    }
 }
 
 /// The theme mode an appearance setting asks for on a system that is `system`.
@@ -341,6 +364,22 @@ mod tests {
         assert_eq!(settings.page_size, 50);
         assert_eq!(settings.appearance, Appearance::Auto);
         assert_eq!(settings.editor_font, None);
+        assert!(
+            settings.always_show_scrollbars,
+            "a file written before the setting existed should still show scrollbars"
+        );
+    }
+
+    #[test]
+    fn the_scrollbar_setting_survives_a_round_trip_through_the_file() {
+        let settings = Settings {
+            always_show_scrollbars: false,
+            ..Settings::default()
+        };
+
+        let written = serde_json::to_string(&settings).expect("settings should serialize");
+        let read: Settings = serde_json::from_str(&written).expect("settings should parse");
+        assert!(!read.always_show_scrollbars);
     }
 
     #[test]

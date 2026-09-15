@@ -4,11 +4,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::InputState;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
     ActiveTheme, Disableable, IconName, ResizableState, Sizable, h_flex, h_resizable,
@@ -19,14 +17,21 @@ use gpui_kit::{
     Context, Entity, EventEmitter, MouseButton, SharedString, Window, actions, div, px,
 };
 
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 
 use crate::db::query::QueryResult;
-use crate::db::{Connection, DatabaseObject, ObjectKind, runtime, statement};
+use crate::db::{Connection, DatabaseObject, runtime, statement};
 use crate::ui::data_grid::DataGrid;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
 use crate::ui::sql_file;
 use crate::ui::table_view::TableView;
+
+mod sidebar;
+pub(crate) mod tab;
+#[cfg(test)]
+mod test_support;
+
+use tab::{SessionTab, Status, TabContent};
 
 /// Starting pane sizes; the user drags from here.
 const SIDEBAR_WIDTH: f32 = 260.;
@@ -41,7 +46,8 @@ actions!(
         SaveFile,
         SaveFileAs,
         Refresh,
-        CancelQuery
+        CancelQuery,
+        QuickSwitcher,
     ]
 );
 
@@ -49,54 +55,6 @@ pub enum SessionEvent {
     /// The user closed the session; the workspace returns to the connection
     /// manager and drains the pool.
     Disconnected,
-}
-
-enum Status {
-    Idle,
-    Running,
-    Done(String),
-    Error(String),
-    /// A statement that writes, held back on a connection that confirms
-    /// writes. The buffer it came from is what the user reads; this is the
-    /// copy that runs if they say yes.
-    Confirm(String),
-}
-
-/// What a tab holds: a query editor with its result, or a table opened from
-/// the sidebar.
-enum TabContent {
-    Query {
-        editor: Entity<QueryEditor>,
-        grid: Entity<DataGrid>,
-        status: Status,
-        /// The SQL file the buffer was read from or last written to.
-        path: Option<PathBuf>,
-        /// Every result the last run produced. A script that selects twice
-        /// leaves two here, and the grid shows one of them at a time.
-        results: Vec<QueryResult>,
-        /// Which of them the grid is showing.
-        result: usize,
-        /// Handle on the run in flight, so it can be given up on.
-        running: Option<tokio::task::AbortHandle>,
-    },
-    Table {
-        view: Entity<TableView>,
-    },
-}
-
-struct SessionTab {
-    title: SharedString,
-    content: TabContent,
-}
-
-impl SessionTab {
-    /// The table this tab shows, if it is a table tab.
-    fn object(&self, cx: &gpui_kit::App) -> Option<DatabaseObject> {
-        match &self.content {
-            TabContent::Table { view } => Some(view.read(cx).object().clone()),
-            TabContent::Query { .. } => None,
-        }
-    }
 }
 
 pub struct Session {
@@ -151,7 +109,7 @@ impl Session {
     ///
     /// `title` defaults to a running "Query N"; `run` executes `sql` right
     /// away, which is how the sidebar opens a table.
-    fn open_tab(
+    pub(crate) fn open_tab(
         &mut self,
         title: Option<String>,
         sql: String,
@@ -187,10 +145,9 @@ impl Session {
     }
 
     /// Open a table or view from the sidebar in its own tab.
-    /// Open a table or view from the sidebar in its own tab.
     ///
     /// A table already open is brought forward rather than opened twice.
-    fn open_object(
+    pub(crate) fn open_object(
         &mut self,
         object: &DatabaseObject,
         window: &mut Window,
@@ -231,11 +188,27 @@ impl Session {
         cx.notify();
     }
 
-    fn activate_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(crate) fn activate_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.tabs.len() && index != self.active {
             self.active = index;
             cx.notify();
         }
+    }
+
+    pub(crate) fn tabs(&self) -> &[SessionTab] {
+        &self.tabs
+    }
+
+    pub(crate) fn active_tab_index(&self) -> usize {
+        self.active
+    }
+
+    pub(crate) fn objects(&self) -> &[DatabaseObject] {
+        &self.objects
+    }
+
+    pub(crate) fn databases(&self) -> &[String] {
+        &self.databases
     }
 
     fn on_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -258,11 +231,25 @@ impl Session {
     /// SQL, run verbatim, and re-running it could repeat a write.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         self.reload_metadata(cx);
+        self.reload_active_table(cx);
+    }
+
+    pub(crate) fn reload_active_table(&mut self, cx: &mut Context<Self>) {
         if let Some(TabContent::Table { view }) = self.tabs.get(self.active).map(|tab| &tab.content)
         {
             let view = view.clone();
             view.update(cx, |view, cx| view.refresh(cx));
         }
+    }
+
+    fn on_quick_switcher(
+        &mut self,
+        _: &QuickSwitcher,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = cx.entity().clone();
+        crate::ui::quick_switcher::open(session, window, cx);
     }
 
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -282,7 +269,7 @@ impl Session {
     }
 
     /// Ask for SQL files and give each one its own tab.
-    fn open_file(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn open_file(&mut self, cx: &mut Context<Self>) {
         let prompt = sql_file::prompt_for_open(cx);
 
         cx.spawn(async move |this, cx| {
@@ -463,7 +450,7 @@ impl Session {
     }
 
     /// Read the database list and the current database's tables and views.
-    fn reload_metadata(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn reload_metadata(&mut self, cx: &mut Context<Self>) {
         let connection = self.connection.clone();
         let task =
             runtime::spawn(
@@ -558,34 +545,6 @@ impl Session {
         })
         .detach();
     }
-
-    fn on_filter_event(
-        &mut self,
-        filter: &Entity<InputState>,
-        event: &InputEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !matches!(event, InputEvent::Change) {
-            return;
-        }
-
-        let pattern = filter.read(cx).value().trim().to_string();
-        self.matcher = compile_filter(&pattern);
-        cx.notify();
-    }
-
-    /// The objects the filter lets through, in sidebar order.
-    fn visible_objects(&self) -> Vec<&DatabaseObject> {
-        self.objects
-            .iter()
-            .filter(|object| match &self.matcher {
-                Some(matcher) => matcher.is_match(&object.label()),
-                None => true,
-            })
-            .collect()
-    }
-
     fn on_editor_event(
         &mut self,
         editor: &Entity<QueryEditor>,
@@ -860,194 +819,6 @@ impl Session {
         editor.update(cx, |editor, cx| editor.set_running(false, cx));
         cx.notify();
     }
-
-    /// Feed the grid a result without going through a live query.
-    #[cfg(test)]
-    pub(crate) fn show_result_for_test(
-        &mut self,
-        result: crate::db::query::QueryResult,
-        cx: &mut Context<Self>,
-    ) {
-        let index = self.active;
-        let Some(grid) = self.active_grid() else {
-            return;
-        };
-        self.set_status(index, Status::Done(result.summary()));
-        grid.update(cx, |grid, cx| grid.set_result(result, cx));
-        cx.notify();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tab_titles(&self) -> Vec<String> {
-        self.tabs.iter().map(|tab| tab.title.to_string()).collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn active_sql(&self, cx: &gpui_kit::App) -> String {
-        match &self.tabs[self.active].content {
-            TabContent::Query { editor, .. } => editor.read(cx).sql(cx),
-            TabContent::Table { view } => view.read(cx).query(cx),
-        }
-    }
-
-    /// The table view in the active tab, if this is a table tab.
-    #[cfg(test)]
-    pub(crate) fn active_table_view(&self) -> Option<Entity<TableView>> {
-        match &self.tabs[self.active].content {
-            TabContent::Table { view } => Some(view.clone()),
-            TabContent::Query { .. } => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn open_tab_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_tab(None, String::new(), false, window, cx);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn close_tab_for_test(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.close_tab(index, window, cx);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn activate_tab_for_test(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.activate_tab(index, cx);
-    }
-
-    /// Set the filter text the way typing in the box does.
-    #[cfg(test)]
-    pub(crate) fn set_filter_for_test(
-        &mut self,
-        pattern: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let filter = self.filter.clone();
-        filter.update(cx, |state, cx| {
-            state.set_value(pattern.to_string(), window, cx)
-        });
-        self.matcher = compile_filter(pattern.trim());
-        cx.notify();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn visible_object_labels(&self) -> Vec<String> {
-        self.visible_objects()
-            .into_iter()
-            .map(|object| object.label())
-            .collect()
-    }
-
-    /// Type into the active tab's editor and put focus there.
-    #[cfg(test)]
-    pub(crate) fn prepare_active_editor_for_test(
-        &mut self,
-        sql: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let TabContent::Query { editor, .. } = &self.tabs[self.active].content else {
-            return;
-        };
-        let editor = editor.clone();
-        editor.update(cx, |editor, cx| {
-            editor.set_sql(sql, window, cx);
-            editor.focus(window, cx);
-        });
-    }
-
-    /// The editor of the active tab, for a test to drive.
-    #[cfg(test)]
-    pub(crate) fn active_editor_for_test(&self) -> Option<Entity<QueryEditor>> {
-        match &self.tabs[self.active].content {
-            TabContent::Query { editor, .. } => Some(editor.clone()),
-            TabContent::Table { .. } => None,
-        }
-    }
-
-    /// How many results the last run left, and which one is showing.
-    #[cfg(test)]
-    pub(crate) fn results_for_test(&self) -> (usize, usize) {
-        match &self.tabs[self.active].content {
-            TabContent::Query {
-                results, result, ..
-            } => (results.len(), *result),
-            TabContent::Table { .. } => (0, 0),
-        }
-    }
-
-    /// Put the active tab into its running state, the way a query in flight
-    /// does. Under test a query finishes before anything can be cancelled, so
-    /// this is what the cancel path is driven with.
-    #[cfg(test)]
-    pub(crate) fn mark_running_for_test(&mut self, cx: &mut Context<Self>) {
-        let index = self.active;
-        let Some(TabContent::Query { editor, .. }) = self.tabs.get(index).map(|tab| &tab.content)
-        else {
-            return;
-        };
-
-        let editor = editor.clone();
-        self.set_status(index, Status::Running);
-        editor.update(cx, |editor, cx| editor.set_running(true, cx));
-        cx.notify();
-    }
-
-    /// Reach the active tab's grid from a test.
-    #[cfg(test)]
-    pub(crate) fn active_grid(&self) -> Option<Entity<DataGrid>> {
-        match &self.tabs[self.active].content {
-            TabContent::Query { grid, .. } => Some(grid.clone()),
-            TabContent::Table { .. } => None,
-        }
-    }
-
-    /// Whether the active tab has a query in flight.
-    #[cfg(test)]
-    pub(crate) fn active_is_running(&self) -> bool {
-        matches!(
-            &self.tabs[self.active].content,
-            TabContent::Query {
-                status: Status::Running,
-                ..
-            }
-        )
-    }
-
-    /// What the status bar says for the active tab, as plain text.
-    #[cfg(test)]
-    pub(crate) fn active_status_for_test(&self) -> String {
-        match &self.tabs[self.active].content {
-            TabContent::Query { status, .. } => match status {
-                Status::Idle => "Ready".to_string(),
-                Status::Running => "Running…".to_string(),
-                Status::Done(summary) => summary.clone(),
-                Status::Error(error) => error.clone(),
-                Status::Confirm(_) => "This statement writes. Run it?".to_string(),
-            },
-            TabContent::Table { .. } => String::new(),
-        }
-    }
-
-    /// Fill the sidebar without waiting on the server.
-    #[cfg(test)]
-    pub(crate) fn set_metadata_for_test(
-        &mut self,
-        databases: Vec<String>,
-        objects: Vec<DatabaseObject>,
-        cx: &mut Context<Self>,
-    ) {
-        self.databases = databases;
-        self.objects = objects;
-        self.metadata_error = None;
-        cx.notify();
-    }
-
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let session = cx.entity().downgrade();
 
@@ -1073,7 +844,8 @@ impl Session {
                             .ghost()
                             .xsmall()
                             .icon(IconName::Close)
-                            .tooltip("Close tab")
+                            .accessibility_label(format!("Close the tab {}", tab.title))
+                            .tooltip_with_action("Close tab", &CloseTab, Some("Session"))
                             .on_click(move |_, window, cx| {
                                 if let Some(session) = session.upgrade() {
                                     session.update(cx, |session, cx| {
@@ -1089,7 +861,8 @@ impl Session {
                     .xsmall()
                     .mr_1()
                     .icon(IconName::Plus)
-                    .tooltip("New query tab")
+                    .accessibility_label("New query tab")
+                    .tooltip_with_action("New query tab", &NewTab, Some("Session"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_tab(None, String::new(), false, window, cx)
                     })),
@@ -1165,129 +938,13 @@ impl Session {
             .into_any_element()
     }
 
-    fn render_objects(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let objects = self.visible_objects();
-        let filtering = self.matcher.is_some();
-
-        let notice = match (
-            &self.metadata_error,
-            self.objects.is_empty(),
-            objects.is_empty(),
-        ) {
-            (Some(error), _, _) => Some((error.clone(), cx.theme().danger)),
-            (None, true, _) => Some((
-                "No tables or views".to_string(),
-                cx.theme().muted_foreground,
-            )),
-            (None, false, true) => Some((
-                "Nothing matches the filter".to_string(),
-                cx.theme().muted_foreground,
-            )),
-            (None, false, false) => None,
-        };
-
-        let heading = if filtering {
-            format!("TABLES & VIEWS ({}/{})", objects.len(), self.objects.len())
-        } else {
-            "TABLES & VIEWS".to_string()
-        };
-
-        v_flex()
-            .flex_1()
-            .min_h_0()
-            .gap_1()
-            .child(
-                Input::new(&self.filter)
-                    .id("object-filter")
-                    .small()
-                    .cleanable(true),
-            )
-            .child(
-                div()
-                    .px_1()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(heading),
-            )
-            .when_some(notice, |this, (message, color)| {
-                this.child(div().px_1().text_xs().text_color(color).child(message))
-            })
-            .child(
-                div()
-                    .id("objects")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .children(objects.into_iter().map(|object| {
-                                let label = object.label();
-                                let kind = object.kind;
-                                let object = object.clone();
-
-                                h_flex()
-                                    .id(SharedString::from(format!("object-{label}")))
-                                    .test_support()
-                                    .w_full()
-                                    .px_1()
-                                    .py_0p5()
-                                    .gap_2()
-                                    .justify_between()
-                                    .rounded(cx.theme().radius)
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(cx.theme().sidebar_accent))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_object(&object, window, cx)
-                                    }))
-                                    .child(div().text_sm().truncate().child(label))
-                                    .when(kind == ObjectKind::View, |this| {
-                                        this.child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child("view"),
-                                        )
-                                    })
-                            })),
-                    ),
-            )
-    }
-
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .id("sidebar")
-            .test_support()
-            .size_full()
-            .p_2()
-            .gap_3()
-            .bg(cx.theme().sidebar)
-            .border_r_1()
-            .border_color(cx.theme().sidebar_border)
-            .child(self.render_objects(cx))
-            .child(
-                Button::new("disconnect")
-                    .outline()
-                    .small()
-                    .w_full()
-                    .label("Disconnect")
-                    .on_click(cx.listener(|_this, _, _window, cx| {
-                        cx.emit(SessionEvent::Disconnected);
-                    })),
-            )
-    }
-
     fn render_status_bar(&self, status: &Status, cx: &mut Context<Self>) -> impl IntoElement {
-        let (message, color) = match status {
-            Status::Idle => ("Ready".to_string(), cx.theme().muted_foreground),
-            Status::Running => ("Running…".to_string(), cx.theme().muted_foreground),
-            Status::Done(summary) => (summary.clone(), cx.theme().muted_foreground),
-            Status::Error(error) => (error.clone(), cx.theme().danger),
-            Status::Confirm(_) => (
-                "This statement writes. Run it?".to_string(),
-                cx.theme().warning,
-            ),
+        let color = match status {
+            Status::Error(_) => cx.theme().danger,
+            Status::Confirm(_) => cx.theme().warning,
+            _ => cx.theme().muted_foreground,
         };
+        let message = status.message();
 
         h_flex()
             .w_full()
@@ -1433,6 +1090,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_save_file_as))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::cancel_query))
+            .on_action(cx.listener(Self::on_quick_switcher))
             .child(
                 h_resizable("session-columns")
                     .with_state(&self.columns)
@@ -1445,24 +1103,4 @@ impl Render for Session {
                     .child(resizable_panel().child(self.render_panes(cx))),
             )
     }
-}
-
-/// Turn the filter box's text into a matcher.
-///
-/// The pattern is a case-insensitive regex; while it is still being typed it is
-/// often not valid (`user(`), so an unparseable pattern falls back to matching
-/// the text literally rather than showing nothing.
-fn compile_filter(pattern: &str) -> Option<Regex> {
-    if pattern.is_empty() {
-        return None;
-    }
-
-    let case_insensitive = |pattern: &str| {
-        RegexBuilder::new(pattern)
-            .case_insensitive(true)
-            .build()
-            .ok()
-    };
-
-    case_insensitive(pattern).or_else(|| case_insensitive(&regex::escape(pattern)))
 }

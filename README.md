@@ -38,7 +38,11 @@ src/
 ├── app.rs            # Root view: one tab per open connection
 ├── keymap.rs         # Key bindings (platform-aware via `secondary`)
 ├── db/
-│   ├── mod.rs        # Engine, ConnectionConfig, Connection, query dispatch
+│   ├── mod.rs        # Module map and re-exports
+│   ├── config.rs     # Engine, SafetyMode, ConnectionConfig
+│   ├── connection.rs # The live pool, and the shared read/write paths
+│   ├── sql.rs        # Quoting and bind placeholders for generated SQL
+│   ├── statement.rs  # Splitting and classifying the user's own SQL
 │   ├── postgres.rs   # Per-engine pool setup and value formatting
 │   ├── mysql.rs
 │   ├── sqlite.rs
@@ -48,13 +52,23 @@ src/
 ├── settings.rs       # Settings global, settings.json, theme/appearance
 └── ui/
     ├── welcome.rs      # Connection manager
-    ├── session.rs      # Open connection: sidebar, query tabs, editor, grid
+    ├── session/        # Open connection: query tabs, editor, grid
+    │   ├── mod.rs      # The view: tabs, running, files, panes
+    │   ├── tab.rs      # What a tab holds and how its last run went
+    │   └── sidebar.rs  # Object list and the filter over it
     ├── query_editor.rs # SQL editor (Cmd+Enter to run)
     ├── sql_file.rs     # Native open/save dialogs for .sql files
     ├── settings_window.rs # Settings window (Cmd+,)
     ├── value_dialog.rs # One cell's value, in full (Cmd+Shift+V)
-    ├── table_view.rs   # Table opened from the sidebar: grid, paging, sorting
-    └── data_grid.rs    # Read-only virtualized result grid
+    ├── filter_bar.rs   # The filter lines above a table view
+    ├── table_view/     # Table opened from the sidebar
+    │   ├── mod.rs      # The view: paging, sorting, applying edits
+    │   └── sql.rs      # The statements it generates
+    └── data_grid/      # Virtualized result grid
+        ├── mod.rs      # The view and the commands its owner drives it with
+        ├── delegate.rs # The result, plus everything staged on top of it
+        ├── format.rs   # Laying one value out for reading
+        └── layout.rs   # Sizing the columns
 ```
 
 Connections are stored in `connections.json` under your OS config directory
@@ -131,12 +145,12 @@ cargo test
 | Open the selected cell's value in a dialog | `Cmd`/`Ctrl` + `Shift` + `V` |
 | Save the value dialog | `Cmd`/`Ctrl` + `Enter` |
 | Add a row to fill in | `Cmd`/`Ctrl` + `Shift` + `I` |
-| Mark the selected rows for deletion | `Cmd`/`Ctrl` + `Backspace` |
+| Mark the selected rows for deletion, or discard selected new rows | `Cmd`/`Ctrl` + `Backspace` |
 | Take the deletion mark off again | `Cmd`/`Ctrl` + `Shift` + `Backspace` |
 | Save the active tab, or write a table tab's staged edits | `Cmd`/`Ctrl` + `S` |
 | Discard a table tab's staged edits | `Cmd`/`Ctrl` + `Z` |
 | Save the active tab under a new name | `Cmd`/`Ctrl` + `Shift` + `S` |
-| Settings | `Cmd`/`Ctrl` + `,` |
+| Settings | `Cmd`/`Ctrl` + `,` (or the gear in the toolbar) |
 
 ---
 
@@ -155,7 +169,7 @@ cargo test
 * [x] Drag across rows to select them, delete them from the row's menu, and fill in new rows in the grid itself — edited cells, new rows, and rows marked for deletion are coloured in the grid and written together when applied
 * [x] SQL editor with SQL syntax highlighting: `Cmd+Enter` runs the statement the caret is in, `Cmd+Shift+Enter` the whole buffer, `Cmd+.` gives up on a run
 * [x] Open and save `.sql` files through the native file dialogs
-* [x] Settings window: page size, editor and grid fonts, striped rows, theme, light/dark
+* [x] Settings window: page size, editor and grid fonts, striped rows, always-on scrollbars, theme, light/dark
 * [x] Query cancellation and multi-statement scripts, with a result tab per statement
 * [ ] Auto-completion from live introspection
 * [ ] SSH tunneling & SSL configuration interface

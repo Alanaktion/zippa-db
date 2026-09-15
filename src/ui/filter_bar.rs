@@ -336,6 +336,7 @@ impl FilterBar {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Close)
+                    .accessibility_label("Remove this filter")
                     .tooltip("Remove this filter")
                     .on_click(
                         cx.listener(move |this, _, _window, cx| this.remove_filter(index, cx)),
