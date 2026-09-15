@@ -318,7 +318,17 @@ impl Welcome {
 
                 h_flex()
                     .w_full()
+                    .items_center()
                     .gap_1()
+                    .child(
+                        // Which engine this is, at a glance; the label beside
+                        // it says the same thing in words.
+                        div()
+                            .flex_none()
+                            .size_2()
+                            .rounded_full()
+                            .bg(super::engine_color(config.engine, cx)),
+                    )
                     .child(
                         Button::new(SharedString::from(format!("open-{id}")))
                             .ghost()

@@ -1,6 +1,7 @@
 mod app;
 mod db;
 mod keymap;
+mod menu;
 mod settings;
 mod ui;
 
@@ -44,9 +45,11 @@ fn main() {
             gpui_kit::init(cx);
             // Themes first: a theme named in the settings has to be in the
             // registry before the settings are applied.
+            settings::load_builtin_themes(cx);
             settings::load_user_themes(cx);
             settings::init(cx);
             keymap::bind(cx);
+            menu::init(cx);
             ui::settings_window::init(cx);
 
             let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);

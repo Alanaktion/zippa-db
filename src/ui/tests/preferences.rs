@@ -27,6 +27,56 @@ fn a_table_opens_with_the_page_size_from_the_settings(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn every_theme_file_under_assets_themes_is_registered(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::component::init(cx);
+        settings::load_builtin_themes(cx);
+    });
+
+    let dark = cx.update(|cx| settings::themes_for(ThemeMode::Dark, cx));
+    let light = cx.update(|cx| settings::themes_for(ThemeMode::Light, cx));
+
+    // Zippa's own theme, and a couple of the others dropped into
+    // `assets/themes` — proof `build.rs`'s directory scan picked up more
+    // than just the one file it used to.
+    for name in ["Zippa Dark", "Gruvbox Dark", "Ayu Dark", "Catppuccin Mocha"] {
+        assert!(
+            dark.iter().any(|theme| theme.as_ref() == name),
+            "{name} should have parsed and registered itself: {dark:?}"
+        );
+    }
+    for name in ["Zippa Light", "Gruvbox Light", "Ayu Light"] {
+        assert!(
+            light.iter().any(|theme| theme.as_ref() == name),
+            "{name} should have parsed and registered itself: {light:?}"
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn the_picker_still_offers_gpui_kits_own_themes_alongside_zippas(cx: &mut TestAppContext) {
+    // `load_themes_from_str` merges into the registry rather than replacing
+    // it, so `gpui_kit::init`'s own "Default Light"/"Default Dark" stay
+    // choosable — Zippa's theme is only the default when nothing is picked.
+    cx.update(|cx| {
+        gpui_kit::component::init(cx);
+        settings::load_builtin_themes(cx);
+    });
+
+    let light = cx.update(|cx| settings::themes_for(ThemeMode::Light, cx));
+    let dark = cx.update(|cx| settings::themes_for(ThemeMode::Dark, cx));
+
+    assert!(
+        light.iter().any(|name| name.as_ref() == "Default Light"),
+        "gpui-kit's own light theme should still be offered: {light:?}"
+    );
+    assert!(
+        dark.iter().any(|name| name.as_ref() == "Default Dark"),
+        "gpui-kit's own dark theme should still be offered: {dark:?}"
+    );
+}
+
+#[gpui_kit::test]
 fn the_settings_window_is_opened_once(cx: &mut TestAppContext) {
     cx.update(gpui_kit::component::init);
 

@@ -1,0 +1,108 @@
+{
+  "name": "Zippa",
+  "author": "Zippa DB",
+  "themes": [
+    {
+      "is_default": false,
+      "name": "Zippa Dark",
+      "mode": "dark",
+      "colors": {
+        "background": "#16171D",
+        "foreground": "#C0CAF5",
+        "border": "#2E3244",
+        "window.border": "#2E3244",
+        "input.border": "#2E3244",
+        "table.row.border": "#2E3244b3",
+
+        "muted.background": "#242734",
+        "muted.foreground": "#565F89",
+        "accent.background": "#242734",
+
+        "sidebar.background": "#1C1E26",
+        "sidebar.border": "#2E3244",
+        "sidebar.foreground": "#C0CAF5",
+        "tab_bar.background": "#1C1E26",
+        "tab_bar.segmented.background": "#1C1E26",
+        "title_bar.background": "#1C1E26",
+        "title_bar.border": "#2E3244",
+        "status_bar.background": "#1C1E26",
+        "status_bar.border": "#2E3244",
+        "popover.background": "#1C1E26",
+        "popover.foreground": "#C0CAF5",
+        "accordion.background": "#1C1E26",
+
+        "table.head.background": "#1C1E26",
+        "table.head.foreground": "#565F89",
+        "table.hover.background": "#242734",
+        "table.even.background": "#242734",
+        "list.hover.background": "#242734",
+        "list.even.background": "#242734",
+
+        "ring": "#37505C",
+        "table.active.border": "#37505C",
+        "list.active.border": "#37505C",
+        "selection.background": "#2A324B",
+        "table.active.background": "#2A324B",
+        "list.active.background": "#2A324B",
+
+        "primary.background": "#BB9AF7",
+        "primary.foreground": "#16171D",
+        "primary.hover.background": "#C7ACF9",
+        "primary.active.background": "#A98AE0",
+        "tab.active.background": "#242734",
+        "tab.active.foreground": "#BB9AF7"
+      }
+    },
+    {
+      "is_default": false,
+      "name": "Zippa Light",
+      "mode": "light",
+      "colors": {
+        "background": "#F4F5F8",
+        "foreground": "#1E202B",
+        "border": "#D5D8E1",
+        "window.border": "#D5D8E1",
+        "input.border": "#D5D8E1",
+        "table.row.border": "#D5D8E1b3",
+
+        "muted.background": "#EAECEF",
+        "muted.foreground": "#6C7393",
+        "accent.background": "#EAECEF",
+
+        "sidebar.background": "#FFFFFF",
+        "sidebar.border": "#D5D8E1",
+        "sidebar.foreground": "#1E202B",
+        "tab_bar.background": "#FFFFFF",
+        "tab_bar.segmented.background": "#FFFFFF",
+        "title_bar.background": "#FFFFFF",
+        "title_bar.border": "#D5D8E1",
+        "status_bar.background": "#FFFFFF",
+        "status_bar.border": "#D5D8E1",
+        "popover.background": "#FFFFFF",
+        "popover.foreground": "#1E202B",
+        "accordion.background": "#FFFFFF",
+
+        "table.head.background": "#FFFFFF",
+        "table.head.foreground": "#6C7393",
+        "table.hover.background": "#EAECEF",
+        "table.even.background": "#EAECEF",
+        "list.hover.background": "#EAECEF",
+        "list.even.background": "#EAECEF",
+
+        "ring": "#4C6E7E",
+        "table.active.border": "#4C6E7E",
+        "list.active.border": "#4C6E7E",
+        "selection.background": "#D9E2FF",
+        "table.active.background": "#D9E2FF",
+        "list.active.background": "#D9E2FF",
+
+        "primary.background": "#7C4DFF",
+        "primary.foreground": "#FFFFFF",
+        "primary.hover.background": "#9165FF",
+        "primary.active.background": "#6A3FE0",
+        "tab.active.background": "#EAECEF",
+        "tab.active.foreground": "#7C4DFF"
+      }
+    }
+  ]
+}

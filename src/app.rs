@@ -15,7 +15,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, Entity, FocusHandle, MouseButton, Pixels, SharedString, Window, actions, div, px,
+    App, Context, Entity, FocusHandle, Hsla, MouseButton, Pixels, SharedString, Window, actions,
+    div, px,
 };
 
 use crate::db::{Connection, runtime};
@@ -64,6 +65,18 @@ impl TabContent {
                     false => Some(IconName::Globe),
                 }
             }
+        }
+    }
+
+    /// The engine's own accent, so tabs for different engines are told apart
+    /// without reading the target string.
+    fn icon_color(&self, cx: &App) -> Option<Hsla> {
+        match self {
+            Self::Connect(_) => None,
+            Self::Session(session) => Some(crate::ui::engine_color(
+                session.read(cx).connection().config.engine,
+                cx,
+            )),
         }
     }
 }
@@ -343,7 +356,14 @@ impl Workspace {
                     .px_3()
                     // `.icon()` on this widget renders icon-only, so icon
                     // goes in `.prefix()` instead
-                    .when_some(tab.icon(cx), |this, icon| this.prefix(Icon::new(icon)))
+                    .when_some(tab.icon(cx), |this, icon| {
+                        let icon = Icon::new(icon);
+                        let icon = match tab.icon_color(cx) {
+                            Some(color) => icon.text_color(color),
+                            None => icon,
+                        };
+                        this.prefix(icon)
+                    })
                     // Middle-click closes, the way it does in a browser.
                     .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
                         if let Some(workspace) = middle_click.upgrade() {

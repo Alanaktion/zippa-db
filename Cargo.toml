@@ -36,6 +36,14 @@ uuid = { version = "1", features = ["v4", "serde"] }
 gpui-kit = { version = "0.6", features = ["test-support"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
+# Read by `cargo bundle` (https://github.com/burtonageo/cargo-bundle) to
+# produce a real macOS .app with an icon and a display name — `cargo run`
+# alone launches a bare binary, which the OS shows with a generic icon.
+[package.metadata.bundle]
+name = "Zippa DB"
+identifier = "com.alanaktion.zippadb"
+icon = ["assets/icons/zippa-db.icns"]
+
 # GPUI does a lot of layout and text shaping per frame, which is painfully slow
 # in an unoptimized build. Optimizing dependencies (and lightly optimizing our
 # own code) keeps `cargo run` usable while still building fast.
