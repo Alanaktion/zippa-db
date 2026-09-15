@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Disc Surface & Cylinder Gradients -->
+    <linearGradient id="disc-fill" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2A2E3D"/>
+      <stop offset="100%" stop-color="#1E212B"/>
+    </linearGradient>
+
+    <linearGradient id="disc-stroke" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#565F89"/>
+      <stop offset="50%" stop-color="#9ECE6A"/>
+      <stop offset="100%" stop-color="#7DCFFF"/>
+    </linearGradient>
+
+    <!-- Z / Lightning Energy Gradient -->
+    <linearGradient id="bolt-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#BB9AF7"/>
+      <stop offset="50%" stop-color="#7AA2F7"/>
+      <stop offset="100%" stop-color="#7DCFFF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Stacked Database Discs (Database Engine Nodes) -->
+  <g transform="translate(136, 120)">
+
+    <!-- Bottom Disc (SQLite - Mint/Cyan Highlight) -->
+    <g transform="translate(0, 180)">
+      <path d="M 0,28 L 0,60 C 0,75.47 53.73,88 120,88 C 186.27,88 240,75.47 240,60 L 240,28" fill="url(#disc-fill)" stroke="#37505C" stroke-width="3"/>
+      <ellipse cx="120" cy="28" rx="120" ry="28" fill="url(#disc-fill)" stroke="#565F89" stroke-width="3"/>
+      <ellipse cx="120" cy="28" rx="118" ry="26" fill="none" stroke="#7DCFFF" stroke-width="1.5" opacity="0.4"/>
+    </g>
+
+    <!-- Middle Disc (Postgres - Slate Blue Highlight) -->
+    <g transform="translate(0, 90)">
+      <path d="M 0,28 L 0,60 C 0,75.47 53.73,88 120,88 C 186.27,88 240,75.47 240,60 L 240,28" fill="url(#disc-fill)" stroke="#37505C" stroke-width="3"/>
+      <ellipse cx="120" cy="28" rx="120" ry="28" fill="url(#disc-fill)" stroke="#565F89" stroke-width="3"/>
+      <ellipse cx="120" cy="28" rx="118" ry="26" fill="none" stroke="#7AA2F7" stroke-width="1.5" opacity="0.5"/>
+    </g>
+
+    <!-- Top Disc (MySQL - Amber Highlight) -->
+    <g transform="translate(0, 0)">
+      <path d="M 0,28 L 0,60 C 0,75.47 53.73,88 120,88 C 186.27,88 240,75.47 240,60 L 240,28" fill="url(#disc-fill)" stroke="#37505C" stroke-width="3"/>
+      <ellipse cx="120" cy="28" rx="120" ry="28" fill="url(#disc-fill)" stroke="#565F89" stroke-width="3"/>
+      <ellipse cx="120" cy="28" rx="118" ry="26" fill="none" stroke="#E0AF68" stroke-width="2" opacity="0.7"/>
+    </g>
+
+  </g>
+
+  <!-- Sharp Foreground Z-Bolt -->
+  <path d="M 340 80
+            L 210 245
+            H 295
+            L 165 430
+            L 210 265
+            H 130
+            Z"
+        fill="url(#bolt-grad)"
+        stroke="#FFFFFF"
+        stroke-width="2"
+        stroke-linejoin="round"/>
+</svg>
