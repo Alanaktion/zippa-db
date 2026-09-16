@@ -67,6 +67,55 @@ pub(crate) fn primary_key_sql(table: &str) -> String {
     )
 }
 
+/// Columns of a table in the current database: name, full type spec (as
+/// `COLUMN_TYPE` already spells it, e.g. `varchar(255)`), nullability, default.
+pub(crate) fn columns_sql(table: &str) -> String {
+    format!(
+        "SELECT column_name, column_type, (is_nullable = 'YES'), column_default \
+         FROM information_schema.columns \
+         WHERE table_schema = DATABASE() AND table_name = {} \
+         ORDER BY ordinal_position",
+        quote_literal(table)
+    )
+}
+
+/// One row per index: name, its columns in index order, unique?, primary key?
+/// (`PRIMARY` is MySQL's fixed name for the primary key's own index.)
+pub(crate) fn indexes_sql(table: &str) -> String {
+    format!(
+        "SELECT index_name, \
+         GROUP_CONCAT(column_name ORDER BY seq_in_index SEPARATOR ','), \
+         (non_unique = 0), (index_name = 'PRIMARY') \
+         FROM information_schema.statistics \
+         WHERE table_schema = DATABASE() AND table_name = {} \
+         GROUP BY index_name, non_unique \
+         ORDER BY index_name",
+        quote_literal(table)
+    )
+}
+
+/// One row per foreign key: name, local columns, referenced schema/table/
+/// columns (matching order), `ON DELETE`/`ON UPDATE`.
+pub(crate) fn foreign_keys_sql(table: &str) -> String {
+    format!(
+        "SELECT kcu.constraint_name, \
+         GROUP_CONCAT(kcu.column_name ORDER BY kcu.ordinal_position SEPARATOR ','), \
+         kcu.referenced_table_schema, kcu.referenced_table_name, \
+         GROUP_CONCAT(kcu.referenced_column_name ORDER BY kcu.ordinal_position SEPARATOR ','), \
+         rc.delete_rule, rc.update_rule \
+         FROM information_schema.key_column_usage kcu \
+         JOIN information_schema.referential_constraints rc \
+           ON rc.constraint_name = kcu.constraint_name \
+           AND rc.constraint_schema = kcu.constraint_schema \
+         WHERE kcu.table_schema = DATABASE() AND kcu.table_name = {} \
+           AND kcu.referenced_table_name IS NOT NULL \
+         GROUP BY kcu.constraint_name, kcu.referenced_table_schema, \
+           kcu.referenced_table_name, rc.delete_rule, rc.update_rule \
+         ORDER BY kcu.constraint_name",
+        quote_literal(table)
+    )
+}
+
 pub(crate) fn rows_affected(result: &MySqlQueryResult) -> u64 {
     result.rows_affected()
 }

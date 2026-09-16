@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, IntoElement, Render, SharedString, Window, div, px};
 
 use crate::db::{DatabaseObject, ObjectKind};
-use crate::ui::session::tab::TabContent;
+use crate::ui::session::tab::{ObjectViewMode, TabContent};
 use crate::ui::session::{NewTab, OpenFile, Refresh, Session};
 
 /// Actions and destinations selectable from the quick switcher.
@@ -240,7 +240,7 @@ impl Render for QuickSwitcherView {
                             session.activate_tab(ix, cx);
                         }
                         SwitcherTarget::Object(object) => {
-                            session.open_object(&object, window, cx);
+                            session.open_object(&object, ObjectViewMode::Data, window, cx);
                         }
                         SwitcherTarget::SwitchDatabase(db) => {
                             session.switch_database(db, cx);

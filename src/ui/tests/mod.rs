@@ -42,6 +42,7 @@ mod quick_switcher;
 mod rows;
 mod running;
 mod safety;
+mod schema;
 mod session;
 mod sorting;
 mod value_dialog;
@@ -147,6 +148,36 @@ fn table_view_with_safety(
         .update(cx, |session, _, _| session.active_table_view())
         .unwrap()
         .expect("clicking a table should open a table view");
+
+    (database, handle, view)
+}
+
+/// Open a structure tab on the seeded `items` table and hand back its view.
+fn schema_view(
+    cx: &mut TestAppContext,
+) -> (
+    TempDatabase,
+    gpui_kit::WindowHandle<Session>,
+    gpui_kit::Entity<crate::ui::schema_view::SchemaView>,
+) {
+    let (database, handle) = session_with_objects(cx);
+
+    let object = DatabaseObject {
+        schema: None,
+        name: "items".into(),
+        kind: ObjectKind::Table,
+    };
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_schema_for_test(&object, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let view = handle
+        .update(cx, |session, _, _| session.active_schema_view())
+        .unwrap()
+        .expect("opening a table's structure should open a schema view");
 
     (database, handle, view)
 }

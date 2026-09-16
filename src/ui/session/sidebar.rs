@@ -8,6 +8,7 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::tree::{TreeItem, tree};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -16,6 +17,7 @@ use regex::{Regex, RegexBuilder};
 
 use crate::db::{DatabaseObject, ObjectKind};
 
+use super::tab::ObjectViewMode;
 use super::{Session, SessionEvent};
 
 impl Session {
@@ -102,6 +104,7 @@ impl Session {
         };
 
         let session = cx.entity();
+        let menu_session = session.clone();
 
         v_flex()
             .flex_1()
@@ -158,12 +161,54 @@ impl Session {
                                     )
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if let Some(object) = object.clone() {
-                                            this.open_object(&object, window, cx);
+                                            this.open_object(
+                                                &object,
+                                                ObjectViewMode::Data,
+                                                window,
+                                                cx,
+                                            );
                                         }
                                     }))
                             })
                         },
                     )
+                    .context_menu(move |_ix, entry, menu, _window, cx| {
+                        let label = entry.item().label.clone();
+                        let object = menu_session
+                            .read(cx)
+                            .objects
+                            .iter()
+                            .find(|object| object.label() == label.as_ref())
+                            .cloned();
+                        let Some(object) = object else {
+                            return menu;
+                        };
+
+                        let open_session = menu_session.clone();
+                        let open_object = object.clone();
+                        let inspect_session = menu_session.clone();
+                        let inspect_object = object;
+
+                        menu.item(PopupMenuItem::new("Open").on_click(move |_, window, cx| {
+                            open_session.update(cx, |this, cx| {
+                                this.open_object(&open_object, ObjectViewMode::Data, window, cx);
+                            });
+                        }))
+                        .item(
+                            PopupMenuItem::new("Inspect structure").on_click(
+                                move |_, window, cx| {
+                                    inspect_session.update(cx, |this, cx| {
+                                        this.open_object(
+                                            &inspect_object,
+                                            ObjectViewMode::Schema,
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                },
+                            ),
+                        )
+                    })
                     .size_full(),
                 ),
             )

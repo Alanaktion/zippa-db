@@ -10,6 +10,7 @@ use gpui_kit::{Context, Entity, Window};
 use crate::db::DatabaseObject;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::query_editor::QueryEditor;
+use crate::ui::schema_view::SchemaView;
 use crate::ui::table_view::TableView;
 
 use super::Session;
@@ -55,6 +56,7 @@ impl Session {
         match &self.tabs[self.active].content {
             TabContent::Query { editor, .. } => editor.read(cx).sql(cx),
             TabContent::Table { view } => view.read(cx).query(cx),
+            TabContent::Schema { .. } => String::new(),
         }
     }
 
@@ -63,8 +65,28 @@ impl Session {
     pub(crate) fn active_table_view(&self) -> Option<Entity<TableView>> {
         match &self.tabs[self.active].content {
             TabContent::Table { view } => Some(view.clone()),
-            TabContent::Query { .. } => None,
+            TabContent::Query { .. } | TabContent::Schema { .. } => None,
         }
+    }
+
+    /// The schema view in the active tab, if this is a structure tab.
+    #[cfg(test)]
+    pub(crate) fn active_schema_view(&self) -> Option<Entity<SchemaView>> {
+        match &self.tabs[self.active].content {
+            TabContent::Schema { view } => Some(view.clone()),
+            TabContent::Query { .. } | TabContent::Table { .. } => None,
+        }
+    }
+
+    /// Open `object`'s structure tab, the way the sidebar's row menu does.
+    #[cfg(test)]
+    pub(crate) fn open_schema_for_test(
+        &mut self,
+        object: &DatabaseObject,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_object(object, super::tab::ObjectViewMode::Schema, window, cx);
     }
 
     #[cfg(test)]
@@ -134,7 +156,7 @@ impl Session {
     pub(crate) fn active_editor_for_test(&self) -> Option<Entity<QueryEditor>> {
         match &self.tabs[self.active].content {
             TabContent::Query { editor, .. } => Some(editor.clone()),
-            TabContent::Table { .. } => None,
+            TabContent::Table { .. } | TabContent::Schema { .. } => None,
         }
     }
 
@@ -145,7 +167,7 @@ impl Session {
             TabContent::Query {
                 results, result, ..
             } => (results.len(), *result),
-            TabContent::Table { .. } => (0, 0),
+            TabContent::Table { .. } | TabContent::Schema { .. } => (0, 0),
         }
     }
 
@@ -171,7 +193,7 @@ impl Session {
     pub(crate) fn active_grid(&self) -> Option<Entity<DataGrid>> {
         match &self.tabs[self.active].content {
             TabContent::Query { grid, .. } => Some(grid.clone()),
-            TabContent::Table { .. } => None,
+            TabContent::Table { .. } | TabContent::Schema { .. } => None,
         }
     }
 
@@ -192,7 +214,7 @@ impl Session {
     pub(crate) fn active_status_for_test(&self) -> String {
         match &self.tabs[self.active].content {
             TabContent::Query { status, .. } => status.message(),
-            TabContent::Table { .. } => String::new(),
+            TabContent::Table { .. } | TabContent::Schema { .. } => String::new(),
         }
     }
 

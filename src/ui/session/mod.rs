@@ -24,6 +24,7 @@ use crate::db::query::QueryResult;
 use crate::db::{Connection, DatabaseObject, runtime, statement};
 use crate::ui::data_grid::DataGrid;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
+use crate::ui::schema_view::SchemaView;
 use crate::ui::sql_file;
 use crate::ui::table_view::TableView;
 
@@ -32,7 +33,7 @@ pub(crate) mod tab;
 #[cfg(test)]
 mod test_support;
 
-use tab::{SessionTab, Status, TabContent};
+use tab::{ObjectViewMode, SessionTab, Status, TabContent};
 
 /// Starting pane sizes; the user drags from here.
 const SIDEBAR_WIDTH: f32 = 260.;
@@ -155,30 +156,48 @@ impl Session {
         cx.notify();
     }
 
-    /// Open a table or view from the sidebar in its own tab.
+    /// Open a table or view from the sidebar in its own tab, either as its
+    /// rows or its own structure.
     ///
-    /// A table already open is brought forward rather than opened twice.
+    /// The same object already open in the same mode is brought forward
+    /// rather than opened twice; a table's data tab and its structure tab are
+    /// different tabs.
     pub(crate) fn open_object(
         &mut self,
         object: &DatabaseObject,
+        mode: ObjectViewMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(index) = self
             .tabs
             .iter()
-            .position(|tab| tab.object(cx).as_ref() == Some(object))
+            .position(|tab| tab.mode() == Some(mode) && tab.object(cx).as_ref() == Some(object))
         {
             self.activate_tab(index, cx);
             return;
         }
 
-        let view = cx.new(|cx| TableView::new(self.connection.clone(), object.clone(), window, cx));
+        let tab = match mode {
+            ObjectViewMode::Data => {
+                let view = cx
+                    .new(|cx| TableView::new(self.connection.clone(), object.clone(), window, cx));
+                SessionTab {
+                    title: object.label().into(),
+                    content: TabContent::Table { view },
+                }
+            }
+            ObjectViewMode::Schema => {
+                let view = cx
+                    .new(|cx| SchemaView::new(self.connection.clone(), object.clone(), window, cx));
+                SessionTab {
+                    title: format!("{} — Structure", object.label()).into(),
+                    content: TabContent::Schema { view },
+                }
+            }
+        };
 
-        self.tabs.push(SessionTab {
-            title: object.label().into(),
-            content: TabContent::Table { view },
-        });
+        self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
         self.sync_tree_selection(cx);
         cx.notify();
@@ -595,6 +614,11 @@ impl Session {
                                     let connection = connection.clone();
                                     view.update(cx, |view, cx| view.set_connection(connection, cx));
                                 }
+                                TabContent::Schema { view } => {
+                                    let view = view.clone();
+                                    let connection = connection.clone();
+                                    view.update(cx, |view, cx| view.set_connection(connection, cx));
+                                }
                             }
                         }
                         this.reload_metadata(cx);
@@ -637,7 +661,7 @@ impl Session {
     fn query_tab_of(&self, editor: &Entity<QueryEditor>) -> Option<usize> {
         self.tabs.iter().position(|tab| match &tab.content {
             TabContent::Query { editor: owned, .. } => owned == editor,
-            TabContent::Table { .. } => false,
+            TabContent::Table { .. } | TabContent::Schema { .. } => false,
         })
     }
 
@@ -1195,6 +1219,7 @@ impl Session {
                 .into_any_element(),
             // The table view carries its own footer, so it fills the pane.
             TabContent::Table { view } => view.clone().into_any_element(),
+            TabContent::Schema { view } => view.clone().into_any_element(),
         };
 
         v_flex()

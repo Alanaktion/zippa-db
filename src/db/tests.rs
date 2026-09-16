@@ -9,6 +9,7 @@ use sqlx::{AssertSqlSafe, Executor};
 use uuid::Uuid;
 
 use super::query::Cell;
+use super::schema::ReferentialAction;
 use super::{
     Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, RowKey, SafetyMode,
     quote_identifier, typed_placeholder,
@@ -474,6 +475,97 @@ async fn the_other_modes_still_write() {
         assert_eq!(affected, 1, "{safety:?} should write");
         connection.close().await;
     }
+}
+
+#[tokio::test]
+async fn table_schema_reads_columns_and_marks_the_primary_key() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let schema = connection
+        .table_schema(&table("items"))
+        .await
+        .expect("could not read the schema");
+
+    let names: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["id", "name", "score", "payload"]);
+
+    // `id INTEGER PRIMARY KEY` is a `rowid` alias with no backing index, so
+    // this only comes from the dedicated primary key read, not the indexes.
+    assert!(schema.columns[0].is_primary_key);
+    assert!(!schema.columns[1].is_primary_key);
+    assert!(schema.indexes.is_empty());
+    assert!(schema.foreign_keys.is_empty());
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn table_schema_reads_a_unique_index_and_a_foreign_key() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    connection
+        .execute(
+            "CREATE TABLE tags (id INTEGER PRIMARY KEY, label TEXT NOT NULL)",
+            Vec::new(),
+        )
+        .await
+        .expect("could not create tags");
+    connection
+        .execute(
+            "CREATE UNIQUE INDEX tags_label_idx ON tags(label)",
+            Vec::new(),
+        )
+        .await
+        .expect("could not create the index");
+    connection
+        .execute(
+            "CREATE TABLE tagged_items ( \
+                item_id INTEGER, \
+                tag_id INTEGER, \
+                FOREIGN KEY(item_id) REFERENCES items(id) ON DELETE CASCADE, \
+                FOREIGN KEY(tag_id) REFERENCES tags(id) \
+             )",
+            Vec::new(),
+        )
+        .await
+        .expect("could not create tagged_items");
+
+    let tags = connection
+        .table_schema(&table("tags"))
+        .await
+        .expect("could not read the tags schema");
+    let index = tags
+        .indexes
+        .iter()
+        .find(|index| index.name == "tags_label_idx")
+        .expect("the unique index should be listed");
+    assert!(index.unique);
+    assert!(!index.is_primary_key);
+    assert_eq!(index.columns, ["label"]);
+
+    let tagged = connection
+        .table_schema(&table("tagged_items"))
+        .await
+        .expect("could not read the tagged_items schema");
+    assert_eq!(tagged.foreign_keys.len(), 2);
+
+    let to_items = tagged
+        .foreign_keys
+        .iter()
+        .find(|fk| fk.referenced_table == "items")
+        .expect("the foreign key to items should be listed");
+    assert_eq!(to_items.columns, ["item_id"]);
+    assert_eq!(to_items.referenced_columns, ["id"]);
+    assert_eq!(to_items.on_delete, ReferentialAction::Cascade);
+    assert_eq!(to_items.on_update, ReferentialAction::NoAction);
+
+    connection.close().await;
 }
 
 #[test]

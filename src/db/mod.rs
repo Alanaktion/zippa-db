@@ -7,6 +7,7 @@
 //!
 //! * [`config`] — what the user saves about a connection, before it is opened.
 //! * [`connection`] — the live pool, and the shared read and write paths.
+//! * [`schema`] — a table's own definition: columns, indexes, foreign keys.
 //! * [`sql`] — quoting and placing bind parameters in generated statements.
 //! * [`statement`] — splitting and classifying the user's own SQL.
 //! * [`query`] — what a run comes back as.
@@ -19,6 +20,7 @@ pub mod mysql;
 pub mod postgres;
 pub mod query;
 pub mod runtime;
+pub mod schema;
 pub mod sql;
 pub mod sqlite;
 pub mod statement;
@@ -31,6 +33,7 @@ pub(crate) use config::file_name;
 pub use config::{ConnectionConfig, Engine, SafetyMode};
 pub(crate) use connection::POOL_SIZE;
 pub use connection::{Connection, DatabaseObject, ObjectKind, RowKey};
+pub use schema::{ColumnDef, ForeignKeyDef, IndexDef, TableSchema};
 pub use sql::quote_identifier;
 pub(crate) use sql::{placeholder, quote_literal, text_type, typed_placeholder};
 

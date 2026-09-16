@@ -61,6 +61,80 @@ pub(crate) fn primary_key_sql(schema: &str, table: &str) -> String {
     )
 }
 
+/// Columns of a table: name, driver-spelled type, nullability, default.
+pub(crate) fn columns_sql(schema: &str, table: &str) -> String {
+    format!(
+        "SELECT column_name, \
+         CASE \
+           WHEN data_type = 'character varying' AND character_maximum_length IS NOT NULL \
+             THEN 'character varying(' || character_maximum_length || ')' \
+           WHEN data_type = 'character' AND character_maximum_length IS NOT NULL \
+             THEN 'character(' || character_maximum_length || ')' \
+           WHEN data_type = 'numeric' AND numeric_precision IS NOT NULL \
+             THEN 'numeric(' || numeric_precision || ',' || COALESCE(numeric_scale, 0) || ')' \
+           ELSE data_type \
+         END, \
+         (is_nullable = 'YES'), column_default \
+         FROM information_schema.columns \
+         WHERE table_schema = {} AND table_name = {} \
+         ORDER BY ordinal_position",
+        quote_literal(schema),
+        quote_literal(table)
+    )
+}
+
+/// One row per index: name, its columns in index order, unique?, primary key?
+pub(crate) fn indexes_sql(schema: &str, table: &str) -> String {
+    format!(
+        "SELECT i.relname, \
+         array_to_string(ARRAY( \
+           SELECT a.attname FROM pg_attribute a \
+           WHERE a.attrelid = t.oid AND a.attnum = ANY(ix.indkey) \
+           ORDER BY array_position(ix.indkey, a.attnum) \
+         ), ','), \
+         ix.indisunique, ix.indisprimary \
+         FROM pg_index ix \
+         JOIN pg_class t ON t.oid = ix.indrelid \
+         JOIN pg_class i ON i.oid = ix.indexrelid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
+         WHERE n.nspname = {} AND t.relname = {} \
+         ORDER BY i.relname",
+        quote_literal(schema),
+        quote_literal(table)
+    )
+}
+
+/// One row per foreign key: name, local columns, referenced schema/table/
+/// columns (matching order), `ON DELETE`/`ON UPDATE`.
+pub(crate) fn foreign_keys_sql(schema: &str, table: &str) -> String {
+    format!(
+        "SELECT con.conname, \
+         array_to_string(ARRAY( \
+           SELECT a.attname FROM pg_attribute a \
+           WHERE a.attrelid = con.conrelid AND a.attnum = ANY(con.conkey) \
+           ORDER BY array_position(con.conkey, a.attnum) \
+         ), ','), \
+         fn.nspname, fc.relname, \
+         array_to_string(ARRAY( \
+           SELECT a.attname FROM pg_attribute a \
+           WHERE a.attrelid = con.confrelid AND a.attnum = ANY(con.confkey) \
+           ORDER BY array_position(con.confkey, a.attnum) \
+         ), ','), \
+         rc.delete_rule, rc.update_rule \
+         FROM pg_constraint con \
+         JOIN pg_class c ON c.oid = con.conrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         JOIN pg_class fc ON fc.oid = con.confrelid \
+         JOIN pg_namespace fn ON fn.oid = fc.relnamespace \
+         JOIN information_schema.referential_constraints rc \
+           ON rc.constraint_name = con.conname AND rc.constraint_schema = n.nspname \
+         WHERE con.contype = 'f' AND n.nspname = {} AND c.relname = {} \
+         ORDER BY con.conname",
+        quote_literal(schema),
+        quote_literal(table)
+    )
+}
+
 pub(crate) fn rows_affected(result: &PgQueryResult) -> u64 {
     result.rows_affected()
 }

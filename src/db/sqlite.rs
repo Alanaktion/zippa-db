@@ -49,6 +49,44 @@ pub(crate) fn primary_key_sql(table: &str) -> String {
     )
 }
 
+/// Columns of a table: name, declared type, nullability, default.
+pub(crate) fn columns_sql(table: &str) -> String {
+    format!(
+        "SELECT name, type, (\"notnull\" = 0), dflt_value \
+         FROM pragma_table_info({}) ORDER BY cid",
+        quote_literal(table)
+    )
+}
+
+/// One row per index: name, its columns in index order, unique?, primary key?
+///
+/// `pragma_index_info` already returns a column's rows in index order, so
+/// nothing here has to ask it to sort itself.
+pub(crate) fn indexes_sql(table: &str) -> String {
+    format!(
+        "SELECT il.name, \
+         (SELECT group_concat(ii.name, ',') FROM pragma_index_info(il.name) ii), \
+         il.\"unique\", (il.origin = 'pk') \
+         FROM pragma_index_list({}) il \
+         ORDER BY il.seq",
+        quote_literal(table)
+    )
+}
+
+/// One row per foreign key: no name (SQLite does not have one, so the caller
+/// synthesizes one), local columns, no schema, referenced table/columns
+/// (matching order), `ON DELETE`/`ON UPDATE` — already spelled the way every
+/// other engine reports them (`CASCADE`, `SET NULL`, ...).
+pub(crate) fn foreign_keys_sql(table: &str) -> String {
+    format!(
+        "SELECT NULL, group_concat(\"from\", ','), NULL, \"table\", \
+         group_concat(\"to\", ','), on_delete, on_update \
+         FROM pragma_foreign_key_list({}) \
+         GROUP BY id ORDER BY id",
+        quote_literal(table)
+    )
+}
+
 pub(crate) fn rows_affected(result: &SqliteQueryResult) -> u64 {
     result.rows_affected()
 }

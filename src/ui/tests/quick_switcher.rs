@@ -3,6 +3,8 @@
 use super::*;
 use gpui_kit::component::WindowExt;
 
+use crate::ui::session::tab::ObjectViewMode;
+
 #[gpui_kit::test]
 fn quick_switcher_opens_via_toolbar_and_lists_tabs_and_objects(cx: &mut TestAppContext) {
     let handle = workspace(cx);
@@ -96,7 +98,7 @@ fn quick_switcher_selecting_object_opens_table_tab(cx: &mut TestAppContext) {
     handle
         .update(cx, |_, window, cx| {
             session.update(cx, |session, cx| {
-                session.open_object(&obj, window, cx);
+                session.open_object(&obj, ObjectViewMode::Data, window, cx);
             });
         })
         .unwrap();
