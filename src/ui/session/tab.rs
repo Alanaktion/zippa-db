@@ -102,14 +102,14 @@ impl SessionTab {
 
     /// Whether a query tab's buffer has changed since it was opened or last
     /// saved. A table tab has no buffer, so it is never dirty; a structure
-    /// tab is read-only in phase 1, so it never is either.
+    /// tab is dirty when it has unapplied column edits.
     pub(crate) fn is_dirty(&self, cx: &gpui_kit::App) -> bool {
         match &self.content {
             TabContent::Query {
                 editor, baseline, ..
             } => &editor.read(cx).sql(cx) != baseline,
             TabContent::Table { .. } => false,
-            TabContent::Schema { view } => view.read(cx).is_dirty(),
+            TabContent::Schema { view } => view.read(cx).is_dirty(cx),
         }
     }
 }
