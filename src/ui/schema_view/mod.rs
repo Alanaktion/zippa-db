@@ -25,12 +25,12 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, SharedString, Window, div, px};
 
 use crate::db::{
-    ColumnDef, Connection, DatabaseObject, ForeignKeyDef, IndexDef, ObjectKind, TableSchema,
-    runtime,
+    ColumnDef, Connection, DatabaseObject, Engine, ForeignKeyDef, IndexDef, ObjectKind,
+    TableSchema, runtime,
 };
 
 mod sql;
-use sql::ColumnEdit;
+use sql::{ColumnEdit, IndexEdit};
 
 /// One column row as the form shows it: a stable identity (so a rename is
 /// tracked by which row it is, not by matching names) plus the fields the
@@ -64,6 +64,37 @@ impl EditableColumn {
     }
 }
 
+/// One index row: a whole index added or a whole one dropped, never
+/// modified in place — see `sql::IndexEdit`, which this becomes for the
+/// generator. Only a new row's column set is editable; an existing index's
+/// composition is shown as loaded.
+struct EditableIndex {
+    id: usize,
+    /// `None` for an index added by hand.
+    original: Option<IndexDef>,
+    name: Entity<InputState>,
+    /// In the order picked — order matters for a composite index.
+    columns: Vec<String>,
+    unique: bool,
+    primary_key: bool,
+    /// Only ever set on an index that came from the server; a dropped new
+    /// index is removed from the list outright instead.
+    dropped: bool,
+}
+
+impl EditableIndex {
+    fn snapshot(&self, cx: &App) -> IndexEdit {
+        IndexEdit {
+            original: self.original.clone(),
+            name: self.name.read(cx).value().trim().to_string(),
+            columns: self.columns.clone(),
+            unique: self.unique,
+            primary_key: self.primary_key,
+            dropped: self.dropped,
+        }
+    }
+}
+
 pub struct SchemaView {
     connection: Arc<Connection>,
     object: DatabaseObject,
@@ -72,6 +103,8 @@ pub struct SchemaView {
     /// The Columns section's own editable state, seeded from `schema` each
     /// time it (re)loads.
     columns: Vec<EditableColumn>,
+    /// The Indexes section's own editable state, seeded the same way.
+    indexes: Vec<EditableIndex>,
     next_id: usize,
     loading: bool,
     applying: bool,
@@ -98,6 +131,7 @@ impl SchemaView {
             object,
             schema: None,
             columns: Vec::new(),
+            indexes: Vec::new(),
             next_id: 0,
             loading: false,
             applying: false,
@@ -155,6 +189,13 @@ impl SchemaView {
                             columns.push(this.new_row(Some(column), window, cx));
                         }
                         this.columns = columns;
+
+                        let mut indexes = Vec::with_capacity(schema.indexes.len());
+                        for index in schema.indexes.clone() {
+                            indexes.push(this.new_index_row(Some(index), window, cx));
+                        }
+                        this.indexes = indexes;
+
                         this.schema = Some(schema);
                     }
                     Ok(Err(error)) => this.error = Some(format!("{error:#}")),
@@ -259,9 +300,10 @@ impl SchemaView {
     }
 
     fn has_changes(&self, cx: &App) -> bool {
-        self.edits(cx).iter().any(|edit| {
+        let columns_changed = self.edits(cx).iter().any(|edit| {
             edit.changed() || edit.dropped || (edit.is_new() && !edit.name.trim().is_empty())
-        })
+        });
+        columns_changed || self.has_index_changes(cx)
     }
 
     /// Append a blank row for the user to fill in by hand.
@@ -309,6 +351,142 @@ impl SchemaView {
         cx.notify();
     }
 
+    /// Build a row's name box, seeded from `original` when there is one.
+    fn new_index_row(
+        &mut self,
+        original: Option<IndexDef>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> EditableIndex {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("index name")
+                .default_value(
+                    original
+                        .as_ref()
+                        .map(|i| i.name.as_str())
+                        .unwrap_or_default(),
+                )
+        });
+        cx.subscribe_in(&name, window, Self::on_field_event)
+            .detach();
+
+        let columns = original
+            .as_ref()
+            .map(|i| i.columns.clone())
+            .unwrap_or_default();
+        let unique = original.as_ref().map(|i| i.unique).unwrap_or(false);
+        let primary_key = original.as_ref().map(|i| i.is_primary_key).unwrap_or(false);
+
+        EditableIndex {
+            id,
+            original,
+            name,
+            columns,
+            unique,
+            primary_key,
+            dropped: false,
+        }
+    }
+
+    /// Append a blank row for the user to name and pick columns for.
+    fn add_index(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_editable() {
+            return;
+        }
+        let row = self.new_index_row(None, window, cx);
+        self.indexes.push(row);
+        self.notice = None;
+        self.pending = None;
+        cx.notify();
+    }
+
+    /// Mark an existing index to be dropped, or take the mark back off; an
+    /// index added by hand is removed outright instead, since the server has
+    /// nothing of it to drop.
+    fn toggle_index_drop(&mut self, id: usize, cx: &mut Context<Self>) {
+        let Some(position) = self.indexes.iter().position(|index| index.id == id) else {
+            return;
+        };
+        if self.indexes[position].original.is_some() {
+            self.indexes[position].dropped = !self.indexes[position].dropped;
+        } else {
+            self.indexes.remove(position);
+        }
+        self.notice = None;
+        self.pending = None;
+        cx.notify();
+    }
+
+    /// Add or remove `column` from a new index's column set, keeping the
+    /// order columns were picked in — that order is what a composite index
+    /// searches by.
+    fn toggle_index_column(
+        &mut self,
+        id: usize,
+        column: String,
+        included: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(index) = self.indexes.iter_mut().find(|index| index.id == id) {
+            if included {
+                if !index.columns.contains(&column) {
+                    index.columns.push(column);
+                }
+            } else {
+                index.columns.retain(|existing| existing != &column);
+            }
+        }
+        self.pending = None;
+        cx.notify();
+    }
+
+    fn set_index_unique(&mut self, id: usize, unique: bool, cx: &mut Context<Self>) {
+        if let Some(index) = self.indexes.iter_mut().find(|index| index.id == id) {
+            index.unique = unique;
+        }
+        self.pending = None;
+        cx.notify();
+    }
+
+    fn set_index_primary_key(&mut self, id: usize, primary_key: bool, cx: &mut Context<Self>) {
+        if let Some(index) = self.indexes.iter_mut().find(|index| index.id == id) {
+            index.primary_key = primary_key;
+        }
+        self.pending = None;
+        cx.notify();
+    }
+
+    /// Whether the table already has a primary key from the server that has
+    /// not been marked to drop — a table can only have one, so this disables
+    /// adding a second.
+    fn has_existing_primary_key(&self) -> bool {
+        self.indexes.iter().any(|index| {
+            index
+                .original
+                .as_ref()
+                .is_some_and(|original| original.is_primary_key)
+                && !index.dropped
+        })
+    }
+
+    fn index_edits(&self, cx: &App) -> Vec<IndexEdit> {
+        self.indexes
+            .iter()
+            .map(|index| index.snapshot(cx))
+            .collect()
+    }
+
+    fn has_index_changes(&self, cx: &App) -> bool {
+        self.index_edits(cx).iter().any(|edit| {
+            edit.dropped
+                || (edit.is_new() && !edit.columns.is_empty() && !edit.name.trim().is_empty())
+        })
+    }
+
     /// Generate the statements for what has changed and show them, or say
     /// why not.
     fn preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -319,21 +497,24 @@ impl SchemaView {
 
         let engine = self.connection.config.engine;
         let target = sql::target(&self.object, engine);
-        let edits = self.edits(cx);
+        let column_statements = sql::generate_alter_statements(engine, &target, &self.edits(cx));
+        let index_statements =
+            sql::generate_index_statements(engine, &self.object, &self.index_edits(cx));
 
-        match sql::generate_alter_statements(engine, &target, &edits) {
-            Ok(statements) if statements.is_empty() => {
-                self.error = Some("nothing has changed".into());
-                self.pending = None;
-            }
-            Ok(statements) => {
+        match (column_statements, index_statements) {
+            (Ok(mut statements), Ok(more)) if !statements.is_empty() || !more.is_empty() => {
+                statements.extend(more);
                 self.error = None;
                 let text = statements.join(";\n") + ";";
                 self.preview
                     .update(cx, |input, cx| input.set_value(text, window, cx));
                 self.pending = Some(statements);
             }
-            Err(message) => {
+            (Ok(_), Ok(_)) => {
+                self.error = Some("nothing has changed".into());
+                self.pending = None;
+            }
+            (Err(message), _) | (_, Err(message)) => {
                 self.error = Some(message);
                 self.pending = None;
             }
@@ -597,12 +778,249 @@ impl SchemaView {
             .children(rows)
     }
 
-    fn render_indexes(&self, indexes: &[IndexDef], cx: &Context<Self>) -> impl IntoElement {
+    /// A checkbox per column the table has, letting a new index pick which
+    /// ones it covers and in what order — an existing index's composition is
+    /// fixed, so this is only shown for a row added by hand.
+    fn render_index_column_picker(
+        &self,
+        index: &EditableIndex,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = index.id;
+        let editable = self.is_editable();
+        let available: Vec<String> = self
+            .schema
+            .as_ref()
+            .map(|schema| {
+                schema
+                    .columns
+                    .iter()
+                    .map(|column| column.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut boxes = Vec::with_capacity(available.len());
+        for name in available {
+            let checked = index.columns.contains(&name);
+            let for_click = name.clone();
+            boxes.push(
+                h_flex()
+                    .flex_none()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Checkbox::new(SharedString::from(format!("index-column-{id}-{name}")))
+                            .accessibility_label(format!("Include {name}"))
+                            .checked(checked)
+                            .disabled(!editable)
+                            .on_click(cx.listener(move |this, included: &bool, _window, cx| {
+                                this.toggle_index_column(id, for_click.clone(), *included, cx);
+                            })),
+                    )
+                    .child(div().text_xs().child(name))
+                    .into_any_element(),
+            );
+        }
+
+        h_flex()
+            .flex_1()
+            .min_w_0()
+            .flex_wrap()
+            .gap_2()
+            .children(boxes)
+    }
+
+    fn render_index_row(&self, index: &EditableIndex, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = index.id;
+        let editable = self.is_editable();
+        let engine = self.connection.config.engine;
+        let edit = index.snapshot(cx);
+        let is_new = edit.is_new();
+        let dropped = index.dropped;
+        // SQLite cannot add or drop a primary key on an existing table at
+        // all without the rebuild phase 3 adds; a plain index is unaffected.
+        let is_primary_key = index
+            .original
+            .as_ref()
+            .is_some_and(|original| original.is_primary_key)
+            || index.primary_key;
+        let pk_blocked_on_sqlite = engine == Engine::Sqlite && is_primary_key;
+
+        let row_tint = if dropped {
+            Some(cx.theme().danger.opacity(0.15))
+        } else if is_new {
+            Some(cx.theme().info.opacity(0.15))
+        } else {
+            None
+        };
+
+        let row = h_flex()
+            .w_full()
+            .items_center()
+            .gap_3()
+            .px_1()
+            .py_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .when_some(row_tint, |this, color| this.bg(color));
+
+        let row = if is_new {
+            row.child(
+                div().flex_1().min_w_0().child(
+                    Input::new(&index.name)
+                        .id(SharedString::from(format!("index-name-{id}")))
+                        .xsmall()
+                        .readonly(!editable),
+                ),
+            )
+            .child(self.render_index_column_picker(index, cx))
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                Checkbox::new(("index-unique", id))
+                                    .accessibility_label("Unique")
+                                    .checked(index.unique)
+                                    .disabled(!editable || index.primary_key)
+                                    .on_click(cx.listener(
+                                        move |this, checked: &bool, _window, cx| {
+                                            this.set_index_unique(id, *checked, cx);
+                                        },
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("UNIQUE"),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                Checkbox::new(("index-primary-key", id))
+                                    .accessibility_label("Primary key")
+                                    .checked(index.primary_key)
+                                    .disabled(
+                                        !editable
+                                            || engine == Engine::Sqlite
+                                            || self.has_existing_primary_key(),
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, checked: &bool, _window, cx| {
+                                            this.set_index_primary_key(id, *checked, cx);
+                                        },
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("PK"),
+                            ),
+                    ),
+            )
+        } else {
+            let kind = match (index.primary_key, index.unique) {
+                (true, _) => "PRIMARY KEY",
+                (false, true) => "UNIQUE",
+                (false, false) => "INDEX",
+            };
+
+            row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .truncate()
+                    .when(dropped, |this| this.line_through())
+                    .child(edit.name.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(100.))
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(kind),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(edit.columns.join(", ")),
+            )
+        };
+
+        row.when(editable, |this| {
+            if pk_blocked_on_sqlite {
+                return this.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Needs a rebuild on SQLite"),
+                );
+            }
+
+            let label = if index.original.is_some() {
+                if dropped { "Undrop" } else { "Drop" }
+            } else {
+                "Remove"
+            };
+            this.child(
+                Button::new(("index-drop", id))
+                    .ghost()
+                    .xsmall()
+                    .label(label)
+                    .on_click(
+                        cx.listener(move |this, _, _window, cx| this.toggle_index_drop(id, cx)),
+                    ),
+            )
+        })
+    }
+
+    fn render_indexes(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let editable = self.is_editable();
+
+        let mut rows = Vec::with_capacity(self.indexes.len());
+        for index in &self.indexes {
+            rows.push(self.render_index_row(index, cx).into_any_element());
+        }
+
         v_flex()
             .w_full()
             .gap_1()
-            .child(self.render_section_heading("INDEXES", cx))
-            .when(indexes.is_empty(), |this| {
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .child(self.render_section_heading("INDEXES", cx))
+                    .when(editable, |this| {
+                        this.child(
+                            Button::new("add-index")
+                                .ghost()
+                                .xsmall()
+                                .label("Add index")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.add_index(window, cx);
+                                })),
+                        )
+                    }),
+            )
+            .when(self.indexes.is_empty(), |this| {
                 this.child(
                     div()
                         .px_1()
@@ -611,46 +1029,7 @@ impl SchemaView {
                         .child("No indexes"),
                 )
             })
-            .children(indexes.iter().map(|index| {
-                let kind = match (index.is_primary_key, index.unique) {
-                    (true, _) => "PRIMARY KEY",
-                    (false, true) => "UNIQUE",
-                    (false, false) => "INDEX",
-                };
-
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .px_1()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_sm()
-                            .truncate()
-                            .child(index.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(100.))
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(kind),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .child(index.columns.join(", ")),
-                    )
-            }))
+            .children(rows)
     }
 
     fn render_foreign_keys(&self, keys: &[ForeignKeyDef], cx: &Context<Self>) -> impl IntoElement {
@@ -819,9 +1198,9 @@ impl Render for SchemaView {
                             .gap_4()
                             .child(self.render_header(cx))
                             .child(self.render_columns(cx))
+                            .child(self.render_indexes(cx))
                             .when_some(self.schema.clone(), |this, schema| {
-                                this.child(self.render_indexes(&schema.indexes, cx))
-                                    .child(self.render_foreign_keys(&schema.foreign_keys, cx))
+                                this.child(self.render_foreign_keys(&schema.foreign_keys, cx))
                             }),
                     ),
             )
@@ -912,6 +1291,66 @@ impl SchemaView {
         self.add_column(window, cx);
     }
 
+    pub(crate) fn index_names_for_test(&self, cx: &App) -> Vec<String> {
+        self.indexes
+            .iter()
+            .map(|index| index.name.read(cx).value().to_string())
+            .collect()
+    }
+
+    pub(crate) fn add_index_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.add_index(window, cx);
+    }
+
+    pub(crate) fn set_index_name_for_test(
+        &mut self,
+        index: usize,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.indexes[index].name.clone();
+        input.update(cx, |input, cx| {
+            input.set_value(value.to_string(), window, cx)
+        });
+    }
+
+    pub(crate) fn toggle_index_column_for_test(
+        &mut self,
+        index: usize,
+        column: &str,
+        included: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.indexes[index].id;
+        self.toggle_index_column(id, column.to_string(), included, cx);
+    }
+
+    pub(crate) fn set_index_unique_for_test(
+        &mut self,
+        index: usize,
+        unique: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.indexes[index].id;
+        self.set_index_unique(id, unique, cx);
+    }
+
+    pub(crate) fn set_index_primary_key_for_test(
+        &mut self,
+        index: usize,
+        primary_key: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.indexes[index].id;
+        self.set_index_primary_key(id, primary_key, cx);
+    }
+
+    pub(crate) fn toggle_index_drop_for_test(&mut self, index: usize, cx: &mut Context<Self>) {
+        let id = self.indexes[index].id;
+        self.toggle_index_drop(id, cx);
+    }
+
     pub(crate) fn preview_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.preview(window, cx);
     }
@@ -926,5 +1365,11 @@ impl SchemaView {
 
     pub(crate) fn notice_for_test(&self) -> Option<String> {
         self.notice.clone()
+    }
+
+    /// Read the structure again, the way applying a change does — used to
+    /// pick up a change made through a second connection.
+    pub(crate) fn reload_for_test(&mut self, cx: &mut Context<Self>) {
+        self.reload(cx);
     }
 }
