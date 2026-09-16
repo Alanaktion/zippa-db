@@ -193,11 +193,11 @@
       <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
         <a href="#download" class="w-full sm:w-auto px-7 py-3.5 rounded-xl bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base font-semibold text-base flex items-center justify-center gap-3 shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all">
           <i data-lucide="download" class="w-5 h-5"></i>
-          Download for <span id="detectedOS">macOS</span>
+          <span>Download for <span id="detectedOS">macOS</span></span>
         </a>
 
         <div class="w-full sm:w-auto flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs font-mono text-light-muted dark:text-dark-muted">
-          <span>cargo install zippa-db</span>
+          <span>cargo install ./zippa-db</span>
           <button onclick="copyCargoCmd(this)" class="p-1 hover:text-light-text dark:hover:text-dark-text transition-colors" title="Copy command">
             <i data-lucide="copy" class="w-4 h-4"></i>
           </button>
@@ -465,7 +465,7 @@
         <!-- SQLite Card -->
         <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border hover:border-db-sqliteLight dark:hover:border-db-sqlite transition-all group shadow-sm">
           <div class="w-12 h-12 rounded-xl bg-db-sqlite/10 text-db-sqliteLight dark:text-db-sqlite flex items-center justify-center mb-5 group-hover:scale-110 transition-transform">
-            <i data-lucide="file-spreadsheets" class="w-6 h-6"></i>
+            <i data-lucide="file-spreadsheet" class="w-6 h-6"></i>
           </div>
           <div class="flex items-center justify-between mb-2">
             <h3 class="text-xl font-bold">SQLite</h3>
@@ -509,7 +509,7 @@
             <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
               <i data-lucide="command" class="w-5 h-5"></i>
             </div>
-            <h3 class="font-bold text-lg mb-2">Vim Mode & Command Palette</h3>
+            <h3 class="font-bold text-lg mb-2">Command Palette</h3>
             <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
               Navigate schemas, run queries, and switch tabs without touching your mouse using integrated modal keybindings.
             </p>
@@ -577,12 +577,12 @@
             <div>
               <div class="flex items-center justify-between mb-4">
                 <i data-lucide="apple" class="w-8 h-8"></i>
-                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">Universal</span>
+                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">ARM64</span>
               </div>
               <h3 class="text-xl font-bold mb-1">macOS</h3>
-              <p class="text-xs text-light-muted dark:text-dark-muted mb-6">Apple Silicon (M1/M2/M3) & Intel</p>
+              <p class="text-xs text-light-muted dark:text-dark-muted mb-6">Apple Silicon</p>
             </div>
-            <a href="#" class="w-full py-2.5 px-4 rounded-lg bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base font-medium text-xs flex items-center justify-center gap-2 hover:opacity-90 transition-opacity">
+            <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0-dev/Zippa.DB_0.1.0_aarch64.dmg" class="w-full py-2.5 px-4 rounded-lg bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base font-medium text-xs flex items-center justify-center gap-2 hover:opacity-90 transition-opacity">
               <i data-lucide="download" class="w-4 h-4"></i> .dmg (Apple Silicon)
             </a>
           </div>
@@ -592,14 +592,19 @@
             <div>
               <div class="flex items-center justify-between mb-4">
                 <i data-lucide="terminal" class="w-8 h-8"></i>
-                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">x86_64 / ARM64</span>
+                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">x86_64</span>
               </div>
               <h3 class="text-xl font-bold mb-1">Linux</h3>
-              <p class="text-xs text-light-muted dark:text-dark-muted mb-6">AppImage, Flatpak & AUR</p>
+              <p class="text-xs text-light-muted dark:text-dark-muted mb-6">AppImage & DEB</p>
             </div>
-            <a href="#" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
-              <i data-lucide="download" class="w-4 h-4"></i> .AppImage
-            </a>
+            <div class="flex gap-2">
+              <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0-dev/zippa-db_0.1.0_x86_64.AppImage" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
+                <i data-lucide="download" class="w-4 h-4"></i> AppImage
+              </a>
+              <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0-dev/zippa-db_0.1.0_x86_64.deb" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
+                .deb
+              </a>
+            </div>
           </div>
 
           <!-- Windows -->
@@ -607,20 +612,23 @@
             <div>
               <div class="flex items-center justify-between mb-4">
                 <i data-lucide="monitor" class="w-8 h-8"></i>
-                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">x64</span>
+                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">x86_64</span>
               </div>
               <h3 class="text-xl font-bold mb-1">Windows</h3>
               <p class="text-xs text-light-muted dark:text-dark-muted mb-6">Windows 10 / 11 (Vulkan / Direct3D)</p>
             </div>
-            <a href="#" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
+            <!--<a href="https://github.com/Alanaktion/zippa-db/releases/download/v0-dev/zippa-db_0.1.0_x86_64.exe" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
               <i data-lucide="download" class="w-4 h-4"></i> .msi Installer
-            </a>
+            </a>-->
+            <div class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 opacity-50">
+              Coming Soon
+            </div>
           </div>
 
         </div>
 
         <!-- Terminal Quick Install -->
-        <div class="mt-8 p-4 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs font-mono flex flex-col sm:flex-row items-center justify-between gap-4 text-left">
+        <!--<div class="mt-8 p-4 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs font-mono flex flex-col sm:flex-row items-center justify-between gap-4 text-left">
           <div class="flex items-center gap-3">
             <span class="text-light-violet dark:text-dark-violet font-bold">Homebrew:</span>
             <span class="text-light-muted dark:text-dark-muted">brew install --cask zippa-db</span>
@@ -628,7 +636,7 @@
           <button onclick="copyBrewCmd(this)" class="px-3 py-1.5 rounded bg-light-subtle dark:bg-dark-subtle hover:text-light-text dark:hover:text-dark-text transition-colors flex items-center gap-1.5">
             <i data-lucide="copy" class="w-3.5 h-3.5"></i> Copy Brew
           </button>
-        </div>
+        </div>-->
 
       </div>
     </section>
@@ -644,7 +652,7 @@
             <path d="M 340 80 L 210 245 H 295 L 165 430 L 210 265 H 130 Z" fill="#BB9AF7"/>
           </svg>
         </div>
-        <span>© 2026 Zippa DB Project. Built with Rust & GPUI. MIT License.</span>
+        <span>© 2026. Built with Rust & GPUI. MIT License.</span>
       </div>
 
       <div class="flex items-center gap-6">
@@ -657,7 +665,6 @@
     </div>
   </footer>
 
-  <!-- Interactive Scripting -->
   <script>
     // Initialize Lucide Icons
     lucide.createIcons();
@@ -714,7 +721,7 @@
 
     // Helper Copy functions
     function copyCargoCmd(btn) {
-      const text = "cargo install zippa-db";
+      const text = "cargo install --git https://github.com/Alanaktion/zippa-db";
       copyToClipboard(text, btn, "Command Copied!");
     }
 
