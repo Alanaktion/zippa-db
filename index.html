@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zippa DB | Multi-Database GUI for Developers</title>
+  <meta name="description" content="Sub-millisecond native GPU-accelerated database client for PostgreSQL, MySQL, and SQLite. Built with Rust and GPUI.">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['Fira Code', 'monospace'],
+          },
+          colors: {
+            // Dark Mode Theme Tokens
+            dark: {
+              base: '#16171D',
+              panel: '#1C1E26',
+              subtle: '#242734',
+              border: '#2E3244',
+              text: '#C0CAF5',
+              muted: '#565F89',
+              accent: '#37505C',
+              violet: '#BB9AF7',
+            },
+            // Light Mode Theme Tokens
+            light: {
+              base: '#F4F5F8',
+              panel: '#FFFFFF',
+              subtle: '#EAECEF',
+              border: '#D5D8E1',
+              text: '#1E202B',
+              muted: '#6C7393',
+              accent: '#4C6E7E',
+              violet: '#7C4DFF',
+            },
+            // Database Engine Specific Tokens
+            db: {
+              mysql: '#E0AF68',
+              mysqlLight: '#D97706',
+              postgres: '#7AA2F7',
+              postgresLight: '#2563EB',
+              sqlite: '#7DCFFF',
+              sqliteLight: '#0284C7',
+            }
+          },
+          animation: {
+            'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+            'float': 'float 6s ease-in-out infinite',
+          },
+          keyframes: {
+            float: {
+              '0%, 100%': { transform: 'translateY(0px)' },
+              '50%': { transform: 'translateY(-8px)' },
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(100, 116, 139, 0.3);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(100, 116, 139, 0.5);
+    }
+
+    .glass-effect {
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+
+    .glow-effect {
+      box-shadow: 0 0 50px -10px rgba(187, 154, 247, 0.15);
+    }
+
+    .glow-effect-light {
+      box-shadow: 0 0 50px -10px rgba(124, 77, 255, 0.12);
+    }
+  </style>
+</head>
+<body class="bg-light-base dark:bg-dark-base text-light-text dark:text-dark-text transition-colors duration-300 font-sans antialiased selection:bg-light-violet selection:text-white dark:selection:bg-dark-violet dark:selection:text-dark-base">
+
+  <!-- Background Ambient Glow -->
+  <div class="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-[500px] bg-gradient-to-b from-light-violet/10 dark:from-dark-violet/10 via-transparent to-transparent pointer-events-none blur-3xl -z-10"></div>
+
+  <!-- Navigation Header -->
+  <header class="sticky top-0 z-50 w-full border-b border-light-border dark:border-dark-border bg-light-base/80 dark:bg-dark-base/80 glass-effect transition-colors duration-300">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+
+      <!-- Brand Logo -->
+      <a href="#" class="flex items-center gap-3 group">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-light-panel dark:from-dark-panel to-light-subtle dark:to-dark-subtle border border-light-border dark:border-dark-border flex items-center justify-center p-1.5 shadow-sm group-hover:scale-105 transition-transform">
+          <!-- Zippa SVG Logo Inline -->
+          <svg viewBox="0 0 512 512" class="w-full h-full">
+            <defs>
+              <linearGradient id="nav-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#1A1C25"/>
+                <stop offset="100%" stop-color="#0D0E14"/>
+              </linearGradient>
+              <linearGradient id="nav-bolt" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#BB9AF7"/>
+                <stop offset="50%" stop-color="#7AA2F7"/>
+                <stop offset="100%" stop-color="#7DCFFF"/>
+              </linearGradient>
+            </defs>
+            <path d="M 340 80 L 210 245 H 295 L 165 430 L 210 265 H 130 Z" fill="url(#nav-bolt)"/>
+          </svg>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="font-bold text-lg tracking-tight text-light-text dark:text-dark-text">Zippa<span class="text-light-violet dark:text-dark-violet">DB</span></span>
+          <span class="px-2 py-0.5 text-[10px] font-mono font-medium rounded-full bg-light-subtle dark:bg-dark-subtle border border-light-border dark:border-dark-border text-light-muted dark:text-dark-muted">v0.8.2-beta</span>
+        </div>
+      </a>
+
+      <!-- Navigation Links -->
+      <nav class="hidden md:flex items-center gap-8 text-sm font-medium text-light-muted dark:text-dark-muted">
+        <a href="#features" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Features</a>
+        <a href="#engines" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Supported Engines</a>
+        <a href="#benchmarks" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Performance</a>
+        <a href="#download" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Download</a>
+        <a href="https://github.com" target="_blank" class="hover:text-light-text dark:hover:text-dark-text transition-colors flex items-center gap-1">
+          <i data-lucide="github" class="w-4 h-4"></i> GitHub
+        </a>
+      </nav>
+
+      <!-- Header Actions -->
+      <div class="flex items-center gap-3">
+        <!-- Theme Toggle Dropdown/Button -->
+        <button id="themeToggleBtn" title="Toggle Light / Dark Mode" class="p-2 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-light-muted dark:text-dark-muted hover:text-light-text dark:hover:text-dark-text hover:border-light-accent dark:hover:border-dark-accent transition-all">
+          <!-- Sun Icon (for dark mode active) -->
+          <i data-lucide="sun" class="w-4 h-4 hidden dark:block"></i>
+          <!-- Moon Icon (for light mode active) -->
+          <i data-lucide="moon" class="w-4 h-4 block dark:hidden"></i>
+        </button>
+
+        <!-- CTA Download Header Button -->
+        <a href="#download" class="hidden sm:inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base hover:opacity-90 transition-opacity shadow-sm">
+          <i data-lucide="download" class="w-4 h-4"></i> Get Zippa
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero Section -->
+    <section class="pt-16 pb-12 sm:pt-24 sm:pb-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+
+      <!-- Top Badge -->
+      <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs font-mono mb-8 text-light-muted dark:text-dark-muted shadow-sm hover:border-light-violet dark:hover:border-dark-violet transition-colors">
+        <span class="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+        <span>Built with Rust & GPUI</span>
+        <span class="text-light-border dark:text-dark-border">|</span>
+        <span class="text-light-violet dark:text-dark-violet font-semibold">Sub-millisecond query render</span>
+      </div>
+
+      <!-- Main Headline -->
+      <h1 class="text-4xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight max-w-4xl mx-auto leading-[1.15]">
+        The Lightning-Fast <br class="hidden sm:inline">
+        <span class="bg-clip-text text-transparent bg-gradient-to-r from-light-text via-light-violet to-light-accent dark:from-dark-text dark:via-dark-violet dark:to-dark-accent">
+          Multi-Database Client GUI
+        </span>
+      </h1>
+
+      <!-- Subtitle -->
+      <p class="mt-6 text-lg sm:text-xl text-light-muted dark:text-dark-muted max-w-2xl mx-auto font-normal leading-relaxed">
+        Engineered for high-density workflows. Instant cold start, zero visual latency, and native support for <strong class="text-light-text dark:text-dark-text font-medium">PostgreSQL</strong>, <strong class="text-light-text dark:text-dark-text font-medium">MySQL</strong>, and <strong class="text-light-text dark:text-dark-text font-medium">SQLite</strong>.
+      </p>
+
+      <!-- CTAs -->
+      <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
+        <a href="#download" class="w-full sm:w-auto px-7 py-3.5 rounded-xl bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base font-semibold text-base flex items-center justify-center gap-3 shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all">
+          <i data-lucide="download" class="w-5 h-5"></i>
+          Download for <span id="detectedOS">macOS</span>
+        </a>
+
+        <div class="w-full sm:w-auto flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs font-mono text-light-muted dark:text-dark-muted">
+          <span>cargo install zippa-db</span>
+          <button onclick="copyCargoCmd(this)" class="p-1 hover:text-light-text dark:hover:text-dark-text transition-colors" title="Copy command">
+            <i data-lucide="copy" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Interactive App Window Preview / Mockup -->
+      <div class="mt-14 sm:mt-20 max-w-6xl mx-auto relative group">
+        <!-- Ambient Backing Glow -->
+        <div class="absolute -inset-1 bg-gradient-to-r from-light-violet/30 via-light-accent/20 to-db-postgres/30 dark:from-dark-violet/20 dark:via-dark-accent/20 dark:to-db-postgres/20 rounded-2xl blur-xl opacity-75 group-hover:opacity-100 transition duration-1000"></div>
+
+        <!-- Main Window Container -->
+        <div class="relative rounded-xl overflow-hidden border border-light-border dark:border-dark-border bg-light-panel dark:bg-dark-panel shadow-2xl text-left">
+
+          <!-- Mockup Titlebar -->
+          <div class="h-11 bg-light-subtle dark:bg-dark-subtle border-b border-light-border dark:border-dark-border px-4 flex items-center justify-between select-none">
+            <!-- Window Controls -->
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-full bg-rose-500/80"></div>
+              <div class="w-3 h-3 rounded-full bg-amber-500/80"></div>
+              <div class="w-3 h-3 rounded-full bg-emerald-500/80"></div>
+            </div>
+
+            <!-- Active Database Selector Pill -->
+            <div class="flex items-center gap-2 px-3 py-1 rounded-md bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs font-mono">
+              <span class="w-2 h-2 rounded-full bg-db-postgres dark:bg-db-postgres"></span>
+              <span class="text-light-text dark:text-dark-text font-medium">prod-db-cluster-01</span>
+              <span class="text-light-muted dark:text-dark-muted text-[10px]">PostgreSQL 16.2</span>
+            </div>
+
+            <!-- Mock Engine Stats -->
+            <div class="flex items-center gap-3 text-xs font-mono text-light-muted dark:text-dark-muted">
+              <span class="hidden sm:inline"><span class="text-emerald-500">●</span> 120 FPS</span>
+              <span class="hidden md:inline">18.4 MB RAM</span>
+            </div>
+          </div>
+
+          <!-- Mockup Main Workspace Layout -->
+          <div class="grid grid-cols-12 min-h-[420px] text-xs font-mono">
+
+            <!-- Sidebar / Connection Tree -->
+            <div class="col-span-3 hidden md:block border-r border-light-border dark:border-dark-border bg-light-subtle/50 dark:bg-dark-subtle/50 p-3 space-y-4">
+              <div>
+                <div class="text-[11px] font-semibold text-light-muted dark:text-dark-muted uppercase tracking-wider mb-2">Saved Connections</div>
+                <div class="space-y-1">
+                  <!-- Connection 1 -->
+                  <button class="w-full text-left px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border flex items-center justify-between font-medium">
+                    <div class="flex items-center gap-2 truncate">
+                      <span class="w-2 h-2 rounded-full bg-db-postgres"></span>
+                      <span class="truncate">prod-db-cluster</span>
+                    </div>
+                    <span class="text-[10px] text-db-postgres dark:text-db-postgres font-semibold">PG</span>
+                  </button>
+                  <!-- Connection 2 -->
+                  <button class="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-light-panel/50 dark:hover:bg-dark-panel/50 flex items-center justify-between text-light-muted dark:text-dark-muted">
+                    <div class="flex items-center gap-2 truncate">
+                      <span class="w-2 h-2 rounded-full bg-db-mysql"></span>
+                      <span class="truncate">analytics-replica</span>
+                    </div>
+                    <span class="text-[10px] text-db-mysqlLight dark:text-db-mysql font-semibold">MYSQL</span>
+                  </button>
+                  <!-- Connection 3 -->
+                  <button class="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-light-panel/50 dark:hover:bg-dark-panel/50 flex items-center justify-between text-light-muted dark:text-dark-muted">
+                    <div class="flex items-center gap-2 truncate">
+                      <span class="w-2 h-2 rounded-full bg-db-sqlite"></span>
+                      <span class="truncate">local-app.sqlite</span>
+                    </div>
+                    <span class="text-[10px] text-db-sqliteLight dark:text-db-sqlite font-semibold">SQLITE</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Tables Tree -->
+              <div>
+                <div class="text-[11px] font-semibold text-light-muted dark:text-dark-muted uppercase tracking-wider mb-2">Tables (24)</div>
+                <div class="space-y-0.5 text-light-muted dark:text-dark-muted pl-1">
+                  <div class="px-2 py-1 rounded bg-light-panel/80 dark:bg-dark-panel/80 text-light-text dark:text-dark-text flex items-center gap-1.5 font-medium">
+                    <i data-lucide="table" class="w-3.5 h-3.5 text-light-violet dark:text-dark-violet"></i> users
+                  </div>
+                  <div class="px-2 py-1 hover:text-light-text dark:hover:text-dark-text flex items-center gap-1.5">
+                    <i data-lucide="table" class="w-3.5 h-3.5"></i> orders
+                  </div>
+                  <div class="px-2 py-1 hover:text-light-text dark:hover:text-dark-text flex items-center gap-1.5">
+                    <i data-lucide="table" class="w-3.5 h-3.5"></i> subscriptions
+                  </div>
+                  <div class="px-2 py-1 hover:text-light-text dark:hover:text-dark-text flex items-center gap-1.5">
+                    <i data-lucide="table" class="w-3.5 h-3.5"></i> audit_logs
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Main Editor & Grid Panel -->
+            <div class="col-span-12 md:col-span-9 flex flex-col">
+
+              <!-- Tabs Header -->
+              <div class="flex items-center border-b border-light-border dark:border-dark-border bg-light-subtle/30 dark:bg-dark-subtle/30">
+                <div class="px-4 py-2 border-r border-light-border dark:border-dark-border bg-light-panel dark:bg-dark-panel text-light-text dark:text-dark-text border-t-2 border-t-light-violet dark:border-t-dark-violet flex items-center gap-2 font-medium">
+                  <i data-lucide="terminal" class="w-3.5 h-3.5 text-light-violet dark:text-dark-violet"></i>
+                  <span>query_active_users.sql</span>
+                </div>
+                <div class="px-4 py-2 border-r border-light-border dark:border-dark-border text-light-muted dark:text-dark-muted hover:text-light-text dark:hover:text-dark-text flex items-center gap-2">
+                  <i data-lucide="table" class="w-3.5 h-3.5"></i>
+                  <span>public.users</span>
+                </div>
+                <div class="ml-auto px-3 py-1.5 text-xs text-light-muted dark:text-dark-muted">
+                  ⌘ + Enter to execute
+                </div>
+              </div>
+
+              <!-- SQL Query Editor Area -->
+              <div class="p-4 bg-light-base/50 dark:bg-dark-base/50 border-b border-light-border dark:border-dark-border font-mono text-sm leading-relaxed">
+                <div class="flex items-center gap-3 text-light-muted dark:text-dark-muted text-xs mb-2 select-none">
+                  <span class="text-emerald-600 dark:text-emerald-400 font-semibold">✓ Query executed in 0.42ms</span>
+                  <span>•</span>
+                  <span>1,000 rows returned</span>
+                </div>
+                <pre class="overflow-x-auto"><code><span class="text-light-violet dark:text-dark-violet font-semibold">SELECT</span> u.id, u.email, u.role, <span class="text-light-violet dark:text-dark-violet font-semibold">COUNT</span>(o.id) <span class="text-light-violet dark:text-dark-violet font-semibold">AS</span> total_orders, <span class="text-light-violet dark:text-dark-violet font-semibold">MAX</span>(o.created_at) <span class="text-light-violet dark:text-dark-violet font-semibold">AS</span> last_active
+<span class="text-light-violet dark:text-dark-violet font-semibold">FROM</span> users u
+<span class="text-light-violet dark:text-dark-violet font-semibold">LEFT JOIN</span> orders o <span class="text-light-violet dark:text-dark-violet font-semibold">ON</span> o.user_id = u.id
+<span class="text-light-violet dark:text-dark-violet font-semibold">WHERE</span> u.status = <span class="text-emerald-600 dark:text-emerald-400">'active'</span>
+<span class="text-light-violet dark:text-dark-violet font-semibold">GROUP BY</span> u.id, u.email
+<span class="text-light-violet dark:text-dark-violet font-semibold">ORDER BY</span> total_orders <span class="text-light-violet dark:text-dark-violet font-semibold">DESC</span>
+<span class="text-light-violet dark:text-dark-violet font-semibold">LIMIT</span> <span class="text-amber-600 dark:text-amber-400">100</span>;</code></pre>
+              </div>
+
+              <!-- Data Results Table -->
+              <div class="flex-1 overflow-x-auto bg-light-panel dark:bg-dark-panel">
+                <table class="w-full text-left border-collapse">
+                  <thead>
+                    <tr class="bg-light-subtle/80 dark:bg-dark-subtle/80 text-light-muted dark:text-dark-muted border-b border-light-border dark:border-dark-border text-[11px] uppercase tracking-wider">
+                      <th class="p-2.5 font-semibold">#</th>
+                      <th class="p-2.5 font-semibold">id</th>
+                      <th class="p-2.5 font-semibold">email</th>
+                      <th class="p-2.5 font-semibold">role</th>
+                      <th class="p-2.5 font-semibold">total_orders</th>
+                      <th class="p-2.5 font-semibold">last_active</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-light-border/60 dark:divide-dark-border/60 text-light-text dark:text-dark-text text-xs">
+                    <tr class="hover:bg-light-subtle/40 dark:hover:bg-dark-subtle/40">
+                      <td class="p-2.5 text-light-muted dark:text-dark-muted">1</td>
+                      <td class="p-2.5 font-mono text-light-violet dark:text-dark-violet">usr_9f82a1</td>
+                      <td class="p-2.5">alex.dev@zippa.db</td>
+                      <td class="p-2.5"><span class="px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-300 font-medium text-[10px]">ADMIN</span></td>
+                      <td class="p-2.5 font-bold">1,429</td>
+                      <td class="p-2.5 text-light-muted dark:text-dark-muted">2026-09-15 16:42:01</td>
+                    </tr>
+                    <tr class="hover:bg-light-subtle/40 dark:hover:bg-dark-subtle/40 bg-light-subtle/20 dark:bg-dark-subtle/20">
+                      <td class="p-2.5 text-light-muted dark:text-dark-muted">2</td>
+                      <td class="p-2.5 font-mono text-light-violet dark:text-dark-violet">usr_3b11c9</td>
+                      <td class="p-2.5">sarah.m@rust-lang.org</td>
+                      <td class="p-2.5"><span class="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-300 font-medium text-[10px]">MEMBER</span></td>
+                      <td class="p-2.5 font-bold">984</td>
+                      <td class="p-2.5 text-light-muted dark:text-dark-muted">2026-09-15 16:38:12</td>
+                    </tr>
+                    <tr class="hover:bg-light-subtle/40 dark:hover:bg-dark-subtle/40">
+                      <td class="p-2.5 text-light-muted dark:text-dark-muted">3</td>
+                      <td class="p-2.5 font-mono text-light-violet dark:text-dark-violet">usr_7a44f2</td>
+                      <td class="p-2.5">engineer@postgres.io</td>
+                      <td class="p-2.5"><span class="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-300 font-medium text-[10px]">MEMBER</span></td>
+                      <td class="p-2.5 font-bold">712</td>
+                      <td class="p-2.5 text-light-muted dark:text-dark-muted">2026-09-15 15:10:45</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Status Bar -->
+              <div class="h-7 bg-light-subtle dark:bg-dark-subtle border-t border-light-border dark:border-dark-border px-3 flex items-center justify-between text-[11px] text-light-muted dark:text-dark-muted">
+                <div class="flex items-center gap-3">
+                  <span class="flex items-center gap-1"><i data-lucide="check-circle" class="w-3 h-3 text-emerald-500"></i> Connected</span>
+                  <span>UTF-8</span>
+                  <span>SSL Active</span>
+                </div>
+                <div>GPUI Metal/Vulkan Backend</div>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Performance Metrics / Stats Ribbon -->
+    <section id="benchmarks" class="py-12 border-y border-light-border dark:border-dark-border bg-light-panel/50 dark:bg-dark-panel/50">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-8 text-center">
+
+          <div class="space-y-1">
+            <div class="text-3xl sm:text-4xl font-extrabold text-light-violet dark:text-dark-violet font-mono">&lt; 15ms</div>
+            <div class="text-sm font-medium text-light-text dark:text-dark-text">Cold Startup Time</div>
+            <div class="text-xs text-light-muted dark:text-dark-muted">Instant UI launch via GPUI</div>
+          </div>
+
+          <div class="space-y-1">
+            <div class="text-3xl sm:text-4xl font-extrabold text-db-postgresLight dark:text-db-postgres font-mono">120 FPS</div>
+            <div class="text-sm font-medium text-light-text dark:text-dark-text">Table Virtualization</div>
+            <div class="text-xs text-light-muted dark:text-dark-muted">Smooth 1M+ row scrolling</div>
+          </div>
+
+          <div class="space-y-1">
+            <div class="text-3xl sm:text-4xl font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">~18 MB</div>
+            <div class="text-sm font-medium text-light-text dark:text-dark-text">Idle RAM Footprint</div>
+            <div class="text-xs text-light-muted dark:text-dark-muted">10x lighter than Electron apps</div>
+          </div>
+
+          <div class="space-y-1">
+            <div class="text-3xl sm:text-4xl font-extrabold text-db-mysqlLight dark:text-db-mysql font-mono">0.4ms</div>
+            <div class="text-sm font-medium text-light-text dark:text-dark-text">Query Result Render</div>
+            <div class="text-xs text-light-muted dark:text-dark-muted">Direct GPU cell layout</div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- Database Engines Support Grid -->
+    <section id="engines" class="py-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center max-w-2xl mx-auto mb-16">
+        <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">Engineered for Your Core Stack</h2>
+        <p class="mt-4 text-light-muted dark:text-dark-muted">Native drivers with zero wrapper overhead. Connect directly to local or cloud-hosted instances.</p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+
+        <!-- Postgres Card -->
+        <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border hover:border-db-postgresLight dark:hover:border-db-postgres transition-all group shadow-sm">
+          <div class="w-12 h-12 rounded-xl bg-db-postgres/10 text-db-postgresLight dark:text-db-postgres flex items-center justify-center mb-5 group-hover:scale-110 transition-transform">
+            <i data-lucide="database" class="w-6 h-6"></i>
+          </div>
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-xl font-bold">PostgreSQL</h3>
+            <span class="px-2 py-0.5 text-xs font-mono rounded bg-db-postgres/10 text-db-postgresLight dark:text-db-postgres font-semibold">PG v10+</span>
+          </div>
+          <p class="text-sm text-light-muted dark:text-dark-muted mb-4 leading-relaxed">
+            Full support for JSONB inspection, PostGIS geometries, native ENUM types, explain visualizer, and live notifications.
+          </p>
+          <ul class="text-xs font-mono text-light-muted dark:text-dark-muted space-y-2">
+            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> SSH Tunneling & SSL Modes</li>
+            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> Connection Pooling</li>
+          </ul>
+        </div>
+
+        <!-- MySQL Card -->
+        <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border hover:border-db-mysqlLight dark:hover:border-db-mysql transition-all group shadow-sm">
+          <div class="w-12 h-12 rounded-xl bg-db-mysql/10 text-db-mysqlLight dark:text-db-mysql flex items-center justify-center mb-5 group-hover:scale-110 transition-transform">
+            <i data-lucide="server" class="w-6 h-6"></i>
+          </div>
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-xl font-bold">MySQL / MariaDB</h3>
+            <span class="px-2 py-0.5 text-xs font-mono rounded bg-db-mysql/10 text-db-mysqlLight dark:text-db-mysql font-semibold">MySQL 8.0+</span>
+          </div>
+          <p class="text-sm text-light-muted dark:text-dark-muted mb-4 leading-relaxed">
+            High-speed index optimization, inline table alter schema editor, stored procedure runner, and query profiling.
+          </p>
+          <ul class="text-xs font-mono text-light-muted dark:text-dark-muted space-y-2">
+            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> Multi-Query Transactions</li>
+            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> Fast DDL Execution</li>
+          </ul>
+        </div>
+
+        <!-- SQLite Card -->
+        <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border hover:border-db-sqliteLight dark:hover:border-db-sqlite transition-all group shadow-sm">
+          <div class="w-12 h-12 rounded-xl bg-db-sqlite/10 text-db-sqliteLight dark:text-db-sqlite flex items-center justify-center mb-5 group-hover:scale-110 transition-transform">
+            <i data-lucide="file-spreadsheets" class="w-6 h-6"></i>
+          </div>
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-xl font-bold">SQLite</h3>
+            <span class="px-2 py-0.5 text-xs font-mono rounded bg-db-sqlite/10 text-db-sqliteLight dark:text-db-sqlite font-semibold">Embedded</span>
+          </div>
+          <p class="text-sm text-light-muted dark:text-dark-muted mb-4 leading-relaxed">
+            Instant zero-config file opening. WAL mode monitoring, memory DB support, and automatic vacuum/integrity checks.
+          </p>
+          <ul class="text-xs font-mono text-light-muted dark:text-dark-muted space-y-2">
+            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> Drag-and-Drop .db Files</li>
+            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> In-Memory Inspections</li>
+          </ul>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Key Features Grid -->
+    <section id="features" class="py-20 bg-light-subtle/40 dark:bg-dark-subtle/40 border-y border-light-border dark:border-dark-border">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="text-center max-w-2xl mx-auto mb-16">
+          <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">Designed for Speed & Focus</h2>
+          <p class="mt-4 text-light-muted dark:text-dark-muted">Everything you need in a modern database tool, stripped of bloated legacy web views.</p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+          <!-- Feature 1 -->
+          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
+            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
+              <i data-lucide="cpu" class="w-5 h-5"></i>
+            </div>
+            <h3 class="font-bold text-lg mb-2">GPU Cell Rendering</h3>
+            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
+              GPUI leverages Metal and Vulkan directly to render text and grid layouts on the graphics processor.
+            </p>
+          </div>
+
+          <!-- Feature 2 -->
+          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
+            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
+              <i data-lucide="command" class="w-5 h-5"></i>
+            </div>
+            <h3 class="font-bold text-lg mb-2">Vim Mode & Command Palette</h3>
+            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
+              Navigate schemas, run queries, and switch tabs without touching your mouse using integrated modal keybindings.
+            </p>
+          </div>
+
+          <!-- Feature 3 -->
+          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
+            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
+              <i data-lucide="shield-check" class="w-5 h-5"></i>
+            </div>
+            <h3 class="font-bold text-lg mb-2">Native Enclave Vault</h3>
+            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
+              Credentials and SSH keys are stored in system Keychain / SecretService with zero third-party telemetry.
+            </p>
+          </div>
+
+          <!-- Feature 4 -->
+          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
+            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
+              <i data-lucide="sparkles" class="w-5 h-5"></i>
+            </div>
+            <h3 class="font-bold text-lg mb-2">Smart Auto-Complete</h3>
+            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
+              Context-aware query suggestions based on active schema metadata, foreign key joins, and custom CTEs.
+            </p>
+          </div>
+
+          <!-- Feature 5 -->
+          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
+            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
+              <i data-lucide="git-compare" class="w-5 h-5"></i>
+            </div>
+            <h3 class="font-bold text-lg mb-2">Schema Diffing & Export</h3>
+            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
+              Compare staging vs. production schemas side-by-side and generate instant migration SQL patches.
+            </p>
+          </div>
+
+          <!-- Feature 6 -->
+          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
+            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
+              <i data-lucide="moon" class="w-5 h-5"></i>
+            </div>
+            <h3 class="font-bold text-lg mb-2">Adaptive Theme Engine</h3>
+            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
+              Seamlessly synchronizes with system dark/light modes or customizable desaturated charcoal palettes.
+            </p>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- Download Matrix Section -->
+    <section id="download" class="py-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+      <div class="max-w-3xl mx-auto">
+        <h2 class="text-3xl font-extrabold sm:text-4xl tracking-tight">Get Zippa DB Today</h2>
+        <p class="mt-4 text-light-muted dark:text-dark-muted">Free and open source under the MIT License. Available on all major platforms.</p>
+
+        <!-- Platform Tabs / Download Cards -->
+        <div class="mt-12 grid grid-cols-1 sm:grid-cols-3 gap-6 text-left">
+
+          <!-- macOS -->
+          <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border relative flex flex-col justify-between">
+            <div>
+              <div class="flex items-center justify-between mb-4">
+                <i data-lucide="apple" class="w-8 h-8"></i>
+                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">Universal</span>
+              </div>
+              <h3 class="text-xl font-bold mb-1">macOS</h3>
+              <p class="text-xs text-light-muted dark:text-dark-muted mb-6">Apple Silicon (M1/M2/M3) & Intel</p>
+            </div>
+            <a href="#" class="w-full py-2.5 px-4 rounded-lg bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base font-medium text-xs flex items-center justify-center gap-2 hover:opacity-90 transition-opacity">
+              <i data-lucide="download" class="w-4 h-4"></i> .dmg (Apple Silicon)
+            </a>
+          </div>
+
+          <!-- Linux -->
+          <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border relative flex flex-col justify-between">
+            <div>
+              <div class="flex items-center justify-between mb-4">
+                <i data-lucide="terminal" class="w-8 h-8"></i>
+                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">x86_64 / ARM64</span>
+              </div>
+              <h3 class="text-xl font-bold mb-1">Linux</h3>
+              <p class="text-xs text-light-muted dark:text-dark-muted mb-6">AppImage, Flatpak & AUR</p>
+            </div>
+            <a href="#" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
+              <i data-lucide="download" class="w-4 h-4"></i> .AppImage
+            </a>
+          </div>
+
+          <!-- Windows -->
+          <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border relative flex flex-col justify-between">
+            <div>
+              <div class="flex items-center justify-between mb-4">
+                <i data-lucide="monitor" class="w-8 h-8"></i>
+                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">x64</span>
+              </div>
+              <h3 class="text-xl font-bold mb-1">Windows</h3>
+              <p class="text-xs text-light-muted dark:text-dark-muted mb-6">Windows 10 / 11 (Vulkan / Direct3D)</p>
+            </div>
+            <a href="#" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
+              <i data-lucide="download" class="w-4 h-4"></i> .msi Installer
+            </a>
+          </div>
+
+        </div>
+
+        <!-- Terminal Quick Install -->
+        <div class="mt-8 p-4 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs font-mono flex flex-col sm:flex-row items-center justify-between gap-4 text-left">
+          <div class="flex items-center gap-3">
+            <span class="text-light-violet dark:text-dark-violet font-bold">Homebrew:</span>
+            <span class="text-light-muted dark:text-dark-muted">brew install --cask zippa-db</span>
+          </div>
+          <button onclick="copyBrewCmd(this)" class="px-3 py-1.5 rounded bg-light-subtle dark:bg-dark-subtle hover:text-light-text dark:hover:text-dark-text transition-colors flex items-center gap-1.5">
+            <i data-lucide="copy" class="w-3.5 h-3.5"></i> Copy Brew
+          </button>
+        </div>
+
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t border-light-border dark:border-dark-border bg-light-panel dark:bg-dark-panel py-12 transition-colors duration-300">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-6 text-xs text-light-muted dark:text-dark-muted">
+
+      <div class="flex items-center gap-3">
+        <div class="w-6 h-6 rounded-md bg-gradient-to-br from-light-panel dark:from-dark-panel to-light-subtle dark:to-dark-subtle border border-light-border dark:border-dark-border p-1">
+          <svg viewBox="0 0 512 512" class="w-full h-full">
+            <path d="M 340 80 L 210 245 H 295 L 165 430 L 210 265 H 130 Z" fill="#BB9AF7"/>
+          </svg>
+        </div>
+        <span>© 2026 Zippa DB Project. Built with Rust & GPUI. MIT License.</span>
+      </div>
+
+      <div class="flex items-center gap-6">
+        <a href="https://github.com" target="_blank" class="hover:text-light-text dark:hover:text-dark-text transition-colors">GitHub</a>
+        <a href="#" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Documentation</a>
+        <a href="#" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Release Notes</a>
+        <a href="#" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Discord</a>
+      </div>
+
+    </div>
+  </footer>
+
+  <!-- Interactive Scripting -->
+  <script>
+    // Initialize Lucide Icons
+    lucide.createIcons();
+
+    // Theme Management Logic (Supports Media Query + Manual Override)
+    const htmlEl = document.documentElement;
+    const themeToggleBtn = document.getElementById('themeToggleBtn');
+
+    // Function to apply theme
+    function applyTheme(isDark) {
+      if (isDark) {
+        htmlEl.classList.add('dark');
+      } else {
+        htmlEl.classList.remove('dark');
+      }
+    }
+
+    // Check system media query
+    const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)');
+
+    // Check local storage or fallback to media query
+    const savedTheme = localStorage.getItem('zippa-theme');
+    if (savedTheme) {
+      applyTheme(savedTheme === 'dark');
+    } else {
+      applyTheme(systemPrefersDark.matches);
+    }
+
+    // Listen to OS level media query changes automatically if no user override
+    systemPrefersDark.addEventListener('change', (e) => {
+      if (!localStorage.getItem('zippa-theme')) {
+        applyTheme(e.matches);
+      }
+    });
+
+    // Manual Theme Toggle Button Click
+    themeToggleBtn.addEventListener('click', () => {
+      const isCurrentlyDark = htmlEl.classList.contains('dark');
+      const newDarkState = !isCurrentlyDark;
+      applyTheme(newDarkState);
+      localStorage.setItem('zippa-theme', newDarkState ? 'dark' : 'light');
+    });
+
+    // Detect user OS for smart CTA label
+    const detectedOS = document.getElementById('detectedOS');
+    const userAgent = navigator.userAgent.toLowerCase();
+    if (userAgent.includes('mac')) {
+      detectedOS.textContent = 'macOS';
+    } else if (userAgent.includes('win')) {
+      detectedOS.textContent = 'Windows';
+    } else if (userAgent.includes('linux')) {
+      detectedOS.textContent = 'Linux';
+    }
+
+    // Helper Copy functions
+    function copyCargoCmd(btn) {
+      const text = "cargo install zippa-db";
+      copyToClipboard(text, btn, "Command Copied!");
+    }
+
+    function copyBrewCmd(btn) {
+      const text = "brew install --cask zippa-db";
+      copyToClipboard(text, btn, "Brew Copied!");
+    }
+
+    function copyToClipboard(text, button, successText) {
+      const tempInput = document.createElement("input");
+      tempInput.value = text;
+      document.body.appendChild(tempInput);
+      tempInput.select();
+      document.execCommand("copy");
+      document.body.removeChild(tempInput);
+
+      const originalHTML = button.innerHTML;
+      button.innerText = successText;
+      setTimeout(() => {
+        button.innerHTML = originalHTML;
+        lucide.createIcons();
+      }, 2000);
+    }
+  </script>
+</body>
+</html>
