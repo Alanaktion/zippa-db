@@ -192,23 +192,40 @@ impl FilterBar {
         }
     }
 
-    /// Add an empty line to the bar, on the first column.
-    pub fn add_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.columns.is_empty() {
-            return;
-        }
-
-        let columns = self.columns.clone();
-        let column = cx.new(|cx| SelectState::new(columns, Some(IndexPath::new(0)), window, cx));
+    /// Build one filter row: the column and operator dropdowns, the value
+    /// box, and the subscriptions that read the filters again on a change.
+    /// Shared by [`Self::add_filter`], which starts a row empty, and
+    /// [`Self::set_filter`], which starts one already filled in.
+    fn build_row(
+        column_items: Vec<SharedString>,
+        column_index: usize,
+        operator: Operator,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> FilterRow {
+        let column = cx.new(|cx| {
+            SelectState::new(column_items, Some(IndexPath::new(column_index)), window, cx)
+        });
 
         let operators: Vec<SharedString> = Operator::ALL
             .iter()
             .map(|operator| SharedString::from(operator.label()))
             .collect();
-        let operator =
-            cx.new(|cx| SelectState::new(operators, Some(IndexPath::new(0)), window, cx));
+        let operator_index = Operator::ALL
+            .iter()
+            .position(|candidate| *candidate == operator)
+            .expect("every operator is in ALL");
+        let operator_state = cx.new(|cx| {
+            SelectState::new(operators, Some(IndexPath::new(operator_index)), window, cx)
+        });
 
-        let value = cx.new(|cx| InputState::new(window, cx).placeholder("value"));
+        let hint = Self::value_hint(operator);
+        let value_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(hint)
+                .default_value(value.to_string())
+        });
 
         // Picking a column or an operator does not run anything on its own;
         // the filters are read again when the user asks for them to be.
@@ -221,14 +238,14 @@ impl FilterBar {
         )
         .detach();
         cx.subscribe(
-            &operator,
+            &operator_state,
             |this, _, _: &SelectEvent<Vec<SharedString>>, cx| {
                 cx.notify();
                 this.apply(cx);
             },
         )
         .detach();
-        cx.subscribe(&value, |this, _, event: &InputEvent, cx| {
+        cx.subscribe(&value_state, |this, _, event: &InputEvent, cx| {
             // Applied on Enter rather than per keystroke, so a half-typed
             // value never runs a query of its own.
             if matches!(event, InputEvent::PressEnter { .. }) {
@@ -237,13 +254,56 @@ impl FilterBar {
         })
         .detach();
 
-        self.rows.push(FilterRow {
+        FilterRow {
             column,
-            operator,
-            value,
-            hint: Self::value_hint(Operator::Equals),
-        });
+            operator: operator_state,
+            value: value_state,
+            hint,
+        }
+    }
+
+    /// Add an empty line to the bar, on the first column.
+    pub fn add_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.columns.is_empty() {
+            return;
+        }
+
+        let row = Self::build_row(self.columns.clone(), 0, Operator::Equals, "", window, cx);
+        self.rows.push(row);
         cx.notify();
+    }
+
+    /// Replace every filter with one already filled in, e.g. for a foreign
+    /// key jump: the matching row is what the user asked to see, not one more
+    /// condition AND'd onto whatever was filtered before.
+    ///
+    /// May run before the table's first load has told the bar its columns —
+    /// opening a fresh tab to jump straight into, say — so the dropdown is
+    /// seeded with just the column already known rather than waiting on
+    /// [`Self::set_columns`]. `SelectState` keeps the selected value apart
+    /// from the item list `refresh_columns` later swaps in, so the selection
+    /// survives that.
+    pub fn set_filter(
+        &mut self,
+        column: &str,
+        operator: Operator,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.rows.clear();
+
+        let known = self.columns.iter().any(|name| name == column);
+        let items = if known {
+            self.columns.clone()
+        } else {
+            vec![SharedString::from(column)]
+        };
+        let column_index = items.iter().position(|name| name == column).unwrap_or(0);
+
+        let row = Self::build_row(items, column_index, operator, value, window, cx);
+        self.rows.push(row);
+        self.apply(cx);
     }
 
     fn remove_filter(&mut self, index: usize, cx: &mut Context<Self>) {

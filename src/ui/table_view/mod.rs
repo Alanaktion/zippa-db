@@ -12,13 +12,15 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::table::ColumnSort;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, Window, actions, div, px};
+use gpui_kit::{Context, Entity, EventEmitter, Window, actions, div, px};
+
+use std::collections::HashSet;
 
 use crate::db::query::Cell;
-use crate::db::{Connection, DatabaseObject, ObjectKind, RowKey, runtime};
+use crate::db::{Connection, DatabaseObject, ForeignKeyDef, ObjectKind, RowKey, runtime};
 use crate::settings::{self, Settings};
-use crate::ui::data_grid::{DataGrid, GridEdit, SortRequested, Sorting, StagedRow};
-use crate::ui::filter_bar::{FilterBar, FiltersChanged};
+use crate::ui::data_grid::{DataGrid, GridEdit, GridNavigate, SortRequested, Sorting, StagedRow};
+use crate::ui::filter_bar::{FilterBar, FilterSpec, FiltersChanged, Operator};
 
 mod sql;
 
@@ -109,6 +111,19 @@ impl Pending {
     }
 }
 
+/// What a table view asks its owner to do, since opening or reusing a tab is
+/// the session's job, not the view's own.
+pub(crate) enum TableViewEvent {
+    /// A cell's foreign key was followed; `filter` selects the matching row
+    /// in `object` once its tab is open.
+    NavigateToForeignKey {
+        object: DatabaseObject,
+        filter: FilterSpec,
+    },
+}
+
+impl EventEmitter<TableViewEvent> for TableView {}
+
 pub struct TableView {
     connection: Arc<Connection>,
     filters: Entity<FilterBar>,
@@ -130,6 +145,9 @@ pub struct TableView {
     /// write can quote its columns and cast its parameters.
     columns: Vec<String>,
     column_types: Vec<String>,
+    /// This table's own foreign keys, read once per table opened; `None`
+    /// until the server has answered, like `row_key`.
+    foreign_keys: Option<Vec<ForeignKeyDef>>,
     /// Row identifiers of the loaded page, when the key is one; indexed the
     /// same way the grid indexes its rows.
     key_values: Vec<Cell>,
@@ -155,6 +173,8 @@ impl TableView {
         cx.subscribe_in(&grid, window, Self::on_sort_requested)
             .detach();
         cx.subscribe_in(&grid, window, Self::on_grid_edit).detach();
+        cx.subscribe_in(&grid, window, Self::on_grid_navigate)
+            .detach();
 
         let filters = cx.new(|cx| FilterBar::new(window, cx));
         cx.subscribe_in(&filters, window, Self::on_filters_changed)
@@ -185,6 +205,7 @@ impl TableView {
             row_key: None,
             columns: Vec::new(),
             column_types: Vec::new(),
+            foreign_keys: None,
             key_values: Vec::new(),
             key_type: None,
             committing: false,
@@ -193,6 +214,7 @@ impl TableView {
             confirming: None,
         };
         view.load_row_key(cx);
+        view.load_foreign_keys(cx);
         view
     }
 
@@ -208,7 +230,9 @@ impl TableView {
         // A table of the same name in another database is another table, so
         // the key is read again rather than carried over.
         self.row_key = None;
+        self.foreign_keys = None;
         self.load_row_key(cx);
+        self.load_foreign_keys(cx);
     }
 
     /// Ask the server how a row of this table can be addressed, then load it.
@@ -241,6 +265,54 @@ impl TableView {
             .ok();
         })
         .detach();
+    }
+
+    /// Ask the server for this table's foreign keys, once per table opened —
+    /// the row menu needs them to offer a jump to the referenced row.
+    fn load_foreign_keys(&mut self, cx: &mut Context<Self>) {
+        let connection = self.connection.clone();
+        let object = self.object.clone();
+        let task = runtime::spawn(async move { connection.foreign_keys(&object).await });
+
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.foreign_keys = Some(match result {
+                    Ok(Ok(keys)) => keys,
+                    Ok(Err(_)) | Err(_) => Vec::new(),
+                });
+                this.sync_foreign_keys(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Tell the grid which of its current columns are backed by a
+    /// single-column foreign key, from whichever of the schema read and the
+    /// page load has landed last.
+    ///
+    /// Composite foreign keys are left out: the filter bar only describes one
+    /// column per row, so there is no filter a jump could pre-set for them.
+    fn sync_foreign_keys(&mut self, cx: &mut Context<Self>) {
+        let Some(foreign_keys) = &self.foreign_keys else {
+            return;
+        };
+
+        let fk_columns: HashSet<usize> = self
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, name)| {
+                foreign_keys
+                    .iter()
+                    .any(|fk| fk.columns.len() == 1 && fk.columns[0] == *name)
+                    .then_some(index)
+            })
+            .collect();
+
+        self.grid
+            .update(cx, |grid, cx| grid.set_foreign_keys(fk_columns, cx));
     }
 
     /// Whether rows of this table can be written back.
@@ -286,6 +358,7 @@ impl TableView {
                         let columns = this.columns.clone();
                         this.filters
                             .update(cx, |filters, cx| filters.set_columns(&columns, cx));
+                        this.sync_foreign_keys(cx);
                         // The rows come back already ordered, so the grid is
                         // told what order they are in: it rebuilds its headers
                         // from scratch and would otherwise show the column as
@@ -637,6 +710,65 @@ impl TableView {
             }
             GridEdit::Staged => cx.notify(),
         }
+    }
+
+    /// A jump to a foreign key's referenced row was asked for from the row
+    /// menu. Resolved here, since this is the one place that holds both the
+    /// table's own foreign keys and its current column layout; where to open
+    /// it is the session's call, so it goes out as an event.
+    fn on_grid_navigate(
+        &mut self,
+        _: &Entity<DataGrid>,
+        event: &GridNavigate,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(foreign_keys) = &self.foreign_keys else {
+            return;
+        };
+        let Some(name) = self.columns.get(event.col) else {
+            return;
+        };
+        let Some(fk) = foreign_keys
+            .iter()
+            .find(|fk| fk.columns.len() == 1 && fk.columns[0] == *name)
+        else {
+            return;
+        };
+        let Some(Some(value)) = self
+            .grid
+            .read(cx)
+            .baseline_row(event.row, cx)
+            .and_then(|row| row.get(event.col).cloned())
+        else {
+            return;
+        };
+
+        cx.emit(TableViewEvent::NavigateToForeignKey {
+            object: DatabaseObject {
+                schema: fk.referenced_schema.clone(),
+                name: fk.referenced_table.clone(),
+                kind: ObjectKind::Table,
+            },
+            filter: FilterSpec {
+                column: fk.referenced_columns[0].clone(),
+                operator: Operator::Equals,
+                value,
+            },
+        });
+    }
+
+    /// Replace this table's filters with one already filled in, e.g. a
+    /// foreign key jump from another table's row menu.
+    pub(crate) fn apply_external_filter(
+        &mut self,
+        filter: FilterSpec,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.filters.update(cx, |filters, cx| {
+            filters.set_filter(&filter.column, filter.operator, &filter.value, window, cx)
+        });
     }
 
     fn on_apply_edits(&mut self, _: &ApplyEdits, _window: &mut Window, cx: &mut Context<Self>) {

@@ -146,6 +146,23 @@ impl Connection {
             foreign_keys: parse_foreign_keys(&foreign_keys_result),
         })
     }
+
+    /// Just `object`'s foreign keys — one round trip, for callers that don't
+    /// need the rest of [`table_schema`](Self::table_schema).
+    pub async fn foreign_keys(&self, object: &DatabaseObject) -> Result<Vec<ForeignKeyDef>> {
+        let engine = self.config.engine;
+        let schema = object.schema.as_deref().unwrap_or("public");
+        let table = object.name.as_str();
+
+        let sql = match engine {
+            Engine::Postgres => postgres::foreign_keys_sql(schema, table),
+            Engine::MySql => mysql::foreign_keys_sql(table),
+            Engine::Sqlite => sqlite::foreign_keys_sql(table),
+        };
+
+        let result = self.run_query(&sql).await?;
+        Ok(parse_foreign_keys(&result))
+    }
 }
 
 fn text(row: &[Cell], index: usize) -> String {

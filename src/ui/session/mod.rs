@@ -23,10 +23,11 @@ use regex::Regex;
 use crate::db::query::QueryResult;
 use crate::db::{Connection, DatabaseObject, runtime, statement};
 use crate::ui::data_grid::DataGrid;
+use crate::ui::filter_bar::FilterSpec;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
 use crate::ui::schema_view::SchemaView;
 use crate::ui::sql_file;
-use crate::ui::table_view::TableView;
+use crate::ui::table_view::{TableView, TableViewEvent};
 
 mod sidebar;
 pub(crate) mod tab;
@@ -182,6 +183,8 @@ impl Session {
             ObjectViewMode::Data => {
                 let view = cx
                     .new(|cx| TableView::new(self.connection.clone(), object.clone(), window, cx));
+                cx.subscribe_in(&view, window, Self::on_table_navigate)
+                    .detach();
                 SessionTab {
                     title: object.label().into(),
                     content: TabContent::Table { view },
@@ -201,6 +204,53 @@ impl Session {
         self.active = self.tabs.len() - 1;
         self.sync_tree_selection(cx);
         cx.notify();
+    }
+
+    /// A table view followed a foreign key; open (or reuse) the referenced
+    /// table's tab and put the matching row's filter on it.
+    fn on_table_navigate(
+        &mut self,
+        _: &Entity<TableView>,
+        event: &TableViewEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            TableViewEvent::NavigateToForeignKey { object, filter } => {
+                self.open_object_filtered(object, filter.clone(), window, cx);
+            }
+        }
+    }
+
+    /// Open or reuse `object`'s data tab, the way [`Self::open_object`] does,
+    /// then replace its filters with `filter` — a table already open is
+    /// re-filtered and brought forward rather than left showing whatever it
+    /// had.
+    fn open_object_filtered(
+        &mut self,
+        object: &DatabaseObject,
+        filter: FilterSpec,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_object(object, ObjectViewMode::Data, window, cx);
+
+        let target = self
+            .tabs
+            .iter()
+            .find(|tab| {
+                tab.mode() == Some(ObjectViewMode::Data) && tab.object(cx).as_ref() == Some(object)
+            })
+            .and_then(|tab| match &tab.content {
+                TabContent::Table { view } => Some(view.clone()),
+                _ => None,
+            });
+        let Some(view) = target else {
+            return;
+        };
+        view.update(cx, |view, cx| {
+            view.apply_external_filter(filter, window, cx)
+        });
     }
 
     /// Close a tab, asking first if it holds unsaved changes.

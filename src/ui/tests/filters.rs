@@ -150,6 +150,41 @@ fn a_null_filter_hides_its_value_box(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn setting_a_filter_replaces_whatever_was_there(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    add_filter(cx, &view, "id", Operator::Greater, "0");
+    add_filter(cx, &view, "name", Operator::NotEquals, "alpha");
+
+    // A programmatic jump — a foreign key follow, say — replaces the filters
+    // rather than AND-ing onto whatever was there, the way `add_filter` does.
+    let filters = view.read_with(cx, |view, _| view.filters_for_test());
+    filters
+        .downgrade()
+        .update_in(cx, |filters, window, cx| {
+            filters.set_filter("name", Operator::Equals, "alpha", window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    filters.read_with(cx, |filters, _cx| {
+        assert_eq!(
+            filters.filter_count_for_test(),
+            1,
+            "set_filter should replace every existing row, not add to them"
+        );
+    });
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where name = ? limit 500 offset 0"
+        );
+        assert_eq!(view.loaded_rows_for_test(), 1);
+    });
+}
+
+#[gpui_kit::test]
 fn filtering_asks_before_it_discards_staged_edits(cx: &mut TestAppContext) {
     let (database, handle, view) = table_view(cx);
     cx.run_until_parked();

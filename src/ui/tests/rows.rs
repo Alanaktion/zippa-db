@@ -389,3 +389,80 @@ fn an_edit_on_a_row_marked_for_deletion_goes_with_it(cx: &mut TestAppContext) {
         "updating a row that is being deleted should never be attempted"
     );
 }
+
+#[gpui_kit::test]
+fn a_foreign_key_jump_opens_and_filters_the_referenced_table(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view_on(
+        cx,
+        "orders",
+        "create table customers (id integer primary key, name text); \
+         insert into customers (id, name) values (1, 'ada'), (2, 'grace'); \
+         create table orders (id integer primary key, customer_id integer references customers(id)); \
+         insert into orders (id, customer_id) values (100, 2);",
+    );
+    cx.run_until_parked();
+
+    // orders' columns are [id, customer_id] in that order, so customer_id is
+    // column 1 — the only one the schema read should have flagged.
+    view.update(cx, |view, cx| {
+        assert!(view.grid_for_test().read(cx).is_foreign_key_for_test(1, cx));
+        assert!(!view.grid_for_test().read(cx).is_foreign_key_for_test(0, cx));
+    });
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.navigate_for_test(0, 1, cx));
+    cx.run_until_parked();
+
+    let target = handle
+        .update(cx, |session, _, _| session.active_table_view())
+        .unwrap()
+        .expect("following the key should open the referenced table");
+    target.read_with(cx, |view, _| {
+        assert_eq!(view.object().name, "customers");
+    });
+
+    let filters = target.read_with(cx, |view, _| view.filters_for_test());
+    filters.read_with(cx, |filters, cx| {
+        let specs = filters.specs(cx);
+        assert_eq!(specs.len(), 1, "the jump should set exactly one filter");
+        assert_eq!(specs[0].column, "id");
+        assert_eq!(specs[0].operator, Operator::Equals);
+        assert_eq!(specs[0].value, "2");
+    });
+    target.update(cx, |view, _cx| {
+        assert_eq!(
+            view.loaded_rows_for_test(),
+            1,
+            "only the referenced row should match"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn a_null_foreign_key_has_nothing_to_follow(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view_on(
+        cx,
+        "orders",
+        "create table customers (id integer primary key, name text); \
+         insert into customers (id, name) values (1, 'ada'); \
+         create table orders (id integer primary key, customer_id integer references customers(id)); \
+         insert into orders (id, customer_id) values (100, null);",
+    );
+    cx.run_until_parked();
+
+    let tabs_before = handle
+        .update(cx, |session, _, _| session.tab_titles())
+        .unwrap();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.navigate_for_test(0, 1, cx));
+    cx.run_until_parked();
+
+    assert_eq!(
+        handle
+            .update(cx, |session, _, _| session.tab_titles())
+            .unwrap(),
+        tabs_before,
+        "a NULL foreign key value has no row to jump to"
+    );
+}

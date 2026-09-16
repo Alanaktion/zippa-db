@@ -57,6 +57,9 @@ type ChangeReporter = Rc<dyn Fn(&mut App)>;
 /// Opens the value viewer on a cell, from the menu the delegate built.
 type ViewReporter = Rc<dyn Fn(usize, usize, &mut App)>;
 
+/// Reports a foreign key jump on a cell, from the menu the delegate built.
+type NavReporter = Rc<dyn Fn(usize, usize, &mut App)>;
+
 /// Emitted when the user clicks a column header on a [`Sorting::Delegated`]
 /// grid.
 pub struct SortRequested {
@@ -71,6 +74,12 @@ pub enum GridEdit {
     Staged,
     /// The selection left `row`, which has edits waiting on it.
     RowLeft { row: usize },
+}
+
+/// A foreign key jump was asked for from the row menu.
+pub struct GridNavigate {
+    pub row: usize,
+    pub col: usize,
 }
 
 /// One row's staged cells, by column index, for the owner to turn into SQL.
@@ -89,6 +98,7 @@ pub struct DataGrid {
 
 impl EventEmitter<SortRequested> for DataGrid {}
 impl EventEmitter<GridEdit> for DataGrid {}
+impl EventEmitter<GridNavigate> for DataGrid {}
 
 impl DataGrid {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -125,6 +135,21 @@ impl DataGrid {
             }
         });
 
+        let report_navigate: NavReporter = Rc::new({
+            let grid = cx.weak_entity();
+            move |row_ix: usize, col_ix: usize, cx: &mut App| {
+                let Some(grid) = grid.upgrade() else {
+                    return;
+                };
+                grid.update(cx, |_, cx| {
+                    cx.emit(GridNavigate {
+                        row: row_ix,
+                        col: col_ix,
+                    })
+                });
+            }
+        });
+
         let editor = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
@@ -149,6 +174,8 @@ impl DataGrid {
                     deletions: HashSet::new(),
                     report_change,
                     report_view,
+                    report_navigate,
+                    foreign_keys: HashSet::new(),
                     drafts: Vec::new(),
                     editing: None,
                     editor: editor.clone(),
@@ -283,6 +310,16 @@ impl DataGrid {
                 delegate.drafts.clear();
                 delegate.deletions.clear();
             }
+            cx.notify();
+        });
+    }
+
+    /// Say which columns hold a single-column foreign key, by index, so the
+    /// row menu can offer to jump to the referenced row. Only the table view
+    /// knows this, since it is the one that reads the table's own schema.
+    pub fn set_foreign_keys(&mut self, columns: HashSet<usize>, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().foreign_keys = columns;
             cx.notify();
         });
     }
@@ -803,6 +840,31 @@ impl DataGrid {
     #[cfg(test)]
     pub(crate) fn cell_for_test(&self, row_ix: usize, col_ix: usize, cx: &App) -> Cell {
         self.table.read(cx).delegate().cell(row_ix, col_ix).clone()
+    }
+
+    /// Ask to follow a cell's foreign key, the way "Go to referenced row" in
+    /// its menu does.
+    #[cfg(test)]
+    pub(crate) fn navigate_for_test(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(GridNavigate {
+            row: row_ix,
+            col: col_ix,
+        });
+    }
+
+    /// Whether the row menu would offer a foreign key jump on this column.
+    #[cfg(test)]
+    pub(crate) fn is_foreign_key_for_test(&self, col_ix: usize, cx: &App) -> bool {
+        self.table
+            .read(cx)
+            .delegate()
+            .foreign_keys
+            .contains(&col_ix)
     }
 
     /// Drop a row being built, the way its menu item does.

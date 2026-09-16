@@ -24,7 +24,7 @@ use crate::db::query::{self, Cell, QueryResult};
 
 use super::layout::MIN_COLUMN_WIDTH;
 
-use super::{ChangeReporter, SortReporter, Sorting, ViewReporter};
+use super::{ChangeReporter, NavReporter, SortReporter, Sorting, ViewReporter};
 
 pub(super) struct ResultDelegate {
     pub(super) result: QueryResult,
@@ -60,6 +60,11 @@ pub(super) struct ResultDelegate {
     pub(super) deletions: HashSet<usize>,
     pub(super) report_change: ChangeReporter,
     pub(super) report_view: ViewReporter,
+    pub(super) report_navigate: NavReporter,
+    /// Column indices with a usable single-column foreign key, set by the
+    /// table view once it has read the table's own schema. Empty for an
+    /// ad-hoc query result, which has no owner that could look one up.
+    pub(super) foreign_keys: HashSet<usize>,
     /// Rows the user is building by hand, each one the cells typed into it so
     /// far. They sit after the result's own rows and are written by an
     /// `INSERT`, so a column nobody typed into is left out and takes whatever
@@ -401,10 +406,21 @@ impl ResultDelegate {
         let menu = match self.menu_cell.filter(|(row, _)| *row == row_ix) {
             Some((row, col)) => {
                 let report = self.report_view.clone();
-                menu.item(
+                let menu = menu.item(
                     PopupMenuItem::new("View value")
                         .on_click(move |_, _window, cx| report(row, col, cx)),
-                )
+                );
+
+                // Nothing to jump to for a NULL foreign key value.
+                if self.foreign_keys.contains(&col) && self.cell(row, col).is_some() {
+                    let report = self.report_navigate.clone();
+                    menu.item(
+                        PopupMenuItem::new("Go to referenced row")
+                            .on_click(move |_, _window, cx| report(row, col, cx)),
+                    )
+                } else {
+                    menu
+                }
             }
             None => menu,
         };
