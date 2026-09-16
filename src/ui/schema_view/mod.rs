@@ -1,15 +1,13 @@
 //! A table's own definition: columns, indexes, and foreign keys.
 //!
-//! TODO.md's "Table Schema Inspector & DDL Generator". Phase 1 was read-only;
-//! phase 2 turns the Columns section into a form that diffs itself against
-//! what was loaded and turns the difference into `ALTER TABLE` statements
-//! (`sql.rs`), previewed and confirmed before they run — unconditionally, on
-//! every `SafetyMode`, since a dropped column or a retyped `NOT NULL` can
-//! lose data outright in a way a single row's edit cannot. Indexes and
-//! foreign keys stay read-only until phases 4 and 5. A table's own structure
-//! is a handful of rows with heterogeneous per-row detail, which is a form
-//! rather than a data grid, so this does not reach for
-//! `gpui_kit::component::table` the way `DataGrid` does.
+//! TODO.md's "Table Schema Inspector & DDL Generator". Every section is now a
+//! form that diffs itself against what was loaded and turns the difference
+//! into statements (`sql.rs`), previewed and confirmed before they run —
+//! unconditionally, on every `SafetyMode`, since a dropped column or foreign
+//! key can lose data or break other tables in a way a single row's edit
+//! cannot. A table's own structure is a handful of rows with heterogeneous
+//! per-row detail, which is a form rather than a data grid, so this does not
+//! reach for `gpui_kit::component::table` the way `DataGrid` does.
 
 use std::sync::Arc;
 
@@ -26,11 +24,22 @@ use gpui_kit::{App, Context, Entity, SharedString, Window, div, px};
 
 use crate::db::{
     ColumnDef, Connection, DatabaseObject, Engine, ForeignKeyDef, IndexDef, ObjectKind,
-    TableSchema, runtime,
+    ReferentialAction, TableSchema, runtime,
 };
 
 mod sql;
-use sql::{ColumnEdit, IndexEdit};
+use sql::{ColumnEdit, ForeignKeyEdit, IndexEdit};
+
+/// The fixed set of `ON DELETE`/`ON UPDATE` choices, for the action dropdowns.
+fn referential_actions() -> [ReferentialAction; 5] {
+    [
+        ReferentialAction::NoAction,
+        ReferentialAction::Restrict,
+        ReferentialAction::Cascade,
+        ReferentialAction::SetNull,
+        ReferentialAction::SetDefault,
+    ]
+}
 
 /// One column row as the form shows it: a stable identity (so a rename is
 /// tracked by which row it is, not by matching names) plus the fields the
@@ -95,16 +104,69 @@ impl EditableIndex {
     }
 }
 
+/// One foreign key row: a whole relationship added or a whole one dropped,
+/// never modified in place — see `sql::ForeignKeyEdit`. Only a new row's
+/// columns and reference are editable; an existing one is shown as loaded.
+struct EditableForeignKey {
+    id: usize,
+    /// `None` for a foreign key added by hand.
+    original: Option<ForeignKeyDef>,
+    name: Entity<InputState>,
+    /// Local columns, in the order picked — order matches `referenced_columns`.
+    columns: Vec<String>,
+    referenced_table: Option<DatabaseObject>,
+    /// Columns of `referenced_table`, read once it is picked; empty until
+    /// then or while that read is in flight.
+    referenced_table_columns: Vec<String>,
+    /// In the order picked, matching `columns` one for one.
+    referenced_columns: Vec<String>,
+    on_delete: ReferentialAction,
+    on_update: ReferentialAction,
+    /// Only ever set on a foreign key that came from the server; a dropped
+    /// new one is removed from the list outright instead.
+    dropped: bool,
+}
+
+impl EditableForeignKey {
+    fn snapshot(&self, cx: &App) -> ForeignKeyEdit {
+        ForeignKeyEdit {
+            original: self.original.clone(),
+            name: self.name.read(cx).value().trim().to_string(),
+            columns: self.columns.clone(),
+            referenced_schema: self
+                .referenced_table
+                .as_ref()
+                .and_then(|t| t.schema.clone()),
+            referenced_table: self
+                .referenced_table
+                .as_ref()
+                .map(|t| t.name.clone())
+                .unwrap_or_default(),
+            referenced_columns: self.referenced_columns.clone(),
+            on_delete: self.on_delete,
+            on_update: self.on_update,
+            dropped: self.dropped,
+        }
+    }
+}
+
 pub struct SchemaView {
     connection: Arc<Connection>,
     object: DatabaseObject,
-    /// Indexes and foreign keys as loaded; read-only until phases 4 and 5.
+    /// As loaded, kept for reference: it is what a foreign key's own row
+    /// picks its referenced columns from once the target is this table.
     schema: Option<TableSchema>,
     /// The Columns section's own editable state, seeded from `schema` each
     /// time it (re)loads.
     columns: Vec<EditableColumn>,
     /// The Indexes section's own editable state, seeded the same way.
     indexes: Vec<EditableIndex>,
+    /// The Foreign Keys section's own editable state, seeded the same way.
+    foreign_keys: Vec<EditableForeignKey>,
+    /// Other tables a new foreign key can reference, read once alongside the
+    /// structure rather than reusing the sidebar's list, so this view stays
+    /// self-contained.
+    tables: Vec<DatabaseObject>,
     next_id: usize,
     loading: bool,
     applying: bool,
@@ -132,6 +194,8 @@ impl SchemaView {
             schema: None,
             columns: Vec::new(),
             indexes: Vec::new(),
+            foreign_keys: Vec::new(),
+            tables: Vec::new(),
             next_id: 0,
             loading: false,
             applying: false,
@@ -176,14 +240,19 @@ impl SchemaView {
 
         let connection = self.connection.clone();
         let object = self.object.clone();
-        let task = runtime::spawn(async move { connection.table_schema(&object).await });
+        let task = runtime::spawn(async move {
+            (
+                connection.table_schema(&object).await,
+                connection.objects().await,
+            )
+        });
 
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
                 this.loading = false;
                 match result {
-                    Ok(Ok(schema)) => {
+                    Ok((Ok(schema), objects)) => {
                         let mut columns = Vec::with_capacity(schema.columns.len());
                         for column in schema.columns.clone() {
                             columns.push(this.new_row(Some(column), window, cx));
@@ -196,9 +265,26 @@ impl SchemaView {
                         }
                         this.indexes = indexes;
 
+                        let mut foreign_keys = Vec::with_capacity(schema.foreign_keys.len());
+                        for key in schema.foreign_keys.clone() {
+                            foreign_keys.push(this.new_foreign_key_row(Some(key), window, cx));
+                        }
+                        this.foreign_keys = foreign_keys;
+
+                        // Other tables a new foreign key could reference; a
+                        // view cannot be one, and referencing this table
+                        // itself is left out to keep the picker simple.
+                        this.tables = objects
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|candidate| {
+                                candidate.kind == ObjectKind::Table && candidate != &this.object
+                            })
+                            .collect();
+
                         this.schema = Some(schema);
                     }
-                    Ok(Err(error)) => this.error = Some(format!("{error:#}")),
+                    Ok((Err(error), _)) => this.error = Some(format!("{error:#}")),
                     Err(_) => {
                         this.error = Some("reading the table's structure was cancelled".into())
                     }
@@ -303,7 +389,7 @@ impl SchemaView {
         let columns_changed = self.edits(cx).iter().any(|edit| {
             edit.changed() || edit.dropped || (edit.is_new() && !edit.name.trim().is_empty())
         });
-        columns_changed || self.has_index_changes(cx)
+        columns_changed || self.has_index_changes(cx) || self.has_foreign_key_changes(cx)
     }
 
     /// Append a blank row for the user to fill in by hand.
@@ -487,6 +573,224 @@ impl SchemaView {
         })
     }
 
+    /// Build a row's name box, seeded from `original` when there is one.
+    fn new_foreign_key_row(
+        &mut self,
+        original: Option<ForeignKeyDef>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> EditableForeignKey {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("foreign key name")
+                .default_value(
+                    original
+                        .as_ref()
+                        .map(|k| k.name.as_str())
+                        .unwrap_or_default(),
+                )
+        });
+        cx.subscribe_in(&name, window, Self::on_field_event)
+            .detach();
+
+        let columns = original
+            .as_ref()
+            .map(|k| k.columns.clone())
+            .unwrap_or_default();
+        let referenced_table = original.as_ref().map(|k| DatabaseObject {
+            schema: k.referenced_schema.clone(),
+            name: k.referenced_table.clone(),
+            kind: ObjectKind::Table,
+        });
+        let referenced_columns = original
+            .as_ref()
+            .map(|k| k.referenced_columns.clone())
+            .unwrap_or_default();
+        let on_delete = original
+            .as_ref()
+            .map(|k| k.on_delete)
+            .unwrap_or(ReferentialAction::NoAction);
+        let on_update = original
+            .as_ref()
+            .map(|k| k.on_update)
+            .unwrap_or(ReferentialAction::NoAction);
+
+        EditableForeignKey {
+            id,
+            original,
+            name,
+            columns,
+            referenced_table,
+            referenced_table_columns: Vec::new(),
+            referenced_columns,
+            on_delete,
+            on_update,
+            dropped: false,
+        }
+    }
+
+    /// Whether foreign keys can be changed at all: SQLite cannot add or drop
+    /// one on an existing table without the phase 3 rebuild, so it is
+    /// refused here rather than in the generator alone.
+    fn foreign_keys_editable(&self) -> bool {
+        self.is_editable() && self.connection.config.engine != Engine::Sqlite
+    }
+
+    /// Append a blank row for the user to name and connect by hand.
+    fn add_foreign_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.foreign_keys_editable() {
+            return;
+        }
+        let row = self.new_foreign_key_row(None, window, cx);
+        self.foreign_keys.push(row);
+        self.notice = None;
+        self.pending = None;
+        cx.notify();
+    }
+
+    /// Mark an existing foreign key to be dropped, or take the mark back
+    /// off; one added by hand is removed outright instead, since the server
+    /// has nothing of it to drop.
+    fn toggle_foreign_key_drop(&mut self, id: usize, cx: &mut Context<Self>) {
+        let Some(position) = self.foreign_keys.iter().position(|key| key.id == id) else {
+            return;
+        };
+        if self.foreign_keys[position].original.is_some() {
+            self.foreign_keys[position].dropped = !self.foreign_keys[position].dropped;
+        } else {
+            self.foreign_keys.remove(position);
+        }
+        self.notice = None;
+        self.pending = None;
+        cx.notify();
+    }
+
+    /// Add or remove `column` from a new foreign key's local columns,
+    /// keeping the order picked — it has to line up with the referenced
+    /// columns one for one.
+    fn toggle_foreign_key_column(
+        &mut self,
+        id: usize,
+        column: String,
+        included: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(key) = self.foreign_keys.iter_mut().find(|key| key.id == id) {
+            if included {
+                if !key.columns.contains(&column) {
+                    key.columns.push(column);
+                }
+            } else {
+                key.columns.retain(|existing| existing != &column);
+            }
+        }
+        self.pending = None;
+        cx.notify();
+    }
+
+    /// Point a new foreign key at `table`, clearing its referenced columns —
+    /// they belonged to whatever was picked before — and read that table's
+    /// own columns to offer as the picker.
+    fn pick_referenced_table(&mut self, id: usize, table: DatabaseObject, cx: &mut Context<Self>) {
+        if let Some(key) = self.foreign_keys.iter_mut().find(|key| key.id == id) {
+            key.referenced_table = Some(table.clone());
+            key.referenced_columns.clear();
+            key.referenced_table_columns.clear();
+        }
+        self.pending = None;
+        cx.notify();
+
+        let connection = self.connection.clone();
+        let task = runtime::spawn(async move { connection.table_schema(&table).await });
+
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                if let Ok(Ok(schema)) = result
+                    && let Some(key) = this.foreign_keys.iter_mut().find(|key| key.id == id)
+                {
+                    key.referenced_table_columns = schema
+                        .columns
+                        .into_iter()
+                        .map(|column| column.name)
+                        .collect();
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Add or remove `column` from a new foreign key's referenced columns,
+    /// keeping the order picked.
+    fn toggle_referenced_column(
+        &mut self,
+        id: usize,
+        column: String,
+        included: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(key) = self.foreign_keys.iter_mut().find(|key| key.id == id) {
+            if included {
+                if !key.referenced_columns.contains(&column) {
+                    key.referenced_columns.push(column);
+                }
+            } else {
+                key.referenced_columns
+                    .retain(|existing| existing != &column);
+            }
+        }
+        self.pending = None;
+        cx.notify();
+    }
+
+    fn set_foreign_key_on_delete(
+        &mut self,
+        id: usize,
+        action: ReferentialAction,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(key) = self.foreign_keys.iter_mut().find(|key| key.id == id) {
+            key.on_delete = action;
+        }
+        self.pending = None;
+        cx.notify();
+    }
+
+    fn set_foreign_key_on_update(
+        &mut self,
+        id: usize,
+        action: ReferentialAction,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(key) = self.foreign_keys.iter_mut().find(|key| key.id == id) {
+            key.on_update = action;
+        }
+        self.pending = None;
+        cx.notify();
+    }
+
+    fn foreign_key_edits(&self, cx: &App) -> Vec<ForeignKeyEdit> {
+        self.foreign_keys
+            .iter()
+            .map(|key| key.snapshot(cx))
+            .collect()
+    }
+
+    fn has_foreign_key_changes(&self, cx: &App) -> bool {
+        self.foreign_key_edits(cx).iter().any(|edit| {
+            edit.dropped
+                || (edit.is_new()
+                    && !edit.columns.is_empty()
+                    && !edit.referenced_table.trim().is_empty()
+                    && !edit.referenced_columns.is_empty())
+        })
+    }
+
     /// Generate the statements for what has changed and show them, or say
     /// why not.
     fn preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -500,21 +804,28 @@ impl SchemaView {
         let column_statements = sql::generate_alter_statements(engine, &target, &self.edits(cx));
         let index_statements =
             sql::generate_index_statements(engine, &self.object, &self.index_edits(cx));
+        let foreign_key_statements =
+            sql::generate_foreign_key_statements(engine, &self.object, &self.foreign_key_edits(cx));
 
-        match (column_statements, index_statements) {
-            (Ok(mut statements), Ok(more)) if !statements.is_empty() || !more.is_empty() => {
-                statements.extend(more);
+        let combined = column_statements.and_then(|mut statements| {
+            statements.extend(index_statements?);
+            statements.extend(foreign_key_statements?);
+            Ok(statements)
+        });
+
+        match combined {
+            Ok(statements) if statements.is_empty() => {
+                self.error = Some("nothing has changed".into());
+                self.pending = None;
+            }
+            Ok(statements) => {
                 self.error = None;
                 let text = statements.join(";\n") + ";";
                 self.preview
                     .update(cx, |input, cx| input.set_value(text, window, cx));
                 self.pending = Some(statements);
             }
-            (Ok(_), Ok(_)) => {
-                self.error = Some("nothing has changed".into());
-                self.pending = None;
-            }
-            (Err(message), _) | (_, Err(message)) => {
+            Err(message) => {
                 self.error = Some(message);
                 self.pending = None;
             }
@@ -1032,40 +1343,316 @@ impl SchemaView {
             .children(rows)
     }
 
-    fn render_foreign_keys(&self, keys: &[ForeignKeyDef], cx: &Context<Self>) -> impl IntoElement {
-        v_flex()
+    /// A checkbox per column `self.schema` has, letting a new foreign key
+    /// pick its local columns and the order they match the referenced ones.
+    fn render_foreign_key_column_picker(
+        &self,
+        key: &EditableForeignKey,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = key.id;
+        let editable = self.foreign_keys_editable();
+        let available: Vec<String> = self
+            .schema
+            .as_ref()
+            .map(|schema| {
+                schema
+                    .columns
+                    .iter()
+                    .map(|column| column.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut boxes = Vec::with_capacity(available.len());
+        for name in available {
+            let checked = key.columns.contains(&name);
+            let for_click = name.clone();
+            boxes.push(
+                h_flex()
+                    .flex_none()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Checkbox::new(SharedString::from(format!("fk-local-col-{id}-{name}")))
+                            .accessibility_label(format!("Include {name}"))
+                            .checked(checked)
+                            .disabled(!editable)
+                            .on_click(cx.listener(move |this, included: &bool, _window, cx| {
+                                this.toggle_foreign_key_column(
+                                    id,
+                                    for_click.clone(),
+                                    *included,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(div().text_xs().child(name))
+                    .into_any_element(),
+            );
+        }
+
+        h_flex()
+            .flex_1()
+            .min_w_0()
+            .flex_wrap()
+            .gap_2()
+            .children(boxes)
+    }
+
+    /// The same, over the picked referenced table's own columns — empty
+    /// until one is picked, and shown as loading between the pick and the
+    /// read that fills it in.
+    fn render_referenced_column_picker(
+        &self,
+        key: &EditableForeignKey,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = key.id;
+        let editable = self.foreign_keys_editable();
+
+        if key.referenced_table.is_some() && key.referenced_table_columns.is_empty() {
+            return div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Loading columns…")
+                .into_any_element();
+        }
+
+        let mut boxes = Vec::with_capacity(key.referenced_table_columns.len());
+        for name in key.referenced_table_columns.clone() {
+            let checked = key.referenced_columns.contains(&name);
+            let for_click = name.clone();
+            boxes.push(
+                h_flex()
+                    .flex_none()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Checkbox::new(SharedString::from(format!("fk-ref-col-{id}-{name}")))
+                            .accessibility_label(format!("Include {name}"))
+                            .checked(checked)
+                            .disabled(!editable)
+                            .on_click(cx.listener(move |this, included: &bool, _window, cx| {
+                                this.toggle_referenced_column(id, for_click.clone(), *included, cx);
+                            })),
+                    )
+                    .child(div().text_xs().child(name))
+                    .into_any_element(),
+            );
+        }
+
+        h_flex()
+            .flex_1()
+            .min_w_0()
+            .flex_wrap()
+            .gap_2()
+            .children(boxes)
+            .into_any_element()
+    }
+
+    /// The dropdown a new foreign key picks its referenced table from,
+    /// sourced from `self.tables` — read once alongside the structure.
+    fn render_referenced_table_picker(
+        &self,
+        key: &EditableForeignKey,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = key.id;
+        let editable = self.foreign_keys_editable();
+        let label = key
+            .referenced_table
+            .as_ref()
+            .map(|table| table.label())
+            .unwrap_or_else(|| "Pick a table".to_string());
+        let tables = self.tables.clone();
+        let weak = cx.entity().downgrade();
+
+        Button::new(("fk-table", id))
+            .outline()
+            .xsmall()
+            .w(px(180.))
+            .label(label)
+            .dropdown_caret(true)
+            .disabled(!editable)
+            .dropdown_menu(move |mut menu, _window, _cx| {
+                if tables.is_empty() {
+                    return menu.label("No other tables");
+                }
+                for table in &tables {
+                    let table = table.clone();
+                    let weak = weak.clone();
+                    menu = menu.item(PopupMenuItem::new(table.label()).on_click(
+                        move |_, _window, cx| {
+                            if let Some(view) = weak.upgrade() {
+                                let table = table.clone();
+                                view.update(cx, |view, cx| {
+                                    view.pick_referenced_table(id, table, cx)
+                                });
+                            }
+                        },
+                    ));
+                }
+                menu.scrollable(true).max_h(px(240.))
+            })
+    }
+
+    /// The `ON DELETE`/`ON UPDATE` dropdown for one foreign key; `on_delete`
+    /// tells the two apart since they otherwise share every argument.
+    fn render_referential_action_picker(
+        &self,
+        key_id: usize,
+        on_delete: bool,
+        current: ReferentialAction,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let editable = self.foreign_keys_editable();
+        let weak = cx.entity().downgrade();
+        let field = if on_delete { "delete" } else { "update" };
+
+        Button::new(SharedString::from(format!("fk-{field}-{key_id}")))
+            .outline()
+            .xsmall()
+            .w(px(110.))
+            .label(current.label())
+            .dropdown_caret(true)
+            .disabled(!editable)
+            .dropdown_menu(move |mut menu, _window, _cx| {
+                for action in referential_actions() {
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(action.label())
+                            .checked(action == current)
+                            .on_click(move |_, _window, cx| {
+                                if let Some(view) = weak.upgrade() {
+                                    view.update(cx, |view, cx| {
+                                        if on_delete {
+                                            view.set_foreign_key_on_delete(key_id, action, cx);
+                                        } else {
+                                            view.set_foreign_key_on_update(key_id, action, cx);
+                                        }
+                                    });
+                                }
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+
+    fn render_foreign_key_row(
+        &self,
+        key: &EditableForeignKey,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = key.id;
+        let editable = self.foreign_keys_editable();
+        let edit = key.snapshot(cx);
+        let is_new = edit.is_new();
+        let dropped = key.dropped;
+
+        let row_tint = if dropped {
+            Some(cx.theme().danger.opacity(0.15))
+        } else if is_new {
+            Some(cx.theme().info.opacity(0.15))
+        } else {
+            None
+        };
+
+        let container = v_flex()
             .w_full()
             .gap_1()
-            .child(self.render_section_heading("FOREIGN KEYS", cx))
-            .when(keys.is_empty(), |this| {
-                this.child(
-                    div()
-                        .px_1()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("No foreign keys"),
-                )
-            })
-            .children(keys.iter().map(|key| {
-                let reference = match &key.referenced_schema {
-                    Some(schema) => format!("{schema}.{}", key.referenced_table),
-                    None => key.referenced_table.clone(),
-                };
+            .px_1()
+            .py_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .when_some(row_tint, |this, color| this.bg(color));
 
+        if is_new {
+            // Each of these borrows `cx` mutably for its own `cx.listener`s;
+            // under edition 2024's RPIT capture rules that borrow would
+            // otherwise still be tied to the returned element, so it is
+            // erased into an owned `AnyElement` before the next one runs.
+            let local_picker = self
+                .render_foreign_key_column_picker(key, cx)
+                .into_any_element();
+            let referenced_picker = self
+                .render_referenced_column_picker(key, cx)
+                .into_any_element();
+            let table_picker = self
+                .render_referenced_table_picker(key, cx)
+                .into_any_element();
+            let delete_picker = self
+                .render_referential_action_picker(id, true, key.on_delete, cx)
+                .into_any_element();
+            let update_picker = self
+                .render_referential_action_picker(id, false, key.on_update, cx)
+                .into_any_element();
+
+            container
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div().flex_1().min_w_0().child(
+                                Input::new(&key.name)
+                                    .id(SharedString::from(format!("fk-name-{id}")))
+                                    .xsmall()
+                                    .readonly(!editable),
+                            ),
+                        )
+                        .child(table_picker)
+                        .child(delete_picker)
+                        .child(update_picker)
+                        .child(
+                            Button::new(("fk-drop", id))
+                                .ghost()
+                                .xsmall()
+                                .label("Remove")
+                                .disabled(!editable)
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.toggle_foreign_key_drop(id, cx);
+                                })),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap_2()
+                        .child(local_picker)
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("→"),
+                        )
+                        .child(referenced_picker),
+                )
+        } else {
+            let reference = match &edit.referenced_schema {
+                Some(schema) => format!("{schema}.{}", edit.referenced_table),
+                None => edit.referenced_table.clone(),
+            };
+
+            container.child(
                 h_flex()
                     .w_full()
+                    .items_center()
                     .gap_3()
-                    .px_1()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .text_sm()
                             .truncate()
-                            .child(key.name.clone()),
+                            .when(dropped, |this| this.line_through())
+                            .child(edit.name.clone()),
                     )
                     .child(
                         div()
@@ -1076,23 +1663,87 @@ impl SchemaView {
                             .truncate()
                             .child(format!(
                                 "{} → {reference}({})",
-                                key.columns.join(", "),
-                                key.referenced_columns.join(", ")
+                                edit.columns.join(", "),
+                                edit.referenced_columns.join(", ")
                             )),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .w(px(260.))
+                            .w(px(220.))
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(format!(
                                 "ON DELETE {} · ON UPDATE {}",
-                                key.on_delete.label(),
-                                key.on_update.label()
+                                edit.on_delete.label(),
+                                edit.on_update.label()
                             )),
                     )
-            }))
+                    .when(editable, |this| {
+                        let label = if dropped { "Undrop" } else { "Drop" };
+                        this.child(
+                            Button::new(("fk-drop", id))
+                                .ghost()
+                                .xsmall()
+                                .label(label)
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.toggle_foreign_key_drop(id, cx)
+                                })),
+                        )
+                    }),
+            )
+        }
+    }
+
+    fn render_foreign_keys(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let editable = self.foreign_keys_editable();
+        // The table can otherwise be edited, but not its foreign keys —
+        // SQLite cannot change one on an existing table at all.
+        let sqlite_blocked = self.is_editable() && !editable;
+
+        let mut rows = Vec::with_capacity(self.foreign_keys.len());
+        for key in &self.foreign_keys {
+            rows.push(self.render_foreign_key_row(key, cx).into_any_element());
+        }
+
+        v_flex()
+            .w_full()
+            .gap_1()
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .child(self.render_section_heading("FOREIGN KEYS", cx))
+                    .when(editable, |this| {
+                        this.child(
+                            Button::new("add-foreign-key")
+                                .ghost()
+                                .xsmall()
+                                .label("Add foreign key")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.add_foreign_key(window, cx);
+                                })),
+                        )
+                    })
+                    .when(sqlite_blocked, |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("SQLite: rebuild required to change"),
+                        )
+                    }),
+            )
+            .when(self.foreign_keys.is_empty(), |this| {
+                this.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("No foreign keys"),
+                )
+            })
+            .children(rows)
     }
 
     fn render_confirm(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1199,9 +1850,7 @@ impl Render for SchemaView {
                             .child(self.render_header(cx))
                             .child(self.render_columns(cx))
                             .child(self.render_indexes(cx))
-                            .when_some(self.schema.clone(), |this, schema| {
-                                this.child(self.render_foreign_keys(&schema.foreign_keys, cx))
-                            }),
+                            .child(self.render_foreign_keys(cx)),
                     ),
             )
             .when(self.pending.is_some(), |this| {
@@ -1349,6 +1998,120 @@ impl SchemaView {
     pub(crate) fn toggle_index_drop_for_test(&mut self, index: usize, cx: &mut Context<Self>) {
         let id = self.indexes[index].id;
         self.toggle_index_drop(id, cx);
+    }
+
+    pub(crate) fn foreign_key_names_for_test(&self, cx: &App) -> Vec<String> {
+        self.foreign_keys
+            .iter()
+            .map(|key| key.name.read(cx).value().to_string())
+            .collect()
+    }
+
+    pub(crate) fn tables_for_test(&self) -> Vec<DatabaseObject> {
+        self.tables.clone()
+    }
+
+    pub(crate) fn add_foreign_key_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.add_foreign_key(window, cx);
+    }
+
+    /// Push a blank row the way `add_foreign_key` does, but without its
+    /// "not on SQLite" gate — for exercising the picker mechanics on the
+    /// only engine the test harness has, independent of that gate, which
+    /// `foreign_keys_cannot_be_added_at_all_on_sqlite` covers on its own.
+    pub(crate) fn push_new_foreign_key_row_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let row = self.new_foreign_key_row(None, window, cx);
+        self.foreign_keys.push(row);
+    }
+
+    pub(crate) fn set_foreign_key_name_for_test(
+        &mut self,
+        index: usize,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.foreign_keys[index].name.clone();
+        input.update(cx, |input, cx| {
+            input.set_value(value.to_string(), window, cx)
+        });
+    }
+
+    pub(crate) fn toggle_foreign_key_column_for_test(
+        &mut self,
+        index: usize,
+        column: &str,
+        included: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.foreign_keys[index].id;
+        self.toggle_foreign_key_column(id, column.to_string(), included, cx);
+    }
+
+    pub(crate) fn pick_referenced_table_for_test(
+        &mut self,
+        index: usize,
+        table: DatabaseObject,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.foreign_keys[index].id;
+        self.pick_referenced_table(id, table, cx);
+    }
+
+    pub(crate) fn referenced_table_columns_for_test(&self, index: usize) -> Vec<String> {
+        self.foreign_keys[index].referenced_table_columns.clone()
+    }
+
+    pub(crate) fn foreign_key_actions_for_test(
+        &self,
+        index: usize,
+    ) -> (ReferentialAction, ReferentialAction) {
+        let key = &self.foreign_keys[index];
+        (key.on_delete, key.on_update)
+    }
+
+    pub(crate) fn toggle_referenced_column_for_test(
+        &mut self,
+        index: usize,
+        column: &str,
+        included: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.foreign_keys[index].id;
+        self.toggle_referenced_column(id, column.to_string(), included, cx);
+    }
+
+    pub(crate) fn set_foreign_key_on_delete_for_test(
+        &mut self,
+        index: usize,
+        action: ReferentialAction,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.foreign_keys[index].id;
+        self.set_foreign_key_on_delete(id, action, cx);
+    }
+
+    pub(crate) fn set_foreign_key_on_update_for_test(
+        &mut self,
+        index: usize,
+        action: ReferentialAction,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.foreign_keys[index].id;
+        self.set_foreign_key_on_update(id, action, cx);
+    }
+
+    pub(crate) fn toggle_foreign_key_drop_for_test(
+        &mut self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.foreign_keys[index].id;
+        self.toggle_foreign_key_drop(id, cx);
     }
 
     pub(crate) fn preview_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {

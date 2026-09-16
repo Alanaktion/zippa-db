@@ -54,10 +54,10 @@
 
 ### Table Schema Inspector & DDL Generator
 
-* [ ] View and modify table structure (Columns, Types, Nullability, Default values)
-* [ ] Index manager (Primary Keys, Unique indexes, Composite indexes)
-* [ ] Foreign Key relationship builder
-* [ ] Live SQL preview generator (shows the `ALTER TABLE` statement before executing changes)
+* [x] View and modify table structure (Columns, Types, Nullability, Default values)
+* [x] Index manager (Primary Keys, Unique indexes, Composite indexes)
+* [x] Foreign Key relationship builder
+* [x] Live SQL preview generator (shows the `ALTER TABLE` statement before executing changes)
 
 ### View & Routine Management
 

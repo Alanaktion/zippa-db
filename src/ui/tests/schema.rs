@@ -1,7 +1,7 @@
 //! The structure tab: read-only indexes and foreign keys, editable columns.
 
 use super::*;
-use crate::db::SafetyMode;
+use crate::db::{ReferentialAction, SafetyMode};
 use crate::ui::session::tab::ObjectViewMode;
 
 #[gpui_kit::test]
@@ -398,6 +398,193 @@ fn adding_a_primary_key_index_on_sqlite_is_refused_without_a_rebuild(cx: &mut Te
     assert!(
         view.read_with(cx, |view, _| view.pending_statements_for_test())
             .is_none()
+    );
+}
+
+#[gpui_kit::test]
+fn the_referenced_table_picker_lists_other_tables_but_not_this_one(cx: &mut TestAppContext) {
+    let (database, _handle, view) = schema_view(cx);
+    cx.run_until_parked();
+    run_external(
+        &database,
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, label TEXT NOT NULL)",
+    );
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.reload_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    let tables = view.read_with(cx, |view, _| view.tables_for_test());
+    let names: Vec<&str> = tables.iter().map(|table| table.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["tags"],
+        "the table being inspected should not list itself"
+    );
+}
+
+#[gpui_kit::test]
+fn picking_a_referenced_table_reads_its_columns(cx: &mut TestAppContext) {
+    let (database, _handle, view) = schema_view(cx);
+    cx.run_until_parked();
+    run_external(
+        &database,
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, label TEXT NOT NULL)",
+    );
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.reload_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    let tags = view
+        .read_with(cx, |view, _| view.tables_for_test())
+        .into_iter()
+        .find(|table| table.name == "tags")
+        .expect("tags should be offered as a referenced table");
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.push_new_foreign_key_row_for_test(window, cx);
+            view.pick_referenced_table_for_test(0, tags, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.referenced_table_columns_for_test(0)),
+        ["id", "label"]
+    );
+}
+
+#[gpui_kit::test]
+fn adding_a_foreign_key_on_sqlite_is_refused_without_a_rebuild(cx: &mut TestAppContext) {
+    let (database, _handle, view) = schema_view(cx);
+    cx.run_until_parked();
+    run_external(
+        &database,
+        "CREATE TABLE tags (id INTEGER PRIMARY KEY, label TEXT NOT NULL)",
+    );
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.reload_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    let tags = view
+        .read_with(cx, |view, _| view.tables_for_test())
+        .into_iter()
+        .find(|table| table.name == "tags")
+        .expect("tags should be offered as a referenced table");
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.push_new_foreign_key_row_for_test(window, cx);
+            view.set_foreign_key_name_for_test(0, "items_tag_fkey", window, cx);
+            view.toggle_foreign_key_column_for_test(0, "name", true, cx);
+            view.pick_referenced_table_for_test(0, tags, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.toggle_referenced_column_for_test(0, "id", true, cx);
+            view.preview_for_test(window, cx);
+        })
+        .unwrap();
+
+    let error = view
+        .read_with(cx, |view, _| view.error_for_test())
+        .expect("adding a foreign key should be refused on SQLite");
+    assert!(error.contains("rebuilding"));
+    assert!(
+        view.read_with(cx, |view, _| view.pending_statements_for_test())
+            .is_none()
+    );
+}
+
+#[gpui_kit::test]
+fn the_on_delete_and_on_update_actions_can_be_set_on_a_new_row(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = schema_view(cx);
+    cx.run_until_parked();
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.push_new_foreign_key_row_for_test(window, cx);
+            view.set_foreign_key_on_delete_for_test(0, ReferentialAction::Cascade, cx);
+            view.set_foreign_key_on_update_for_test(0, ReferentialAction::SetNull, cx);
+        })
+        .unwrap();
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.foreign_key_actions_for_test(0)),
+        (ReferentialAction::Cascade, ReferentialAction::SetNull)
+    );
+}
+
+#[gpui_kit::test]
+fn dropping_an_existing_foreign_key_on_sqlite_is_refused_without_a_rebuild(
+    cx: &mut TestAppContext,
+) {
+    let (database, handle) = session_with_objects(cx);
+    run_external(
+        &database,
+        "CREATE TABLE tagged_items (item_id INTEGER, FOREIGN KEY(item_id) REFERENCES items(id))",
+    );
+
+    let object = DatabaseObject {
+        schema: None,
+        name: "tagged_items".into(),
+        kind: ObjectKind::Table,
+    };
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_schema_for_test(&object, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let view = handle
+        .update(cx, |session, _, _| session.active_schema_view())
+        .unwrap()
+        .expect("opening a table's structure should open a schema view");
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| {
+            view.toggle_foreign_key_drop_for_test(0, cx)
+        })
+        .unwrap();
+    view.downgrade()
+        .update_in(cx, |view, window, cx| view.preview_for_test(window, cx))
+        .unwrap();
+
+    let error = view
+        .read_with(cx, |view, _| view.error_for_test())
+        .expect("dropping a foreign key should be refused on SQLite");
+    assert!(error.contains("rebuilding"));
+    assert!(
+        view.read_with(cx, |view, _| view.pending_statements_for_test())
+            .is_none()
+    );
+}
+
+#[gpui_kit::test]
+fn foreign_keys_cannot_be_added_at_all_on_sqlite(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = schema_view(cx);
+    cx.run_until_parked();
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.add_foreign_key_for_test(window, cx)
+        })
+        .unwrap();
+
+    assert!(
+        view.read_with(cx, |view, cx| view.foreign_key_names_for_test(cx))
+            .is_empty(),
+        "the add affordance should be a no-op on SQLite, not just hidden"
     );
 }
 

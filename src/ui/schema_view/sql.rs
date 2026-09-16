@@ -3,7 +3,7 @@
 //! Kept beside the view rather than in `db/`, same as `table_view/sql.rs`:
 //! this is DDL generation for one screen, not a shared query path.
 
-use crate::db::schema::{ColumnDef, IndexDef};
+use crate::db::schema::{ColumnDef, ForeignKeyDef, IndexDef, ReferentialAction};
 use crate::db::{DatabaseObject, Engine, quote_identifier};
 
 /// One column row as the user has edited it, ready to be diffed against
@@ -440,6 +440,115 @@ fn drop_index_statement(
     })
 }
 
+/// One foreign key row: a whole relationship added or a whole one dropped,
+/// never modified in place — same shape as `IndexEdit`, for the same reason.
+#[derive(Debug, Clone)]
+pub(crate) struct ForeignKeyEdit {
+    /// `None` for a foreign key added by hand.
+    pub original: Option<ForeignKeyDef>,
+    pub name: String,
+    /// Local columns, in the order they match up with `referenced_columns`.
+    pub columns: Vec<String>,
+    pub referenced_schema: Option<String>,
+    pub referenced_table: String,
+    pub referenced_columns: Vec<String>,
+    pub on_delete: ReferentialAction,
+    pub on_update: ReferentialAction,
+    /// Only meaningful when `original` is `Some`: a dropped new foreign key
+    /// is simply removed from the row list instead, the way a new index is.
+    pub dropped: bool,
+}
+
+impl ForeignKeyEdit {
+    pub(crate) fn is_new(&self) -> bool {
+        self.original.is_none()
+    }
+
+    /// Whether this row asks for anything at all — a blank added row, with
+    /// no table picked yet, asks for nothing.
+    fn wants_a_statement(&self) -> bool {
+        self.dropped
+            || (self.is_new()
+                && !self.columns.is_empty()
+                && !self.referenced_table.trim().is_empty()
+                && !self.referenced_columns.is_empty())
+    }
+}
+
+/// Every statement `edits` calls for: the new relationships first, then the
+/// dropped ones — same add-then-drop order as columns and indexes.
+///
+/// `Err` for any real add or drop on SQLite, which cannot change a foreign
+/// key on an existing table at all — not even by rebuilding one column at a
+/// time the way phase 3 does for a column — without recreating the whole
+/// table; a changed row left with an empty name is also refused.
+pub(crate) fn generate_foreign_key_statements(
+    engine: Engine,
+    object: &DatabaseObject,
+    edits: &[ForeignKeyEdit],
+) -> Result<Vec<String>, String> {
+    if engine == Engine::Sqlite && edits.iter().any(ForeignKeyEdit::wants_a_statement) {
+        return Err(
+            "adding or dropping a foreign key is not supported on SQLite without rebuilding the table"
+                .to_string(),
+        );
+    }
+
+    let target = target(object, engine);
+    let mut statements = Vec::new();
+
+    for edit in edits {
+        if !edit.is_new() || !edit.wants_a_statement() {
+            continue;
+        }
+        if edit.name.trim().is_empty() {
+            return Err("a foreign key needs a name".to_string());
+        }
+
+        let referenced = match &edit.referenced_schema {
+            Some(schema) if engine == Engine::Postgres => format!(
+                "{}.{}",
+                quote_identifier(schema, engine),
+                quote_identifier(&edit.referenced_table, engine)
+            ),
+            _ => quote_identifier(&edit.referenced_table, engine),
+        };
+
+        statements.push(format!(
+            "ALTER TABLE {target} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {referenced} ({}) \
+             ON DELETE {} ON UPDATE {}",
+            quote_identifier(&edit.name, engine),
+            columns_list(engine, &edit.columns),
+            columns_list(engine, &edit.referenced_columns),
+            edit.on_delete.label(),
+            edit.on_update.label(),
+        ));
+    }
+
+    for edit in edits {
+        if !edit.dropped {
+            continue;
+        }
+        let Some(original) = &edit.original else {
+            continue;
+        };
+        statements.push(match engine {
+            Engine::Postgres => format!(
+                "ALTER TABLE {target} DROP CONSTRAINT {}",
+                quote_identifier(&original.name, engine)
+            ),
+            Engine::MySql => format!(
+                "ALTER TABLE {target} DROP FOREIGN KEY {}",
+                quote_identifier(&original.name, engine)
+            ),
+            // The guard above already refused any SQLite drop.
+            Engine::Sqlite => unreachable!(),
+        });
+    }
+
+    Ok(statements)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,6 +889,154 @@ mod tests {
             &[added_index("", &["name"], false, false)],
         )
         .expect_err("an index with columns but no name should be refused");
+        assert!(error.contains("name"));
+    }
+
+    fn added_fk(
+        name: &str,
+        columns: &[&str],
+        referenced_schema: Option<&str>,
+        referenced_table: &str,
+        referenced_columns: &[&str],
+    ) -> ForeignKeyEdit {
+        ForeignKeyEdit {
+            original: None,
+            name: name.to_string(),
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            referenced_schema: referenced_schema.map(str::to_string),
+            referenced_table: referenced_table.to_string(),
+            referenced_columns: referenced_columns.iter().map(|c| c.to_string()).collect(),
+            on_delete: ReferentialAction::NoAction,
+            on_update: ReferentialAction::NoAction,
+            dropped: false,
+        }
+    }
+
+    fn existing_fk(
+        name: &str,
+        columns: &[&str],
+        referenced_table: &str,
+        referenced_columns: &[&str],
+    ) -> ForeignKeyDef {
+        ForeignKeyDef {
+            name: name.to_string(),
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            referenced_schema: None,
+            referenced_table: referenced_table.to_string(),
+            referenced_columns: referenced_columns.iter().map(|c| c.to_string()).collect(),
+            on_delete: ReferentialAction::NoAction,
+            on_update: ReferentialAction::NoAction,
+        }
+    }
+
+    fn kept_fk(original: ForeignKeyDef) -> ForeignKeyEdit {
+        ForeignKeyEdit {
+            name: original.name.clone(),
+            columns: original.columns.clone(),
+            referenced_schema: original.referenced_schema.clone(),
+            referenced_table: original.referenced_table.clone(),
+            referenced_columns: original.referenced_columns.clone(),
+            on_delete: original.on_delete,
+            on_update: original.on_update,
+            original: Some(original),
+            dropped: false,
+        }
+    }
+
+    #[test]
+    fn postgres_adds_a_foreign_key_with_its_actions() {
+        let mut new = added_fk(
+            "tagged_items_tag_id_fkey",
+            &["tag_id"],
+            None,
+            "tags",
+            &["id"],
+        );
+        new.on_delete = ReferentialAction::Cascade;
+        new.on_update = ReferentialAction::Restrict;
+
+        let statements = generate_foreign_key_statements(Engine::Postgres, &table(None), &[new])
+            .expect("should generate");
+        assert_eq!(
+            statements,
+            [
+                "ALTER TABLE items ADD CONSTRAINT tagged_items_tag_id_fkey FOREIGN KEY (tag_id) \
+                 REFERENCES tags (id) ON DELETE CASCADE ON UPDATE RESTRICT"
+            ]
+        );
+    }
+
+    #[test]
+    fn postgres_qualifies_the_referenced_table_by_its_schema() {
+        let new = added_fk("fk", &["tag_id"], Some("app"), "tags", &["id"]);
+        let statements = generate_foreign_key_statements(Engine::Postgres, &table(None), &[new])
+            .expect("should generate");
+        assert_eq!(
+            statements,
+            ["ALTER TABLE items ADD CONSTRAINT fk FOREIGN KEY (tag_id) \
+                 REFERENCES app.tags (id) ON DELETE NO ACTION ON UPDATE NO ACTION"]
+        );
+    }
+
+    #[test]
+    fn postgres_drops_a_foreign_key_by_constraint_name() {
+        let mut dropped = kept_fk(existing_fk("fk", &["tag_id"], "tags", &["id"]));
+        dropped.dropped = true;
+
+        let statements =
+            generate_foreign_key_statements(Engine::Postgres, &table(None), &[dropped])
+                .expect("should generate");
+        assert_eq!(statements, ["ALTER TABLE items DROP CONSTRAINT fk"]);
+    }
+
+    #[test]
+    fn mysql_adds_and_drops_a_foreign_key() {
+        let new = added_fk("fk", &["tag_id"], None, "tags", &["id"]);
+        let statements = generate_foreign_key_statements(Engine::MySql, &table(None), &[new])
+            .expect("should generate");
+        assert_eq!(
+            statements,
+            ["ALTER TABLE items ADD CONSTRAINT fk FOREIGN KEY (tag_id) \
+                 REFERENCES tags (id) ON DELETE NO ACTION ON UPDATE NO ACTION"]
+        );
+
+        let mut dropped = kept_fk(existing_fk("fk", &["tag_id"], "tags", &["id"]));
+        dropped.dropped = true;
+        let statements = generate_foreign_key_statements(Engine::MySql, &table(None), &[dropped])
+            .expect("should generate");
+        assert_eq!(statements, ["ALTER TABLE items DROP FOREIGN KEY fk"]);
+    }
+
+    #[test]
+    fn sqlite_refuses_any_foreign_key_add_or_drop() {
+        let new = added_fk("fk", &["tag_id"], None, "tags", &["id"]);
+        let error = generate_foreign_key_statements(Engine::Sqlite, &table(None), &[new])
+            .expect_err("adding a foreign key should be refused on SQLite");
+        assert!(error.contains("rebuilding"));
+
+        let mut dropped = kept_fk(existing_fk("fk", &["tag_id"], "tags", &["id"]));
+        dropped.dropped = true;
+        let error = generate_foreign_key_statements(Engine::Sqlite, &table(None), &[dropped])
+            .expect_err("dropping a foreign key should be refused on SQLite");
+        assert!(error.contains("rebuilding"));
+    }
+
+    #[test]
+    fn a_blank_added_foreign_key_generates_nothing_even_on_sqlite() {
+        let blank = added_fk("", &[], None, "", &[]);
+        let statements = generate_foreign_key_statements(Engine::Sqlite, &table(None), &[blank])
+            .expect("a blank row should not even trip the SQLite refusal");
+        assert!(statements.is_empty());
+    }
+
+    #[test]
+    fn an_added_foreign_key_needs_a_name() {
+        let error = generate_foreign_key_statements(
+            Engine::Postgres,
+            &table(None),
+            &[added_fk("", &["tag_id"], None, "tags", &["id"])],
+        )
+        .expect_err("a foreign key with columns but no name should be refused");
         assert!(error.contains("name"));
     }
 }
