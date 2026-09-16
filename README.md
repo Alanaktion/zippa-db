@@ -124,6 +124,29 @@ cargo test
 
 ---
 
+## 📦 Packaging
+
+Precompiled binaries are built with [`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager), which reads `[package.metadata.packager]` in `Cargo.toml` and produces the right installer for whichever platform it runs on:
+
+```bash
+cargo install cargo-packager --locked
+```
+
+```bash
+# macOS: Zippa DB.app + a .dmg to distribute it in
+cargo packager --release --formats app,dmg
+
+# Linux: an AppImage and a .deb
+cargo packager --release --formats appimage,deb
+
+# Windows: an NSIS installer (run on a Windows host; not yet exercised here)
+cargo packager --release --formats nsis
+```
+
+Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the packaging (separate from `script/linux`'s build-time dependencies, which are for compiling the app itself). Packaged builds are unsigned for now, so macOS shows a Gatekeeper "unidentified developer" prompt (right-click → Open works around it) and Windows shows a SmartScreen warning.
+
+---
+
 ## ⌨️ Shortcuts
 
 `Cmd` on macOS, `Ctrl` on Linux and Windows.

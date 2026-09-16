@@ -36,13 +36,14 @@ uuid = { version = "1", features = ["v4", "serde"] }
 gpui-kit = { version = "0.6", features = ["test-support"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
-# Read by `cargo bundle` (https://github.com/burtonageo/cargo-bundle) to
-# produce a real macOS .app with an icon and a display name — `cargo run`
-# alone launches a bare binary, which the OS shows with a generic icon.
-[package.metadata.bundle]
-name = "Zippa DB"
+# Read by `cargo packager` (https://github.com/crabnebula-dev/cargo-packager)
+# to produce real installable packages — macOS .app/.dmg, Linux AppImage/.deb,
+# Windows NSIS/.msi — with an icon and a display name. See README.md's
+# "Packaging" section for the per-platform commands.
+[package.metadata.packager]
+product-name = "Zippa DB"
 identifier = "com.alanaktion.zippadb"
-icon = ["assets/icons/zippa-db.icns"]
+icons = ["assets/icons/zippa-db.iconset/*.png", "assets/icons/zippa-db.icns", "assets/icons/zippa-db.ico"]
 
 # GPUI does a lot of layout and text shaping per frame, which is painfully slow
 # in an unoptimized build. Optimizing dependencies (and lightly optimizing our
@@ -52,3 +53,8 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Smaller, faster shipped binaries for packaged builds.
+[profile.release]
+strip = true
+lto = "thin"
