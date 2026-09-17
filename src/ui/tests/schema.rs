@@ -37,7 +37,7 @@ fn the_tab_title_says_structure(cx: &mut TestAppContext) {
 
     assert_eq!(
         handle
-            .update(cx, |session, _, _| session.tab_titles())
+            .update(cx, |session, _, cx| session.tab_titles(cx))
             .unwrap(),
         ["Query 1", "items — Structure"]
     );
@@ -61,7 +61,7 @@ fn a_structure_tab_already_open_is_brought_forward(cx: &mut TestAppContext) {
 
     assert_eq!(
         handle
-            .update(cx, |session, _, _| session.tab_titles())
+            .update(cx, |session, _, cx| session.tab_titles(cx))
             .unwrap(),
         ["Query 1", "items — Structure"],
         "opening the same table's structure again should not duplicate the tab"
@@ -251,7 +251,7 @@ fn a_read_only_connection_cannot_edit_columns(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let view = handle
-        .update(cx, |session, _, _| session.active_schema_view())
+        .update(cx, |session, _, cx| session.active_schema_view(cx))
         .unwrap()
         .expect("opening a table's structure should open a schema view");
 
@@ -547,7 +547,7 @@ fn dropping_an_existing_foreign_key_on_sqlite_is_refused_without_a_rebuild(
     cx.run_until_parked();
 
     let view = handle
-        .update(cx, |session, _, _| session.active_schema_view())
+        .update(cx, |session, _, cx| session.active_schema_view(cx))
         .unwrap()
         .expect("opening a table's structure should open a schema view");
 
@@ -606,7 +606,7 @@ fn a_tables_data_and_structure_are_different_tabs(cx: &mut TestAppContext) {
 
     assert_eq!(
         handle
-            .update(cx, |session, _, _| session.tab_titles())
+            .update(cx, |session, _, cx| session.tab_titles(cx))
             .unwrap(),
         ["Query 1", "items — Structure", "items"]
     );

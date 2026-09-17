@@ -60,3 +60,4 @@ Two ordering rules make the row menu work, both learned the hard way: the cell a
 * Tooltips show the keystroke an action is bound to, so shortcuts are discoverable from the UI
 * The sidebar's object list is reachable by keyboard
 * Nothing is told by color alone: errors say so in words, staged cells are underlined, deleted rows are struck through
+* Known deviation: a dock panel's own `+` (beside its tab strip) is not tab-reachable — `gpui-kit`'s dock forces `tab_stop(false)` on toolbar buttons. `Cmd+T` is bound and named in the button's tooltip, and the workspace toolbar's `new-query` button (`src/app.rs`) is still tab-reachable, so a new query tab is always reachable by keyboard some other way.

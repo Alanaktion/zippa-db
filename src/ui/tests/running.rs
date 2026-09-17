@@ -33,7 +33,7 @@ fn a_selection_is_what_runs(cx: &mut TestAppContext) {
     handle
         .update(cx, |session, _, cx| {
             let editor = session
-                .active_editor_for_test()
+                .active_editor_for_test(cx)
                 .expect("a query tab has an editor");
             editor.update(cx, |editor, cx| {
                 // Select the second statement, caret notwithstanding.
@@ -63,13 +63,13 @@ fn the_script_shortcut_runs_every_statement(cx: &mut TestAppContext) {
     );
 
     let (results, shown) = handle
-        .update(cx, |session, _, _| session.results_for_test())
+        .update(cx, |session, _, cx| session.results_for_test(cx))
         .unwrap();
     assert_eq!(results, 3, "one result per statement");
     assert_eq!(shown, 0, "the first one is showing");
 
     let status = handle
-        .update(cx, |session, _, _| session.active_status_for_test())
+        .update(cx, |session, _, cx| session.active_status_for_test(cx))
         .unwrap();
     assert!(
         status.starts_with("3 statements in") && status.contains("result 1 of 3"),
@@ -94,12 +94,12 @@ fn a_result_tab_shows_that_statements_rows(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let (_, shown) = handle
-        .update(cx, |session, _, _| session.results_for_test())
+        .update(cx, |session, _, cx| session.results_for_test(cx))
         .unwrap();
     assert_eq!(shown, 1, "the second result should be showing");
 
     let grid = handle
-        .update(cx, |session, _, _| session.active_grid())
+        .update(cx, |session, _, cx| session.active_grid(cx))
         .unwrap()
         .expect("a query tab has a grid");
     assert_eq!(
@@ -118,7 +118,7 @@ fn a_write_reports_the_rows_it_changed(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let status = handle
-        .update(cx, |session, _, _| session.active_status_for_test())
+        .update(cx, |session, _, cx| session.active_status_for_test(cx))
         .unwrap();
     assert!(
         status.starts_with("2 rows affected in"),
@@ -140,7 +140,7 @@ fn cancelling_stops_waiting_on_a_query(cx: &mut TestAppContext) {
         .unwrap();
     assert!(
         handle
-            .update(cx, |session, _, _| session.active_is_running())
+            .update(cx, |session, _, cx| session.active_is_running(cx))
             .unwrap()
     );
 
@@ -149,13 +149,13 @@ fn cancelling_stops_waiting_on_a_query(cx: &mut TestAppContext) {
 
     assert_eq!(
         handle
-            .update(cx, |session, _, _| session.active_status_for_test())
+            .update(cx, |session, _, cx| session.active_status_for_test(cx))
             .unwrap(),
         "Cancelled"
     );
     assert!(
         !handle
-            .update(cx, |session, _, _| session.active_is_running())
+            .update(cx, |session, _, cx| session.active_is_running(cx))
             .unwrap(),
         "the editor should stop saying it is running"
     );

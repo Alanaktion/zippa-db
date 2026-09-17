@@ -53,7 +53,7 @@ fn json_is_laid_out_and_a_query_result_cannot_be_edited(cx: &mut TestAppContext)
         .unwrap();
 
     let grid = handle
-        .update(cx, |session, _, _| session.active_grid())
+        .update(cx, |session, _, cx| session.active_grid(cx))
         .unwrap()
         .expect("a query tab has a grid");
     grid.update(cx, |grid, cx| grid.view_cell(0, 0, cx));

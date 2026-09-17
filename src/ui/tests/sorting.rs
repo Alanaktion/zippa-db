@@ -50,7 +50,7 @@ fn sorting_a_query_result_reorders_the_rows_in_place(cx: &mut TestAppContext) {
         .unwrap();
 
     let grid = handle
-        .update(cx, |session, _, _| session.active_grid())
+        .update(cx, |session, _, cx| session.active_grid(cx))
         .unwrap()
         .expect("a query tab should have a grid");
 
@@ -108,7 +108,7 @@ fn clicking_a_column_header_cycles_the_sort_and_comes_back(cx: &mut TestAppConte
         .unwrap();
 
     let grid = handle
-        .update(cx, |session, _, _| session.active_grid())
+        .update(cx, |session, _, cx| session.active_grid(cx))
         .unwrap()
         .expect("a query tab should have a grid");
 

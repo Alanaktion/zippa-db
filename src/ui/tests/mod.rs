@@ -145,7 +145,7 @@ fn table_view_with_safety(
     .unwrap();
 
     let view = handle
-        .update(cx, |session, _, _| session.active_table_view())
+        .update(cx, |session, _, cx| session.active_table_view(cx))
         .unwrap()
         .expect("clicking a table should open a table view");
 
@@ -175,7 +175,7 @@ fn schema_view(
     cx.run_until_parked();
 
     let view = handle
-        .update(cx, |session, _, _| session.active_schema_view())
+        .update(cx, |session, _, cx| session.active_schema_view(cx))
         .unwrap()
         .expect("opening a table's structure should open a schema view");
 
@@ -461,7 +461,7 @@ fn table_view_on(
     .unwrap();
 
     let view = handle
-        .update(cx, |session, _, _| session.active_table_view())
+        .update(cx, |session, _, cx| session.active_table_view(cx))
         .unwrap()
         .expect("clicking a table should open a table view");
 
@@ -606,7 +606,7 @@ fn workspace_table(
     cx.run_until_parked();
 
     let view = session
-        .read_with(cx, |session, _| session.active_table_view())
+        .read_with(cx, |session, cx| session.active_table_view(cx))
         .expect("clicking a table should open a table view");
 
     (database, handle, view)
@@ -631,7 +631,7 @@ fn prepare_editor(
     handle
         .update(cx, |session, window, cx| {
             session.prepare_active_editor_for_test(sql, window, cx);
-            if let Some(editor) = session.active_editor_for_test() {
+            if let Some(editor) = session.active_editor_for_test(cx) {
                 editor.update(cx, |editor, cx| editor.set_cursor_for_test(cursor, cx));
             }
         })

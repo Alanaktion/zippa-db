@@ -5,7 +5,8 @@
 //! see. Kept beside the session rather than in it so the view itself reads as
 //! what the app does.
 
-use gpui_kit::{Context, Entity, Window};
+use gpui_kit::component::dock::DockArea;
+use gpui_kit::{App, Context, Entity, SharedString, Window};
 
 use crate::db::DatabaseObject;
 use crate::ui::data_grid::DataGrid;
@@ -14,8 +15,9 @@ use crate::ui::schema_view::SchemaView;
 use crate::ui::table_view::TableView;
 
 use super::Session;
+use super::panel::SessionPanel;
 use super::sidebar::compile_filter;
-use super::tab::{Status, TabContent};
+use super::tab::Status;
 
 impl Session {
     /// Feed the grid a result without going through a live query.
@@ -25,57 +27,65 @@ impl Session {
         result: crate::db::query::QueryResult,
         cx: &mut Context<Self>,
     ) {
-        let index = self.active;
-        let Some(grid) = self.active_grid() else {
+        let Some(panel) = self.active_panel_for_test() else {
             return;
         };
-        self.set_status(index, Status::Done(result.summary()));
-        grid.update(cx, |grid, cx| grid.set_result(result, cx));
-        cx.notify();
+        panel.update(cx, |panel, cx| {
+            panel.set_status(Status::Done(result.summary()));
+            if let Some(grid) = panel.grid() {
+                grid.update(cx, |grid, cx| grid.set_result(result, cx));
+            }
+            cx.notify();
+        });
     }
 
     #[cfg(test)]
-    pub(crate) fn tab_titles(&self) -> Vec<String> {
-        self.tabs.iter().map(|tab| tab.title.to_string()).collect()
+    pub(crate) fn tab_titles(&self, cx: &App) -> Vec<String> {
+        self.panels
+            .iter()
+            .map(|panel| panel.read(cx).title().to_string())
+            .collect()
     }
 
     /// Whether the tab at `index` has unsaved changes.
     #[cfg(test)]
-    pub(crate) fn tab_is_dirty_for_test(&self, index: usize, cx: &gpui_kit::App) -> bool {
-        self.tabs[index].is_dirty(cx)
+    pub(crate) fn tab_is_dirty_for_test(&self, index: usize, cx: &App) -> bool {
+        self.panels[index].read(cx).is_dirty(cx)
     }
 
-    /// The tab waiting on an answer about its unsaved changes, if any.
+    /// The title of the tab waiting on an answer about its unsaved changes,
+    /// if any.
     #[cfg(test)]
-    pub(crate) fn closing_for_test(&self) -> Option<usize> {
-        self.closing
+    pub(crate) fn closing_title_for_test(&self, cx: &App) -> Option<String> {
+        self.closing_panel()
+            .map(|panel| panel.read(cx).title().to_string())
     }
 
     #[cfg(test)]
-    pub(crate) fn active_sql(&self, cx: &gpui_kit::App) -> String {
-        match &self.tabs[self.active].content {
-            TabContent::Query { editor, .. } => editor.read(cx).sql(cx),
-            TabContent::Table { view } => view.read(cx).query(cx),
-            TabContent::Schema { .. } => String::new(),
+    pub(crate) fn active_sql(&self, cx: &App) -> String {
+        let Some(panel) = self.active_panel_for_test() else {
+            return String::new();
+        };
+        let panel = panel.read(cx);
+        if let Some(editor) = panel.editor() {
+            return editor.read(cx).sql(cx);
         }
+        if let Some(view) = panel.table_view() {
+            return view.read(cx).query(cx);
+        }
+        String::new()
     }
 
     /// The table view in the active tab, if this is a table tab.
     #[cfg(test)]
-    pub(crate) fn active_table_view(&self) -> Option<Entity<TableView>> {
-        match &self.tabs[self.active].content {
-            TabContent::Table { view } => Some(view.clone()),
-            TabContent::Query { .. } | TabContent::Schema { .. } => None,
-        }
+    pub(crate) fn active_table_view(&self, cx: &App) -> Option<Entity<TableView>> {
+        self.active_panel_for_test()?.read(cx).table_view()
     }
 
     /// The schema view in the active tab, if this is a structure tab.
     #[cfg(test)]
-    pub(crate) fn active_schema_view(&self) -> Option<Entity<SchemaView>> {
-        match &self.tabs[self.active].content {
-            TabContent::Schema { view } => Some(view.clone()),
-            TabContent::Query { .. } | TabContent::Table { .. } => None,
-        }
+    pub(crate) fn active_schema_view(&self, cx: &App) -> Option<Entity<SchemaView>> {
+        self.active_panel_for_test()?.read(cx).schema_view()
     }
 
     /// Open `object`'s structure tab, the way the sidebar's row menu does.
@@ -101,12 +111,18 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.close_tab(index, window, cx);
+        let panel = self.panel_for_test(index);
+        self.close_tab(&panel, window, cx);
     }
 
     #[cfg(test)]
-    pub(crate) fn activate_tab_for_test(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.activate_tab(index, cx);
+    pub(crate) fn activate_tab_for_test(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.activate_tab(index, window, cx);
     }
 
     /// Set the filter text the way typing in the box does.
@@ -141,10 +157,12 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let TabContent::Query { editor, .. } = &self.tabs[self.active].content else {
+        let Some(editor) = self
+            .active_panel_for_test()
+            .and_then(|panel| panel.read(cx).editor())
+        else {
             return;
         };
-        let editor = editor.clone();
         editor.update(cx, |editor, cx| {
             editor.set_sql(sql, window, cx);
             editor.focus(window, cx);
@@ -153,22 +171,16 @@ impl Session {
 
     /// The editor of the active tab, for a test to drive.
     #[cfg(test)]
-    pub(crate) fn active_editor_for_test(&self) -> Option<Entity<QueryEditor>> {
-        match &self.tabs[self.active].content {
-            TabContent::Query { editor, .. } => Some(editor.clone()),
-            TabContent::Table { .. } | TabContent::Schema { .. } => None,
-        }
+    pub(crate) fn active_editor_for_test(&self, cx: &App) -> Option<Entity<QueryEditor>> {
+        self.active_panel_for_test()?.read(cx).editor()
     }
 
     /// How many results the last run left, and which one is showing.
     #[cfg(test)]
-    pub(crate) fn results_for_test(&self) -> (usize, usize) {
-        match &self.tabs[self.active].content {
-            TabContent::Query {
-                results, result, ..
-            } => (results.len(), *result),
-            TabContent::Table { .. } | TabContent::Schema { .. } => (0, 0),
-        }
+    pub(crate) fn results_for_test(&self, cx: &App) -> (usize, usize) {
+        self.active_panel_for_test()
+            .map(|panel| panel.read(cx).results())
+            .unwrap_or((0, 0))
     }
 
     /// Put the active tab into its running state, the way a query in flight
@@ -176,46 +188,38 @@ impl Session {
     /// this is what the cancel path is driven with.
     #[cfg(test)]
     pub(crate) fn mark_running_for_test(&mut self, cx: &mut Context<Self>) {
-        let index = self.active;
-        let Some(TabContent::Query { editor, .. }) = self.tabs.get(index).map(|tab| &tab.content)
-        else {
+        let Some(panel) = self.active_panel_for_test() else {
             return;
         };
-
-        let editor = editor.clone();
-        self.set_status(index, Status::Running);
+        let Some(editor) = panel.read(cx).editor() else {
+            return;
+        };
+        panel.update(cx, |panel, cx| {
+            panel.set_status(Status::Running);
+            cx.notify();
+        });
         editor.update(cx, |editor, cx| editor.set_running(true, cx));
-        cx.notify();
     }
 
     /// Reach the active tab's grid from a test.
     #[cfg(test)]
-    pub(crate) fn active_grid(&self) -> Option<Entity<DataGrid>> {
-        match &self.tabs[self.active].content {
-            TabContent::Query { grid, .. } => Some(grid.clone()),
-            TabContent::Table { .. } | TabContent::Schema { .. } => None,
-        }
+    pub(crate) fn active_grid(&self, cx: &App) -> Option<Entity<DataGrid>> {
+        self.active_panel_for_test()?.read(cx).grid()
     }
 
     /// Whether the active tab has a query in flight.
     #[cfg(test)]
-    pub(crate) fn active_is_running(&self) -> bool {
-        matches!(
-            &self.tabs[self.active].content,
-            TabContent::Query {
-                status: Status::Running,
-                ..
-            }
-        )
+    pub(crate) fn active_is_running(&self, cx: &App) -> bool {
+        self.active_panel_for_test()
+            .is_some_and(|panel| panel.read(cx).is_running())
     }
 
     /// What the status bar says for the active tab, as plain text.
     #[cfg(test)]
-    pub(crate) fn active_status_for_test(&self) -> String {
-        match &self.tabs[self.active].content {
-            TabContent::Query { status, .. } => status.message(),
-            TabContent::Table { .. } | TabContent::Schema { .. } => String::new(),
-        }
+    pub(crate) fn active_status_for_test(&self, cx: &App) -> String {
+        self.active_panel_for_test()
+            .map(|panel| panel.read(cx).status_message())
+            .unwrap_or_default()
     }
 
     /// Fill the sidebar without waiting on the server.
@@ -235,10 +239,47 @@ impl Session {
 
     /// The sidebar tree's highlighted object, if any.
     #[cfg(test)]
-    pub(crate) fn selected_object_label_for_test(&self, cx: &gpui_kit::App) -> Option<String> {
+    pub(crate) fn selected_object_label_for_test(&self, cx: &App) -> Option<String> {
         self.objects_tree
             .read(cx)
             .selected_item()
             .map(|item| item.id.to_string())
+    }
+
+    /// The panel the user was last focused in, for a test to drive.
+    #[cfg(test)]
+    pub(crate) fn active_panel_for_test(&self) -> Option<Entity<SessionPanel>> {
+        self.active_panel()
+    }
+
+    /// The panel at `index` in creation order, for a test to drive.
+    #[cfg(test)]
+    pub(crate) fn panel_for_test(&self, index: usize) -> Entity<SessionPanel> {
+        self.panels[index].clone()
+    }
+
+    /// The id of the close button on the tab at `index`, which is keyed by
+    /// the panel's stable `key` rather than its position.
+    #[cfg(test)]
+    pub(crate) fn close_button_id_for_test(&self, index: usize, cx: &App) -> SharedString {
+        SharedString::from(format!("close-tab-{}", self.panels[index].read(cx).key()))
+    }
+
+    /// Exercise the `…`-menu close path, which never reaches
+    /// [`Session::close_tab`] — it removes the panel from the dock directly.
+    #[cfg(test)]
+    pub(crate) fn dock_remove_for_test(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dock = self.dock_for_test();
+        dock.update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
+    }
+
+    #[cfg(test)]
+    fn dock_for_test(&self) -> Entity<DockArea> {
+        self.dock.clone()
     }
 }

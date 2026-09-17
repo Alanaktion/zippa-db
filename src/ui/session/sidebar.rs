@@ -66,9 +66,8 @@ impl Session {
     /// Highlight the table the active tab shows, or nothing for a query tab.
     pub(super) fn sync_tree_selection(&mut self, cx: &mut Context<Self>) {
         let label = self
-            .tabs
-            .get(self.active)
-            .and_then(|tab| tab.object(cx))
+            .active_panel()
+            .and_then(|panel| panel.read(cx).object(cx))
             .map(|object| object.label());
         self.objects_tree.update(cx, |tree, cx| {
             let index = label.and_then(|label| tree.index_of(&SharedString::from(label)));
