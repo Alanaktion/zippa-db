@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, IntoElement, Render, SharedString, Window, div, px};
 
 use crate::db::{DatabaseObject, ObjectKind};
-use crate::ui::session::tab::{ObjectViewMode, TabContent};
+use crate::ui::session::tab::ObjectViewMode;
 use crate::ui::session::{NewTab, OpenFile, Refresh, Session};
 
 /// Actions and destinations selectable from the quick switcher.
@@ -70,18 +70,11 @@ impl Render for QuickSwitcherView {
         let (tabs_info, objects, databases, is_file_based, current_db, active_tab_ix) = {
             let s = self.session.read(cx);
             let tabs: Vec<(SharedString, bool, Option<String>)> = s
-                .tabs()
+                .panels()
                 .iter()
-                .map(|t| {
-                    let is_query = matches!(t.content, TabContent::Query { .. });
-                    let path = match &t.content {
-                        TabContent::Query { path: Some(p), .. } => p
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .map(|s| s.to_string()),
-                        _ => None,
-                    };
-                    (t.title.clone(), is_query, path)
+                .map(|panel| {
+                    let panel = panel.read(cx);
+                    (panel.title(), panel.is_query(), panel.file_name())
                 })
                 .collect();
             let objects = s.objects().to_vec();
@@ -237,7 +230,7 @@ impl Render for QuickSwitcherView {
                     let target = target.clone();
                     session_for_confirm.update(cx, |session, cx| match target {
                         SwitcherTarget::Tab(ix) => {
-                            session.activate_tab(ix, cx);
+                            session.activate_tab(ix, window, cx);
                         }
                         SwitcherTarget::Object(object) => {
                             session.open_object(&object, ObjectViewMode::Data, window, cx);

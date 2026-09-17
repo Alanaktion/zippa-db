@@ -45,10 +45,10 @@ fn quick_switcher_opens_via_toolbar_and_lists_tabs_and_objects(cx: &mut TestAppC
     .unwrap();
 
     // Verify session contents available to switcher
-    session.update(cx, |session, _| {
-        assert_eq!(session.tabs().len(), 2);
-        assert_eq!(session.tabs()[0].title, "Query 1");
-        assert_eq!(session.tabs()[1].title, "Custom Query");
+    session.update(cx, |session, cx| {
+        assert_eq!(session.panels().len(), 2);
+        assert_eq!(session.panels()[0].read(cx).title(), "Query 1");
+        assert_eq!(session.panels()[1].read(cx).title(), "Custom Query");
         assert!(session.objects().iter().any(|o| o.name == "items"));
     });
 }
@@ -85,7 +85,7 @@ fn quick_switcher_selecting_object_opens_table_tab(cx: &mut TestAppContext) {
         .expect("active session");
 
     session.update(cx, |session, _| {
-        assert_eq!(session.tabs().len(), 1);
+        assert_eq!(session.panels().len(), 1);
     });
 
     let obj = DatabaseObject {
@@ -103,9 +103,9 @@ fn quick_switcher_selecting_object_opens_table_tab(cx: &mut TestAppContext) {
         })
         .unwrap();
 
-    session.update(cx, |session, _| {
-        assert_eq!(session.tabs().len(), 2);
-        assert_eq!(session.tabs()[1].title, "items");
+    session.update(cx, |session, cx| {
+        assert_eq!(session.panels().len(), 2);
+        assert_eq!(session.panels()[1].read(cx).title(), "items");
         assert_eq!(session.active_tab_index(), 1);
     });
 }
@@ -125,7 +125,7 @@ fn quick_switcher_selecting_tab_switches_active_tab(cx: &mut TestAppContext) {
             session.update(cx, |session, cx| {
                 session.open_tab(Some("Second Tab".into()), String::new(), false, window, cx);
                 assert_eq!(session.active_tab_index(), 1);
-                session.activate_tab(0, cx);
+                session.activate_tab(0, window, cx);
                 assert_eq!(session.active_tab_index(), 0);
             });
         })

@@ -55,9 +55,15 @@ impl QueryEditor {
 
     /// Put the caret in the editor, as clicking it does.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        use gpui_kit::Focusable as _;
-        let handle = self.state.read(cx).focus_handle(cx);
+        let handle = self.focus_handle(cx);
         handle.focus(window, cx);
+    }
+
+    /// The editor's own focus handle, so its owner can hand it to a dock
+    /// panel without going through a window.
+    pub fn focus_handle(&self, cx: &gpui_kit::App) -> gpui_kit::FocusHandle {
+        use gpui_kit::Focusable as _;
+        self.state.read(cx).focus_handle(cx)
     }
 
     /// Replace the buffer contents.

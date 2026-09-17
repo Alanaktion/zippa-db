@@ -28,7 +28,7 @@ fn opening_a_sql_file_puts_it_in_its_own_tab(cx: &mut TestAppContext) {
     handle
         .update(cx, |session, _, cx| {
             assert_eq!(
-                session.tab_titles(),
+                session.tab_titles(cx),
                 ["Query 1", "report.sql"],
                 "the file should open in a tab named after it"
             );
@@ -65,7 +65,7 @@ fn a_file_just_opened_or_saved_is_not_dirty(cx: &mut TestAppContext) {
     // Editing it dirties it again, and saving clears it once more.
     handle
         .update(cx, |session, window, cx| {
-            session.activate_tab_for_test(1, cx);
+            session.activate_tab_for_test(1, window, cx);
             session.prepare_active_editor_for_test("SELECT 2;", window, cx);
             assert!(session.tab_is_dirty_for_test(1, cx));
         })
@@ -98,8 +98,8 @@ fn cancelling_the_open_dialog_opens_nothing(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     handle
-        .update(cx, |session, _, _| {
-            assert_eq!(session.tab_titles(), ["Query 1"]);
+        .update(cx, |session, _, cx| {
+            assert_eq!(session.tab_titles(cx), ["Query 1"]);
         })
         .unwrap();
 }
@@ -130,9 +130,9 @@ fn saving_a_tab_with_no_file_asks_where_to_put_it(cx: &mut TestAppContext) {
         "SELECT 2;"
     );
     handle
-        .update(cx, |session, _, _| {
+        .update(cx, |session, _, cx| {
             assert_eq!(
-                session.tab_titles(),
+                session.tab_titles(cx),
                 ["notes.sql"],
                 "the tab should take the name of the file it was saved to"
             );
@@ -193,8 +193,8 @@ fn save_as_asks_again_and_follows_the_new_file(cx: &mut TestAppContext) {
         "SELECT 4;"
     );
     handle
-        .update(cx, |session, _, _| {
-            assert_eq!(session.tab_titles(), ["second.sql"]);
+        .update(cx, |session, _, cx| {
+            assert_eq!(session.tab_titles(cx), ["second.sql"]);
         })
         .unwrap();
 

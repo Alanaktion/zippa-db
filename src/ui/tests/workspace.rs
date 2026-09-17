@@ -190,14 +190,14 @@ fn the_toolbar_new_query_button_opens_a_tab(cx: &mut TestAppContext) {
         .unwrap()
         .expect("the active tab should be a session");
     assert_eq!(
-        session.read_with(cx, |session, _| session.tab_titles()),
+        session.read_with(cx, |session, cx| session.tab_titles(cx)),
         ["Query 1"]
     );
 
     click(cx, &handle, "new-query");
 
     assert_eq!(
-        session.read_with(cx, |session, _| session.tab_titles()),
+        session.read_with(cx, |session, cx| session.tab_titles(cx)),
         ["Query 1", "Query 2"],
         "the toolbar button should behave like the session's own new-tab button"
     );

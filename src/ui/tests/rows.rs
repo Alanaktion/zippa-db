@@ -414,7 +414,7 @@ fn a_foreign_key_jump_opens_and_filters_the_referenced_table(cx: &mut TestAppCon
     cx.run_until_parked();
 
     let target = handle
-        .update(cx, |session, _, _| session.active_table_view())
+        .update(cx, |session, _, cx| session.active_table_view(cx))
         .unwrap()
         .expect("following the key should open the referenced table");
     target.read_with(cx, |view, _| {
@@ -451,7 +451,7 @@ fn a_null_foreign_key_has_nothing_to_follow(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let tabs_before = handle
-        .update(cx, |session, _, _| session.tab_titles())
+        .update(cx, |session, _, cx| session.tab_titles(cx))
         .unwrap();
 
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
@@ -460,7 +460,7 @@ fn a_null_foreign_key_has_nothing_to_follow(cx: &mut TestAppContext) {
 
     assert_eq!(
         handle
-            .update(cx, |session, _, _| session.tab_titles())
+            .update(cx, |session, _, cx| session.tab_titles(cx))
             .unwrap(),
         tabs_before,
         "a NULL foreign key value has no row to jump to"

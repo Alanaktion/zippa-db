@@ -28,7 +28,7 @@ fn a_view_is_read_only(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let view = handle
-        .update(cx, |session, _, _| session.active_table_view())
+        .update(cx, |session, _, cx| session.active_table_view(cx))
         .unwrap()
         .expect("clicking a view should open a table view");
 
@@ -72,7 +72,7 @@ fn a_read_only_connection_reports_what_the_editor_refused(cx: &mut TestAppContex
     cx.run_until_parked();
 
     let status = handle
-        .update(cx, |session, _, _| session.active_status_for_test())
+        .update(cx, |session, _, cx| session.active_status_for_test(cx))
         .unwrap();
     assert!(
         status.contains("read-only") && status.contains("INSERT"),
@@ -163,7 +163,7 @@ fn a_confirming_connection_asks_before_running_a_write_from_the_editor(cx: &mut 
 
     assert_eq!(
         handle
-            .update(cx, |session, _, _| session.active_status_for_test())
+            .update(cx, |session, _, cx| session.active_status_for_test(cx))
             .unwrap(),
         "This statement writes. Run it?"
     );
@@ -205,7 +205,7 @@ fn a_confirming_connection_leaves_a_cancelled_statement_unrun(cx: &mut TestAppCo
     );
     assert_eq!(
         handle
-            .update(cx, |session, _, _| session.active_status_for_test())
+            .update(cx, |session, _, cx| session.active_status_for_test(cx))
             .unwrap(),
         "Not run"
     );
@@ -224,7 +224,7 @@ fn a_read_from_the_editor_is_never_confirmed(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let status = handle
-        .update(cx, |session, _, _| session.active_status_for_test())
+        .update(cx, |session, _, cx| session.active_status_for_test(cx))
         .unwrap();
     assert!(
         !status.contains("Run it?"),

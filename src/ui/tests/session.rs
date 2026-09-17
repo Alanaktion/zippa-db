@@ -32,8 +32,8 @@ fn clicking_a_table_opens_a_table_tab(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
 
     handle
-        .update(cx, |session, _, _| {
-            assert_eq!(session.tab_titles(), ["Query 1"]);
+        .update(cx, |session, _, cx| {
+            assert_eq!(session.tab_titles(cx), ["Query 1"]);
         })
         .unwrap();
 
@@ -45,9 +45,9 @@ fn clicking_a_table_opens_a_table_tab(cx: &mut TestAppContext) {
 
     handle
         .update(cx, |session, _, cx| {
-            assert_eq!(session.tab_titles(), ["Query 1", "items"]);
+            assert_eq!(session.tab_titles(cx), ["Query 1", "items"]);
             assert!(
-                session.active_table_view().is_some(),
+                session.active_table_view(cx).is_some(),
                 "clicking a table should open a table view, not an editor"
             );
             assert_eq!(
@@ -73,7 +73,7 @@ fn opening_the_same_table_twice_focuses_the_open_tab(cx: &mut TestAppContext) {
     handle
         .update(cx, |session, window, cx| {
             session.open_tab_for_test(window, cx);
-            assert_eq!(session.tab_titles(), ["Query 1", "items", "Query 2"]);
+            assert_eq!(session.tab_titles(cx), ["Query 1", "items", "Query 2"]);
         })
         .unwrap();
 
@@ -84,14 +84,14 @@ fn opening_the_same_table_twice_focuses_the_open_tab(cx: &mut TestAppContext) {
     .unwrap();
 
     handle
-        .update(cx, |session, _, _| {
+        .update(cx, |session, _, cx| {
             assert_eq!(
-                session.tab_titles(),
+                session.tab_titles(cx),
                 ["Query 1", "items", "Query 2"],
                 "the table should not be opened a second time"
             );
             assert!(
-                session.active_table_view().is_some(),
+                session.active_table_view(cx).is_some(),
                 "the existing table tab should have been focused"
             );
         })
@@ -131,7 +131,7 @@ fn the_sidebar_highlights_the_table_the_active_tab_shows(cx: &mut TestAppContext
             assert_eq!(session.selected_object_label_for_test(cx), None);
 
             // Switching back to the table tab restores the highlight.
-            session.activate_tab_for_test(1, cx);
+            session.activate_tab_for_test(1, window, cx);
             assert_eq!(
                 session.selected_object_label_for_test(cx),
                 Some("items".to_string())
@@ -178,7 +178,9 @@ fn each_tab_keeps_its_own_result(cx: &mut TestAppContext) {
 
     // Going back shows the original result again.
     handle
-        .update(cx, |session, _, cx| session.activate_tab_for_test(0, cx))
+        .update(cx, |session, window, cx| {
+            session.activate_tab_for_test(0, window, cx)
+        })
         .unwrap();
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -198,14 +200,14 @@ fn closing_the_last_tab_leaves_an_empty_editor(cx: &mut TestAppContext) {
     handle
         .update(cx, |session, window, cx| {
             session.open_tab_for_test(window, cx);
-            assert_eq!(session.tab_titles().len(), 2);
+            assert_eq!(session.tab_titles(cx).len(), 2);
 
             session.close_tab_for_test(1, window, cx);
-            assert_eq!(session.tab_titles(), ["Query 1"]);
+            assert_eq!(session.tab_titles(cx), ["Query 1"]);
 
             // The session always keeps one editor open.
             session.close_tab_for_test(0, window, cx);
-            assert_eq!(session.tab_titles(), ["Query 3"]);
+            assert_eq!(session.tab_titles(cx), ["Query 3"]);
             assert_eq!(session.active_sql(cx), "");
         })
         .unwrap();
@@ -261,13 +263,16 @@ fn closing_a_dirty_tab_asks_first(cx: &mut TestAppContext) {
         .unwrap();
 
     handle
-        .update(cx, |session, _, _| {
+        .update(cx, |session, _, cx| {
             assert_eq!(
-                session.tab_titles(),
+                session.tab_titles(cx),
                 ["Query 1"],
                 "a dirty tab should not close until the question is answered"
             );
-            assert_eq!(session.closing_for_test(), Some(0));
+            assert_eq!(
+                session.closing_title_for_test(cx),
+                Some("Query 1".to_string())
+            );
         })
         .unwrap();
 
@@ -275,8 +280,8 @@ fn closing_a_dirty_tab_asks_first(cx: &mut TestAppContext) {
     click_in_session(cx, handle, "keep-tab");
     handle
         .update(cx, |session, _, cx| {
-            assert_eq!(session.tab_titles(), ["Query 1"]);
-            assert_eq!(session.closing_for_test(), None);
+            assert_eq!(session.tab_titles(cx), ["Query 1"]);
+            assert_eq!(session.closing_title_for_test(cx), None);
             assert!(session.tab_is_dirty_for_test(0, cx));
         })
         .unwrap();
@@ -291,7 +296,7 @@ fn closing_a_dirty_tab_asks_first(cx: &mut TestAppContext) {
     click_in_session(cx, handle, "close-tab-anyway");
     handle
         .update(cx, |session, _, cx| {
-            assert_eq!(session.tab_titles(), ["Query 2"]);
+            assert_eq!(session.tab_titles(cx), ["Query 2"]);
             assert!(!session.tab_is_dirty_for_test(0, cx));
         })
         .unwrap();
@@ -409,9 +414,9 @@ fn the_platform_shortcut_opens_and_closes_tabs(cx: &mut TestAppContext) {
     .unwrap();
 
     handle
-        .update(cx, |session, _, _| {
+        .update(cx, |session, _, cx| {
             assert_eq!(
-                session.tab_titles().len(),
+                session.tab_titles(cx).len(),
                 2,
                 "the new-tab shortcut did not open a tab"
             );
@@ -424,9 +429,9 @@ fn the_platform_shortcut_opens_and_closes_tabs(cx: &mut TestAppContext) {
     .unwrap();
 
     handle
-        .update(cx, |session, _, _| {
+        .update(cx, |session, _, cx| {
             assert_eq!(
-                session.tab_titles().len(),
+                session.tab_titles(cx).len(),
                 1,
                 "the close-tab shortcut did not close a tab"
             );
@@ -441,7 +446,7 @@ fn the_platform_shortcut_runs_the_query(cx: &mut TestAppContext) {
     handle
         .update(cx, |session, window, cx| {
             session.prepare_active_editor_for_test("select 1", window, cx);
-            assert!(!session.active_is_running());
+            assert!(!session.active_is_running(cx));
         })
         .unwrap();
 
@@ -454,7 +459,7 @@ fn the_platform_shortcut_runs_the_query(cx: &mut TestAppContext) {
     handle
         .update(cx, |session, _, cx| {
             assert!(
-                session.active_is_running(),
+                session.active_is_running(cx),
                 "the run shortcut did not start the query"
             );
             // The editor's own binding for this keystroke inserts a newline;
@@ -468,10 +473,11 @@ fn the_platform_shortcut_runs_the_query(cx: &mut TestAppContext) {
 fn middle_clicking_a_tab_closes_it(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
 
-    handle
+    let close_id = handle
         .update(cx, |session, window, cx| {
             session.open_tab_for_test(window, cx);
-            assert_eq!(session.tab_titles(), ["Query 1", "Query 2"]);
+            assert_eq!(session.tab_titles(cx), ["Query 1", "Query 2"]);
+            session.close_button_id_for_test(1, cx)
         })
         .unwrap();
 
@@ -480,7 +486,7 @@ fn middle_clicking_a_tab_closes_it(cx: &mut TestAppContext) {
 
         // Aim inside the second tab: its close button sits within it, and the
         // middle button is not what that button listens for.
-        let target = window.find("close-tab-1").bounds().center();
+        let target = window.find(close_id).bounds().center();
 
         window.dispatch_event(
             MouseMoveEvent {
@@ -516,9 +522,9 @@ fn middle_clicking_a_tab_closes_it(cx: &mut TestAppContext) {
     .unwrap();
 
     handle
-        .update(cx, |session, _, _| {
+        .update(cx, |session, _, cx| {
             assert_eq!(
-                session.tab_titles(),
+                session.tab_titles(cx),
                 ["Query 1"],
                 "middle-clicking a tab should close it"
             );
@@ -546,7 +552,7 @@ fn refresh_reloads_the_schema_and_the_open_table_but_not_a_query_tab(cx: &mut Te
     cx.run_until_parked();
 
     let view = session
-        .read_with(cx, |session, _| session.active_table_view())
+        .read_with(cx, |session, cx| session.active_table_view(cx))
         .expect("clicking a table should open a table view");
     let before = view.read_with(cx, |view, _| view.loaded_rows_for_test());
     assert_eq!(before, 2, "the seed data has two rows");
@@ -585,4 +591,85 @@ fn refresh_reloads_the_schema_and_the_open_table_but_not_a_query_tab(cx: &mut Te
         count, 3,
         "refresh must not execute a query tab's buffer, or it would have inserted a fourth row"
     );
+}
+
+#[gpui_kit::test]
+async fn dragging_a_tab_splits_the_view(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestAppContextExt;
+    use std::time::Duration;
+
+    let (_database, handle) = session_with_objects(cx);
+
+    // A table tab beside Query 1, both in the one group the session starts
+    // with.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click("object-items", cx);
+    })
+    .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // The right 35% of the group's own body is the drop zone that
+        // splits rather than merges — the exact centre would just reorder
+        // the tab within the same group.
+        let body = window.find("tab-panel").bounds();
+        let from = window.within("tab-bar").find(1usize).bounds().center();
+        let to = gpui_kit::point(
+            body.origin.x + body.size.width * 0.9,
+            body.origin.y + body.size.height / 2.,
+        );
+        window.drag(from, to, cx);
+    })
+    .unwrap();
+
+    cx.wait_for(handle.into(), Duration::from_secs(1), |window, _| {
+        // "limit" only ever appears in a table view's own footer, so its
+        // presence is the table panel; the query panel keeps its stable
+        // per-key id.
+        match (
+            window.try_find(("session-panel", 0usize)),
+            window.try_find("limit"),
+        ) {
+            (Some(query), Some(table)) => {
+                query.visible()
+                    && table.visible()
+                    && query.bounds().right() <= table.bounds().left()
+            }
+            _ => false,
+        }
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+fn closing_a_panel_from_the_dock_forgets_it(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    let panel = handle
+        .update(cx, |session, window, cx| {
+            session.open_tab_for_test(window, cx);
+            assert_eq!(session.tab_titles(cx), ["Query 1", "Query 2"]);
+            session.panel_for_test(1)
+        })
+        .unwrap();
+
+    // The `…`-menu Close path: it removes the panel from the dock directly,
+    // never asking `Session::close_tab` first.
+    handle
+        .update(cx, |session, window, cx| {
+            session.dock_remove_for_test(&panel, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |session, _, cx| {
+            assert_eq!(
+                session.tab_titles(cx),
+                ["Query 1"],
+                "the dock's own close path should still be noticed and forgotten"
+            );
+        })
+        .unwrap();
 }

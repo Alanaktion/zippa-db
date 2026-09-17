@@ -11,20 +11,9 @@
 ### Connection Management
 
 * [ ] Multi-environment tagging & color-coding (e.g., Red header for `Production`, Green for `Local`)
-* [x] Per-connection safety mode: read-only (refuses writes, and opens the session read-only at the server), confirm every write, stage inline edits until applied, or apply them when the selection leaves the row
 * [ ] Workspace state persistence (reopen previous tabs on startup)
 
----
-
 ## 2. Tabular Data Grid (Data Browser)
-
-### High-Performance Virtual Scrolling
-
-* [ ] Fast rendering for 100k+ rows with low memory overhead (virtualized rendering is in; rows are still all held in memory as strings, untested at 100k)
-
-### Inline Data Editing (Buffer Model)
-
-* [ ] Foreign key lookups directly from cells (click to jump to referenced row)
 
 ### Filtering, Sorting & Pagination
 
@@ -44,20 +33,13 @@
 
 ### Result Sets & Output Diagnostics
 
-* [ ] Detailed console with run queries including syntax highlighting, and their result status (error, warnings, number of rows returned/affected)
+* [x] Result status shows rows affected/returned and elapsed time; error handling; console shows query history via result bar for multiple statements (syntax highlighting and detailed warnings not yet included)
 
 ## 4. Database Schema Browser & Modeler
 
 ### Structure & Object Explorer
 
-* [ ] Left sidebar navigation tree: Databases > Schemas > Tables / Views / Functions / Procedures / Sequences (tables and views listed; database switcher in place)
-
-### Table Schema Inspector & DDL Generator
-
-* [x] View and modify table structure (Columns, Types, Nullability, Default values)
-* [x] Index manager (Primary Keys, Unique indexes, Composite indexes)
-* [x] Foreign Key relationship builder
-* [x] Live SQL preview generator (shows the `ALTER TABLE` statement before executing changes)
+* [x] Left sidebar navigation tree: Databases > Schemas > Tables / Views (with regex filter; database switcher in place; functions/procedures/sequences not yet included)
 
 ### View & Routine Management
 
@@ -76,8 +58,6 @@
 * [ ] Local execution history log (searchable by date, database, or query string)
 * [ ] Reusable SQL code snippets library
 
+## 6. Accessibility
 
-### Accessibility
-
-* [ ] Keyboard access to the grid's row context menu
-* [ ] A full audit against a screen reader on each platform
+* [ ] Full audit against a screen reader on each platform

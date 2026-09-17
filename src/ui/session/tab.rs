@@ -2,9 +2,8 @@
 
 use std::path::PathBuf;
 
-use gpui_kit::{Entity, SharedString};
+use gpui_kit::Entity;
 
-use crate::db::DatabaseObject;
 use crate::db::query::QueryResult;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::query_editor::QueryEditor;
@@ -74,42 +73,4 @@ pub(crate) enum TabContent {
     Schema {
         view: Entity<SchemaView>,
     },
-}
-
-pub(crate) struct SessionTab {
-    pub(crate) title: SharedString,
-    pub(crate) content: TabContent,
-}
-
-impl SessionTab {
-    /// The table this tab shows, if it is a table or structure tab.
-    pub(crate) fn object(&self, cx: &gpui_kit::App) -> Option<DatabaseObject> {
-        match &self.content {
-            TabContent::Table { view } => Some(view.read(cx).object().clone()),
-            TabContent::Schema { view } => Some(view.read(cx).object().clone()),
-            TabContent::Query { .. } => None,
-        }
-    }
-
-    /// Which view mode this tab is showing its object in, if it is showing one.
-    pub(crate) fn mode(&self) -> Option<ObjectViewMode> {
-        match &self.content {
-            TabContent::Table { .. } => Some(ObjectViewMode::Data),
-            TabContent::Schema { .. } => Some(ObjectViewMode::Schema),
-            TabContent::Query { .. } => None,
-        }
-    }
-
-    /// Whether a query tab's buffer has changed since it was opened or last
-    /// saved. A table tab has no buffer, so it is never dirty; a structure
-    /// tab is dirty when it has unapplied column edits.
-    pub(crate) fn is_dirty(&self, cx: &gpui_kit::App) -> bool {
-        match &self.content {
-            TabContent::Query {
-                editor, baseline, ..
-            } => &editor.read(cx).sql(cx) != baseline,
-            TabContent::Table { .. } => false,
-            TabContent::Schema { view } => view.read(cx).is_dirty(cx),
-        }
-    }
 }

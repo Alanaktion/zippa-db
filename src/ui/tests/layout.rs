@@ -308,7 +308,7 @@ fn selecting_a_cell_highlights_its_whole_row(cx: &mut TestAppContext) {
         .unwrap();
 
     let grid = handle
-        .update(cx, |session, _, _| session.active_grid())
+        .update(cx, |session, _, cx| session.active_grid(cx))
         .unwrap()
         .expect("the active tab should be a query tab");
 
@@ -371,7 +371,7 @@ fn columns_are_sized_from_their_contents(cx: &mut TestAppContext) {
         .unwrap();
 
     let grid = handle
-        .update(cx, |session, _, _| session.active_grid())
+        .update(cx, |session, _, cx| session.active_grid(cx))
         .unwrap()
         .expect("the active tab should be a query tab");
 

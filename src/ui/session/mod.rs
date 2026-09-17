@@ -1,44 +1,45 @@
-//! An open connection: object sidebar, query editor, and result grid, split by
-//! draggable panes.
+//! An open connection: object sidebar, and a dock of query, table and
+//! structure panels, split and reordered by dragging their tabs.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::dock::{
+    DockArea, DockLayout, DockPlacement, DockSkin, InsertTarget, NodeId, PanelId, PanelStyle,
+    panel_handle,
+};
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tree::TreeState;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, IconName, ResizableState, Sizable, h_flex, h_resizable,
-    resizable_panel, v_flex, v_resizable,
+    ActiveTheme, Disableable, ResizableState, Sizable, h_flex, h_resizable, resizable_panel, v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Entity, EventEmitter, MouseButton, SharedString, Window, actions, div, px,
+    App, Context, Entity, EventEmitter, Focusable, SharedString, WeakEntity, Window, actions, div,
+    px,
 };
 
 use regex::Regex;
 
-use crate::db::query::QueryResult;
 use crate::db::{Connection, DatabaseObject, runtime, statement};
-use crate::ui::data_grid::DataGrid;
 use crate::ui::filter_bar::FilterSpec;
-use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
 use crate::ui::schema_view::SchemaView;
 use crate::ui::sql_file;
 use crate::ui::table_view::{TableView, TableViewEvent};
 
+mod panel;
 mod sidebar;
 pub(crate) mod tab;
 #[cfg(test)]
 mod test_support;
 
-use tab::{ObjectViewMode, SessionTab, Status, TabContent};
+use panel::{SessionPanel, SessionPanelEvent};
+use tab::{ObjectViewMode, Status};
 
 /// Starting pane sizes; the user drags from here.
 const SIDEBAR_WIDTH: f32 = 260.;
-const EDITOR_HEIGHT: f32 = 220.;
 
 actions!(
     zippa_db,
@@ -62,14 +63,17 @@ pub enum SessionEvent {
 
 pub struct Session {
     connection: Arc<Connection>,
-    tabs: Vec<SessionTab>,
-    active: usize,
+    dock: Entity<DockArea>,
+    /// Every panel this session owns, in creation order. The dock owns where
+    /// they are; this owns which ones exist.
+    panels: Vec<Entity<SessionPanel>>,
+    /// The panel the user is in — with a split open, several panels are
+    /// displayed at once, so "active" means where focus last was.
+    active: Option<WeakEntity<SessionPanel>>,
     /// Numbers the untitled tabs, so closing one does not reuse its name.
     opened: usize,
     /// Sidebar beside the editor and grid.
     columns: Entity<ResizableState>,
-    /// Editor above the grid, shared by every tab so the split stays put.
-    panes: Entity<ResizableState>,
     databases: Vec<String>,
     objects: Vec<DatabaseObject>,
     /// Text filter over the object list.
@@ -84,7 +88,9 @@ pub struct Session {
     switching: bool,
     /// A tab close waiting on an answer, because the buffer it would lose has
     /// unsaved changes.
-    closing: Option<usize>,
+    closing: Option<WeakEntity<SessionPanel>>,
+    /// The next panel's stable key. See `SessionPanel`'s `key` field.
+    next_key: usize,
 }
 
 impl EventEmitter<SessionEvent> for Session {}
@@ -95,13 +101,27 @@ impl Session {
         cx.subscribe_in(&filter, window, Self::on_filter_event)
             .detach();
 
+        // A per-connection id: every workspace tab builds its own dock.
+        let (dock, skin) = DockSkin::dock_area(
+            SharedString::from(format!("session-dock-{}", connection.config.id)),
+            None,
+            window,
+            cx,
+        );
+        // A lone tab still gets a strip, so its close button and `+` are
+        // always there.
+        skin.set_panel_style(PanelStyle::TabBar, cx);
+        dock.update(cx, |dock, cx| {
+            dock.set_center(DockLayout::tabs(), window, cx)
+        });
+
         let mut session = Self {
             connection,
-            tabs: Vec::new(),
-            active: 0,
+            dock,
+            panels: Vec::new(),
+            active: None,
             opened: 0,
             columns: cx.new(|_| ResizableState::default()),
-            panes: cx.new(|_| ResizableState::default()),
             databases: Vec::new(),
             objects: Vec::new(),
             filter,
@@ -110,10 +130,133 @@ impl Session {
             metadata_error: None,
             switching: false,
             closing: None,
+            next_key: 0,
         };
         session.open_tab(None, String::new(), false, window, cx);
         session.reload_metadata(cx);
         session
+    }
+
+    /// The one place a panel joins the session.
+    fn install(
+        &mut self,
+        panel: Entity<SessionPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.subscribe_in(&panel, window, Self::on_panel_event)
+            .detach();
+
+        // `add_panel_view` appends to the *first* group in the region, so
+        // with a split open a new tab would land beside the wrong one; the
+        // move afterward puts it beside the group the user is looking at.
+        let target = self.active_group(cx);
+        self.dock.update(cx, |dock, cx| {
+            dock.add_panel_view(
+                panel_handle(panel.clone()),
+                DockPlacement::Center,
+                None,
+                window,
+                cx,
+            );
+            if let Some(node) = target {
+                dock.move_panel(
+                    PanelId::from(panel.entity_id()),
+                    InsertTarget::Tabs {
+                        node,
+                        ix: None,
+                        activate: true,
+                    },
+                    window,
+                    cx,
+                );
+            }
+        });
+
+        self.panels.push(panel.clone());
+        self.active = Some(panel.downgrade());
+        self.sync_tree_selection(cx);
+        cx.notify();
+    }
+
+    /// The node of the tab group holding the active panel — where a new tab
+    /// goes.
+    fn active_group(&self, cx: &App) -> Option<NodeId> {
+        let panel = self.active_panel()?;
+        let group = panel.read(cx).group()?.upgrade()?;
+        Some(group.read(cx).node())
+    }
+
+    /// The panel the user was last focused in, if it is still open.
+    fn active_panel(&self) -> Option<Entity<SessionPanel>> {
+        self.active.as_ref()?.upgrade()
+    }
+
+    /// The panel waiting on an answer about its unsaved changes, if any.
+    fn closing_panel(&self) -> Option<Entity<SessionPanel>> {
+        self.closing.as_ref()?.upgrade()
+    }
+
+    /// `active` moves here, and only here.
+    fn touch(&mut self, panel: &Entity<SessionPanel>, cx: &mut Context<Self>) {
+        self.active = Some(panel.downgrade());
+        self.sync_tree_selection(cx);
+        cx.notify();
+    }
+
+    /// A panel left the dock — by the ✕, or by the `…` menu's Close, which
+    /// never asks the session first. Idempotent: the ✕ path has already done
+    /// this by the time the event arrives.
+    fn forget(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.panels.iter().any(|p| p == panel) {
+            return;
+        }
+
+        self.panels.retain(|p| p != panel);
+        if self.closing.as_ref().is_some_and(|w| w == panel) {
+            self.closing = None;
+        }
+        if self.active.as_ref().is_some_and(|w| w == panel) {
+            self.active = self.panels.last().map(|p| p.downgrade());
+        }
+
+        if self.panels.is_empty() {
+            // The session always shows one editor.
+            self.open_tab(None, String::new(), false, window, cx);
+            return;
+        }
+
+        self.sync_tree_selection(cx);
+        cx.notify();
+    }
+
+    /// The hub every panel event passes through.
+    fn on_panel_event(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        event: &SessionPanelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SessionPanelEvent::Focused => self.touch(panel, cx),
+            SessionPanelEvent::Removed => self.forget(panel, window, cx),
+            SessionPanelEvent::CloseRequested => self.close_tab(panel, window, cx),
+            SessionPanelEvent::NewTabRequested => {
+                self.touch(panel, cx);
+                self.open_tab(None, String::new(), false, window, cx);
+            }
+            SessionPanelEvent::Run(sql) => self.run(panel, sql.clone(), cx),
+            SessionPanelEvent::RunScript(sql) => self.run_script(panel, sql.clone(), cx),
+            SessionPanelEvent::ConfirmRun(sql) => self.run_now(panel, sql.clone(), cx),
+            SessionPanelEvent::OpenFile => self.open_file(cx),
+            SessionPanelEvent::Save => self.save(panel, false, cx),
+        }
     }
 
     /// Add a tab and make it active.
@@ -127,34 +270,20 @@ impl Session {
         run: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Entity<SessionPanel> {
         self.opened += 1;
         let title = title.unwrap_or_else(|| format!("Query {}", self.opened));
+        let key = self.next_key;
+        self.next_key += 1;
 
-        let editor = cx.new(|cx| QueryEditor::with_text(sql.clone(), window, cx));
-        cx.subscribe_in(&editor, window, Self::on_editor_event)
-            .detach();
-
-        self.tabs.push(SessionTab {
-            title: title.into(),
-            content: TabContent::Query {
-                editor,
-                grid: cx.new(|cx| DataGrid::new(window, cx)),
-                status: Status::Idle,
-                path: None,
-                results: Vec::new(),
-                result: 0,
-                running: None,
-                baseline: sql.clone(),
-            },
-        });
-        self.active = self.tabs.len() - 1;
-        self.sync_tree_selection(cx);
+        let panel = cx.new(|cx| SessionPanel::query(key, title, sql.clone(), window, cx));
+        self.install(panel.clone(), window, cx);
 
         if run && !sql.trim().is_empty() {
-            self.run(self.active, sql, cx);
+            self.run(&panel, sql, cx);
         }
         cx.notify();
+        panel
     }
 
     /// Open a table or view from the sidebar in its own tab, either as its
@@ -170,40 +299,40 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(index) = self
-            .tabs
+        if let Some(panel) = self
+            .panels
             .iter()
-            .position(|tab| tab.mode() == Some(mode) && tab.object(cx).as_ref() == Some(object))
+            .find(|panel| {
+                let panel = panel.read(cx);
+                panel.mode() == Some(mode) && panel.object(cx).as_ref() == Some(object)
+            })
+            .cloned()
         {
-            self.activate_tab(index, cx);
+            self.activate_panel(&panel, window, cx);
             return;
         }
 
-        let tab = match mode {
+        let key = self.next_key;
+        self.next_key += 1;
+
+        let panel = match mode {
             ObjectViewMode::Data => {
                 let view = cx
                     .new(|cx| TableView::new(self.connection.clone(), object.clone(), window, cx));
                 cx.subscribe_in(&view, window, Self::on_table_navigate)
                     .detach();
-                SessionTab {
-                    title: object.label().into(),
-                    content: TabContent::Table { view },
-                }
+                let title = object.label();
+                cx.new(|cx| SessionPanel::table(key, title, view, cx))
             }
             ObjectViewMode::Schema => {
                 let view = cx
                     .new(|cx| SchemaView::new(self.connection.clone(), object.clone(), window, cx));
-                SessionTab {
-                    title: format!("{} — Structure", object.label()).into(),
-                    content: TabContent::Schema { view },
-                }
+                let title = format!("{} — Structure", object.label());
+                cx.new(|cx| SessionPanel::schema(key, title, view, cx))
             }
         };
 
-        self.tabs.push(tab);
-        self.active = self.tabs.len() - 1;
-        self.sync_tree_selection(cx);
-        cx.notify();
+        self.install(panel, window, cx);
     }
 
     /// A table view followed a foreign key; open (or reuse) the referenced
@@ -236,15 +365,14 @@ impl Session {
         self.open_object(object, ObjectViewMode::Data, window, cx);
 
         let target = self
-            .tabs
+            .panels
             .iter()
-            .find(|tab| {
-                tab.mode() == Some(ObjectViewMode::Data) && tab.object(cx).as_ref() == Some(object)
+            .find(|panel| {
+                let panel = panel.read(cx);
+                panel.mode() == Some(ObjectViewMode::Data)
+                    && panel.object(cx).as_ref() == Some(object)
             })
-            .and_then(|tab| match &tab.content {
-                TabContent::Table { view } => Some(view.clone()),
-                _ => None,
-            });
+            .and_then(|panel| panel.read(cx).table_view());
         let Some(view) = target else {
             return;
         };
@@ -254,18 +382,23 @@ impl Session {
     }
 
     /// Close a tab, asking first if it holds unsaved changes.
-    fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if index >= self.tabs.len() {
+    fn close_tab(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.panels.iter().any(|p| p == panel) {
             return;
         }
 
-        if self.tabs[index].is_dirty(cx) {
-            self.closing = Some(index);
+        if panel.read(cx).is_dirty(cx) {
+            self.closing = Some(panel.downgrade());
             cx.notify();
             return;
         }
 
-        self.close_tab_now(index, window, cx);
+        self.close_tab_now(panel, window, cx);
     }
 
     /// Leave the tab open; the buffer it would have lost is untouched either
@@ -277,55 +410,76 @@ impl Session {
 
     /// Close the tab waiting on an answer about its unsaved changes.
     fn close_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.closing.take() else {
+        let Some(panel) = self.closing.take().and_then(|panel| panel.upgrade()) else {
             return;
         };
-        self.close_tab_now(index, window, cx);
+        self.close_tab_now(&panel, window, cx);
     }
 
     /// Remove a tab outright; the caller has already decided unsaved changes
     /// do not matter.
-    fn close_tab_now(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if index >= self.tabs.len() {
+    fn close_tab_now(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.panels.iter().any(|p| p == panel) {
             return;
         }
 
-        self.tabs.remove(index);
-        // A pending confirmation about another tab still points at the one
-        // meant, once the tabs after it have shifted down.
-        if let Some(closing) = self.closing {
-            self.closing = match closing.cmp(&index) {
-                std::cmp::Ordering::Less => Some(closing),
-                std::cmp::Ordering::Equal => None,
-                std::cmp::Ordering::Greater => Some(closing - 1),
-            };
-        }
-
-        if self.tabs.is_empty() {
-            // The session always shows one editor.
+        if self.panels.len() == 1 {
+            // The session always shows one editor; opening it first, before
+            // this one leaves, means it lands in the same group.
             self.open_tab(None, String::new(), false, window, cx);
-            return;
         }
 
-        self.active = self.active.min(self.tabs.len() - 1);
+        self.panels.retain(|p| p != panel);
+        if self.closing.as_ref().is_some_and(|w| w == panel) {
+            self.closing = None;
+        }
+        if self.active.as_ref().is_some_and(|w| w == panel) {
+            self.active = self.panels.last().map(|p| p.downgrade());
+        }
+
+        self.dock
+            .update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
+
         self.sync_tree_selection(cx);
         cx.notify();
     }
 
-    pub(crate) fn activate_tab(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index < self.tabs.len() && index != self.active {
-            self.active = index;
-            self.sync_tree_selection(cx);
-            cx.notify();
-        }
+    pub(crate) fn activate_tab(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.panels.get(index).cloned() else {
+            return;
+        };
+        self.activate_panel(&panel, window, cx);
     }
 
-    pub(crate) fn tabs(&self) -> &[SessionTab] {
-        &self.tabs
+    fn activate_panel(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        SessionPanel::bring_forward(panel, window, cx);
+        self.touch(panel, cx);
+    }
+
+    pub(crate) fn panels(&self) -> &[Entity<SessionPanel>] {
+        &self.panels
     }
 
     pub(crate) fn active_tab_index(&self) -> usize {
-        self.active
+        let Some(active) = self.active.as_ref() else {
+            return 0;
+        };
+        self.panels.iter().position(|p| p == active).unwrap_or(0)
     }
 
     pub(crate) fn objects(&self) -> &[DatabaseObject] {
@@ -360,10 +514,8 @@ impl Session {
     }
 
     pub(crate) fn reload_active_table(&mut self, cx: &mut Context<Self>) {
-        if let Some(TabContent::Table { view }) = self.tabs.get(self.active).map(|tab| &tab.content)
-        {
-            let view = view.clone();
-            view.update(cx, |view, cx| view.refresh(cx));
+        if let Some(panel) = self.active_panel() {
+            panel.update(cx, |panel, cx| panel.refresh(cx));
         }
     }
 
@@ -378,7 +530,9 @@ impl Session {
     }
 
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_tab(self.active, window, cx);
+        if let Some(panel) = self.active_panel() {
+            self.close_tab(&panel, window, cx);
+        }
     }
 
     fn on_open_file(&mut self, _: &OpenFile, _window: &mut Window, cx: &mut Context<Self>) {
@@ -386,11 +540,15 @@ impl Session {
     }
 
     fn on_save_file(&mut self, _: &SaveFile, _window: &mut Window, cx: &mut Context<Self>) {
-        self.save(self.active, false, cx);
+        if let Some(panel) = self.active_panel() {
+            self.save(&panel, false, cx);
+        }
     }
 
     fn on_save_file_as(&mut self, _: &SaveFileAs, _window: &mut Window, cx: &mut Context<Self>) {
-        self.save(self.active, true, cx);
+        if let Some(panel) = self.active_panel() {
+            self.save(&panel, true, cx);
+        }
     }
 
     /// Ask for SQL files and give each one its own tab.
@@ -432,44 +590,44 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_tab(None, sql, false, window, cx);
-        let index = self.active;
-        self.set_status(index, Status::Done(format!("Opened {}", path.display())));
-        self.set_file(index, path, cx);
+        let panel = self.open_tab(None, sql, false, window, cx);
+        panel.update(cx, |panel, cx| {
+            panel.set_status(Status::Done(format!("Opened {}", path.display())));
+            panel.set_file(path, cx);
+        });
     }
 
-    /// Save the query tab at `index`.
+    /// Save `panel`'s query tab.
     ///
     /// A tab with no file yet — or "Save As", with `ask` set — asks the
     /// platform for a path first.
-    fn save(&mut self, index: usize, ask: bool, cx: &mut Context<Self>) {
+    fn save(&mut self, panel: &Entity<SessionPanel>, ask: bool, cx: &mut Context<Self>) {
         // A table tab has no buffer to save, so saving it writes its staged
         // edits instead. `TableView` binds the same key itself, which covers
         // the grid having focus; this covers everywhere else in the session.
-        if let Some(TabContent::Table { view }) = self.tabs.get(index).map(|tab| &tab.content) {
-            let view = view.clone();
-            view.update(cx, |view, cx| view.commit(cx));
+        if panel.read(cx).table_view().is_some() {
+            panel.update(cx, |panel, cx| panel.commit(cx));
             return;
         }
 
-        let Some(TabContent::Query { editor, path, .. }) =
-            self.tabs.get(index).map(|tab| &tab.content)
-        else {
+        let Some(editor) = panel.read(cx).editor() else {
             return;
         };
-        let (editor, file) = (editor.clone(), path.clone());
+        let file = panel.read(cx).file_path();
         let sql = editor.read(cx).sql(cx);
 
         if let Some(path) = file.clone().filter(|_| !ask) {
-            self.write(editor, path, sql, cx);
+            self.write(panel.downgrade(), path, sql, cx);
             return;
         }
 
-        let prompt = sql_file::prompt_for_save(file.as_deref(), &self.tabs[index].title, cx);
+        let title = panel.read(cx).title();
+        let prompt = sql_file::prompt_for_save(file.as_deref(), &title, cx);
+        let weak = panel.downgrade();
 
         cx.spawn(async move |this, cx| match prompt.await {
             Ok(Some(path)) => {
-                this.update(cx, |this, cx| this.write(editor, path, sql, cx))
+                this.update(cx, |this, cx| this.write(weak, path, sql, cx))
                     .ok();
             }
             Ok(None) => {}
@@ -483,7 +641,7 @@ impl Session {
     /// Write `sql` to `path`, then bind the tab to it.
     fn write(
         &mut self,
-        editor: Entity<QueryEditor>,
+        panel: WeakEntity<SessionPanel>,
         path: PathBuf,
         sql: String,
         cx: &mut Context<Self>,
@@ -492,48 +650,27 @@ impl Session {
 
         cx.spawn(async move |this, cx| {
             let written = task.await;
-            this.update(cx, |this, cx| {
-                // The tab may have been closed or moved while the file was written.
-                let Some(index) = this.query_tab_of(&editor) else {
+            this.update(cx, |_this, cx| {
+                // The tab may have been closed while the file was written.
+                let Some(panel) = panel.upgrade() else {
                     return;
                 };
 
-                match written {
-                    Ok(()) => {
-                        this.set_status(index, Status::Done(format!("Saved {}", path.display())));
-                        this.set_file(index, path, cx);
-                        this.set_baseline(index, sql);
+                panel.update(cx, |panel, cx| {
+                    match written {
+                        Ok(()) => {
+                            panel.set_status(Status::Done(format!("Saved {}", path.display())));
+                            panel.set_file(path, cx);
+                            panel.set_baseline(sql);
+                        }
+                        Err(error) => panel.set_status(Status::Error(format!("{error:#}"))),
                     }
-                    Err(error) => this.set_status(index, Status::Error(format!("{error:#}"))),
-                }
-                cx.notify();
+                    cx.notify();
+                });
             })
             .ok();
         })
         .detach();
-    }
-
-    /// Bind the query tab at `index` to `path`, naming the tab after the file.
-    fn set_file(&mut self, index: usize, path: PathBuf, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs.get_mut(index) else {
-            return;
-        };
-        let TabContent::Query { path: slot, .. } = &mut tab.content else {
-            return;
-        };
-
-        tab.title = sql_file::label(&path).into();
-        *slot = Some(path);
-        cx.notify();
-    }
-
-    /// Mark `sql` as the query tab at `index`'s clean state, as a save does.
-    fn set_baseline(&mut self, index: usize, sql: String) {
-        if let Some(TabContent::Query { baseline, .. }) =
-            self.tabs.get_mut(index).map(|tab| &mut tab.content)
-        {
-            *baseline = sql;
-        }
     }
 
     /// Put a file error where the user can see it.
@@ -541,18 +678,26 @@ impl Session {
     /// Only query tabs carry a status bar, so an error raised while a table
     /// tab is in front goes to the query tab nearest it.
     fn report(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
-        let Some(index) = self.nearest_query_tab() else {
+        let Some(panel) = self.nearest_query_panel(cx) else {
             return;
         };
-        self.set_status(index, Status::Error(format!("{error:#}")));
-        cx.notify();
+        panel.update(cx, |panel, cx| {
+            panel.set_status(Status::Error(format!("{error:#}")));
+            cx.notify();
+        });
     }
 
-    /// The active tab if it holds a query, else the next one that does.
-    fn nearest_query_tab(&self) -> Option<usize> {
-        (0..self.tabs.len())
-            .map(|offset| (self.active + offset) % self.tabs.len())
-            .find(|index| matches!(self.tabs[*index].content, TabContent::Query { .. }))
+    /// The active panel if it holds a query, else the next one that does.
+    fn nearest_query_panel(&self, cx: &App) -> Option<Entity<SessionPanel>> {
+        if self.panels.is_empty() {
+            return None;
+        }
+        let start = self.active_tab_index();
+        (0..self.panels.len())
+            .map(|offset| (start + offset) % self.panels.len())
+            .map(|index| &self.panels[index])
+            .find(|panel| panel.read(cx).is_query())
+            .cloned()
     }
 
     pub fn connection(&self) -> Arc<Connection> {
@@ -574,14 +719,10 @@ impl Session {
     /// Called when the session is brought forward, so `Cmd+Enter` runs the
     /// query without having to click into the editor first.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(TabContent::Query { editor, .. }) =
-            self.tabs.get(self.active).map(|tab| &tab.content)
-        else {
+        let Some(panel) = self.active_panel() else {
             return;
         };
-
-        let editor = editor.clone();
-        editor.update(cx, |editor, cx| editor.focus(window, cx));
+        panel.read(cx).focus_handle(cx).focus(window, cx);
     }
 
     /// Read the database list and the current database's tables and views.
@@ -650,36 +791,28 @@ impl Session {
                         this.objects.clear();
                         this.rebuild_tree(cx);
                         let connection = this.connection.clone();
-                        for index in 0..this.tabs.len() {
-                            match &this.tabs[index].content {
-                                TabContent::Query { grid, .. } => {
-                                    let grid = grid.clone();
-                                    grid.update(cx, |grid, cx| grid.clear(cx));
-                                    this.set_status(index, Status::Idle);
-                                }
-                                // A table tab points at a table in the database
-                                // it was opened from; re-read it in the new one.
-                                TabContent::Table { view } => {
-                                    let view = view.clone();
-                                    let connection = connection.clone();
-                                    view.update(cx, |view, cx| view.set_connection(connection, cx));
-                                }
-                                TabContent::Schema { view } => {
-                                    let view = view.clone();
-                                    let connection = connection.clone();
-                                    view.update(cx, |view, cx| view.set_connection(connection, cx));
-                                }
-                            }
+                        for panel in this.panels.clone() {
+                            let connection = connection.clone();
+                            panel.update(cx, |panel, cx| panel.set_connection(connection, cx));
                         }
                         this.reload_metadata(cx);
                     }
                     Ok(Err(error)) => {
-                        this.set_status(this.active, Status::Error(format!("{error:#}")))
+                        if let Some(panel) = this.active_panel() {
+                            panel.update(cx, |panel, _| {
+                                panel.set_status(Status::Error(format!("{error:#}")))
+                            });
+                        }
                     }
-                    Err(_) => this.set_status(
-                        this.active,
-                        Status::Error("switching database was cancelled".into()),
-                    ),
+                    Err(_) => {
+                        if let Some(panel) = this.active_panel() {
+                            panel.update(cx, |panel, _| {
+                                panel.set_status(Status::Error(
+                                    "switching database was cancelled".into(),
+                                ))
+                            });
+                        }
+                    }
                 }
                 cx.notify();
             })
@@ -687,121 +820,63 @@ impl Session {
         })
         .detach();
     }
-    fn on_editor_event(
-        &mut self,
-        editor: &Entity<QueryEditor>,
-        event: &QueryEditorEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // A tab renders only while it is active, so its buttons act on it.
-        let Some(index) = self.query_tab_of(editor) else {
-            return;
-        };
 
-        match event {
-            QueryEditorEvent::Run(sql) => self.run(index, sql.clone(), cx),
-            QueryEditorEvent::RunScript(sql) => self.run_script(index, sql.clone(), cx),
-            QueryEditorEvent::Open => self.open_file(cx),
-            QueryEditorEvent::Save => self.save(index, false, cx),
-        }
-    }
-
-    /// Index of the query tab owning `editor`.
-    fn query_tab_of(&self, editor: &Entity<QueryEditor>) -> Option<usize> {
-        self.tabs.iter().position(|tab| match &tab.content {
-            TabContent::Query { editor: owned, .. } => owned == editor,
-            TabContent::Table { .. } | TabContent::Schema { .. } => false,
-        })
-    }
-
-    fn set_status(&mut self, index: usize, status: Status) {
-        if let Some(TabContent::Query { status: slot, .. }) =
-            self.tabs.get_mut(index).map(|tab| &mut tab.content)
-        {
-            *slot = status;
-        }
-    }
-
-    /// Run `sql` for the tab at `index`, asking first where the connection
-    /// says every write is confirmed.
-    fn run(&mut self, index: usize, sql: String, cx: &mut Context<Self>) {
+    /// Run `sql` for `panel`, asking first where the connection says every
+    /// write is confirmed.
+    fn run(&mut self, panel: &Entity<SessionPanel>, sql: String, cx: &mut Context<Self>) {
         if self.connection.config.safety.confirms_writes() && statement::first_write(&sql).is_some()
         {
-            self.set_status(index, Status::Confirm(sql));
-            cx.notify();
+            panel.update(cx, |panel, cx| {
+                panel.set_status(Status::Confirm(sql));
+                cx.notify();
+            });
             return;
         }
 
-        self.run_now(index, sql, cx);
+        self.run_now(panel, sql, cx);
     }
 
     /// Run every statement in `sql`, one after another.
-    fn run_script(&mut self, index: usize, sql: String, cx: &mut Context<Self>) {
-        // A script is confirmed as a whole: what the user is being asked about
-        // is the buffer they are about to run.
+    fn run_script(&mut self, panel: &Entity<SessionPanel>, sql: String, cx: &mut Context<Self>) {
+        // A script is confirmed as a whole: what the user is being asked
+        // about is the buffer they are about to run.
         if self.connection.config.safety.confirms_writes() && statement::first_write(&sql).is_some()
         {
-            self.set_status(index, Status::Confirm(sql));
-            cx.notify();
+            panel.update(cx, |panel, cx| {
+                panel.set_status(Status::Confirm(sql));
+                cx.notify();
+            });
             return;
         }
 
-        self.send(index, sql, true, cx);
+        self.send(panel, sql, true, cx);
     }
 
-    /// Run the statement that is waiting to be confirmed.
-    fn confirm_run(&mut self, cx: &mut Context<Self>) {
-        let index = self.active;
-        let Some(TabContent::Query {
-            status: Status::Confirm(sql),
-            ..
-        }) = self.tabs.get(index).map(|tab| &tab.content)
-        else {
-            return;
-        };
-
-        let sql = sql.clone();
-        self.run_now(index, sql, cx);
+    /// Send one statement for `panel`.
+    fn run_now(&mut self, panel: &Entity<SessionPanel>, sql: String, cx: &mut Context<Self>) {
+        self.send(panel, sql, false, cx);
     }
 
-    /// Leave the statement unrun; the buffer is untouched either way.
-    fn cancel_run(&mut self, cx: &mut Context<Self>) {
-        let index = self.active;
-        if !matches!(
-            self.tabs.get(index).map(|tab| &tab.content),
-            Some(TabContent::Query {
-                status: Status::Confirm(_),
-                ..
-            })
-        ) {
-            return;
-        }
-
-        self.set_status(index, Status::Done("Not run".into()));
-        cx.notify();
-    }
-
-    /// Send one statement for the tab at `index`.
-    fn run_now(&mut self, index: usize, sql: String, cx: &mut Context<Self>) {
-        self.send(index, sql, false, cx);
-    }
-
-    /// Send `sql` for the tab at `index`; its own grid and status follow it.
+    /// Send `sql` for `panel`; its own grid and status follow it.
     ///
     /// A script comes back as one result per statement; a single statement
     /// comes back as one result, so both land in the same place.
-    fn send(&mut self, index: usize, sql: String, script: bool, cx: &mut Context<Self>) {
-        let Some(TabContent::Query { editor, grid, .. }) =
-            self.tabs.get(index).map(|tab| &tab.content)
-        else {
+    fn send(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        sql: String,
+        script: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((editor, grid)) = panel.read(cx).query_parts() else {
             return;
         };
-        let (editor, grid) = (editor.clone(), grid.clone());
 
-        self.set_status(index, Status::Running);
+        panel.update(cx, |panel, cx| {
+            panel.set_status(Status::Running);
+            cx.notify();
+        });
         editor.update(cx, |editor, cx| editor.set_running(true, cx));
-        cx.notify();
 
         let connection = self.connection.clone();
         let task = runtime::spawn(async move {
@@ -811,214 +886,46 @@ impl Session {
                 connection.run_query(&sql).await.map(|result| vec![result])
             }
         });
-        self.set_running(index, task.abort_handle());
+        panel.update(cx, |panel, _| panel.set_running(task.abort_handle()));
 
+        let weak = panel.downgrade();
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            this.update(cx, |this, cx| {
-                // The tab may have been closed or moved while the query ran.
-                let Some(index) = this.query_tab_of(&editor) else {
+            this.update(cx, |_this, cx| {
+                // The tab may have been closed while the query ran.
+                let Some(panel) = weak.upgrade() else {
                     return;
                 };
 
                 editor.update(cx, |editor, cx| editor.set_running(false, cx));
-                this.set_running(index, None);
+                panel.update(cx, |panel, cx| {
+                    panel.set_running(None);
 
-                match result {
-                    Ok(Ok(results)) => this.show_results(index, results, cx),
-                    Ok(Err(error)) => {
-                        this.set_status(index, Status::Error(format!("{error:#}")));
-                        grid.update(cx, |grid, cx| grid.clear(cx));
+                    match result {
+                        Ok(Ok(results)) => panel.show_results(results, cx),
+                        Ok(Err(error)) => {
+                            panel.set_status(Status::Error(format!("{error:#}")));
+                            grid.update(cx, |grid, cx| grid.clear(cx));
+                        }
+                        // The sender is dropped when the run is given up on,
+                        // which is what cancelling does.
+                        Err(_) => panel.set_status(Status::Done("Cancelled".into())),
                     }
-                    // The sender is dropped when the run is given up on, which
-                    // is what cancelling does.
-                    Err(_) => this.set_status(index, Status::Done("Cancelled".into())),
-                }
-                cx.notify();
+                    cx.notify();
+                });
             })
             .ok();
         })
         .detach();
     }
 
-    /// Remember what is running in the tab at `index`, so it can be cancelled.
-    fn set_running(&mut self, index: usize, handle: Option<tokio::task::AbortHandle>) {
-        if let Some(TabContent::Query { running, .. }) =
-            self.tabs.get_mut(index).map(|tab| &mut tab.content)
-        {
-            *running = handle;
-        }
-    }
-
-    /// Put a finished run's results in the tab at `index`.
-    fn show_results(&mut self, index: usize, results: Vec<QueryResult>, cx: &mut Context<Self>) {
-        let Some(TabContent::Query {
-            grid,
-            results: slot,
-            result,
-            ..
-        }) = self.tabs.get_mut(index).map(|tab| &mut tab.content)
-        else {
-            return;
-        };
-
-        let grid = grid.clone();
-        *slot = results;
-        *result = 0;
-
-        let summary = self.result_summary(index);
-        self.set_status(index, Status::Done(summary));
-
-        // A statement that returned no rows at all — an `update`, say — leaves
-        // the grid empty rather than showing the rows of the run before it.
-        let first = match self.tabs.get(index).map(|tab| &tab.content) {
-            Some(TabContent::Query { results, .. }) => results.first().cloned(),
-            _ => None,
-        };
-        match first {
-            Some(result) => grid.update(cx, |grid, cx| grid.set_result(result, cx)),
-            None => grid.update(cx, |grid, cx| grid.clear(cx)),
-        }
-    }
-
-    /// Show another of the results the last run produced.
-    fn show_result(&mut self, index: usize, which: usize, cx: &mut Context<Self>) {
-        let Some(TabContent::Query {
-            grid,
-            results,
-            result,
-            ..
-        }) = self.tabs.get_mut(index).map(|tab| &mut tab.content)
-        else {
-            return;
-        };
-
-        let Some(chosen) = results.get(which).cloned() else {
-            return;
-        };
-        let grid = grid.clone();
-        *result = which;
-
-        grid.update(cx, |grid, cx| grid.set_result(chosen, cx));
-        let summary = self.result_summary(index);
-        self.set_status(index, Status::Done(summary));
-        cx.notify();
-    }
-
-    /// What the status bar says about the run that just finished.
-    fn result_summary(&self, index: usize) -> String {
-        let Some(TabContent::Query {
-            results, result, ..
-        }) = self.tabs.get(index).map(|tab| &tab.content)
-        else {
-            return String::new();
-        };
-
-        let Some(shown) = results.get(*result) else {
-            return "Nothing to show".to_string();
-        };
-
-        if results.len() == 1 {
-            return shown.summary();
-        }
-
-        let total: u128 = results
-            .iter()
-            .map(|result| result.elapsed.as_millis())
-            .sum();
-        format!(
-            "{} statements in {total} ms · result {} of {}: {}",
-            results.len(),
-            result + 1,
-            results.len(),
-            shown.summary()
-        )
-    }
-
     /// Give up on the run in the active tab.
     fn cancel_query(&mut self, _: &CancelQuery, _window: &mut Window, cx: &mut Context<Self>) {
-        let index = self.active;
-        let Some(TabContent::Query {
-            editor,
-            running,
-            status,
-            ..
-        }) = self.tabs.get_mut(index).map(|tab| &mut tab.content)
-        else {
-            return;
-        };
-
-        if !matches!(status, Status::Running) {
-            return;
+        if let Some(panel) = self.active_panel() {
+            panel.update(cx, |panel, cx| {
+                panel.cancel_running(cx);
+            });
         }
-
-        let editor = editor.clone();
-        if let Some(running) = running.take() {
-            running.abort();
-        }
-
-        *status = Status::Done("Cancelled".into());
-        editor.update(cx, |editor, cx| editor.set_running(false, cx));
-        cx.notify();
-    }
-    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let session = cx.entity().downgrade();
-
-        TabBar::new("query-tabs")
-            .selected_index(self.active)
-            .on_click(cx.listener(|this, index: &usize, _window, cx| this.activate_tab(*index, cx)))
-            .children(self.tabs.iter().enumerate().map(|(index, tab)| {
-                let session = session.clone();
-
-                let middle_click = session.clone();
-                let dirty = tab.is_dirty(cx);
-                let label = if dirty {
-                    format!("\u{25cf} {}", tab.title)
-                } else {
-                    tab.title.to_string()
-                };
-
-                Tab::new()
-                    .px_1()
-                    .label(label)
-                    // Middle-click closes, the way it does in a browser.
-                    .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
-                        if let Some(session) = middle_click.upgrade() {
-                            session.update(cx, |session, cx| session.close_tab(index, window, cx));
-                        }
-                    })
-                    .suffix(
-                        Button::new(SharedString::from(format!("close-tab-{index}")))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Close)
-                            .accessibility_label(if dirty {
-                                format!("Close the tab {} (unsaved changes)", tab.title)
-                            } else {
-                                format!("Close the tab {}", tab.title)
-                            })
-                            .tooltip_with_action("Close tab", &CloseTab, Some("Session"))
-                            .on_click(move |_, window, cx| {
-                                if let Some(session) = session.upgrade() {
-                                    session.update(cx, |session, cx| {
-                                        session.close_tab(index, window, cx)
-                                    });
-                                }
-                            }),
-                    )
-            }))
-            .suffix(
-                Button::new("new-tab")
-                    .ghost()
-                    .xsmall()
-                    .mr_1()
-                    .icon(IconName::Plus)
-                    .accessibility_label("New query tab")
-                    .tooltip_with_action("New query tab", &NewTab, Some("Session"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_tab(None, String::new(), false, window, cx)
-                    })),
-            )
     }
 
     /// The database dropdown, rendered by whoever owns the toolbar.
@@ -1090,100 +997,13 @@ impl Session {
             .into_any_element()
     }
 
-    fn render_status_bar(&self, status: &Status, cx: &mut Context<Self>) -> impl IntoElement {
-        let color = match status {
-            Status::Error(_) => cx.theme().danger,
-            Status::Confirm(_) => cx.theme().warning,
-            _ => cx.theme().muted_foreground,
-        };
-        let message = status.message();
-
-        h_flex()
-            .w_full()
-            .px_3()
-            .py_1()
-            .flex_none()
-            .gap_2()
-            .justify_between()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().status_bar)
-            // Errors can be long; cap the bar so it never eats the grid.
-            .child(
-                div()
-                    .id("status")
-                    .w_full()
-                    .max_h(px(72.))
-                    .overflow_y_scroll()
-                    .text_xs()
-                    .text_color(color)
-                    .child(message),
-            )
-            // The statement itself is in the editor above, so the bar only has
-            // to carry the answer.
-            .when(matches!(status, Status::Confirm(_)), |this| {
-                this.child(
-                    h_flex()
-                        .flex_none()
-                        .gap_2()
-                        .child(
-                            Button::new("cancel-run")
-                                .ghost()
-                                .xsmall()
-                                .label("Cancel")
-                                .on_click(cx.listener(|this, _, _window, cx| this.cancel_run(cx))),
-                        )
-                        .child(
-                            Button::new("confirm-run")
-                                .primary()
-                                .xsmall()
-                                .label("Run")
-                                .on_click(cx.listener(|this, _, _window, cx| this.confirm_run(cx))),
-                        ),
-                )
-            })
-    }
-
-    /// One button per result the last run produced.
-    fn render_result_bar(
+    /// The bar asking whether to close a tab with unsaved changes.
+    fn render_close_confirm(
         &self,
-        results: usize,
-        shown: usize,
+        panel: &Entity<SessionPanel>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        h_flex()
-            .w_full()
-            .flex_none()
-            .px_2()
-            .py_1()
-            .gap_1()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().status_bar)
-            .children((0..results).map(|index| {
-                let button = Button::new(SharedString::from(format!("result-{index}")))
-                    .xsmall()
-                    .label(format!("Result {}", index + 1))
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        let active = this.active;
-                        this.show_result(active, index, cx);
-                    }));
-
-                if index == shown {
-                    button.primary()
-                } else {
-                    button.ghost()
-                }
-            }))
-    }
-
-    /// The bar asking whether to close a tab with unsaved changes.
-    fn render_close_confirm(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self
-            .tabs
-            .get(index)
-            .map(|tab| tab.title.clone())
-            .unwrap_or_default();
+        let title = panel.read(cx).title();
 
         h_flex()
             .w_full()
@@ -1224,62 +1044,6 @@ impl Session {
                     ),
             )
     }
-
-    fn render_panes(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = match &self.tabs[self.active].content {
-            TabContent::Query {
-                editor,
-                grid,
-                status,
-                results,
-                result,
-                ..
-            } => v_flex()
-                .size_full()
-                .child(
-                    div().flex_1().min_h_0().child(
-                        v_resizable("session-panes")
-                            .with_state(&self.panes)
-                            .child(
-                                resizable_panel()
-                                    .size(px(EDITOR_HEIGHT))
-                                    .size_range(px(120.)..px(720.))
-                                    .child(editor.clone()),
-                            )
-                            .child(
-                                resizable_panel().child(
-                                    v_flex()
-                                        .size_full()
-                                        // A script leaves one result per
-                                        // statement; a single query leaves one,
-                                        // and the bar for it would say nothing.
-                                        .when(results.len() > 1, |this| {
-                                            this.child(self.render_result_bar(
-                                                results.len(),
-                                                *result,
-                                                cx,
-                                            ))
-                                        })
-                                        .child(div().flex_1().min_h_0().child(grid.clone())),
-                                ),
-                            ),
-                    ),
-                )
-                .child(self.render_status_bar(status, cx))
-                .into_any_element(),
-            // The table view carries its own footer, so it fills the pane.
-            TabContent::Table { view } => view.clone().into_any_element(),
-            TabContent::Schema { view } => view.clone().into_any_element(),
-        };
-
-        v_flex()
-            .size_full()
-            .child(self.render_tab_bar(cx))
-            .when_some(self.closing, |this, index| {
-                this.child(self.render_close_confirm(index, cx))
-            })
-            .child(div().flex_1().min_h_0().child(body))
-    }
 }
 
 impl Render for Session {
@@ -1304,7 +1068,16 @@ impl Render for Session {
                             .size_range(px(180.)..px(560.))
                             .child(self.render_sidebar(cx)),
                     )
-                    .child(resizable_panel().child(self.render_panes(cx))),
+                    .child(
+                        resizable_panel().child(
+                            v_flex()
+                                .size_full()
+                                .when_some(self.closing_panel(), |this, panel| {
+                                    this.child(self.render_close_confirm(&panel, cx))
+                                })
+                                .child(div().flex_1().min_h_0().child(self.dock.clone())),
+                        ),
+                    ),
             )
     }
 }
