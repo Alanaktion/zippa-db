@@ -54,6 +54,7 @@ impl QueryEditor {
     }
 
     /// Put the caret in the editor, as clicking it does.
+    #[cfg(test)]
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         let handle = self.focus_handle(cx);
         handle.focus(window, cx);

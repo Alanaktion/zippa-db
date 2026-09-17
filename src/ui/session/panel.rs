@@ -154,6 +154,7 @@ impl SessionPanel {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn key(&self) -> usize {
         self.key
     }
@@ -209,6 +210,7 @@ impl SessionPanel {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn schema_view(&self) -> Option<Entity<SchemaView>> {
         match &self.content {
             TabContent::Schema { view } => Some(view.clone()),
@@ -223,6 +225,7 @@ impl SessionPanel {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn grid(&self) -> Option<Entity<DataGrid>> {
         match &self.content {
             TabContent::Query { grid, .. } => Some(grid.clone()),
@@ -254,6 +257,7 @@ impl SessionPanel {
             .map(|s| s.to_string())
     }
 
+    #[cfg(test)]
     pub(crate) fn status_message(&self) -> String {
         match &self.content {
             TabContent::Query { status, .. } => status.message(),
@@ -261,6 +265,7 @@ impl SessionPanel {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn is_running(&self) -> bool {
         matches!(
             &self.content,
@@ -272,6 +277,7 @@ impl SessionPanel {
     }
 
     /// How many results the last run left, and which one is showing.
+    #[cfg(test)]
     pub(crate) fn results(&self) -> (usize, usize) {
         match &self.content {
             TabContent::Query {
