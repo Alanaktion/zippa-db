@@ -163,6 +163,12 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 | Close the active tab | `Cmd`/`Ctrl` + `W` |
 | Refresh the schema and the open table | `Cmd`/`Ctrl` + `R` |
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
+| Move between cells | `↑` `↓` `←` `→`, `Home` / `End`, `PageUp` / `PageDown` |
+| Copy the selected cell, or the selected rows | `Cmd`/`Ctrl` + `C` |
+| Select the row the selection is on, or unselect it | `Space` |
+| Extend the row selection up / down | `Shift` + `↑` / `↓` |
+| Select every row | `Cmd`/`Ctrl` + `A` |
+| Unselect every row | `Cmd`/`Ctrl` + `Shift` + `A`, or `Escape` |
 | Edit the selected cell in a table tab | `Enter` |
 | Set the selected cell to `NULL` | `Cmd`/`Ctrl` + `Shift` + `N` |
 | Open the selected cell's value in a dialog | `Cmd`/`Ctrl` + `Shift` + `V` |

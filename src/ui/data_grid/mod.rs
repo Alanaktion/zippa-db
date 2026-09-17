@@ -20,7 +20,10 @@ use gpui_kit::component::table::TableDelegate;
 use gpui_kit::component::table::{ColumnSort, DataTable, TableEvent, TableState};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, EventEmitter, Window, actions, div};
+use gpui_kit::{
+    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseUpEvent,
+    Window, actions, div,
+};
 
 use crate::db::query::{self, Cell, QueryResult};
 use crate::settings::{self, Settings};
@@ -35,7 +38,24 @@ use layout::measure_columns;
 
 pub use format::{format_value, needs_a_window};
 
-actions!(zippa_db, [ViewCell]);
+actions!(
+    zippa_db,
+    [
+        ViewCell,
+        /// Copy what is selected: the picked rows, or the selected cell.
+        CopyValue,
+        /// Pick every row out.
+        SelectAllRows,
+        /// Put every picked row back.
+        ClearRowSelection,
+        /// Pick the focused row out, or put it back.
+        ToggleRow,
+        /// Move the selection up a row, taking the rows it passes with it.
+        ExtendSelectionUp,
+        /// The same, downwards.
+        ExtendSelectionDown,
+    ]
+);
 
 /// How a click on a column header is answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +79,10 @@ type ViewReporter = Rc<dyn Fn(usize, usize, &mut App)>;
 
 /// Reports a foreign key jump on a cell, from the menu the delegate built.
 type NavReporter = Rc<dyn Fn(usize, usize, &mut App)>;
+
+/// Copies from that menu: the cell the click landed on, or — with no cell —
+/// whatever is selected.
+type CopyReporter = Rc<dyn Fn(Option<(usize, usize)>, &mut App)>;
 
 /// Emitted when the user clicks a column header on a [`Sorting::Delegated`]
 /// grid.
@@ -94,6 +118,16 @@ pub struct DataGrid {
     has_result: bool,
     /// The cell editor, shared with the delegate that renders it.
     editor: Entity<InputState>,
+}
+
+impl Focusable for DataGrid {
+    /// The table is what answers the keyboard — the arrows, the row commands,
+    /// and the keys the grid binds on its own context all reach it from
+    /// there — so whoever hands the grid the focus lands on it rather than on
+    /// an element above it that would swallow every keystroke.
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.table.read(cx).focus_handle(cx)
+    }
 }
 
 impl EventEmitter<SortRequested> for DataGrid {}
@@ -150,6 +184,16 @@ impl DataGrid {
             }
         });
 
+        let report_copy: CopyReporter = Rc::new({
+            let grid = cx.weak_entity();
+            move |cell: Option<(usize, usize)>, cx: &mut App| {
+                let Some(grid) = grid.upgrade() else {
+                    return;
+                };
+                grid.update(cx, |grid, cx| grid.copy(cell, cx));
+            }
+        });
+
         let editor = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
@@ -160,7 +204,7 @@ impl DataGrid {
                     result: QueryResult::default(),
                     order: Vec::new(),
                     widths: Vec::new(),
-                    selected_row: None,
+                    focused_row: None,
                     font,
                     sorting,
                     sorted_by: None,
@@ -169,12 +213,14 @@ impl DataGrid {
                     editable: false,
                     rows_selected: HashSet::new(),
                     anchor: None,
+                    sweeping: None,
                     menu_row: None,
                     menu_cell: None,
                     deletions: HashSet::new(),
                     report_change,
                     report_view,
                     report_navigate,
+                    report_copy,
                     foreign_keys: HashSet::new(),
                     drafts: Vec::new(),
                     editing: None,
@@ -184,7 +230,18 @@ impl DataGrid {
                 cx,
             )
             .cell_selectable(true)
-            .row_selectable(true)
+            // Rows are picked out with the checkbox column, so the table's own
+            // row header strip and its row selection mode are turned off: two
+            // ways to select a row that mean different things is what made the
+            // highlight inconsistent, and the table's mode also left the
+            // selected cell — and with it edit, copy, and view value —
+            // unset.
+            .row_header(false)
+            .row_selectable(false)
+            // The end of the rows is the end of the rows: an arrow that
+            // reappears at the other edge loses the user's place in a result
+            // that is thousands of rows long.
+            .loop_selection(false)
         });
 
         // The grid's font is a setting, so it can change under a grid that is
@@ -222,6 +279,34 @@ impl DataGrid {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The checkbox column is not a value, so the selection never rests on
+        // it: an arrow, Home, or a click on a box moves it to the first column
+        // that holds one. Without this the selected cell has nothing to copy,
+        // edit, or view, and the first left arrow out of a row looks like
+        // nothing happened.
+        if let TableEvent::SelectCell(row_ix, col_ix) = event
+            && table.read(cx).delegate().data_column(*col_ix).is_none()
+        {
+            let row_ix = *row_ix;
+            if !self.is_empty(cx) {
+                let first = ResultDelegate::shown_column(0);
+                table.update(cx, |table, cx| table.set_selected_cell(row_ix, first, cx));
+            }
+            return;
+        }
+
+        // The table falls back to row selection when a key arrives with
+        // nothing selected yet. The grid only works in cells, so that becomes
+        // a cell on the same row.
+        if let TableEvent::SelectRow(row_ix) = event {
+            let row_ix = *row_ix;
+            if !self.is_empty(cx) {
+                let first = ResultDelegate::shown_column(0);
+                table.update(cx, |table, cx| table.set_selected_cell(row_ix, first, cx));
+            }
+            return;
+        }
+
         if let TableEvent::DoubleClickedCell(row_ix, col_ix) = event {
             let row_ix = *row_ix;
             // The table counts the checkbox column; everything below counts
@@ -254,7 +339,6 @@ impl DataGrid {
 
         let row = match event {
             TableEvent::SelectCell(row_ix, _) => Some(*row_ix),
-            TableEvent::SelectRow(row_ix) => Some(*row_ix),
             TableEvent::ClearSelection => None,
             _ => return,
         };
@@ -263,13 +347,13 @@ impl DataGrid {
         // also blurs the input, and the order the two arrive in is not ours.
         self.commit_editor(cx);
 
-        let previous = table.read(cx).delegate().selected_row;
+        let previous = table.read(cx).delegate().focused_row;
         if previous == row {
             return;
         }
 
         table.update(cx, |table, cx| {
-            table.delegate_mut().selected_row = row;
+            table.delegate_mut().focused_row = row;
             cx.notify();
         });
 
@@ -286,14 +370,30 @@ impl DataGrid {
         &mut self,
         _: &Entity<InputState>,
         event: &InputEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // Enter finishes the cell; losing focus does the same, so clicking
         // away never drops what was typed.
-        if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-            self.commit_editor(cx);
+        if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+            return;
         }
+
+        let finished = matches!(event, InputEvent::PressEnter { .. });
+        self.commit_editor(cx);
+
+        // Finishing with the keyboard hands the keyboard back to the rows, so
+        // the next arrow moves the selection instead of going nowhere. A blur
+        // is the user putting the focus somewhere themselves; taking it back
+        // would fight them for it.
+        if finished {
+            self.focus_table(window, cx);
+        }
+    }
+
+    /// Put the keyboard back on the table, the way clicking a cell does.
+    fn focus_table(&self, window: &mut Window, cx: &mut App) {
+        self.focus_handle(cx).focus(window, cx);
     }
 
     /// Whether the owner is allowed to write this result back.
@@ -373,7 +473,7 @@ impl DataGrid {
     }
 
     /// Stage SQL `NULL` on the selected cell, whatever is in the editor.
-    pub fn set_null(&mut self, cx: &mut Context<Self>) {
+    pub fn set_null(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((row_ix, col_ix)) = self.selected_cell(cx) else {
             return;
         };
@@ -381,7 +481,7 @@ impl DataGrid {
             return;
         }
 
-        self.cancel_editor(cx);
+        self.cancel_editor(window, cx);
         self.table.update(cx, |table, cx| {
             table.delegate_mut().stage(row_ix, col_ix, None);
             cx.notify();
@@ -416,14 +516,25 @@ impl DataGrid {
     }
 
     /// Close the editor, keeping the cell as it was.
-    pub fn cancel_editor(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// The keyboard goes back to the table: giving up on a cell should leave
+    /// the grid exactly as finishing one does.
+    pub fn cancel_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.close_editor(cx) {
+            self.focus_table(window, cx);
+        }
+    }
+
+    /// Close the editor without touching the focus; says whether one was open.
+    fn close_editor(&mut self, cx: &mut Context<Self>) -> bool {
         self.table.update(cx, |table, cx| {
             if table.delegate().editing.is_none() {
-                return;
+                return false;
             }
             table.delegate_mut().editing = None;
             cx.notify();
-        });
+            true
+        })
     }
 
     /// Start a row the user fills in by hand, below the ones on screen.
@@ -511,6 +622,135 @@ impl DataGrid {
 
     fn on_view_cell(&mut self, _: &ViewCell, _window: &mut Window, cx: &mut Context<Self>) {
         self.view_selected(cx);
+    }
+
+    fn on_copy_value(&mut self, _: &CopyValue, _window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_selection(cx);
+    }
+
+    /// Put what is selected on the clipboard.
+    ///
+    /// Rows picked out win over the selected cell: once a row is checked, a
+    /// row is what the user is working with. Rows go out as one line each,
+    /// columns separated by tabs, which is what a spreadsheet reads back as
+    /// cells. A `NULL` copies as nothing, the way an empty cell does.
+    pub fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        self.copy(None, cx);
+    }
+
+    /// Copy one cell, or whatever is selected when no cell is named — which is
+    /// how the row menu copies the cell the click landed on rather than the
+    /// one the selection happens to be on.
+    fn copy(&mut self, cell: Option<(usize, usize)>, cx: &mut Context<Self>) {
+        self.commit_editor(cx);
+
+        let selected = self.selected_cell(cx);
+        let delegate = self.table.read(cx).delegate();
+        let columns = delegate.result.columns.len();
+
+        if let Some((row_ix, col_ix)) = cell {
+            let text = delegate.cell(row_ix, col_ix).clone().unwrap_or_default();
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            return;
+        }
+
+        let text = if !delegate.rows_selected.is_empty() {
+            let mut rows: Vec<usize> = delegate.rows_selected.iter().copied().collect();
+            rows.sort_unstable();
+            rows.iter()
+                .map(|row_ix| {
+                    (0..columns)
+                        .map(|col_ix| delegate.cell(*row_ix, col_ix).clone().unwrap_or_default())
+                        .collect::<Vec<String>>()
+                        .join("\t")
+                })
+                .collect::<Vec<String>>()
+                .join("\n")
+        } else {
+            let Some((row_ix, col_ix)) = selected else {
+                return;
+            };
+            delegate.cell(row_ix, col_ix).clone().unwrap_or_default()
+        };
+
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    fn on_select_all_rows(
+        &mut self,
+        _: &SelectAllRows,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.table.update(cx, |table, cx| {
+            let rows = table.delegate().rows();
+            table.delegate_mut().pick_all(true, rows);
+            cx.notify();
+        });
+    }
+
+    fn on_clear_row_selection(
+        &mut self,
+        _: &ClearRowSelection,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_row_selection(cx);
+    }
+
+    /// Pick the focused row out, or put it back, the way its box does.
+    fn on_toggle_row(&mut self, _: &ToggleRow, _window: &mut Window, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            let Some(row_ix) = table.delegate().focused_row else {
+                return;
+            };
+            table.delegate_mut().pick(row_ix, false);
+            cx.notify();
+        });
+    }
+
+    fn on_extend_up(&mut self, _: &ExtendSelectionUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.extend_selection(-1, window, cx);
+    }
+
+    fn on_extend_down(
+        &mut self,
+        _: &ExtendSelectionDown,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.extend_selection(1, window, cx);
+    }
+
+    /// Move the selection one row and take the rows it passed with it.
+    ///
+    /// The first shifted arrow takes the row the selection was already on, so
+    /// holding shift and pressing down twice leaves three rows picked out.
+    fn extend_selection(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_editor(cx);
+
+        let rows = self.table.read(cx).delegate().rows();
+        if rows == 0 {
+            return;
+        }
+
+        // Nothing selected yet: the shifted arrow starts at the top rather
+        // than doing nothing.
+        let (row_ix, col_ix) = match self.table.read(cx).selected_cell() {
+            Some(cell) => cell,
+            None => (0, ResultDelegate::shown_column(0)),
+        };
+        let next = row_ix.saturating_add_signed(step).min(rows - 1);
+
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            if delegate.anchor.is_none() {
+                delegate.anchor_at(row_ix);
+            }
+            delegate.sweep_to(next, true);
+            table.set_selected_cell(next, col_ix, cx);
+        });
+        self.focus_table(window, cx);
     }
 
     /// Show a cell's whole value in a window of its own.
@@ -752,7 +992,7 @@ impl DataGrid {
             delegate.widths = measure_columns(&result);
             delegate.order = (0..result.rows.len()).collect();
             delegate.result = result;
-            delegate.selected_row = None;
+            delegate.focused_row = None;
             delegate.sorted_by = sort;
             // New rows mean the staged ones are gone: paging, sorting, and
             // refreshing all throw unwritten edits away.
@@ -762,6 +1002,7 @@ impl DataGrid {
             delegate.deletions.clear();
             delegate.rows_selected.clear();
             delegate.anchor = None;
+            delegate.sweeping = None;
             table.clear_selection(cx);
             table.refresh(cx);
         });
@@ -775,7 +1016,7 @@ impl DataGrid {
             delegate.result = QueryResult::default();
             delegate.order = Vec::new();
             delegate.widths = Vec::new();
-            delegate.selected_row = None;
+            delegate.focused_row = None;
             delegate.sorted_by = None;
             delegate.edits.clear();
             delegate.editing = None;
@@ -783,6 +1024,7 @@ impl DataGrid {
             delegate.deletions.clear();
             delegate.rows_selected.clear();
             delegate.anchor = None;
+            delegate.sweeping = None;
             table.clear_selection(cx);
             table.refresh(cx);
         });
@@ -796,9 +1038,13 @@ impl DataGrid {
     /// Put the keyboard focus on the grid, the way clicking a cell does.
     #[cfg(test)]
     pub(crate) fn focus_for_test(&self, window: &mut Window, cx: &mut Context<Self>) {
-        use gpui_kit::Focusable as _;
-        let handle = self.table.read(cx).focus_handle(cx);
-        handle.focus(window, cx);
+        self.focus_table(window, cx);
+    }
+
+    /// Whether the keyboard is on the grid itself rather than a cell editor.
+    #[cfg(test)]
+    pub(crate) fn is_focused_for_test(&self, window: &Window, cx: &App) -> bool {
+        self.table.read(cx).focus_handle(cx).is_focused(window)
     }
 
     #[cfg(test)]
@@ -834,6 +1080,17 @@ impl DataGrid {
         self.editor.update(cx, |editor, cx| {
             editor.set_value(value.to_string(), window, cx)
         });
+    }
+
+    /// Copy one cell, the way "Copy value" in the row menu does.
+    #[cfg(test)]
+    pub(crate) fn copy_cell_for_test(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.copy(Some((row_ix, col_ix)), cx);
     }
 
     /// The value a cell shows, staged edit included.
@@ -919,7 +1176,7 @@ impl DataGrid {
     #[cfg(test)]
     pub(crate) fn selection_for_test(&self, cx: &App) -> (Option<usize>, Option<(usize, usize)>) {
         (
-            self.table.read(cx).delegate().selected_row,
+            self.table.read(cx).delegate().focused_row,
             self.selected_cell(cx),
         )
     }
@@ -990,6 +1247,21 @@ impl Render for DataGrid {
             .relative()
             .key_context("DataGrid")
             .on_action(cx.listener(Self::on_view_cell))
+            .on_action(cx.listener(Self::on_copy_value))
+            .on_action(cx.listener(Self::on_select_all_rows))
+            .on_action(cx.listener(Self::on_clear_row_selection))
+            .on_action(cx.listener(Self::on_toggle_row))
+            .on_action(cx.listener(Self::on_extend_up))
+            .on_action(cx.listener(Self::on_extend_down))
+            // Releasing the button ends a sweep across the pick boxes, so a
+            // later drag that happens to pass over them picks nothing up.
+            // Captured, since the table stops a click on a cell before it
+            // reaches this element.
+            .capture_any_mouse_up(cx.listener(|this, _: &MouseUpEvent, _window, cx| {
+                this.table.update(cx, |table, _cx| {
+                    table.delegate_mut().sweeping = None;
+                });
+            }))
             .context_menu(self.row_menu())
             .child(
                 DataTable::new(&self.table)

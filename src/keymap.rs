@@ -6,7 +6,10 @@
 use gpui_kit::{App, KeyBinding};
 
 use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
-use crate::ui::data_grid::ViewCell;
+use crate::ui::data_grid::{
+    ClearRowSelection, CopyValue, ExtendSelectionDown, ExtendSelectionUp, SelectAllRows, ToggleRow,
+    ViewCell,
+};
 use crate::ui::query_editor::{RunQuery, RunScript};
 use crate::ui::session::{
     CancelQuery, CloseTab, NewTab, OpenFile, QuickSwitcher, Refresh, SaveFile, SaveFileAs,
@@ -103,8 +106,29 @@ pub fn bind(cx: &mut App) {
             Some("TableView > DataTable"),
         ),
         // Looking at a whole value works on any grid, so these are bound on
-        // the grid rather than on the table view.
+        // the grid rather than on the table view. So does copying one, picking
+        // rows out, and everything else about reading a result — a query tab's
+        // grid answers them exactly as a table tab's does.
         KeyBinding::new("secondary-shift-v", ViewCell, Some("DataGrid > DataTable")),
+        KeyBinding::new("secondary-c", CopyValue, Some("DataGrid > DataTable")),
+        // The table binds the plain arrows for the selection itself; shifted,
+        // they take the rows they pass over with them.
+        KeyBinding::new("shift-up", ExtendSelectionUp, Some("DataGrid > DataTable")),
+        KeyBinding::new(
+            "shift-down",
+            ExtendSelectionDown,
+            Some("DataGrid > DataTable"),
+        ),
+        // Space is the box beside the focused row, which is not a tab stop:
+        // with one box per row, tabbing through a page of them to reach the
+        // grid is worse than a key that picks the row the user is already on.
+        KeyBinding::new("space", ToggleRow, Some("DataGrid > DataTable")),
+        KeyBinding::new("secondary-a", SelectAllRows, Some("DataGrid > DataTable")),
+        KeyBinding::new(
+            "secondary-shift-a",
+            ClearRowSelection,
+            Some("DataGrid > DataTable"),
+        ),
         // Escape while typing in a cell closes the editor; without this the
         // input's own escape, or the table's clear-selection, would take it.
         KeyBinding::new("escape", CancelEdit, Some("TableView > DataTable > Input")),

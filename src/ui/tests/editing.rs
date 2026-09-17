@@ -131,10 +131,12 @@ fn setting_a_cell_to_null_writes_null(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
-    grid.update(cx, |grid, cx| {
-        grid.select_cell_for_test(0, 1, cx);
-        grid.set_null(cx);
-    });
+    grid.downgrade()
+        .update_in(cx, |grid, window, cx| {
+            grid.select_cell_for_test(0, 1, cx);
+            grid.set_null(window, cx);
+        })
+        .unwrap();
     view.update(cx, |view, cx| view.commit(cx));
     cx.run_until_parked();
 

@@ -12,7 +12,9 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::table::ColumnSort;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, EventEmitter, Window, actions, div, px};
+use gpui_kit::{
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Window, actions, div, px,
+};
 
 use std::collections::HashSet;
 
@@ -786,12 +788,13 @@ impl TableView {
             .update(cx, |grid, cx| grid.edit_selected(window, cx));
     }
 
-    fn on_set_null(&mut self, _: &SetNull, _window: &mut Window, cx: &mut Context<Self>) {
-        self.grid.update(cx, |grid, cx| grid.set_null(cx));
+    fn on_set_null(&mut self, _: &SetNull, window: &mut Window, cx: &mut Context<Self>) {
+        self.grid.update(cx, |grid, cx| grid.set_null(window, cx));
     }
 
-    fn on_cancel_edit(&mut self, _: &CancelEdit, _window: &mut Window, cx: &mut Context<Self>) {
-        self.grid.update(cx, |grid, cx| grid.cancel_editor(cx));
+    fn on_cancel_edit(&mut self, _: &CancelEdit, window: &mut Window, cx: &mut Context<Self>) {
+        self.grid
+            .update(cx, |grid, cx| grid.cancel_editor(window, cx));
     }
 
     /// Re-run the page with the filters as they now stand.
@@ -1095,6 +1098,15 @@ impl TableView {
                             .child(Input::new(&self.limit_input).id("limit").xsmall()),
                     ),
             )
+    }
+}
+
+impl Focusable for TableView {
+    /// The rows are where the keyboard belongs: a tab that has just been
+    /// opened, or that a dialog has just closed over, answers the arrows and
+    /// the row commands without being clicked into first.
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.grid.read(cx).focus_handle(cx)
     }
 }
 

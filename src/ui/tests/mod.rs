@@ -36,6 +36,7 @@ mod editing;
 mod files;
 mod filters;
 mod layout;
+mod navigation;
 mod paging;
 mod preferences;
 mod quick_switcher;
@@ -485,6 +486,45 @@ fn select_cell(
     cx.run_until_parked();
 }
 
+/// The row the grid is highlighting, and the cell the selection sits on.
+fn selection(
+    cx: &mut TestAppContext,
+    view: &gpui_kit::Entity<crate::ui::table_view::TableView>,
+) -> (Option<usize>, Option<(usize, usize)>) {
+    view.read_with(cx, |view, cx| {
+        view.grid_for_test().read(cx).selection_for_test(cx)
+    })
+}
+
+/// The rows picked out for a row command, in display order.
+fn picked(
+    cx: &mut TestAppContext,
+    view: &gpui_kit::Entity<crate::ui::table_view::TableView>,
+) -> Vec<usize> {
+    view.read_with(cx, |view, cx| {
+        view.grid_for_test().read(cx).rows_selected_for_test(cx)
+    })
+}
+
+/// Whether the grid itself holds the keyboard, rather than a cell editor or a
+/// checkbox that was clicked.
+fn grid_focused(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Session>,
+    view: &gpui_kit::Entity<crate::ui::table_view::TableView>,
+) -> bool {
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    cx.update_window(handle.into(), |_, window, cx| {
+        grid.read(cx).is_focused_for_test(window, cx)
+    })
+    .unwrap()
+}
+
+/// What the app last put on the clipboard.
+fn clipboard(cx: &mut TestAppContext) -> Option<String> {
+    cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
+}
+
 /// Click the pick box beside `row_ix`, the way a user checks a row out.
 fn pick_row(cx: &mut TestAppContext, handle: WindowHandle<Session>, row_ix: usize) {
     cx.update_window(handle.into(), |_, window, cx| {
@@ -504,6 +544,53 @@ fn pick_through(cx: &mut TestAppContext, handle: WindowHandle<Session>, row_ix: 
             shift: true,
             ..Default::default()
         };
+
+        window.dispatch_event(
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    })
+    .unwrap();
+}
+
+/// Drag from one row's pick box to another's, the way a run of rows is swept.
+fn sweep_rows(cx: &mut TestAppContext, handle: WindowHandle<Session>, from: usize, to: usize) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        let from = window.find(("pick", from)).bounds().center();
+        let to = window.find(("pick", to)).bounds().center();
+        window.drag(from, to, cx);
+    })
+    .unwrap();
+}
+
+/// Click a row away from its pick box — on its first cell — with `modifiers`.
+fn click_row(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Session>,
+    row_ix: usize,
+    modifiers: Modifiers,
+) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        let position = window.find(("row", row_ix)).bounds().center();
 
         window.dispatch_event(
             MouseDownEvent {

@@ -619,7 +619,12 @@ impl Focusable for SessionPanel {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         match &self.content {
             TabContent::Query { editor, .. } => editor.read(cx).focus_handle(cx),
-            TabContent::Table { .. } | TabContent::Schema { .. } => self.focus.clone(),
+            // A table panel answers with its grid, for the same reason: the
+            // rows are what the keyboard is for, and the panel's own element
+            // is above the contexts the grid's keys are bound on, so focus
+            // left there would answer none of them.
+            TabContent::Table { view } => view.read(cx).focus_handle(cx),
+            TabContent::Schema { .. } => self.focus.clone(),
         }
     }
 }
