@@ -26,6 +26,7 @@ gpui_kit::assets::icon_assets!(
         FilePlus,
         DatabasePlus,
         Settings,
+        Table,
         Route,
         Gauge,
         Braces,
@@ -92,13 +93,13 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::AssetSource as _;
 
     #[test]
     fn every_icon_the_app_names_beyond_the_default_bundle_is_embedded() {
         // `Assets` carries only the 101 component icons, so an icon outside
         // that set that is not named in `icon_assets!` silently draws nothing.
         for path in [
+            "icons/table.svg",
             "icons/route.svg",
             "icons/gauge.svg",
             "icons/braces.svg",
