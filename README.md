@@ -161,6 +161,7 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 | Next / previous connection | `Cmd`/`Ctrl` + `Shift` + `]` / `[` |
 | New query tab | `Cmd`/`Ctrl` + `T` |
 | Close the active tab | `Cmd`/`Ctrl` + `W` |
+| Next / previous tab | `Ctrl` + `Tab` / `Ctrl` + `Shift` + `Tab` (or `Ctrl` + `PageDown` / `PageUp`) |
 | Refresh the schema and the open table | `Cmd`/`Ctrl` + `R` |
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
 | Move between cells | `↑` `↓` `←` `→`, `Home` / `End`, `PageUp` / `PageDown` |
@@ -180,6 +181,8 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 | Discard a table tab's staged edits | `Cmd`/`Ctrl` + `Z` |
 | Save the active tab under a new name | `Cmd`/`Ctrl` + `Shift` + `S` |
 | Settings | `Cmd`/`Ctrl` + `,` (or the gear in the toolbar) |
+| Close the settings window | `Cmd`/`Ctrl` + `W`, `Alt` + `F4`, or `Escape` |
+| Keyboard shortcut list | `Ctrl` + `/` (or Help menu) |
 
 ---
 

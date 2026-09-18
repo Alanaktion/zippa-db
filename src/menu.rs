@@ -12,6 +12,7 @@ use gpui_kit::{App, KeyBinding, Menu, MenuItem, actions};
 use crate::app::{CloseConnection, NewConnection};
 use crate::ui::session::{CloseTab, NewTab, OpenFile, SaveFile, SaveFileAs};
 use crate::ui::settings_window::OpenSettings;
+use crate::ui::shortcuts_dialog::ShowShortcuts;
 
 // Not bound by the keymap: nothing else in the app reaches for the app-level
 // commands the App menu is expected to carry.
@@ -51,5 +52,9 @@ pub fn init(cx: &mut App) {
             MenuItem::action("Close Tab", CloseTab),
             MenuItem::action("Close Connection", CloseConnection),
         ]),
+        Menu::new("Help").items(vec![MenuItem::action(
+            "Keyboard Shortcuts",
+            ShowShortcuts,
+        )]),
     ]);
 }

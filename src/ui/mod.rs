@@ -9,6 +9,7 @@ pub mod query_editor;
 pub mod quick_switcher;
 pub mod schema_view;
 pub mod session;
+pub mod shortcuts_dialog;
 pub mod settings_window;
 pub mod sql_file;
 pub mod table_view;

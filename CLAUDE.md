@@ -2,6 +2,8 @@
 
 Zippa DB: cross-platform desktop database client (Postgres/MySQL/SQLite) built on GPUI (Zed's GPU-accelerated UI framework) via `gpui-kit`, with `sqlx` for database access. Early stage — see `TODO.md` for the full feature backlog and `README.md` for status/shortcuts.
 
+Documentation for `gpui-kit` can be found here: https://gpui-kit.com/llms.txt
+
 ## Commands
 
 ```bash

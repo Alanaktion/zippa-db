@@ -46,6 +46,8 @@ actions!(
     [
         NewTab,
         CloseTab,
+        NextTab,
+        PreviousTab,
         OpenFile,
         SaveFile,
         SaveFileAs,
@@ -505,6 +507,25 @@ impl Session {
     /// have an `&NewTab` to hand it.
     pub(crate) fn new_query_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_tab(None, String::new(), false, window, cx);
+    }
+
+    fn on_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_tab(1, window, cx);
+    }
+
+    fn on_previous_tab(&mut self, _: &PreviousTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_tab(-1, window, cx);
+    }
+
+    /// Move `delta` tabs along the panels, wrapping at either end.
+    fn step_tab(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.panels.len() as isize;
+        if count < 2 {
+            return;
+        }
+
+        let next = (self.active_tab_index() as isize + delta).rem_euclid(count);
+        self.activate_tab(next as usize, window, cx);
     }
 
     fn on_refresh(&mut self, _: &Refresh, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1079,6 +1100,8 @@ impl Render for Session {
             .key_context("Session")
             .on_action(cx.listener(Self::on_new_tab))
             .on_action(cx.listener(Self::on_close_tab))
+            .on_action(cx.listener(Self::on_next_tab))
+            .on_action(cx.listener(Self::on_previous_tab))
             .on_action(cx.listener(Self::on_open_file))
             .on_action(cx.listener(Self::on_save_file))
             .on_action(cx.listener(Self::on_save_file_as))

@@ -4,5 +4,5 @@
 - [ ] Customizable keyboard shortcuts map
 - [ ] Multi-column table sorting
 - [ ] Disable Dialog transitions (needs upstream support)
-- [ ] Change tabbed query/table view to flexible Dock interface
-- [ ] Redesign Zippa themes around Ayu Light/Tokyo Night
+- [x] Change tabbed query/table view to flexible Dock interface
+- [x] Redesign Zippa themes around Ayu Light/Tokyo Night

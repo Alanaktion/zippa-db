@@ -12,9 +12,11 @@ use crate::ui::data_grid::{
 };
 use crate::ui::query_editor::{RunQuery, RunScript};
 use crate::ui::session::{
-    CancelQuery, CloseTab, NewTab, OpenFile, QuickSwitcher, Refresh, SaveFile, SaveFileAs,
+    CancelQuery, CloseTab, NewTab, NextTab, OpenFile, PreviousTab, QuickSwitcher, Refresh, SaveFile,
+    SaveFileAs,
 };
-use crate::ui::settings_window::OpenSettings;
+use crate::ui::settings_window::{CloseSettings, OpenSettings};
+use crate::ui::shortcuts_dialog::ShowShortcuts;
 use crate::ui::table_view::{
     ApplyEdits, CancelEdit, DeleteRows, DiscardEdits, EditCell, InsertRow, RestoreRows, SetNull,
     ToggleRowPanel,
@@ -59,6 +61,13 @@ pub fn bind(cx: &mut App) {
         // Reloads the schema, and the active table's rows; never re-runs a
         // query tab's buffer, so it is safe even if that buffer is a write.
         KeyBinding::new("secondary-r", Refresh, Some("Session")),
+        // Ctrl+Tab is the tab-switching key on every OS, browsers and macOS
+        // apps included; Cmd+Shift+] is taken by the connections above.
+        // Neither is an editor key, so the session sees them from anywhere.
+        KeyBinding::new("ctrl-tab", NextTab, Some("Session")),
+        KeyBinding::new("ctrl-shift-tab", PreviousTab, Some("Session")),
+        KeyBinding::new("ctrl-pagedown", NextTab, Some("Session")),
+        KeyBinding::new("ctrl-pageup", PreviousTab, Some("Session")),
         // Connections are the outer tabs, so they take the shifted keys; the
         // workspace wraps every screen, so these work from all of them.
         KeyBinding::new("secondary-n", NewConnection, Some("Workspace")),
@@ -141,6 +150,14 @@ pub fn bind(cx: &mut App) {
         // No context: the settings belong to the app, not to a screen, and the
         // handler for it is registered on the app itself.
         KeyBinding::new("secondary-,", OpenSettings, None),
+        // Literally Ctrl on every OS, including macOS, where Cmd+/ is left to
+        // whatever the focused control does with it.
+        KeyBinding::new("ctrl-/", ShowShortcuts, None),
+        // The settings window is not a `Workspace`, so it gets its own close
+        // keys; Alt+F4 is the Windows/Linux habit and harmless elsewhere.
+        KeyBinding::new("secondary-w", CloseSettings, Some("SettingsWindow")),
+        KeyBinding::new("alt-f4", CloseSettings, Some("SettingsWindow")),
+        KeyBinding::new("escape", CloseSettings, Some("SettingsWindow")),
         // The value dialog covers the window while it is open. Enter belongs
         // to its text box, which is multi-line, so saving takes the modifier.
         KeyBinding::new("escape", CloseValue, Some("ValueDialog")),

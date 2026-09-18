@@ -17,13 +17,13 @@ use gpui_kit::component::setting::{
 use gpui_kit::component::{ActiveTheme, IconName, Root, Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Bounds, Context, Global, SharedString, TitlebarOptions, Window, WindowBounds,
+    App, Bounds, Context, FocusHandle, Global, SharedString, TitlebarOptions, Window, WindowBounds,
     WindowHandle, WindowOptions, actions, div, px, size,
 };
 
 use crate::settings::{self, Appearance, Settings};
 
-actions!(zippa_db, [OpenSettings]);
+actions!(zippa_db, [OpenSettings, CloseSettings]);
 
 const WINDOW_SIZE: (f32, f32) = (860., 620.);
 
@@ -65,7 +65,13 @@ pub fn open(cx: &mut App) {
     };
 
     let opened = cx.open_window(options, |window, cx| {
-        let view = cx.new(|_| SettingsView);
+        let view = cx.new(|cx| SettingsView {
+            focus: cx.focus_handle(),
+        });
+        // Something inside the window has to hold the focus for its keys to
+        // reach `SettingsWindow`.
+        let focus = view.read(cx).focus.clone();
+        focus.focus(window, cx);
         cx.new(|cx| Root::new(view, window, cx))
     });
 
@@ -75,13 +81,18 @@ pub fn open(cx: &mut App) {
     }
 }
 
-pub struct SettingsView;
+pub struct SettingsView {
+    focus: FocusHandle,
+}
 
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("settings")
             .test_support()
+            .track_focus(&self.focus)
+            .key_context("SettingsWindow")
+            .on_action(|_: &CloseSettings, window, _cx| window.remove_window())
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)

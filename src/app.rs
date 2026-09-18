@@ -24,6 +24,7 @@ use crate::db::{Connection, runtime};
 use crate::settings;
 use crate::ui::session::{NewTab, QuickSwitcher, Refresh, Session, SessionEvent};
 use crate::ui::settings_window::{self, OpenSettings};
+use crate::ui::shortcuts_dialog::{self, ShowShortcuts};
 use crate::ui::value_dialog::{self, Dismissed, ValueView};
 use crate::ui::welcome::{Welcome, WelcomeEvent};
 
@@ -357,6 +358,15 @@ impl Workspace {
         self.open_connect_tab(window, cx);
     }
 
+    fn on_show_shortcuts(
+        &mut self,
+        _: &ShowShortcuts,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        shortcuts_dialog::open(window, cx);
+    }
+
     fn on_close_connection(
         &mut self,
         _: &CloseConnection,
@@ -638,6 +648,7 @@ impl Render for Workspace {
             .key_context("Workspace")
             .on_action(cx.listener(Self::on_new_connection))
             .on_action(cx.listener(Self::on_close_connection))
+            .on_action(cx.listener(Self::on_show_shortcuts))
             .on_action(cx.listener(Self::on_next_connection))
             .on_action(cx.listener(Self::on_previous_connection))
             .on_action(cx.listener(Self::on_quick_switcher))
