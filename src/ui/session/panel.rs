@@ -50,8 +50,6 @@ pub(crate) enum SessionPanelEvent {
     NewTabRequested,
     Run(String),
     RunScript(String),
-    /// The status bar's Run answered a held-back write.
-    ConfirmRun(String),
     /// The user asked for a statement's plan.
     Explain {
         sql: String,
@@ -485,23 +483,6 @@ impl SessionPanel {
         }
     }
 
-    /// Leave the statement waiting on confirmation unrun; the buffer it came
-    /// from is untouched either way.
-    pub(crate) fn cancel_run(&mut self, cx: &mut Context<Self>) {
-        if !matches!(
-            &self.content,
-            TabContent::Query {
-                status: Status::Confirm(_),
-                ..
-            }
-        ) {
-            return;
-        }
-
-        self.set_status(Status::Done("Not run".into()));
-        cx.notify();
-    }
-
     /// Give up on the run in flight, if there is one. Answers whether there
     /// was something to cancel.
     pub(crate) fn cancel_running(&mut self, cx: &mut Context<Self>) -> bool {
@@ -618,7 +599,6 @@ impl SessionPanel {
     fn render_status_bar(&self, status: &Status, cx: &mut Context<Self>) -> impl IntoElement {
         let color = match status {
             Status::Error(_) => cx.theme().danger,
-            Status::Confirm(_) => cx.theme().warning,
             _ => cx.theme().muted_foreground,
         };
         let message = status.message();
@@ -644,38 +624,6 @@ impl SessionPanel {
                     .text_color(color)
                     .child(message),
             )
-            // The statement itself is in the editor above, so the bar only
-            // has to carry the answer.
-            .when(matches!(status, Status::Confirm(_)), |this| {
-                this.child(
-                    h_flex()
-                        .flex_none()
-                        .gap_2()
-                        .child(
-                            Button::new("cancel-run")
-                                .ghost()
-                                .xsmall()
-                                .label("Cancel")
-                                .on_click(cx.listener(|this, _, _window, cx| this.cancel_run(cx))),
-                        )
-                        .child(
-                            Button::new("confirm-run")
-                                .primary()
-                                .xsmall()
-                                .label("Run")
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    if let TabContent::Query {
-                                        status: Status::Confirm(sql),
-                                        ..
-                                    } = &this.content
-                                    {
-                                        let sql = sql.clone();
-                                        cx.emit(SessionPanelEvent::ConfirmRun(sql));
-                                    }
-                                })),
-                        ),
-                )
-            })
     }
 
     /// The bar above the result area: one button per result the last run

@@ -54,14 +54,6 @@ impl Session {
         self.panels[index].read(cx).is_dirty(cx)
     }
 
-    /// The title of the tab waiting on an answer about its unsaved changes,
-    /// if any.
-    #[cfg(test)]
-    pub(crate) fn closing_title_for_test(&self, cx: &App) -> Option<String> {
-        self.closing_panel()
-            .map(|panel| panel.read(cx).title().to_string())
-    }
-
     #[cfg(test)]
     pub(crate) fn active_sql(&self, cx: &App) -> String {
         let Some(panel) = self.active_panel_for_test() else {

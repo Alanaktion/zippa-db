@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::dock::{
     DockArea, DockLayout, DockPlacement, DockSkin, InsertTarget, NodeId, PanelId, PanelStyle,
@@ -14,8 +14,7 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::tree::TreeState;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, ResizableState, Sizable, WindowExt, h_flex, h_resizable,
-    resizable_panel, v_flex,
+    Disableable, ResizableState, Sizable, WindowExt, h_resizable, resizable_panel,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -92,9 +91,6 @@ pub struct Session {
     /// Set when the schema could not be read; queries still work.
     metadata_error: Option<String>,
     switching: bool,
-    /// A tab close waiting on an answer, because the buffer it would lose has
-    /// unsaved changes.
-    closing: Option<WeakEntity<SessionPanel>>,
     /// The next panel's stable key. See `SessionPanel`'s `key` field.
     next_key: usize,
 }
@@ -136,7 +132,6 @@ impl Session {
             objects_tree: cx.new(|cx| TreeState::new(cx)),
             metadata_error: None,
             switching: false,
-            closing: None,
             next_key: 0,
         };
         session.open_tab(None, String::new(), false, window, cx);
@@ -199,11 +194,6 @@ impl Session {
         self.active.as_ref()?.upgrade()
     }
 
-    /// The panel waiting on an answer about its unsaved changes, if any.
-    fn closing_panel(&self) -> Option<Entity<SessionPanel>> {
-        self.closing.as_ref()?.upgrade()
-    }
-
     /// `active` moves here, and only here.
     fn touch(&mut self, panel: &Entity<SessionPanel>, cx: &mut Context<Self>) {
         self.active = Some(panel.downgrade());
@@ -225,9 +215,6 @@ impl Session {
         }
 
         self.panels.retain(|p| p != panel);
-        if self.closing.as_ref().is_some_and(|w| w == panel) {
-            self.closing = None;
-        }
         if self.active.as_ref().is_some_and(|w| w == panel) {
             self.active = self.panels.last().map(|p| p.downgrade());
         }
@@ -258,9 +245,8 @@ impl Session {
                 self.touch(panel, cx);
                 self.open_tab(None, String::new(), false, window, cx);
             }
-            SessionPanelEvent::Run(sql) => self.run(panel, sql.clone(), cx),
-            SessionPanelEvent::RunScript(sql) => self.run_script(panel, sql.clone(), cx),
-            SessionPanelEvent::ConfirmRun(sql) => self.run_now(panel, sql.clone(), cx),
+            SessionPanelEvent::Run(sql) => self.run(panel, sql.clone(), window, cx),
+            SessionPanelEvent::RunScript(sql) => self.run_script(panel, sql.clone(), window, cx),
             SessionPanelEvent::Explain { sql, analyze } => {
                 self.explain(panel, sql.clone(), *analyze, window, cx)
             }
@@ -290,7 +276,7 @@ impl Session {
         self.install(panel.clone(), window, cx);
 
         if run && !sql.trim().is_empty() {
-            self.run(&panel, sql, cx);
+            self.run(&panel, sql, window, cx);
         }
         cx.notify();
         panel
@@ -403,27 +389,49 @@ impl Session {
         }
 
         if panel.read(cx).is_dirty(cx) {
-            self.closing = Some(panel.downgrade());
-            cx.notify();
+            self.confirm_close(panel, window, cx);
             return;
         }
 
         self.close_tab_now(panel, window, cx);
     }
 
-    /// Leave the tab open; the buffer it would have lost is untouched either
-    /// way.
-    fn cancel_close(&mut self, cx: &mut Context<Self>) {
-        self.closing = None;
-        cx.notify();
-    }
+    /// Ask before throwing away a dirty buffer.
+    ///
+    /// A dialog rather than a bar, so the question is about the tab alone and
+    /// the answer closes over the tab it is about — the tab cannot move out
+    /// from under it while the user reads it.
+    fn confirm_close(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = panel.read(cx).title();
+        let session = cx.entity().downgrade();
+        let panel = panel.clone();
 
-    /// Close the tab waiting on an answer about its unsaved changes.
-    fn close_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(panel) = self.closing.take().and_then(|panel| panel.upgrade()) else {
-            return;
-        };
-        self.close_tab_now(&panel, window, cx);
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let session = session.clone();
+            let panel = panel.clone();
+
+            alert
+                .title(format!("Close \"{title}\" without saving?"))
+                .description("The tab has unsaved changes.")
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Close Without Saving")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Keep Open")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    if let Some(session) = session.upgrade() {
+                        session.update(cx, |session, cx| session.close_tab_now(&panel, window, cx));
+                    }
+                    true
+                })
+        });
     }
 
     /// Remove a tab outright; the caller has already decided unsaved changes
@@ -445,9 +453,6 @@ impl Session {
         }
 
         self.panels.retain(|p| p != panel);
-        if self.closing.as_ref().is_some_and(|w| w == panel) {
-            self.closing = None;
-        }
         if self.active.as_ref().is_some_and(|w| w == panel) {
             self.active = self.panels.last().map(|p| p.downgrade());
         }
@@ -891,13 +896,16 @@ impl Session {
 
     /// Run `sql` for `panel`, asking first where the connection says every
     /// write is confirmed.
-    fn run(&mut self, panel: &Entity<SessionPanel>, sql: String, cx: &mut Context<Self>) {
+    fn run(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        sql: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.connection.config.safety.confirms_writes() && statement::first_write(&sql).is_some()
         {
-            panel.update(cx, |panel, cx| {
-                panel.set_status(Status::Confirm(sql));
-                cx.notify();
-            });
+            self.confirm_write(panel.clone(), sql, false, window, cx);
             return;
         }
 
@@ -905,19 +913,75 @@ impl Session {
     }
 
     /// Run every statement in `sql`, one after another.
-    fn run_script(&mut self, panel: &Entity<SessionPanel>, sql: String, cx: &mut Context<Self>) {
+    fn run_script(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        sql: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // A script is confirmed as a whole: what the user is being asked
         // about is the buffer they are about to run.
         if self.connection.config.safety.confirms_writes() && statement::first_write(&sql).is_some()
         {
-            panel.update(cx, |panel, cx| {
-                panel.set_status(Status::Confirm(sql));
-                cx.notify();
-            });
+            self.confirm_write(panel.clone(), sql, true, window, cx);
             return;
         }
 
         self.send(panel, sql, true, cx);
+    }
+
+    /// Ask before running a write, on a connection that confirms them.
+    ///
+    /// The dialog closes over the buffer it is about, so the answer runs
+    /// exactly what was on screen when the question was asked.
+    fn confirm_write(
+        &mut self,
+        panel: Entity<SessionPanel>,
+        sql: String,
+        script: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self.display_target();
+        let statements = statement::split(&sql).len();
+        let session = cx.entity().downgrade();
+
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let session = session.clone();
+            let panel = panel.clone();
+            let sql = sql.clone();
+
+            let description = match statement::first_write(&sql) {
+                Some(_) if script => {
+                    format!("{statements} statements change data on {target}.")
+                }
+                Some(word) => format!("The {word} statement changes data on {target}."),
+                None => format!("This changes data on {target}."),
+            };
+
+            alert
+                .title(if script {
+                    "Run this script?"
+                } else {
+                    "Run this statement?"
+                })
+                .description(description)
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Run")
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    if let Some(session) = session.upgrade() {
+                        session.update(cx, |session, cx| {
+                            session.send(&panel, sql.clone(), script, cx)
+                        });
+                    }
+                    true
+                })
+        });
     }
 
     /// Send one statement for `panel`.
@@ -1190,54 +1254,6 @@ impl Session {
             })
             .into_any_element()
     }
-
-    /// The bar asking whether to close a tab with unsaved changes.
-    fn render_close_confirm(
-        &self,
-        panel: &Entity<SessionPanel>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let title = panel.read(cx).title();
-
-        h_flex()
-            .w_full()
-            .flex_none()
-            .px_3()
-            .py_1()
-            .gap_3()
-            .justify_between()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().status_bar)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().warning)
-                    .child(format!("\"{title}\" has unsaved changes.")),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("keep-tab")
-                            .ghost()
-                            .xsmall()
-                            .label("Keep tab")
-                            .tooltip("Leave the tab open")
-                            .on_click(cx.listener(|this, _, _window, cx| this.cancel_close(cx))),
-                    )
-                    .child(
-                        Button::new("close-tab-anyway")
-                            .danger()
-                            .xsmall()
-                            .label("Close Without Saving")
-                            .tooltip("Throw the changes away and close the tab")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.close_confirmed(window, cx)),
-                            ),
-                    ),
-            )
-    }
 }
 
 impl Render for Session {
@@ -1265,14 +1281,7 @@ impl Render for Session {
                             .child(self.render_sidebar(cx)),
                     )
                     .child(
-                        resizable_panel().child(
-                            v_flex()
-                                .size_full()
-                                .when_some(self.closing_panel(), |this, panel| {
-                                    this.child(self.render_close_confirm(&panel, cx))
-                                })
-                                .child(div().flex_1().min_h_0().child(self.dock.clone())),
-                        ),
+                        resizable_panel().child(div().flex_1().min_h_0().child(self.dock.clone())),
                     ),
             )
     }

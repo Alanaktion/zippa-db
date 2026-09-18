@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::table::ColumnSort;
-use gpui_kit::component::{Root, Theme, ThemeMode};
+use gpui_kit::component::{Root, Theme, ThemeMode, WindowExt};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AppContext as _, Bounds, Context, Entity, InputEvent as _, Modifiers, MouseButton,
@@ -285,9 +285,22 @@ fn workspace(cx: &mut TestAppContext) -> WorkspaceWindow {
 /// Open a connection to a database of its own from the active tab, the way
 /// the connection manager does when its Connect button succeeds.
 fn connect(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> TempDatabase {
+    connect_with_safety(cx, handle, SafetyMode::default())
+}
+
+/// The same, on a connection whose write mode is `safety`.
+fn connect_with_safety(
+    cx: &mut TestAppContext,
+    handle: &WorkspaceWindow,
+    safety: SafetyMode,
+) -> TempDatabase {
     let database = runtime::block_on(TempDatabase::new());
+    let config = ConnectionConfig {
+        safety,
+        ..database.config()
+    };
     let connection = Arc::new(
-        runtime::block_on(Connection::open(database.config(), None))
+        runtime::block_on(Connection::open(config, None))
             .expect("could not open the test database"),
     );
 
@@ -300,6 +313,88 @@ fn connect(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> TempDatabase {
     cx.run_until_parked();
 
     database
+}
+
+/// Open a session inside a workspace, which is where the `Root` an
+/// `AlertDialog` needs lives.
+fn workspace_session(cx: &mut TestAppContext) -> (TempDatabase, WorkspaceWindow, Entity<Session>) {
+    workspace_session_with_safety(cx, SafetyMode::default())
+}
+
+/// The same, on a connection that handles writes the way `safety` says.
+fn workspace_session_with_safety(
+    cx: &mut TestAppContext,
+    safety: SafetyMode,
+) -> (TempDatabase, WorkspaceWindow, Entity<Session>) {
+    let handle = workspace(cx);
+    let database = connect_with_safety(cx, &handle, safety);
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the active tab should be a session");
+    cx.run_until_parked();
+
+    (database, handle, session)
+}
+
+/// Put `sql` in a workspace session's editor and hand it the keyboard.
+fn prepare_workspace_editor(
+    cx: &mut TestAppContext,
+    handle: &WorkspaceWindow,
+    session: &Entity<Session>,
+    sql: &str,
+) {
+    let session = session.clone();
+    let sql = sql.to_string();
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        session.update(cx, |session, cx| {
+            session.prepare_active_editor_for_test(&sql, window, cx);
+        });
+    })
+    .unwrap();
+}
+
+/// Close a workspace session's tab by index, the way its ✕ does.
+fn close_workspace_tab(
+    cx: &mut TestAppContext,
+    handle: &WorkspaceWindow,
+    session: &Entity<Session>,
+    index: usize,
+) {
+    let session = session.clone();
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        session.update(cx, |session, cx| {
+            session.close_tab_for_test(index, window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn press_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, keystroke: &str) {
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.press(keystroke, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn click_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, id: &'static str) {
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click(id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn workspace_dialog_open(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> bool {
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.has_active_dialog(cx)
+    })
+    .unwrap()
 }
 
 fn titles(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> Vec<String> {

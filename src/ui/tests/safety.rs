@@ -172,25 +172,19 @@ fn the_footers_own_apply_hides_while_a_write_waits_to_be_confirmed(cx: &mut Test
 
 #[gpui_kit::test]
 fn a_confirming_connection_asks_before_running_a_write_from_the_editor(cx: &mut TestAppContext) {
-    let (database, handle) = session_with_safety(cx, SafetyMode::ConfirmWrites);
+    let (database, handle, session) = workspace_session_with_safety(cx, SafetyMode::ConfirmWrites);
 
-    handle
-        .update(cx, |session, window, cx| {
-            session.prepare_active_editor_for_test(
-                "insert into items values (5, 'five', 5.0, NULL)",
-                window,
-                cx,
-            );
-        })
-        .unwrap();
-    press(cx, handle, "secondary-enter");
-    cx.run_until_parked();
+    prepare_workspace_editor(
+        cx,
+        &handle,
+        &session,
+        "insert into items values (5, 'five', 5.0, NULL)",
+    );
+    press_workspace(cx, &handle, "secondary-enter");
 
-    assert_eq!(
-        handle
-            .update(cx, |session, _, cx| session.active_status_for_test(cx))
-            .unwrap(),
-        "This statement writes. Run it?"
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "a write should be asked about before it runs"
     );
     assert_eq!(
         runtime::block_on(other_count(&database)),
@@ -198,8 +192,7 @@ fn a_confirming_connection_asks_before_running_a_write_from_the_editor(cx: &mut 
         "the statement should be held until it is confirmed"
     );
 
-    click_in_session(cx, handle, "confirm-run");
-    cx.run_until_parked();
+    click_workspace(cx, &handle, "ok");
 
     assert_eq!(
         runtime::block_on(other_count(&database)),
@@ -210,29 +203,20 @@ fn a_confirming_connection_asks_before_running_a_write_from_the_editor(cx: &mut 
 
 #[gpui_kit::test]
 fn a_confirming_connection_leaves_a_cancelled_statement_unrun(cx: &mut TestAppContext) {
-    let (database, handle) = session_with_safety(cx, SafetyMode::ConfirmWrites);
+    let (database, handle, session) = workspace_session_with_safety(cx, SafetyMode::ConfirmWrites);
 
-    handle
-        .update(cx, |session, window, cx| {
-            session.prepare_active_editor_for_test("delete from items", window, cx);
-        })
-        .unwrap();
-    press(cx, handle, "secondary-enter");
-    cx.run_until_parked();
-
-    click_in_session(cx, handle, "cancel-run");
-    cx.run_until_parked();
+    prepare_workspace_editor(cx, &handle, &session, "delete from items");
+    press_workspace(cx, &handle, "secondary-enter");
+    click_workspace(cx, &handle, "cancel");
 
     assert_eq!(
         runtime::block_on(other_count(&database)),
         2,
         "cancelling must not run the statement"
     );
-    assert_eq!(
-        handle
-            .update(cx, |session, _, cx| session.active_status_for_test(cx))
-            .unwrap(),
-        "Not run"
+    assert!(
+        !workspace_dialog_open(cx, &handle),
+        "the question should be gone once it is answered"
     );
 }
 

@@ -26,10 +26,6 @@ pub(crate) enum Status {
     Running,
     Done(String),
     Error(String),
-    /// A statement that writes, held back on a connection that confirms
-    /// writes. The buffer it came from is what the user reads; this is the
-    /// copy that runs if they say yes.
-    Confirm(String),
 }
 
 impl Status {
@@ -43,7 +39,6 @@ impl Status {
             Status::Running => "Running…".to_string(),
             Status::Done(summary) => summary.clone(),
             Status::Error(error) => format!("Error: {error}"),
-            Status::Confirm(_) => "This statement writes. Run it?".to_string(),
         }
     }
 }

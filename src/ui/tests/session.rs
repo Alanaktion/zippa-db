@@ -248,58 +248,39 @@ fn typing_into_a_tab_marks_it_dirty(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn closing_a_dirty_tab_asks_first(cx: &mut TestAppContext) {
-    let (_database, handle) = session_with_objects(cx);
+    let (_database, handle, session) = workspace_session(cx);
 
-    handle
-        .update(cx, |session, window, cx| {
-            session.prepare_active_editor_for_test("SELECT 1;", window, cx);
-        })
-        .unwrap();
+    prepare_workspace_editor(cx, &handle, &session, "SELECT 1;");
 
-    handle
-        .update(cx, |session, window, cx| {
-            session.close_tab_for_test(0, window, cx);
-        })
-        .unwrap();
-
-    handle
-        .update(cx, |session, _, cx| {
-            assert_eq!(
-                session.tab_titles(cx),
-                ["Query 1"],
-                "a dirty tab should not close until the question is answered"
-            );
-            assert_eq!(
-                session.closing_title_for_test(cx),
-                Some("Query 1".to_string())
-            );
-        })
-        .unwrap();
+    close_workspace_tab(cx, &handle, &session, 0);
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "a dirty tab should be asked about before it closes"
+    );
+    assert_eq!(
+        session.read_with(cx, |session, cx| session.tab_titles(cx)),
+        ["Query 1"],
+        "the tab should still be open while the question is up"
+    );
 
     // Saying no leaves the tab open, still dirty.
-    click_in_session(cx, handle, "keep-tab");
-    handle
-        .update(cx, |session, _, cx| {
-            assert_eq!(session.tab_titles(cx), ["Query 1"]);
-            assert_eq!(session.closing_title_for_test(cx), None);
-            assert!(session.tab_is_dirty_for_test(0, cx));
-        })
-        .unwrap();
+    click_workspace(cx, &handle, "cancel");
+    assert_eq!(
+        session.read_with(cx, |session, cx| session.tab_titles(cx)),
+        ["Query 1"]
+    );
+    assert!(session.read_with(cx, |session, cx| session.tab_is_dirty_for_test(0, cx)));
 
     // Saying yes throws the buffer away and closes the tab; the session
     // always keeps one editor, so a fresh one takes its place.
-    handle
-        .update(cx, |session, window, cx| {
-            session.close_tab_for_test(0, window, cx);
-        })
-        .unwrap();
-    click_in_session(cx, handle, "close-tab-anyway");
-    handle
-        .update(cx, |session, _, cx| {
-            assert_eq!(session.tab_titles(cx), ["Query 2"]);
-            assert!(!session.tab_is_dirty_for_test(0, cx));
-        })
-        .unwrap();
+    close_workspace_tab(cx, &handle, &session, 0);
+    click_workspace(cx, &handle, "ok");
+    assert_eq!(
+        session.read_with(cx, |session, cx| session.tab_titles(cx)),
+        ["Query 2"],
+        "the session always keeps an editor open"
+    );
+    assert!(!session.read_with(cx, |session, cx| session.tab_is_dirty_for_test(0, cx)));
 }
 
 #[gpui_kit::test]

@@ -2,7 +2,6 @@
 //! `ANALYZE`.
 
 use super::*;
-use gpui_kit::component::WindowExt;
 
 /// The labels of the plan the active tab is showing, in tree order.
 fn plan_labels(cx: &mut TestAppContext, handle: WindowHandle<Session>) -> Vec<String> {
@@ -231,65 +230,6 @@ fn a_cancelled_analyze_reads_nothing(cx: &mut TestAppContext) {
         !session.read_with(cx, |session, cx| session.active_plan_showing_for_test(cx)),
         "cancelling must not read a plan"
     );
-}
-
-/// Open a session inside a workspace, which is where the `Root` an
-/// `AlertDialog` needs lives.
-fn workspace_session(
-    cx: &mut TestAppContext,
-) -> (TempDatabase, WorkspaceWindow, gpui_kit::Entity<Session>) {
-    let handle = workspace(cx);
-    let database = connect(cx, &handle);
-
-    let session = handle
-        .update(cx, |workspace, _, _| workspace.active_session_for_test())
-        .unwrap()
-        .expect("the active tab should be a session");
-    cx.run_until_parked();
-
-    (database, handle, session)
-}
-
-/// Put `sql` in the workspace session's editor and hand it the keyboard.
-fn prepare_workspace_editor(
-    cx: &mut TestAppContext,
-    handle: &WorkspaceWindow,
-    session: &gpui_kit::Entity<Session>,
-    sql: &str,
-) {
-    let session = session.clone();
-    let sql = sql.to_string();
-    cx.update_window(handle.window.into(), |_, window, cx| {
-        session.update(cx, |session, cx| {
-            session.prepare_active_editor_for_test(&sql, window, cx);
-        });
-    })
-    .unwrap();
-}
-
-fn press_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, keystroke: &str) {
-    cx.update_window(handle.window.into(), |_, window, cx| {
-        window.draw(cx).clear(cx);
-        window.press(keystroke, cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-}
-
-fn click_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, id: &'static str) {
-    cx.update_window(handle.window.into(), |_, window, cx| {
-        window.draw(cx).clear(cx);
-        window.click(id, cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-}
-
-fn workspace_dialog_open(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> bool {
-    cx.update_window(handle.window.into(), |_, window, cx| {
-        window.has_active_dialog(cx)
-    })
-    .unwrap()
 }
 
 #[gpui_kit::test]
