@@ -279,3 +279,42 @@ fn double_clicking_a_saved_connection_opens_it(cx: &mut TestAppContext) {
         "a double click should open the connection"
     );
 }
+
+#[gpui_kit::test]
+fn deleting_a_saved_connection_asks_first(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let (_database, id) = saved_connection(cx, &handle);
+
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("the active tab should be the connection manager");
+
+    click_workspace(
+        cx,
+        &handle,
+        gpui_kit::SharedString::from(format!("delete-{id}")),
+    );
+
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "deleting a saved connection should be asked about"
+    );
+    assert_eq!(
+        welcome
+            .read_with(cx, |welcome, _| welcome.saved_names_for_test())
+            .len(),
+        1,
+        "nothing should be deleted while the question is up"
+    );
+
+    // Keeping it leaves the connection and its password alone.
+    click_workspace(cx, &handle, "cancel");
+    assert_eq!(
+        welcome
+            .read_with(cx, |welcome, _| welcome.saved_names_for_test())
+            .len(),
+        1
+    );
+    assert!(!workspace_dialog_open(cx, &handle));
+}

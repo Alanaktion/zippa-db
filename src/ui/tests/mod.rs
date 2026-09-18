@@ -14,7 +14,7 @@ use gpui_kit::component::table::ColumnSort;
 use gpui_kit::component::{Root, Theme, ThemeMode, WindowExt};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext as _, Bounds, Context, Entity, InputEvent as _, Modifiers, MouseButton,
+    AppContext as _, Bounds, Context, ElementId, Entity, InputEvent as _, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, TestAppContext, Window, WindowHandle,
     point, px, size,
 };
@@ -381,8 +381,9 @@ fn press_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, keystroke:
     cx.run_until_parked();
 }
 
-fn click_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, id: &'static str) {
-    cx.update_window(handle.window.into(), |_, window, cx| {
+fn click_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, id: impl Into<ElementId>) {
+    let id = id.into();
+    cx.update_window(handle.window.into(), move |_, window, cx| {
         window.draw(cx).clear(cx);
         window.click(id, cx);
     })

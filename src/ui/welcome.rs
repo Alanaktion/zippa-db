@@ -6,10 +6,11 @@
 
 use std::sync::Arc;
 
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, IconName, Selectable, Sizable, h_flex, v_flex,
+    ActiveTheme, Disableable, IconName, Selectable, Sizable, WindowExt, h_flex, v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{App, ClickEvent, Context, Entity, EventEmitter, SharedString, Window, div, px};
@@ -233,7 +234,44 @@ impl Welcome {
         cx.notify();
     }
 
-    fn delete(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+    /// Ask before deleting a saved connection: its keychain password goes
+    /// with it, and neither can be got back.
+    fn confirm_delete(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self
+            .connections
+            .iter()
+            .find(|config| config.id == id)
+            .map(|config| config.display_name())
+        else {
+            return;
+        };
+        let welcome = cx.entity().downgrade();
+
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let welcome = welcome.clone();
+
+            alert
+                .title(format!("Delete \"{name}\"?"))
+                .description(
+                    "The saved password is removed from the keychain too. This cannot be undone.",
+                )
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Delete")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    if let Some(welcome) = welcome.upgrade() {
+                        welcome.update(cx, |welcome, cx| welcome.delete_now(id, window, cx));
+                    }
+                    true
+                })
+        });
+    }
+
+    fn delete_now(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         self.connections.retain(|config| config.id != id);
 
         if let Err(error) =
@@ -294,6 +332,16 @@ impl Welcome {
     ) {
         self.connections = connections;
         cx.notify();
+    }
+
+    /// The saved connections' names, so a test can tell that one survived or
+    /// did not.
+    #[cfg(test)]
+    pub(crate) fn saved_names_for_test(&self) -> Vec<String> {
+        self.connections
+            .iter()
+            .map(|config| config.display_name())
+            .collect()
     }
 
     #[cfg(test)]
@@ -368,9 +416,9 @@ impl Welcome {
                             .icon(IconName::Close)
                             .accessibility_label(format!("Delete {}", config.display_name()))
                             .tooltip("Delete connection")
-                            .on_click(
-                                cx.listener(move |this, _, window, cx| this.delete(id, window, cx)),
-                            ),
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.confirm_delete(id, window, cx)
+                            })),
                     )
             }))
             .child(
