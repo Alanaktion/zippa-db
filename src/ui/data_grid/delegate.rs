@@ -344,7 +344,8 @@ impl TableDelegate for ResultDelegate {
                         .id(("cell-editor", col_ix))
                         .xsmall()
                         .appearance(false)
-                        .bordered(false),
+                        .bordered(false)
+                        .font_family(self.font.clone()),
                 )
                 .into_any_element();
         }

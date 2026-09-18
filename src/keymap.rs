@@ -3,7 +3,7 @@
 //! GPUI resolves `secondary` per platform: Cmd on macOS, Ctrl on Linux and
 //! Windows. Every shortcut here uses it so the app matches the OS it runs on.
 
-use gpui_kit::{App, KeyBinding};
+use gpui_kit::{App, KeyBinding, NoAction};
 
 use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
 use crate::ui::data_grid::{
@@ -123,6 +123,10 @@ pub fn bind(cx: &mut App) {
         // with one box per row, tabbing through a page of them to reach the
         // grid is worse than a key that picks the row the user is already on.
         KeyBinding::new("space", ToggleRow, Some("DataGrid > DataTable")),
+        // A cell editor's own context is deeper than the table's, so without
+        // this a space typed into it would pick the row instead of typing the
+        // character.
+        KeyBinding::new("space", NoAction, Some("DataGrid > DataTable > Input")),
         KeyBinding::new("secondary-a", SelectAllRows, Some("DataGrid > DataTable")),
         KeyBinding::new(
             "secondary-shift-a",

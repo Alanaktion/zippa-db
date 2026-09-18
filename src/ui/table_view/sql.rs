@@ -7,13 +7,18 @@
 //! belongs here too rather than in the rendering.
 //!
 //! Values are never pasted in. Every value is bound as a parameter through
-//! [`typed_placeholder`], with one deliberate exception: `IN` / `NOT IN` take
-//! SQL the user wrote so a subquery can do the filtering.
+//! [`typed_placeholder`], with two deliberate exceptions: `IN` / `NOT IN` take
+//! SQL the user wrote so a subquery can do the filtering, and a staged cell
+//! that reads as one of [`keyword_literal`]'s keywords — `NOW()` and its kin —
+//! is pasted in as that keyword rather than bound as text, the way a cell
+//! already accepts `NULL`.
 
 use gpui_kit::component::table::ColumnSort;
 
 use crate::db::query::{Cell, QueryResult};
-use crate::db::{Engine, RowKey, placeholder, quote_identifier, text_type, typed_placeholder};
+use crate::db::{
+    Engine, RowKey, keyword_literal, placeholder, quote_identifier, text_type, typed_placeholder,
+};
 use crate::ui::data_grid::StagedRow;
 use crate::ui::filter_bar::{FilterSpec, Operator};
 
@@ -218,20 +223,24 @@ impl TableView {
         let key = self.key_for(staged.row, cx)?;
 
         let mut params: Vec<Cell> = Vec::with_capacity(staged.cells.len() + key.len());
-        let mut index = 0;
 
         let assignments: Vec<String> = staged
             .cells
             .iter()
             .map(|(column, value)| {
-                index += 1;
-                params.push(value.clone());
                 let name = self.columns.get(*column).cloned().unwrap_or_default();
+                // A recognized keyword is pasted as written: bound as a
+                // parameter, a driver would quote it as text instead of
+                // evaluating it.
+                if let Some(keyword) = value.as_deref().and_then(keyword_literal) {
+                    return format!("{} = {keyword}", quote_identifier(&name, engine));
+                }
+                params.push(value.clone());
                 let type_name = self.column_types.get(*column).cloned().unwrap_or_default();
                 format!(
                     "{} = {}",
                     quote_identifier(&name, engine),
-                    typed_placeholder(engine, index, &type_name)
+                    typed_placeholder(engine, params.len(), &type_name)
                 )
             })
             .collect();
@@ -239,9 +248,11 @@ impl TableView {
         let conditions: Vec<String> = key
             .into_iter()
             .map(|(left, type_name, value)| {
-                index += 1;
                 params.push(value);
-                format!("{left} = {}", typed_placeholder(engine, index, &type_name))
+                format!(
+                    "{left} = {}",
+                    typed_placeholder(engine, params.len(), &type_name)
+                )
             })
             .collect();
 
@@ -271,16 +282,23 @@ impl TableView {
         let mut columns = Vec::with_capacity(cells.len());
         let mut values = Vec::with_capacity(cells.len());
 
-        for (index, (column, value)) in cells.iter().enumerate() {
+        for (column, value) in cells {
             let name = self.columns.get(*column).cloned().unwrap_or_default();
             if name.is_empty() {
                 return None;
             }
-            let type_name = self.column_types.get(*column).cloned().unwrap_or_default();
-
-            params.push(value.clone());
             columns.push(quote_identifier(&name, engine));
-            values.push(typed_placeholder(engine, index + 1, &type_name));
+
+            // A recognized keyword is pasted as written: bound as a
+            // parameter, a driver would quote it as text instead of
+            // evaluating it.
+            if let Some(keyword) = value.as_deref().and_then(keyword_literal) {
+                values.push(keyword.to_string());
+                continue;
+            }
+            let type_name = self.column_types.get(*column).cloned().unwrap_or_default();
+            params.push(value.clone());
+            values.push(typed_placeholder(engine, params.len(), &type_name));
         }
 
         Some((

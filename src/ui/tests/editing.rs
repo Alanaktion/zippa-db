@@ -310,6 +310,30 @@ fn typing_null_means_sql_null_only_when_the_setting_says_so(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+fn a_keyword_literal_runs_as_sql_instead_of_being_stored_as_text(cx: &mut TestAppContext) {
+    let (database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // Case does not matter, and neither does surrounding whitespace: both are
+    // trimmed away before the keyword is recognized.
+    stage_cell(cx, &view, 0, 1, "  current_timestamp  ");
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    let stored = runtime::block_on(name_of(&database, 1))
+        .expect("current_timestamp should have written a value");
+    assert_ne!(
+        stored, "current_timestamp",
+        "the keyword should run as SQL rather than being stored as its own text"
+    );
+    assert_eq!(
+        stored.len(),
+        19,
+        "should look like a `YYYY-MM-DD HH:MM:SS` timestamp: {stored}"
+    );
+}
+
+#[gpui_kit::test]
 fn enter_opens_the_editor_on_the_selected_cell(cx: &mut TestAppContext) {
     let (_database, handle, view) = table_view(cx);
     cx.run_until_parked();

@@ -146,6 +146,31 @@ fn a_confirming_connection_shows_the_update_before_it_runs(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
+fn the_footers_own_apply_hides_while_a_write_waits_to_be_confirmed(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view_with_safety(cx, SafetyMode::ConfirmWrites);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "confirmed");
+    focus_grid(cx, &view);
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    // The confirm banner already asks about this write; the footer's own
+    // Discard/Apply asking the same thing looks like clicking Apply did
+    // nothing.
+    let found = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.try_find("discard-edits").is_some() || window.try_find("apply-edits").is_some()
+        })
+        .unwrap();
+    assert!(
+        !found,
+        "the footer's own Discard/Apply should not show while a write waits to be confirmed"
+    );
+}
+
+#[gpui_kit::test]
 fn a_confirming_connection_asks_before_running_a_write_from_the_editor(cx: &mut TestAppContext) {
     let (database, handle) = session_with_safety(cx, SafetyMode::ConfirmWrites);
 

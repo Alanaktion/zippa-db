@@ -1041,51 +1041,63 @@ impl TableView {
                                 })),
                         )
                     })
-                    .when(self.is_editable() && self.pending.is_none(), |this| {
-                        this.child(
-                            Button::new("insert-row")
-                                .ghost()
-                                .xsmall()
-                                .label("New row")
-                                .tooltip_with_action(
-                                    "Add a row to fill in",
-                                    &InsertRow,
-                                    Some("TableView > DataTable"),
-                                )
-                                .disabled(self.committing)
-                                .on_click(cx.listener(|this, _, _window, cx| this.insert_row(cx))),
-                        )
-                    })
-                    .when(staged > 0 && self.pending.is_none(), |this| {
-                        this.child(
-                            Button::new("discard-edits")
-                                .ghost()
-                                .xsmall()
-                                .label("Discard")
-                                .tooltip_with_action(
-                                    "Throw away the staged edits",
-                                    &DiscardEdits,
-                                    Some("TableView"),
-                                )
-                                .disabled(self.committing)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.on_discard_edits(&DiscardEdits, window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("apply-edits")
-                                .primary()
-                                .xsmall()
-                                .label("Apply")
-                                .tooltip_with_action(
-                                    "Write the staged edits",
-                                    &ApplyEdits,
-                                    Some("TableView"),
-                                )
-                                .disabled(self.committing)
-                                .on_click(cx.listener(|this, _, _window, cx| this.commit(cx))),
-                        )
-                    })
+                    .when(
+                        self.is_editable() && self.pending.is_none() && self.confirming.is_none(),
+                        |this| {
+                            this.child(
+                                Button::new("insert-row")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("New row")
+                                    .tooltip_with_action(
+                                        "Add a row to fill in",
+                                        &InsertRow,
+                                        Some("TableView > DataTable"),
+                                    )
+                                    .disabled(self.committing)
+                                    .on_click(
+                                        cx.listener(|this, _, _window, cx| this.insert_row(cx)),
+                                    ),
+                            )
+                        },
+                    )
+                    // Hidden while a write is waiting to be confirmed: the
+                    // confirm banner above already asks about the same
+                    // changes, so showing both looks like clicking Apply did
+                    // nothing.
+                    .when(
+                        staged > 0 && self.pending.is_none() && self.confirming.is_none(),
+                        |this| {
+                            this.child(
+                                Button::new("discard-edits")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Discard")
+                                    .tooltip_with_action(
+                                        "Throw away the staged edits",
+                                        &DiscardEdits,
+                                        Some("TableView"),
+                                    )
+                                    .disabled(self.committing)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_discard_edits(&DiscardEdits, window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("apply-edits")
+                                    .primary()
+                                    .xsmall()
+                                    .label("Apply")
+                                    .tooltip_with_action(
+                                        "Write the staged edits",
+                                        &ApplyEdits,
+                                        Some("TableView"),
+                                    )
+                                    .disabled(self.committing)
+                                    .on_click(cx.listener(|this, _, _window, cx| this.commit(cx))),
+                            )
+                        },
+                    )
                     .child(
                         div()
                             .text_xs()

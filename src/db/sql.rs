@@ -93,3 +93,23 @@ pub(crate) fn text_type(engine: Engine) -> &'static str {
         Engine::Postgres | Engine::Sqlite => "text",
     }
 }
+
+/// Keyword calls a cell accepts as a literal value, the way it already
+/// accepts `NULL`: recognized up to case, all three engines evaluate every
+/// one of them the same way.
+const KEYWORD_LITERALS: &[&str] = &["NOW()", "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME"];
+
+/// `value`, if it is one of [`KEYWORD_LITERALS`] up to case — the canonical
+/// spelling to paste into the statement as written, rather than bind as a
+/// parameter.
+///
+/// A bound parameter is always text, so a driver would quote `NOW()` and the
+/// server would either store the four characters or refuse them outright,
+/// rather than evaluate the call.
+pub(crate) fn keyword_literal(value: &str) -> Option<&'static str> {
+    let trimmed = value.trim();
+    KEYWORD_LITERALS
+        .iter()
+        .find(|keyword| keyword.eq_ignore_ascii_case(trimmed))
+        .copied()
+}

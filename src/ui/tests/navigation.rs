@@ -136,6 +136,44 @@ fn space_picks_the_focused_row_out_and_puts_it_back(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn space_does_not_pick_the_row_while_editing_a_cell(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.downgrade()
+        .update_in(cx, |grid, window, cx| {
+            grid.focus_for_test(window, cx);
+            grid.select_cell_for_test(0, 1, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    grid.downgrade()
+        .update_in(cx, |grid, window, cx| {
+            grid.begin_edit_for_test(0, 1, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    // Without a binding that wins over the row's own, the editor's context is
+    // deeper than the table's, so this reaches the row picker instead of the
+    // input.
+    press(cx, handle, "space");
+    cx.run_until_parked();
+
+    assert!(
+        picked(cx, &view).is_empty(),
+        "space while editing a cell must not pick the row out"
+    );
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.editing_for_test(cx)),
+        Some((0, 1)),
+        "the editor should still be open"
+    );
+}
+
+#[gpui_kit::test]
 fn the_select_all_shortcut_picks_every_row_and_the_shifted_one_clears(cx: &mut TestAppContext) {
     let (_database, handle, view) = table_view(cx);
     cx.run_until_parked();

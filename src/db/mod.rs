@@ -35,7 +35,7 @@ pub(crate) use connection::POOL_SIZE;
 pub use connection::{Connection, DatabaseObject, ObjectKind, RowKey};
 pub use schema::{ColumnDef, ForeignKeyDef, IndexDef, ReferentialAction, TableSchema};
 pub use sql::quote_identifier;
-pub(crate) use sql::{placeholder, quote_literal, text_type, typed_placeholder};
+pub(crate) use sql::{keyword_literal, placeholder, quote_literal, text_type, typed_placeholder};
 
 /// Decode a column into a display string, or `None` when the decode fails.
 macro_rules! decode {

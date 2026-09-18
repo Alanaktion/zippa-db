@@ -12,7 +12,7 @@ use super::query::Cell;
 use super::schema::ReferentialAction;
 use super::{
     Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, RowKey, SafetyMode,
-    quote_identifier, typed_placeholder,
+    keyword_literal, quote_identifier, typed_placeholder,
 };
 
 pub(crate) struct TempDatabase {
@@ -385,6 +385,21 @@ fn only_postgres_casts_its_placeholders() {
     assert_eq!(typed_placeholder(Engine::Sqlite, 2, "INTEGER"), "?");
     // A column the driver could not name is left uncast rather than guessed at.
     assert_eq!(typed_placeholder(Engine::Postgres, 1, ""), "$1");
+}
+
+#[test]
+fn keyword_literals_are_recognized_up_to_case_and_whitespace() {
+    assert_eq!(keyword_literal("now()"), Some("NOW()"));
+    assert_eq!(
+        keyword_literal(" Current_Timestamp "),
+        Some("CURRENT_TIMESTAMP")
+    );
+    assert_eq!(keyword_literal("current_date"), Some("CURRENT_DATE"));
+    assert_eq!(keyword_literal("current_time"), Some("CURRENT_TIME"));
+    // Text that merely contains a keyword is still just text.
+    assert_eq!(keyword_literal("now"), None);
+    assert_eq!(keyword_literal("it's now()"), None);
+    assert_eq!(keyword_literal(""), None);
 }
 
 /// The seeded database, opened in `safety` mode.
