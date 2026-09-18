@@ -37,21 +37,30 @@ fn each_connection_opens_in_a_tab_of_its_own(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_shortcut_opens_a_connection_tab_from_an_untouched_window(cx: &mut TestAppContext) {
+fn the_shortcut_opens_the_editor_on_the_welcome_screen(cx: &mut TestAppContext) {
     let handle = workspace(cx);
 
-    // Nothing has been clicked yet, so the keystroke has only the window's own
-    // root to travel through.
+    // Nothing has been clicked yet, so the keystroke has only the launcher's
+    // own context to travel through.
     cx.update_window(handle.window.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
         window.press("secondary-n", cx);
     })
     .unwrap();
 
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("the active tab should be showing the connection manager");
+
+    assert!(
+        welcome.update(cx, |welcome, _| welcome.editor_open_for_test()),
+        "the new-connection shortcut should open the editor on the welcome screen"
+    );
     assert_eq!(
         titles(cx, &handle),
-        ["New connection", "New connection"],
-        "the new-connection shortcut should work before anything has focus"
+        ["New connection"],
+        "opening the editor should not add another connection tab"
     );
 }
 
@@ -242,30 +251,15 @@ fn the_toolbar_new_query_button_opens_a_tab(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn double_clicking_a_saved_connection_opens_it(cx: &mut TestAppContext) {
+fn clicking_a_saved_connection_opens_it(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let (_database, id) = saved_connection(cx, &handle);
-    let target = gpui_kit::SharedString::from(format!("open-{id}"));
+    let target = gpui_kit::SharedString::from(format!("connect-{id}"));
 
-    // One click only fills the form in, so the tab is still the manager.
+    // A card is the connect target now, so a single click opens it.
     cx.update_window(handle.window.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
         window.click(target.clone(), cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert!(
-        handle
-            .update(cx, |workspace, _, _| workspace
-                .active_welcome_for_test()
-                .is_some())
-            .unwrap(),
-        "a single click should not connect"
-    );
-
-    cx.update_window(handle.window.into(), |_, window, cx| {
-        window.draw(cx).clear(cx);
-        window.double_click(target.clone(), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -276,6 +270,6 @@ fn double_clicking_a_saved_connection_opens_it(cx: &mut TestAppContext) {
                 .active_session_for_test()
                 .is_some())
             .unwrap(),
-        "a double click should open the connection"
+        "a click on the card should open the connection"
     );
 }

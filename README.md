@@ -51,7 +51,10 @@ src/
 │   └── store.rs      # connections.json + OS keychain
 ├── settings.rs       # Settings global, settings.json, theme/appearance
 └── ui/
-    ├── welcome.rs      # Connection manager
+    ├── welcome/        # Connection manager (launcher + editor dialog)
+    │   ├── mod.rs      # The launcher: searchable cards, most-recent first
+    │   ├── card.rs     # One connection card
+    │   └── editor.rs   # The new/edit connection dialog
     ├── session/        # Open connection: query tabs, editor, grid
     │   ├── mod.rs      # The view: tabs, running, files, panes
     │   ├── tab.rs      # What a tab holds and how its last run went
@@ -156,7 +159,7 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 | Run the selection, or the statement the caret is in | `Cmd`/`Ctrl` + `Enter` |
 | Run every statement in the buffer | `Cmd`/`Ctrl` + `Shift` + `Enter` |
 | Give up on a running query | `Cmd`/`Ctrl` + `.` |
-| Open another connection | `Cmd`/`Ctrl` + `N` |
+| New connection (or another connection tab) | `Cmd`/`Ctrl` + `N` |
 | Close the active connection | `Cmd`/`Ctrl` + `Shift` + `W` |
 | Next / previous connection | `Cmd`/`Ctrl` + `Shift` + `]` / `[` |
 | New query tab | `Cmd`/`Ctrl` + `T` |
@@ -190,6 +193,7 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 
 * [x] Initial GPUI window and layout setup
 * [x] Connection manager & driver abstractions (`PostgreSQL`, `MySQL`, `SQLite`)
+* [x] Launcher-first welcome screen: searchable connection cards, a new/edit dialog, and one tag + colour per connection that follows it into the tab and session
 * [x] Result grid: virtualized, dense, monospaced, auto-sized columns
 * [x] Resizable panes, database switcher, and table/view list in the sidebar
 * [x] Connection tabs: several databases open at once, each with its own session

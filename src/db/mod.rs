@@ -30,7 +30,7 @@ pub mod store;
 pub(crate) mod tests;
 
 pub(crate) use config::file_name;
-pub use config::{ConnectionConfig, Engine, SafetyMode};
+pub use config::{ConnectionConfig, Engine, SafetyMode, TagColor};
 pub(crate) use connection::POOL_SIZE;
 pub use connection::{Connection, DatabaseObject, ObjectKind, RowKey, StoredKind, StoredObject};
 pub use schema::{ColumnDef, ForeignKeyDef, IndexDef, ReferentialAction, TableSchema};

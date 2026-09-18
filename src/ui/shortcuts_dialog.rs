@@ -34,7 +34,7 @@ const GROUPS: &[Group] = &[
     Group {
         title: "Connections",
         rows: &[
-            ("Open another connection", &["secondary-n"]),
+            ("New connection (or another tab)", &["secondary-n"]),
             ("Close the active connection", &["secondary-shift-w"]),
             ("Next connection", &["secondary-shift-]"]),
             ("Previous connection", &["secondary-shift-["]),

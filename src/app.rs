@@ -20,7 +20,7 @@ use gpui_kit::{
     div, px,
 };
 
-use crate::db::{Connection, runtime};
+use crate::db::{Connection, TagColor, runtime};
 use crate::settings;
 use crate::ui::session::{NewTab, QuickSwitcher, Refresh, Session, SessionEvent};
 use crate::ui::settings_window::{self, OpenSettings};
@@ -80,6 +80,46 @@ impl TabContent {
                 cx,
             )),
         }
+    }
+
+    /// The connection's environment tag and colour, if it has one.
+    fn tag(&self, cx: &App) -> Option<(String, Option<TagColor>)> {
+        match self {
+            Self::Connect(_) => None,
+            Self::Session(session) => {
+                let config = &session.read(cx).connection().config;
+                config.tag.as_ref().map(|tag| (tag.clone(), config.color))
+            }
+        }
+    }
+
+    /// The tab's title, with the tag appended so the environment reads at a
+    /// glance without losing the name.
+    fn label(&self, cx: &App) -> SharedString {
+        match self.tag(cx) {
+            Some((tag, _)) => format!("{} · {}", self.title(cx), tag).into(),
+            None => self.title(cx),
+        }
+    }
+
+    /// The icon and tag chip shown before the label.
+    fn prefix(&self, cx: &App) -> Option<impl IntoElement> {
+        let icon = self.icon(cx)?;
+        let icon = Icon::new(icon);
+        let icon = match self.icon_color(cx) {
+            Some(color) => icon.text_color(color),
+            None => icon,
+        };
+
+        Some(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(icon)
+                .when_some(self.tag(cx), |this, (tag, color)| {
+                    this.child(crate::ui::tag_chip(&tag, color, cx))
+                }),
+        )
     }
 }
 
@@ -149,8 +189,13 @@ impl Workspace {
                 let session = session.clone();
                 session.update(cx, |session, cx| session.focus(window, cx));
             }
-            // Nothing in the connection manager asks for the caret, and focus
-            // left behind in a hidden tab would keep answering keystrokes.
+            // The launcher puts the caret in its search box when there is
+            // something to search; focus left behind in a hidden tab would
+            // keep answering keystrokes.
+            Some(TabContent::Connect(welcome)) => {
+                let welcome = welcome.clone();
+                welcome.update(cx, |welcome, cx| welcome.focus(window, cx));
+            }
             _ => self.focus.focus(window, cx),
         }
     }
@@ -422,18 +467,11 @@ impl Workspace {
                 let middle_click = workspace.clone();
 
                 Tab::new()
-                    .label(tab.title(cx))
+                    .label(tab.label(cx))
                     .px_3()
-                    // `.icon()` on this widget renders icon-only, so icon
-                    // goes in `.prefix()` instead
-                    .when_some(tab.icon(cx), |this, icon| {
-                        let icon = Icon::new(icon);
-                        let icon = match tab.icon_color(cx) {
-                            Some(color) => icon.text_color(color),
-                            None => icon,
-                        };
-                        this.prefix(icon)
-                    })
+                    // The engine icon and, for a tagged connection, the tag
+                    // chip ride in the prefix; `.icon()` renders icon-only.
+                    .when_some(tab.prefix(cx), |this, prefix| this.prefix(prefix))
                     // Middle-click closes, the way it does in a browser.
                     .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
                         if let Some(workspace) = middle_click.upgrade() {

@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 dirs = "7"
 futures = "0.3.34"
 # One dependency pulls in GPUI (Zed's preview channel), gpui-base, the styled

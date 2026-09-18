@@ -22,6 +22,7 @@ use crate::ui::table_view::{
     ToggleRowPanel,
 };
 use crate::ui::value_dialog::{CloseValue, SaveValue};
+use crate::ui::welcome::{EditorClose, EditorConnect};
 
 pub fn bind(cx: &mut App) {
     cx.bind_keys([
@@ -71,6 +72,9 @@ pub fn bind(cx: &mut App) {
         // Connections are the outer tabs, so they take the shifted keys; the
         // workspace wraps every screen, so these work from all of them.
         KeyBinding::new("secondary-n", NewConnection, Some("Workspace")),
+        // On the welcome screen the same key opens the editor dialog instead
+        // of another tab: the more specific context wins.
+        KeyBinding::new("secondary-n", NewConnection, Some("Welcome")),
         KeyBinding::new("secondary-shift-w", CloseConnection, Some("Workspace")),
         KeyBinding::new("secondary-shift-]", NextConnection, Some("Workspace")),
         KeyBinding::new("secondary-shift-[", PreviousConnection, Some("Workspace")),
@@ -165,5 +169,16 @@ pub fn bind(cx: &mut App) {
         // The caret is in the text box, whose own context binds this key, so
         // the dialog's binding has to name that node to win there.
         KeyBinding::new("secondary-enter", SaveValue, Some("ValueDialog > Input")),
+        // The connection editor dialog: Escape gives up, Cmd+Enter connects.
+        // The fields are single-line inputs, but their own context is deeper
+        // than the editor's, so both paths are bound.
+        KeyBinding::new("escape", EditorClose, Some("ConnectionEditor")),
+        KeyBinding::new("escape", EditorClose, Some("ConnectionEditor > Input")),
+        KeyBinding::new("secondary-enter", EditorConnect, Some("ConnectionEditor")),
+        KeyBinding::new(
+            "secondary-enter",
+            EditorConnect,
+            Some("ConnectionEditor > Input"),
+        ),
     ]);
 }

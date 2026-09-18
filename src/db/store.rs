@@ -8,6 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use uuid::Uuid;
 
 use super::ConnectionConfig;
@@ -15,8 +16,26 @@ use super::ConnectionConfig;
 const SERVICE: &str = "zippa-db";
 const FILE_NAME: &str = "connections.json";
 
+#[cfg(test)]
+std::thread_local! {
+    static TEST_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Point [`config_dir`] at a scratch directory, so a test never reads or writes
+/// the developer's real connections.
+#[cfg(test)]
+pub(crate) fn set_config_dir_for_test(path: PathBuf) {
+    TEST_CONFIG_DIR.with(|dir| *dir.borrow_mut() = Some(path));
+}
+
 /// Where Zippa keeps its files: connections, settings, and user themes.
 pub(crate) fn config_dir() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = TEST_CONFIG_DIR.with(|dir| dir.borrow().clone()) {
+        return Ok(dir);
+    }
+
     let dir = dirs::config_dir().context("no config directory for this platform")?;
     Ok(dir.join(SERVICE))
 }
@@ -49,31 +68,69 @@ pub fn save(connections: &[ConnectionConfig]) -> Result<()> {
     Ok(())
 }
 
+/// Mark a connection as the most recently opened one and save it.
+///
+/// Called on a successful connect so the welcome screen can list connections
+/// most-recent-first. A connection that is not saved yet is left alone.
+pub fn record_connected(id: &Uuid) -> Result<()> {
+    let mut connections = load()?;
+    let Some(config) = connections.iter_mut().find(|config| &config.id == id) else {
+        return Ok(());
+    };
+    config.last_connected = Some(Utc::now());
+    save(&connections)
+}
+
+#[cfg(not(test))]
 fn entry(id: &Uuid) -> Result<keyring::Entry> {
     keyring::Entry::new(SERVICE, &id.to_string()).context("no OS credential store available")
 }
 
 /// The stored password for a connection, if the user saved one.
 pub fn password(id: &Uuid) -> Result<Option<String>> {
-    match entry(id)?.get_password() {
-        Ok(password) => Ok(Some(password)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(error.into()),
+    #[cfg(not(test))]
+    {
+        match entry(id)?.get_password() {
+            Ok(password) => Ok(Some(password)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+    #[cfg(test)]
+    {
+        let _ = id;
+        Ok(None)
     }
 }
 
 pub fn set_password(id: &Uuid, password: &str) -> Result<()> {
-    if password.is_empty() {
-        return delete_password(id);
+    #[cfg(not(test))]
+    {
+        if password.is_empty() {
+            return delete_password(id);
+        }
+        entry(id)?
+            .set_password(password)
+            .context("could not save the password to the OS credential store")
     }
-    entry(id)?
-        .set_password(password)
-        .context("could not save the password to the OS credential store")
+    #[cfg(test)]
+    {
+        let _ = (id, password);
+        Ok(())
+    }
 }
 
 pub fn delete_password(id: &Uuid) -> Result<()> {
-    match entry(id)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(error.into()),
+    #[cfg(not(test))]
+    {
+        match entry(id)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+    #[cfg(test)]
+    {
+        let _ = id;
+        Ok(())
     }
 }

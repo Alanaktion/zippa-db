@@ -5,6 +5,7 @@
 //! how careful it is about writes ([`SafetyMode`]). [`store`](super::store)
 //! persists it; [`Connection`](super::Connection) opens it.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -99,6 +100,69 @@ impl SafetyMode {
     }
 }
 
+/// A fixed palette a connection can be tagged with.
+///
+/// A palette rather than arbitrary hex: a colour is resolved against the theme
+/// for contrast in light and dark, and stays valid when a theme changes. The
+/// colour is always shown with its [`label`](TagColor::label) next to it, so it
+/// is never the only way to tell one environment from another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TagColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Teal,
+    Blue,
+    Purple,
+    Pink,
+    Gray,
+}
+
+impl TagColor {
+    pub const ALL: [TagColor; 9] = [
+        TagColor::Red,
+        TagColor::Orange,
+        TagColor::Yellow,
+        TagColor::Green,
+        TagColor::Teal,
+        TagColor::Blue,
+        TagColor::Purple,
+        TagColor::Pink,
+        TagColor::Gray,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TagColor::Red => "Red",
+            TagColor::Orange => "Orange",
+            TagColor::Yellow => "Yellow",
+            TagColor::Green => "Green",
+            TagColor::Teal => "Teal",
+            TagColor::Blue => "Blue",
+            TagColor::Purple => "Purple",
+            TagColor::Pink => "Pink",
+            TagColor::Gray => "Gray",
+        }
+    }
+
+    /// The kebab-case key the palette colour serialises as.
+    pub fn key(self) -> &'static str {
+        match self {
+            TagColor::Red => "red",
+            TagColor::Orange => "orange",
+            TagColor::Yellow => "yellow",
+            TagColor::Green => "green",
+            TagColor::Teal => "teal",
+            TagColor::Blue => "blue",
+            TagColor::Purple => "purple",
+            TagColor::Pink => "pink",
+            TagColor::Gray => "gray",
+        }
+    }
+}
+
 /// A saved connection as configured by the user.
 ///
 /// The password is not part of this struct: it lives in the OS keychain, keyed
@@ -117,6 +181,17 @@ pub struct ConnectionConfig {
     /// before the setting existed, which read back as the safer mode.
     #[serde(default)]
     pub safety: SafetyMode,
+    /// A free-text environment label (e.g. "Production"), shown with its
+    /// colour everywhere the connection appears.
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// The palette colour behind [`ConnectionConfig::tag`]. Absent in files
+    /// written before tagging existed.
+    #[serde(default)]
+    pub color: Option<TagColor>,
+    /// When this connection was last opened, for most-recent-first ordering.
+    #[serde(default)]
+    pub last_connected: Option<DateTime<Utc>>,
 }
 
 impl ConnectionConfig {
@@ -130,6 +205,9 @@ impl ConnectionConfig {
             username: String::new(),
             database: String::new(),
             safety: SafetyMode::default(),
+            tag: None,
+            color: None,
+            last_connected: None,
         }
     }
 
