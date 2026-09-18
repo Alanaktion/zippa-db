@@ -25,7 +25,7 @@
 
 ## 3. SQL Query Editor
 
-### Text Editing Essentials
+### Text Editing
 
 * [ ] Syntax highlighting tailored per database engine dialect
 * [ ] Auto-complete (tables, columns, SQL keywords, schemas) powered by live introspection
@@ -50,7 +50,9 @@
 ### Import & Export Tools
 
 * [ ] Export selected rows or entire tables to `CSV`, `JSON`, and SQL `INSERT` statements
-* [ ] Database backup dump (`pg_dump` / `mysqldump` integration) and SQL file restoration
+* [ ] Import SQL dumps
+* [ ] Import CSV data into existing table
+* [ ] Database backup dump (`pg_dump` / `mysqldump` integration)
 
 ### Query History & Snippets
 
