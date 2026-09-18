@@ -620,3 +620,135 @@ fn mysql_bit_digits_are_converted_rather_than_stored_as_text() {
     assert_eq!(typed_placeholder(Engine::MySql, 1, "DATETIME"), "?");
     assert_eq!(typed_placeholder(Engine::Sqlite, 1, "DATETIME"), "?");
 }
+
+#[tokio::test]
+async fn explain_reads_a_sqlite_plan_tree() {
+    let database = TempDatabase::new().await;
+    let connection = open_with(&database, SafetyMode::default()).await;
+
+    let explained = connection
+        .explain("select * from items where id = 1", false)
+        .await
+        .expect("a select should explain");
+    let super::plan::Explained::Plan(plan) = explained else {
+        panic!("SQLite should come back as a tree");
+    };
+    assert!(plan.parsed, "the rows are the shape SQLite documents");
+    // The detail is the label, whether SQLite chose an index or a scan.
+    let labels = labels(&plan.root);
+    assert!(
+        labels.iter().any(|label| label.contains("items")),
+        "the plan should name the table: {labels:?}"
+    );
+
+    connection.close().await;
+}
+
+/// Every label in a tree, for tests that only care that one is there.
+fn labels(node: &super::plan::PlanNode) -> Vec<String> {
+    let mut all = vec![node.label.clone()];
+    for child in &node.children {
+        all.extend(labels(child));
+    }
+    all
+}
+
+#[tokio::test]
+async fn explain_refuses_to_analyze_a_write() {
+    let database = TempDatabase::new().await;
+    let connection = open_with(&database, SafetyMode::AutoApply).await;
+
+    for sql in [
+        "insert into items values (3, 'gamma', 3.0, NULL)",
+        "with gone as (delete from items returning *) select * from gone",
+        // The header says `ANALYZE`, so it runs even though the caller did not
+        // ask for it.
+        "explain analyze delete from items",
+    ] {
+        let error = connection
+            .explain(sql, true)
+            .await
+            .expect_err("analyzing a write should be refused");
+        assert!(
+            format!("{error:#}").contains("changes data"),
+            "{sql}: {error:#}"
+        );
+    }
+
+    // A read is what `ANALYZE` is for.
+    let explained = connection
+        .explain("select * from items", true)
+        .await
+        .expect("analyzing a select should be allowed");
+    assert!(matches!(explained, super::plan::Explained::Plan(_)));
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn plain_explain_of_a_write_does_not_run_it() {
+    let database = TempDatabase::new().await;
+    let connection = open_with(&database, SafetyMode::AutoApply).await;
+
+    connection
+        .explain("delete from items", false)
+        .await
+        .expect("explaining a write without ANALYZE is safe");
+
+    let count = connection
+        .run_query("select count(*) from items")
+        .await
+        .expect("could not count the rows");
+    assert_eq!(
+        count.rows[0][0].as_deref(),
+        Some("2"),
+        "nothing should be deleted"
+    );
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_read_only_connection_can_still_explain() {
+    let database = TempDatabase::new().await;
+    let connection = open_with(&database, SafetyMode::ReadOnly).await;
+
+    // A plain plan is a read, and the classifier already knows it.
+    connection
+        .explain("select * from items", false)
+        .await
+        .expect("a read-only connection should explain a read");
+
+    // The classifier calls any `ANALYZE` a write, so the pool is the guard
+    // here; either way the connection must not run the write.
+    let _ = connection.explain("delete from items", true).await;
+    let count = connection
+        .run_query("select count(*) from items")
+        .await
+        .expect("could not count the rows");
+    assert_eq!(count.rows[0][0].as_deref(), Some("2"));
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn explain_needs_a_statement() {
+    let database = TempDatabase::new().await;
+    let connection = open_with(&database, SafetyMode::default()).await;
+
+    let error = connection
+        .explain("   ;  ", false)
+        .await
+        .expect_err("an empty buffer has nothing to explain");
+    assert!(format!("{error:#}").contains("Select one statement"));
+
+    // A plan describes one statement, so a selection of several is refused
+    // rather than explained as whatever the server does with a script.
+    let error = connection
+        .explain("select 1; select 2", false)
+        .await
+        .expect_err("a script has no single plan");
+    assert!(format!("{error:#}").contains("Select one statement"));
+
+    connection.close().await;
+}

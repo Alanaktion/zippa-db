@@ -6,6 +6,7 @@ use gpui_kit::Entity;
 
 use crate::db::query::QueryResult;
 use crate::ui::data_grid::DataGrid;
+use crate::ui::plan_view::PlanView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::table_view::TableView;
@@ -49,6 +50,12 @@ impl Status {
 
 /// What a tab holds: a query editor with its result, or a table opened from
 /// the sidebar.
+///
+/// The query variant is the wide one — it carries the buffer, its results, and
+/// the plan — and the others are a single entity handle. Boxing the query to
+/// even them out would put an indirection on every accessor for no gain, since
+/// a session holds a handful of these at once.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum TabContent {
     Query {
         editor: Entity<QueryEditor>,
@@ -66,6 +73,11 @@ pub(crate) enum TabContent {
         /// The buffer's content as last opened or saved, to tell dirty from
         /// clean.
         baseline: String,
+        /// The last plan this tab read, if any, so a plan can be looked at
+        /// again after the grid has been.
+        plan: Option<Entity<PlanView>>,
+        /// Whether the pane is showing the plan rather than the result grid.
+        show_plan: bool,
     },
     Table {
         view: Entity<TableView>,

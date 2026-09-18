@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::dock::{
     DockArea, DockLayout, DockPlacement, DockSkin, InsertTarget, NodeId, PanelId, PanelStyle,
     panel_handle,
@@ -13,7 +14,8 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::tree::TreeState;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, ResizableState, Sizable, h_flex, h_resizable, resizable_panel, v_flex,
+    ActiveTheme, Disableable, ResizableState, Sizable, WindowExt, h_flex, h_resizable,
+    resizable_panel, v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -23,7 +25,7 @@ use gpui_kit::{
 
 use regex::Regex;
 
-use crate::db::{Connection, DatabaseObject, StoredObject, runtime, statement};
+use crate::db::{Connection, DatabaseObject, Explained, StoredObject, runtime, statement};
 use crate::ui::filter_bar::FilterSpec;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::sql_file;
@@ -259,6 +261,9 @@ impl Session {
             SessionPanelEvent::Run(sql) => self.run(panel, sql.clone(), cx),
             SessionPanelEvent::RunScript(sql) => self.run_script(panel, sql.clone(), cx),
             SessionPanelEvent::ConfirmRun(sql) => self.run_now(panel, sql.clone(), cx),
+            SessionPanelEvent::Explain { sql, analyze } => {
+                self.explain(panel, sql.clone(), *analyze, window, cx)
+            }
             SessionPanelEvent::OpenFile => self.open_file(cx),
             SessionPanelEvent::Save => self.save(panel, false, cx),
         }
@@ -757,7 +762,8 @@ impl Session {
         self.connection.config.display_target()
     }
 
-    /// Put the caret in the active tab's editor.
+    /// Put the caret in the active tab's editor, or on its plan when that is
+    /// what the tab is showing.
     ///
     /// Called when the session is brought forward, so `Cmd+Enter` runs the
     /// query without having to click into the editor first.
@@ -765,7 +771,13 @@ impl Session {
         let Some(panel) = self.active_panel() else {
             return;
         };
-        panel.read(cx).focus_handle(cx).focus(window, cx);
+        match panel.read(cx).active_plan() {
+            Some(plan) => plan.update(cx, |plan, cx| plan.focus(window, cx)),
+            None => {
+                let handle = panel.read(cx).focus_handle(cx);
+                handle.focus(window, cx);
+            }
+        }
     }
 
     /// Read the database list and the current database's tables and views.
@@ -966,6 +978,130 @@ impl Session {
                             crate::ui::notify_error(window, cx, format!("Error: {message}"));
                         }
                         // The sender is dropped when the run is given up on,
+                        // which is what cancelling does.
+                        Err(_) => panel.set_status(Status::Done("Cancelled".into())),
+                    }
+                    cx.notify();
+                });
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Read one statement's plan for `panel`.
+    ///
+    /// `ANALYZE` is the only form that runs anything, so it is the only form
+    /// a careful connection asks about first.
+    fn explain(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        sql: String,
+        analyze: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if analyze
+            && !self.connection.config.safety.auto_applies()
+            && !self.connection.config.safety.is_read_only()
+        {
+            self.confirm_explain(panel.clone(), sql, window, cx);
+            return;
+        }
+
+        self.explain_now(panel, sql, analyze, cx);
+    }
+
+    /// Ask before running the query an `ANALYZE` would, the way a write is
+    /// asked about: the statement the plan comes from is here, so the answer
+    /// is the same either way.
+    fn confirm_explain(
+        &mut self,
+        panel: Entity<SessionPanel>,
+        sql: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let session = session.clone();
+            let panel = panel.clone();
+            let sql = sql.clone();
+
+            alert
+                .title("Explain and run this query?")
+                .description(
+                    "EXPLAIN ANALYZE runs the statement to report actual times, so the query \
+                     really executes.",
+                )
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Explain")
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    if let Some(session) = session.upgrade() {
+                        session.update(cx, |session, cx| {
+                            session.explain_now(&panel, sql.clone(), true, cx)
+                        });
+                    }
+                    true
+                })
+        });
+    }
+
+    /// Send `sql` for its plan; a tree lands in the tab's plan viewer, and a
+    /// server that only knows the classic table lands in the grid.
+    fn explain_now(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        sql: String,
+        analyze: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((editor, grid)) = panel.read(cx).query_parts() else {
+            return;
+        };
+
+        panel.update(cx, |panel, cx| {
+            panel.set_status(Status::Running);
+            cx.notify();
+        });
+        editor.update(cx, |editor, cx| editor.set_running(true, cx));
+
+        let connection = self.connection.clone();
+        let task = runtime::spawn(async move { connection.explain(&sql, analyze).await });
+        panel.update(cx, |panel, _| panel.set_running(task.abort_handle()));
+
+        let weak = panel.downgrade();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |_this, window, cx| {
+                // The tab may have been closed while the plan was read.
+                let Some(panel) = weak.upgrade() else {
+                    return;
+                };
+
+                editor.update(cx, |editor, cx| editor.set_running(false, cx));
+                panel.update(cx, |panel, cx| {
+                    panel.set_running(None);
+
+                    match result {
+                        Ok(Ok(Explained::Plan(plan))) => panel.set_plan(plan, cx),
+                        Ok(Ok(Explained::Rows(result))) => {
+                            panel.show_results(vec![result], cx);
+                            panel.set_status(Status::Done(
+                                "Classic plan output; shown in the result grid".into(),
+                            ));
+                        }
+                        Ok(Err(error)) => {
+                            let message = format!("{error:#}");
+                            panel.set_status(Status::Error(message.clone()));
+                            grid.update(cx, |grid, cx| grid.clear(cx));
+                            crate::ui::notify_error(window, cx, format!("Error: {message}"));
+                        }
+                        // The sender is dropped when the read is given up on,
                         // which is what cancelling does.
                         Err(_) => panel.set_status(Status::Done("Cancelled".into())),
                     }

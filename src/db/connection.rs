@@ -17,6 +17,7 @@ use sqlx::{
 };
 
 use super::config::{ConnectionConfig, Engine};
+use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
 use super::{mysql, postgres, sqlite, statement};
 
@@ -262,6 +263,17 @@ impl Connection {
     /// value the user typed stays a value rather than becoming SQL.
     pub async fn run_query_with(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
         self.refuse_write(sql)?;
+        self.fetch(sql, params).await
+    }
+
+    /// Send `sql` with no client-side classification.
+    ///
+    /// The caller has already decided the statement is safe — [`Self::explain`]
+    /// does that with `statement::explained` — so the read-only pool's own
+    /// session remains the guard. Skipping [`Self::refuse_write`] is what lets a
+    /// read-only connection run `EXPLAIN ANALYZE`, which the classifier would
+    /// otherwise refuse for the `ANALYZE` word alone.
+    async fn fetch(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
         match &self.pool {
             Pool::Postgres(pool) => {
                 fetch_all(pool, sql, params, postgres::cell, postgres::rows_affected).await
@@ -271,6 +283,100 @@ impl Connection {
             }
             Pool::Sqlite(pool) => {
                 fetch_all(pool, sql, params, sqlite::cell, sqlite::rows_affected).await
+            }
+        }
+    }
+
+    /// Read the plan for one statement.
+    ///
+    /// `sql` is the statement the caller picked — the selection, or the one the
+    /// caret is in, as a run does. A statement that already carries its own
+    /// `EXPLAIN` header is run as written rather than wrapped again; otherwise
+    /// `analyze` chooses between a plain plan and one the server ran the
+    /// statement to produce.
+    ///
+    /// `ANALYZE` is only allowed for a statement that reads: it runs what it
+    /// explains, and a write would then happen. The app gates the button as
+    /// well, so this refusal is the backstop behind it.
+    pub async fn explain(&self, sql: &str, analyze: bool) -> Result<Explained> {
+        let statement = sql.trim().trim_end_matches(';').trim();
+        // One statement is what a plan describes; a script has no single plan
+        // to draw, and the caller's buffer may be a selection of many.
+        if statement.is_empty() || statement::split(statement).len() != 1 {
+            anyhow::bail!("Select one statement to explain.");
+        }
+
+        // What is being explained, and whether this request runs it: the
+        // caller's flag, or an `ANALYZE` the user already wrote into a header
+        // of their own.
+        let header = statement::explained(statement);
+        let (inner, runs) = match &header {
+            Some((inner, analyzes)) => (inner.clone(), analyze || *analyzes),
+            None => (statement.to_string(), analyze),
+        };
+        if runs && let Some(word) = statement::first_write(&inner) {
+            anyhow::bail!("EXPLAIN ANALYZE would run this statement; it changes data ({word}).");
+        }
+
+        let already = header.is_some();
+        match self.config.engine {
+            Engine::Postgres => {
+                let sql = match (already, analyze) {
+                    (true, _) => statement.to_string(),
+                    (false, true) => {
+                        format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {inner}")
+                    }
+                    (false, false) => format!("EXPLAIN (FORMAT JSON) {inner}"),
+                };
+                let result = self.fetch(&sql, Vec::new()).await?;
+                let text = result
+                    .rows
+                    .first()
+                    .and_then(|row| row.first())
+                    .and_then(|cell| cell.clone())
+                    .unwrap_or_else(|| "(no plan returned)".to_string());
+                let mut plan = plan::postgres(&text, analyze).unwrap_or_else(|| Plan::raw(&text));
+                plan.elapsed = result.elapsed;
+                Ok(Explained::Plan(plan))
+            }
+            Engine::MySql => {
+                // The tree format arrived in 8.0.16 and `EXPLAIN ANALYZE` in
+                // 8.0.18; MariaDB has neither. A server that answers with
+                // something the parser does not know, or refuses the format,
+                // gets the classic table shown in the grid instead — detected
+                // by trying, never by reading the version.
+                let tree = match (already, analyze) {
+                    (true, _) => statement.to_string(),
+                    (false, true) => format!("EXPLAIN ANALYZE {inner}"),
+                    (false, false) => format!("EXPLAIN FORMAT=TREE {inner}"),
+                };
+                if let Ok(result) = self.fetch(&tree, Vec::new()).await {
+                    let text = result
+                        .rows
+                        .first()
+                        .and_then(|row| row.first())
+                        .and_then(|cell| cell.clone())
+                        .unwrap_or_default();
+                    if let Some(mut plan) = plan::mysql(&text, analyze) {
+                        plan.elapsed = result.elapsed;
+                        return Ok(Explained::Plan(plan));
+                    }
+                }
+
+                let classic = format!("EXPLAIN {inner}");
+                let result = self.fetch(&classic, Vec::new()).await?;
+                Ok(Explained::Rows(result))
+            }
+            Engine::Sqlite => {
+                let sql = if already {
+                    statement.to_string()
+                } else {
+                    format!("EXPLAIN QUERY PLAN {inner}")
+                };
+                let result = self.fetch(&sql, Vec::new()).await?;
+                let mut plan = plan::sqlite(&result);
+                plan.elapsed = result.elapsed;
+                Ok(Explained::Plan(plan))
             }
         }
     }

@@ -10,6 +10,7 @@
 //! * [`schema`] — a table's own definition: columns, indexes, foreign keys.
 //! * [`sql`] — quoting and placing bind parameters in generated statements.
 //! * [`statement`] — splitting and classifying the user's own SQL.
+//! * [`plan`] — reading an `EXPLAIN` into a tree.
 //! * [`query`] — what a run comes back as.
 //! * [`runtime`] — the Tokio runtime every database call is submitted to.
 //! * [`store`] — connection metadata on disk, passwords in the OS keychain.
@@ -17,6 +18,7 @@
 pub mod config;
 pub mod connection;
 pub mod mysql;
+pub mod plan;
 pub mod postgres;
 pub mod query;
 pub mod runtime;
@@ -33,6 +35,7 @@ pub(crate) use config::file_name;
 pub use config::{ConnectionConfig, Engine, SafetyMode};
 pub(crate) use connection::POOL_SIZE;
 pub use connection::{Connection, DatabaseObject, ObjectKind, RowKey, StoredKind, StoredObject};
+pub use plan::{Explained, Plan, PlanNode};
 pub use schema::{ColumnDef, ForeignKeyDef, IndexDef, ReferentialAction, TableSchema};
 pub use sql::quote_identifier;
 pub(crate) use sql::{keyword_literal, placeholder, quote_literal, text_type, typed_placeholder};

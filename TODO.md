@@ -33,6 +33,7 @@
 ### Result Sets & Output Diagnostics
 
 * [x] Result status shows rows affected/returned and elapsed time; error handling; console shows query history via result bar for multiple statements (syntax highlighting and detailed warnings not yet included)
+* [x] Query plan viewer: `EXPLAIN` / `EXPLAIN ANALYZE` as a readable tree with cost, rows, timing, and warnings, alongside the result grid
 
 ## 4. Database Schema Browser & Modeler
 

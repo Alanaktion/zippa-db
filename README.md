@@ -155,6 +155,8 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 | --- | --- |
 | Run the selection, or the statement the caret is in | `Cmd`/`Ctrl` + `Enter` |
 | Run every statement in the buffer | `Cmd`/`Ctrl` + `Shift` + `Enter` |
+| Show the statement's execution plan without running it | `Cmd`/`Ctrl` + `E` |
+| Show the plan and run the statement for actual times | `Cmd`/`Ctrl` + `Shift` + `E` |
 | Give up on a running query | `Cmd`/`Ctrl` + `.` |
 | Open another connection | `Cmd`/`Ctrl` + `N` |
 | Close the active connection | `Cmd`/`Ctrl` + `Shift` + `W` |
@@ -200,6 +202,7 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 * [x] Staged cell editing in a table tab, with a per-connection safety mode: read-only, confirm every write, apply by hand, or write when the selection leaves the row
 * [x] Drag across rows to select them, delete them from the row's menu, and fill in new rows in the grid itself — edited cells, new rows, and rows marked for deletion are coloured in the grid and written together when applied
 * [x] SQL editor with SQL syntax highlighting: `Cmd+Enter` runs the statement the caret is in, `Cmd+Shift+Enter` the whole buffer, `Cmd+.` gives up on a run
+* [x] Query plan viewer: `Cmd+E` shows a statement's plan as a tree with costs, rows, timing, and warnings, and `Cmd+Shift+E` runs it for actual times
 * [x] Open and save `.sql` files through the native file dialogs
 * [x] Settings window: page size, editor and grid fonts, striped rows, always-on scrollbars, theme, light/dark
 * [x] Query cancellation and multi-statement scripts, with a result tab per statement

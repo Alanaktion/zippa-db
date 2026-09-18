@@ -10,6 +10,7 @@
 use gpui_kit::{App, KeyBinding, Menu, MenuItem, actions};
 
 use crate::app::{CloseConnection, NewConnection};
+use crate::ui::query_editor::{Explain, ExplainAnalyze};
 use crate::ui::session::{CloseTab, NewTab, OpenFile, SaveFile, SaveFileAs};
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -51,6 +52,10 @@ pub fn init(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Close Tab", CloseTab),
             MenuItem::action("Close Connection", CloseConnection),
+        ]),
+        Menu::new("Query").items(vec![
+            MenuItem::action("Explain", Explain),
+            MenuItem::action("Explain Analyze", ExplainAnalyze),
         ]),
         Menu::new("Help").items(vec![MenuItem::action("Keyboard Shortcuts", ShowShortcuts)]),
     ]);

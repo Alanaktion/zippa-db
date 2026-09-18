@@ -5,6 +5,7 @@
 
 pub mod data_grid;
 pub mod filter_bar;
+pub mod plan_view;
 pub mod query_editor;
 pub mod quick_switcher;
 pub mod schema_view;

@@ -73,6 +73,83 @@ pub fn at_cursor(sql: &str, cursor: usize) -> Option<Statement> {
         .cloned()
 }
 
+/// Option words an `EXPLAIN` header can carry before the statement it
+/// explains: Postgres' parenthesised options and MySQL's bare ones, with the
+/// words that name their values (`FORMAT TREE`, `FORMAT=JSON`).
+const EXPLAIN_OPTIONS: [&str; 17] = [
+    "ANALYZE",
+    "VERBOSE",
+    "COSTS",
+    "SETTINGS",
+    "BUFFERS",
+    "WAL",
+    "TIMING",
+    "SUMMARY",
+    "FORMAT",
+    "TREE",
+    "JSON",
+    "TRADITIONAL",
+    "EXTENDED",
+    "PARTITIONS",
+    "XML",
+    "YAML",
+    "GENERIC_PLAN",
+];
+
+/// The statement an `EXPLAIN` explains, and whether running it runs that
+/// statement too.
+///
+/// `None` when `sql` is not an `EXPLAIN` at all, so the caller knows it has a
+/// plain statement to wrap itself. `Some((inner, analyzes))` otherwise: `inner`
+/// is the statement after the header, which is what the classifier is asked
+/// about, and `analyzes` is true when the header asks for `ANALYZE`, so the
+/// inner statement really runs. Both `EXPLAIN ...` and MariaDB's `ANALYZE
+/// FORMAT=JSON ...` spelling are recognised.
+pub fn explained(sql: &str) -> Option<(String, bool)> {
+    let characters: Vec<char> = sql.chars().collect();
+    let offsets: Vec<usize> = sql
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain(std::iter::once(sql.len()))
+        .collect();
+    let byte = |index: usize| offsets.get(index).copied().unwrap_or(sql.len());
+
+    let mut index = skip_trivia(&characters, 0);
+    let (word, next) = word_at(&characters, index)?;
+    let first = word.to_ascii_uppercase();
+    if first != "EXPLAIN" && first != "ANALYZE" {
+        return None;
+    }
+
+    let mut analyzes = first == "ANALYZE";
+    index = next;
+
+    loop {
+        index = skip_trivia(&characters, index);
+        match characters.get(index) {
+            Some('(') => {
+                let (found, next) = skip_parens(&characters, index);
+                analyzes |= found;
+                index = next;
+            }
+            Some('=') => index += 1,
+            Some(_) => {
+                if let Some((word, next)) = word_at(&characters, index) {
+                    let upper = word.to_ascii_uppercase();
+                    if EXPLAIN_OPTIONS.contains(&upper.as_str()) {
+                        analyzes |= upper == "ANALYZE";
+                        index = next;
+                        continue;
+                    }
+                }
+                return Some((sql[byte(index)..].trim().to_string(), analyzes));
+            }
+            // An `EXPLAIN` with nothing after it explains nothing.
+            None => return Some((String::new(), analyzes)),
+        }
+    }
+}
+
 /// The first statement in `sql` that is not plainly a read.
 ///
 /// The answer is the word the statement starts with, upper-cased, for a
@@ -210,6 +287,79 @@ fn statements(sql: &str) -> Vec<(Vec<String>, usize, usize)> {
         statements.push((words, byte(start), sql.len()));
     }
     statements
+}
+
+/// Index of the first character that is not whitespace, a comment, or blank
+/// space left by one.
+fn skip_trivia(characters: &[char], mut index: usize) -> usize {
+    loop {
+        while index < characters.len() && characters[index].is_whitespace() {
+            index += 1;
+        }
+        match characters
+            .get(index)
+            .copied()
+            .zip(characters.get(index + 1).copied())
+        {
+            Some(('-', '-')) => index = skip_until(characters, index, "\n"),
+            Some(('/', '*')) => index = skip_until(characters, index + 2, "*/"),
+            // MySQL's `#` comment.
+            Some(('#', _)) => index = skip_until(characters, index, "\n"),
+            _ => return index,
+        }
+    }
+}
+
+/// The word starting at `index`, upper-cased by the caller, and where it ends.
+/// `None` when there is no word there.
+fn word_at(characters: &[char], start: usize) -> Option<(String, usize)> {
+    let mut index = start;
+    let mut word = String::new();
+    while let Some(character) = characters.get(index) {
+        if character.is_alphanumeric() || *character == '_' {
+            word.push(*character);
+            index += 1;
+        } else {
+            break;
+        }
+    }
+    if word.is_empty() {
+        None
+    } else {
+        Some((word, index))
+    }
+}
+
+/// Skip a parenthesised option list, answering whether it asked for `ANALYZE`,
+/// and the index just past its closing `)`.
+fn skip_parens(characters: &[char], start: usize) -> (bool, usize) {
+    let mut depth = 0usize;
+    let mut analyzes = false;
+    let mut index = start;
+    while index < characters.len() {
+        match characters[index] {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (analyzes, index + 1);
+                }
+            }
+            quote @ ('\'' | '"' | '`') => {
+                index = skip_quoted(characters, index, quote);
+                continue;
+            }
+            character if character.is_alphanumeric() || character == '_' => {
+                let (word, next) = word_at(characters, index).expect("a word starts here");
+                analyzes |= word.eq_ignore_ascii_case("analyze");
+                index = next;
+                continue;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    (analyzes, index)
 }
 
 /// Index just past the next `terminator` at or after `from`, or the end.
@@ -370,6 +520,49 @@ mod tests {
             first_write("/* comment */ delete from items").as_deref(),
             Some("DELETE")
         );
+    }
+
+    #[test]
+    fn an_explain_header_is_split_off_what_it_explains() {
+        let split = |sql: &str| explained(sql);
+
+        assert_eq!(split("select 1"), None);
+        assert_eq!(
+            split("explain select * from items"),
+            Some(("select * from items".to_string(), false))
+        );
+        assert_eq!(
+            split("EXPLAIN ANALYZE select * from items"),
+            Some(("select * from items".to_string(), true))
+        );
+        // Postgres' parenthesised options, in any order.
+        assert_eq!(
+            split("explain (analyze, buffers, format json) select 1"),
+            Some(("select 1".to_string(), true))
+        );
+        assert_eq!(
+            split("explain (format json) select 1"),
+            Some(("select 1".to_string(), false))
+        );
+        // MySQL's bare options, and MariaDB's `ANALYZE` spelling.
+        assert_eq!(
+            split("explain format=tree select 1"),
+            Some(("select 1".to_string(), false))
+        );
+        assert_eq!(
+            split("analyze format=json select 1"),
+            Some(("select 1".to_string(), true))
+        );
+        // The statement itself is what the classifier has to see.
+        assert_eq!(
+            split("explain analyze delete from items"),
+            Some(("delete from items".to_string(), true))
+        );
+        assert_eq!(
+            split("explain delete from items"),
+            Some(("delete from items".to_string(), false))
+        );
+        assert_eq!(split("explain"), Some((String::new(), false)));
     }
 
     #[test]

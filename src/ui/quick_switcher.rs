@@ -15,6 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, IntoElement, Render, SharedString, Window, div, px};
 
 use crate::db::{DatabaseObject, ObjectKind};
+use crate::ui::query_editor::{Explain, ExplainAnalyze};
 use crate::ui::session::tab::ObjectViewMode;
 use crate::ui::session::{NewTab, OpenFile, Refresh, Session};
 
@@ -26,6 +27,8 @@ pub(crate) enum SwitcherTarget {
     NewTab,
     OpenFile,
     Refresh,
+    Explain,
+    ExplainAnalyze,
     SwitchDatabase(String),
 }
 
@@ -183,6 +186,24 @@ impl Render for QuickSwitcherView {
             );
             act_targets.push(SwitcherTarget::Refresh);
 
+            act_group = act_group.item(
+                CommandItem::new()
+                    .label("Explain Query")
+                    .icon(IconName::Route)
+                    .action(Box::new(Explain))
+                    .keywords(["explain", "plan", "query", "cost", "tree"]),
+            );
+            act_targets.push(SwitcherTarget::Explain);
+
+            act_group = act_group.item(
+                CommandItem::new()
+                    .label("Explain Query & Analyze")
+                    .icon(IconName::Gauge)
+                    .action(Box::new(ExplainAnalyze))
+                    .keywords(["explain", "analyze", "plan", "query", "timing"]),
+            );
+            act_targets.push(SwitcherTarget::ExplainAnalyze);
+
             targets.push(act_targets);
             groups.push(act_group);
         }
@@ -240,7 +261,9 @@ impl Render for QuickSwitcherView {
                         }
                         SwitcherTarget::NewTab
                         | SwitcherTarget::OpenFile
-                        | SwitcherTarget::Refresh => {
+                        | SwitcherTarget::Refresh
+                        | SwitcherTarget::Explain
+                        | SwitcherTarget::ExplainAnalyze => {
                             // Handled via the item's dispatched Action.
                         }
                     });

@@ -11,7 +11,8 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent, PanelId, TabGroup};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::{
-    ActiveTheme, IconName, ResizableState, Sizable, h_flex, resizable_panel, v_flex, v_resizable,
+    ActiveTheme, Disableable, IconName, ResizableState, Sizable, h_flex, resizable_panel, v_flex,
+    v_resizable,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -21,8 +22,10 @@ use gpui_kit::{
 
 use crate::db::Connection;
 use crate::db::DatabaseObject;
+use crate::db::Plan;
 use crate::db::query::QueryResult;
 use crate::ui::data_grid::DataGrid;
+use crate::ui::plan_view::PlanView;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
 use crate::ui::schema_view::SchemaView;
 use crate::ui::sql_file;
@@ -49,6 +52,11 @@ pub(crate) enum SessionPanelEvent {
     RunScript(String),
     /// The status bar's Run answered a held-back write.
     ConfirmRun(String),
+    /// The user asked for a statement's plan.
+    Explain {
+        sql: String,
+        analyze: bool,
+    },
     OpenFile,
     Save,
 }
@@ -98,6 +106,8 @@ impl SessionPanel {
                 result: 0,
                 running: None,
                 baseline: sql,
+                plan: None,
+                show_plan: false,
             },
             focus: cx.focus_handle(),
             group: None,
@@ -149,6 +159,10 @@ impl SessionPanel {
         match event {
             QueryEditorEvent::Run(sql) => cx.emit(SessionPanelEvent::Run(sql.clone())),
             QueryEditorEvent::RunScript(sql) => cx.emit(SessionPanelEvent::RunScript(sql.clone())),
+            QueryEditorEvent::Explain { sql, analyze } => cx.emit(SessionPanelEvent::Explain {
+                sql: sql.clone(),
+                analyze: *analyze,
+            }),
             QueryEditorEvent::Open => cx.emit(SessionPanelEvent::OpenFile),
             QueryEditorEvent::Save => cx.emit(SessionPanelEvent::Save),
         }
@@ -241,6 +255,70 @@ impl SessionPanel {
         }
     }
 
+    /// The plan viewer this tab has, once it has read a plan.
+    pub(crate) fn plan_view(&self) -> Option<Entity<PlanView>> {
+        match &self.content {
+            TabContent::Query { plan, .. } => plan.clone(),
+            _ => None,
+        }
+    }
+
+    /// Whether the pane is showing the plan rather than the result grid.
+    pub(crate) fn showing_plan(&self) -> bool {
+        matches!(
+            &self.content,
+            TabContent::Query {
+                show_plan: true,
+                ..
+            }
+        )
+    }
+
+    /// Show the plan pane or the result grid.
+    pub(crate) fn set_show_plan(&mut self, show: bool, cx: &mut Context<Self>) {
+        if let TabContent::Query { show_plan, .. } = &mut self.content {
+            *show_plan = show;
+            cx.notify();
+        }
+    }
+
+    /// Put `plan` in this tab's viewer and show it, building the viewer the
+    /// first time one is needed.
+    pub(crate) fn set_plan(&mut self, plan: Plan, cx: &mut Context<Self>) {
+        let summary = plan_summary(&plan);
+        let TabContent::Query {
+            plan: slot,
+            show_plan,
+            status,
+            ..
+        } = &mut self.content
+        else {
+            return;
+        };
+
+        let view = match slot {
+            Some(view) => view.clone(),
+            None => {
+                let view = cx.new(PlanView::new);
+                *slot = Some(view.clone());
+                view
+            }
+        };
+        view.update(cx, |view, cx| view.set_plan(plan, cx));
+        *show_plan = true;
+        *status = Status::Done(summary);
+        cx.notify();
+    }
+
+    /// The plan viewer while it is the pane being shown, so whoever hands the
+    /// tab its keyboard can put it on the plan instead of the editor.
+    pub(crate) fn active_plan(&self) -> Option<Entity<PlanView>> {
+        if !self.showing_plan() {
+            return None;
+        }
+        self.plan_view()
+    }
+
     /// The file a query tab is bound to, if any.
     pub(crate) fn file_path(&self) -> Option<PathBuf> {
         match &self.content {
@@ -305,6 +383,7 @@ impl SessionPanel {
             grid,
             results: slot,
             result,
+            show_plan,
             ..
         } = &mut self.content
         else {
@@ -314,6 +393,9 @@ impl SessionPanel {
         let grid = grid.clone();
         *slot = results;
         *result = 0;
+        // A new run is what the user asked to see, so the grid comes back even
+        // if a plan was showing.
+        *show_plan = false;
 
         let summary = self.result_summary();
         self.set_status(Status::Done(summary));
@@ -461,10 +543,18 @@ impl SessionPanel {
     /// Point this tab at `connection`: a query tab clears its grid, a table
     /// or structure tab re-reads from the new connection.
     pub(crate) fn set_connection(&mut self, connection: Arc<Connection>, cx: &mut Context<Self>) {
-        match &self.content {
-            TabContent::Query { grid, .. } => {
+        match &mut self.content {
+            TabContent::Query {
+                grid,
+                plan,
+                show_plan,
+                ..
+            } => {
                 let grid = grid.clone();
                 grid.update(cx, |grid, cx| grid.clear(cx));
+                // A plan belongs to the connection it was read from.
+                *plan = None;
+                *show_plan = false;
                 self.set_status(Status::Idle);
             }
             TabContent::Table { view } => {
@@ -514,8 +604,15 @@ impl SessionPanel {
             });
         }
         // Covers the already-displayed case, where `select_tab` returns
-        // early and never reaches `focus_active_panel`.
-        panel.read(cx).focus_handle(cx).focus(window, cx);
+        // early and never reaches `focus_active_panel`. The plan, when it is
+        // what the tab shows, is where its keys are bound.
+        match panel.read(cx).active_plan() {
+            Some(plan) => plan.update(cx, |plan, cx| plan.focus(window, cx)),
+            None => {
+                let handle = panel.read(cx).focus_handle(cx);
+                handle.focus(window, cx);
+            }
+        }
     }
 
     fn render_status_bar(&self, status: &Status, cx: &mut Context<Self>) -> impl IntoElement {
@@ -581,11 +678,14 @@ impl SessionPanel {
             })
     }
 
-    /// One button per result the last run produced.
-    fn render_result_bar(
+    /// The bar above the result area: one button per result the last run
+    /// produced, and the Results/Plan switch once a plan has been read.
+    fn render_view_bar(
         &self,
         results: usize,
         shown: usize,
+        has_plan: bool,
+        show_plan: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
@@ -601,15 +701,54 @@ impl SessionPanel {
                 let button = Button::new(SharedString::from(format!("result-{index}")))
                     .xsmall()
                     .label(format!("Result {}", index + 1))
+                    .disabled(show_plan)
                     .on_click(cx.listener(move |this, _, _window, cx| this.show_result(index, cx)));
 
-                if index == shown {
+                if index == shown && !show_plan {
                     button.primary()
                 } else {
                     button.ghost()
                 }
             }))
+            .child(div().flex_1())
+            .when(has_plan, |this| {
+                this.child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .child(
+                            Button::new("show-results")
+                                .xsmall()
+                                .label("Results")
+                                .when(show_plan, |this| this.ghost())
+                                .when(!show_plan, |this| this.primary())
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.set_show_plan(false, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("show-plan")
+                                .xsmall()
+                                .label("Plan")
+                                .when(show_plan, |this| this.primary())
+                                .when(!show_plan, |this| this.ghost())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.set_show_plan(true, cx);
+                                    if let Some(plan) = this.plan_view() {
+                                        plan.update(cx, |plan, cx| plan.focus(window, cx));
+                                    }
+                                })),
+                        ),
+                )
+            })
     }
+}
+
+/// The status bar's line after a plan comes back.
+fn plan_summary(plan: &Plan) -> String {
+    let milliseconds = plan.elapsed.as_millis();
+    let analyzed = if plan.analyzed { " · analyzed" } else { "" };
+    format!("Plan for 1 statement in {milliseconds} ms{analyzed}")
 }
 
 impl Focusable for SessionPanel {
@@ -761,41 +900,54 @@ impl Render for SessionPanel {
                 status,
                 results,
                 result,
+                plan,
+                show_plan,
                 ..
-            } => v_flex()
-                .size_full()
-                .child(
-                    div().flex_1().min_h_0().child(
-                        v_resizable("session-panes")
-                            .with_state(&self.panes)
-                            .child(
-                                resizable_panel()
-                                    .size(px(EDITOR_HEIGHT))
-                                    .size_range(px(120.)..px(720.))
-                                    .child(editor.clone()),
-                            )
-                            .child(
-                                resizable_panel().child(
-                                    v_flex()
-                                        .size_full()
-                                        // A script leaves one result per
-                                        // statement; a single query leaves
-                                        // one, and the bar for it would say
-                                        // nothing.
-                                        .when(results.len() > 1, |this| {
-                                            this.child(self.render_result_bar(
-                                                results.len(),
-                                                *result,
-                                                cx,
-                                            ))
-                                        })
-                                        .child(div().flex_1().min_h_0().child(grid.clone())),
+            } => {
+                let has_plan = plan.is_some();
+                let showing_plan = *show_plan && has_plan;
+                let content: gpui_kit::AnyElement = match (showing_plan, plan) {
+                    (true, Some(plan)) => plan.clone().into_any_element(),
+                    _ => grid.clone().into_any_element(),
+                };
+
+                v_flex()
+                    .size_full()
+                    .child(
+                        div().flex_1().min_h_0().child(
+                            v_resizable("session-panes")
+                                .with_state(&self.panes)
+                                .child(
+                                    resizable_panel()
+                                        .size(px(EDITOR_HEIGHT))
+                                        .size_range(px(120.)..px(720.))
+                                        .child(editor.clone()),
+                                )
+                                .child(
+                                    resizable_panel().child(
+                                        v_flex()
+                                            .size_full()
+                                            // A script leaves one result per
+                                            // statement, and a plan leaves the
+                                            // switch; a lone result alone would
+                                            // make the bar say nothing.
+                                            .when(results.len() > 1 || has_plan, |this| {
+                                                this.child(self.render_view_bar(
+                                                    results.len(),
+                                                    *result,
+                                                    has_plan,
+                                                    showing_plan,
+                                                    cx,
+                                                ))
+                                            })
+                                            .child(div().flex_1().min_h_0().child(content)),
+                                    ),
                                 ),
-                            ),
-                    ),
-                )
-                .child(self.render_status_bar(status, cx))
-                .into_any_element(),
+                        ),
+                    )
+                    .child(self.render_status_bar(status, cx))
+                    .into_any_element()
+            }
             // The table/structure view carries its own footer, so it fills
             // the pane.
             TabContent::Table { view } => view.clone().into_any_element(),

@@ -10,11 +10,13 @@ use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, EventEmitter, Window, actions, div};
 
+use gpui_kit::assets::IconName as AssetIcon;
+
 use crate::db::statement;
 use crate::settings;
 use crate::ui::session::{OpenFile, SaveFile};
 
-actions!(zippa_db, [RunQuery, RunScript]);
+actions!(zippa_db, [RunQuery, RunScript, Explain, ExplainAnalyze]);
 
 pub enum QueryEditorEvent {
     /// The user asked to run one statement: what is selected, or the one the
@@ -22,6 +24,9 @@ pub enum QueryEditorEvent {
     Run(String),
     /// The user asked to run the whole buffer, statement by statement.
     RunScript(String),
+    /// The user asked for the statement's plan. `analyze` asks the server to
+    /// run it so the plan carries actual times.
+    Explain { sql: String, analyze: bool },
     /// The user asked to read a SQL file into a tab.
     Open,
     /// The user asked to write this buffer to its file.
@@ -99,6 +104,13 @@ impl QueryEditor {
         self.state.read(cx).value().to_string()
     }
 
+    /// Whether the analyze button would be disabled, so a test can check the
+    /// gate without reading button state out of the window.
+    #[cfg(test)]
+    pub(crate) fn analyze_disabled_for_test(&self, cx: &gpui_kit::App) -> bool {
+        self.running || self.statement_writes(cx)
+    }
+
     pub fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
         self.running = running;
         cx.notify();
@@ -110,6 +122,19 @@ impl QueryEditor {
 
     fn run_script(&mut self, _: &RunScript, _window: &mut Window, cx: &mut Context<Self>) {
         self.emit_run_script(cx);
+    }
+
+    fn explain(&mut self, _: &Explain, _window: &mut Window, cx: &mut Context<Self>) {
+        self.emit_explain(false, cx);
+    }
+
+    fn explain_analyze(
+        &mut self,
+        _: &ExplainAnalyze,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.emit_explain(true, cx);
     }
 
     /// Run what is selected, or the statement the caret is in.
@@ -138,6 +163,34 @@ impl QueryEditor {
         cx.emit(QueryEditorEvent::RunScript(sql));
     }
 
+    /// Ask for the current statement's plan.
+    fn emit_explain(&mut self, analyze: bool, cx: &mut Context<Self>) {
+        if self.running {
+            return;
+        }
+
+        let Some(sql) = self.statement(cx) else {
+            return;
+        };
+        cx.emit(QueryEditorEvent::Explain { sql, analyze });
+    }
+
+    /// Whether the statement a run would send is one that changes data.
+    ///
+    /// The plan of a write can be read, but asking the server to run it for
+    /// actual times cannot, so the analyze button is disabled and says why.
+    pub(crate) fn statement_writes(&self, cx: &gpui_kit::App) -> bool {
+        let Some(sql) = self.statement(cx) else {
+            return false;
+        };
+        // A statement with its own `EXPLAIN` header is judged by what it
+        // explains, so `EXPLAIN ANALYZE SELECT` still reads as a read.
+        let inner = statement::explained(&sql)
+            .map(|(inner, _)| inner)
+            .unwrap_or(sql);
+        statement::first_write(&inner).is_some()
+    }
+
     /// The one statement a run should send.
     ///
     /// A selection is taken as written — it may be a fragment, or several
@@ -158,10 +211,14 @@ impl QueryEditor {
 
 impl Render for QueryEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let writes = self.statement_writes(cx);
+
         v_flex()
             .key_context("QueryEditor")
             .on_action(cx.listener(Self::run))
             .on_action(cx.listener(Self::run_script))
+            .on_action(cx.listener(Self::explain))
+            .on_action(cx.listener(Self::explain_analyze))
             .size_full()
             .border_b_1()
             .border_color(cx.theme().border)
@@ -209,6 +266,42 @@ impl Render for QueryEditor {
                                     )
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.emit(QueryEditorEvent::Save)
+                                    })),
+                            )
+                            .child(
+                                Button::new("explain")
+                                    .ghost()
+                                    .small()
+                                    .icon(AssetIcon::Route)
+                                    .accessibility_label("Explain the statement")
+                                    .tooltip_with_action(
+                                        "Show the statement's plan without running it",
+                                        &Explain,
+                                        Some("QueryEditor"),
+                                    )
+                                    .disabled(self.running)
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.emit_explain(false, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("explain-analyze")
+                                    .ghost()
+                                    .small()
+                                    .icon(AssetIcon::Gauge)
+                                    .accessibility_label("Explain the statement and run it")
+                                    .tooltip_with_action(
+                                        if writes {
+                                            "Analyze runs the query; this statement changes data"
+                                        } else {
+                                            "Explain the statement and run it for actual times"
+                                        },
+                                        &ExplainAnalyze,
+                                        Some("QueryEditor"),
+                                    )
+                                    .disabled(self.running || writes)
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.emit_explain(true, cx)
                                     })),
                             )
                             .child(

@@ -72,6 +72,14 @@ const GROUPS: &[Group] = &[
                 "Run every statement in the buffer",
                 &["secondary-shift-enter"],
             ),
+            (
+                "Show the statement's plan without running it",
+                &["secondary-e"],
+            ),
+            (
+                "Show the plan and run the statement for actual times",
+                &["secondary-shift-e"],
+            ),
             ("Give up on a running query", &["secondary-."]),
         ],
     },

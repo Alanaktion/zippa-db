@@ -33,6 +33,7 @@ use crate::ui::session::Session;
 use crate::ui::welcome::Welcome;
 
 mod editing;
+mod explain;
 mod files;
 mod filters;
 mod layout;

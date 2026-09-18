@@ -10,7 +10,7 @@ use crate::ui::data_grid::{
     ClearRowSelection, CopyValue, ExtendSelectionDown, ExtendSelectionUp, SelectAllRows, ToggleRow,
     ViewCell,
 };
-use crate::ui::query_editor::{RunQuery, RunScript};
+use crate::ui::query_editor::{Explain, ExplainAnalyze, RunQuery, RunScript};
 use crate::ui::session::{
     CancelQuery, CloseTab, NewTab, NextTab, OpenFile, PreviousTab, QuickSwitcher, Refresh,
     SaveFile, SaveFileAs,
@@ -50,6 +50,16 @@ pub fn bind(cx: &mut App) {
             Some("QueryEditor > Input"),
         ),
         KeyBinding::new("secondary-shift-enter", RunScript, Some("QueryEditor")),
+        // Reading the plan, with and without running the statement. The
+        // editor's own context leaves both free.
+        KeyBinding::new("secondary-e", Explain, Some("QueryEditor > Input")),
+        KeyBinding::new("secondary-e", Explain, Some("QueryEditor")),
+        KeyBinding::new(
+            "secondary-shift-e",
+            ExplainAnalyze,
+            Some("QueryEditor > Input"),
+        ),
+        KeyBinding::new("secondary-shift-e", ExplainAnalyze, Some("QueryEditor")),
         // Give up on a query that is taking too long.
         KeyBinding::new("secondary-.", CancelQuery, Some("Session")),
         // The caret is usually in the editor, whose own context claims keys

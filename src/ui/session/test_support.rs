@@ -10,6 +10,7 @@ use gpui_kit::{App, Context, Entity, SharedString, Window};
 
 use crate::db::DatabaseObject;
 use crate::ui::data_grid::DataGrid;
+use crate::ui::plan_view::PlanView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::table_view::TableView;
@@ -199,6 +200,19 @@ impl Session {
             cx.notify();
         });
         editor.update(cx, |editor, cx| editor.set_running(true, cx));
+    }
+
+    /// The plan viewer in the active tab, if one has been built.
+    #[cfg(test)]
+    pub(crate) fn active_plan_view_for_test(&self, cx: &App) -> Option<Entity<PlanView>> {
+        self.active_panel_for_test()?.read(cx).plan_view()
+    }
+
+    /// Whether the active tab is showing its plan rather than its grid.
+    #[cfg(test)]
+    pub(crate) fn active_plan_showing_for_test(&self, cx: &App) -> bool {
+        self.active_panel_for_test()
+            .is_some_and(|panel| panel.read(cx).showing_plan())
     }
 
     /// Reach the active tab's grid from a test.

@@ -17,15 +17,28 @@ use gpui_kit::{
 use crate::app::Workspace;
 
 // The default component bundle carries only the 101 icons the components
-// themselves use; the toolbar wants a few more from the wider Lucide catalog.
-gpui_kit::assets::icon_assets!(ToolbarIcons, [RefreshCw, FilePlus, DatabasePlus, Settings]);
+// themselves use, so every wider-Lucide icon the app names has to be listed
+// here or it renders as nothing.
+gpui_kit::assets::icon_assets!(
+    ExtraIcons,
+    [
+        RefreshCw,
+        FilePlus,
+        DatabasePlus,
+        Settings,
+        Route,
+        Gauge,
+        Braces,
+        ChevronsDownUp,
+    ]
+);
 
 #[derive(Clone, Copy, Default)]
 struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        match ToolbarIcons.load(path)? {
+        match ExtraIcons.load(path)? {
             Some(bytes) => Ok(Some(bytes)),
             None => gpui_kit::assets::Assets.load(path),
         }
@@ -33,7 +46,7 @@ impl AssetSource for AppAssets {
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut paths = gpui_kit::assets::Assets.list(path)?;
-        paths.extend(ToolbarIcons.list(path)?);
+        paths.extend(ExtraIcons.list(path)?);
         Ok(paths)
     }
 }
@@ -74,4 +87,27 @@ fn main() {
 
             cx.activate(true);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::AssetSource as _;
+
+    #[test]
+    fn every_icon_the_app_names_beyond_the_default_bundle_is_embedded() {
+        // `Assets` carries only the 101 component icons, so an icon outside
+        // that set that is not named in `icon_assets!` silently draws nothing.
+        for path in [
+            "icons/route.svg",
+            "icons/gauge.svg",
+            "icons/braces.svg",
+            "icons/chevrons-down-up.svg",
+        ] {
+            let loaded = AppAssets
+                .load(path)
+                .expect("loading an asset should not fail");
+            assert!(loaded.is_some(), "{path} is used but not embedded");
+        }
+    }
 }
