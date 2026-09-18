@@ -12,7 +12,10 @@ use gpui_kit::component::input::{
     InputEvent, InputState, NumberInput, NumberInputEvent, StepAction,
 };
 use gpui_kit::component::table::ColumnSort;
-use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme, Disableable, IconName, ResizableState, Sizable, h_flex, h_resizable,
+    resizable_panel, v_flex,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, Window, actions, div, px,
@@ -26,7 +29,11 @@ use crate::settings::{self, Settings};
 use crate::ui::data_grid::{DataGrid, GridEdit, GridNavigate, SortRequested, Sorting, StagedRow};
 use crate::ui::filter_bar::{FilterBar, FilterSpec, FiltersChanged, Operator};
 
+mod row_panel;
 mod sql;
+
+pub(crate) use row_panel::RowPanel;
+use row_panel::RowPanelEvent;
 
 actions!(
     zippa_db,
@@ -38,7 +45,8 @@ actions!(
         CancelEdit,
         InsertRow,
         DeleteRows,
-        RestoreRows
+        RestoreRows,
+        ToggleRowPanel
     ]
 );
 
@@ -133,6 +141,10 @@ pub struct TableView {
     filters: Entity<FilterBar>,
     object: DatabaseObject,
     grid: Entity<DataGrid>,
+    /// The side panel that lays the focused row out one field per column.
+    row_panel: Entity<RowPanel>,
+    row_panel_visible: bool,
+    columns_pane: Entity<ResizableState>,
     limit_input: Entity<InputState>,
     limit: usize,
     page: usize,
@@ -180,6 +192,10 @@ impl TableView {
         cx.subscribe_in(&grid, window, Self::on_grid_navigate)
             .detach();
 
+        let row_panel = cx.new(|cx| RowPanel::new(grid.clone(), window, cx));
+        cx.subscribe_in(&row_panel, window, Self::on_row_panel_event)
+            .detach();
+
         let filters = cx.new(|cx| FilterBar::new(window, cx));
         cx.subscribe_in(&filters, window, Self::on_filters_changed)
             .detach();
@@ -206,6 +222,9 @@ impl TableView {
             filters,
             object,
             grid,
+            row_panel,
+            row_panel_visible: true,
+            columns_pane: cx.new(|_| ResizableState::default()),
             limit_input,
             limit,
             page: 0,
@@ -227,6 +246,26 @@ impl TableView {
         view.load_row_key(cx);
         view.load_foreign_keys(cx);
         view
+    }
+
+    fn on_row_panel_event(
+        &mut self,
+        _: &Entity<RowPanel>,
+        event: &RowPanelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            RowPanelEvent::CloseRequested => {
+                self.row_panel_visible = false;
+                cx.notify();
+            }
+        }
+    }
+
+    fn on_toggle_row_panel(&mut self, _: &ToggleRowPanel, _: &mut Window, cx: &mut Context<Self>) {
+        self.row_panel_visible = !self.row_panel_visible;
+        cx.notify();
     }
 
     pub fn object(&self) -> &DatabaseObject {
@@ -369,6 +408,10 @@ impl TableView {
                         let columns = this.columns.clone();
                         this.filters
                             .update(cx, |filters, cx| filters.set_columns(&columns, cx));
+                        let column_types = this.column_types.clone();
+                        this.row_panel.update(cx, |panel, cx| {
+                            panel.sync_columns(&columns, &column_types, window, cx)
+                        });
                         this.sync_foreign_keys(cx);
                         // The rows come back already ordered, so the grid is
                         // told what order they are in: it rebuilds its headers
@@ -725,7 +768,7 @@ impl TableView {
                     cx.notify();
                 }
             }
-            GridEdit::Staged => cx.notify(),
+            GridEdit::Staged | GridEdit::RowFocused(_) => cx.notify(),
         }
     }
 
@@ -1140,6 +1183,21 @@ impl TableView {
                         },
                     )
                     .child(
+                        Button::new("toggle-row-panel")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::PanelRightOpen)
+                            .accessibility_label("Toggle row detail panel")
+                            .tooltip_with_action(
+                                "Show the focused row as fields",
+                                &ToggleRowPanel,
+                                Some("TableView"),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_toggle_row_panel(&ToggleRowPanel, window, cx)
+                            })),
+                    )
+                    .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
@@ -1176,8 +1234,31 @@ impl Render for TableView {
             .on_action(cx.listener(Self::on_insert_row))
             .on_action(cx.listener(Self::on_delete_rows))
             .on_action(cx.listener(Self::on_restore_rows))
+            .on_action(cx.listener(Self::on_toggle_row_panel))
             .child(self.filters.clone())
-            .child(div().flex_1().min_h_0().child(self.grid.clone()))
+            .child(if self.row_panel_visible {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        h_resizable("table-view-columns")
+                            .with_state(&self.columns_pane)
+                            .child(resizable_panel().child(self.grid.clone()))
+                            .child(
+                                resizable_panel()
+                                    .size(px(280.))
+                                    .size_range(px(220.)..px(480.))
+                                    .child(self.row_panel.clone()),
+                            ),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.grid.clone())
+                    .into_any_element()
+            })
             .when(self.confirming.is_some(), |this| {
                 this.child(self.render_confirm(cx))
             })
@@ -1230,6 +1311,19 @@ impl TableView {
 
     pub(crate) fn filters_for_test(&self) -> Entity<FilterBar> {
         self.filters.clone()
+    }
+
+    pub(crate) fn row_panel_for_test(&self) -> Entity<RowPanel> {
+        self.row_panel.clone()
+    }
+
+    pub(crate) fn toggle_row_panel_for_test(&mut self, cx: &mut Context<Self>) {
+        self.row_panel_visible = !self.row_panel_visible;
+        cx.notify();
+    }
+
+    pub(crate) fn row_panel_visible_for_test(&self) -> bool {
+        self.row_panel_visible
     }
 
     pub(crate) fn grid_for_test(&self) -> Entity<DataGrid> {

@@ -98,6 +98,17 @@ pub enum GridEdit {
     Staged,
     /// The selection left `row`, which has edits waiting on it.
     RowLeft { row: usize },
+    /// The keyboard's row changed, or was reset by a new page. `None` when no
+    /// row has it.
+    RowFocused(Option<usize>),
+}
+
+/// What a row shown in the grid is, for an owner that lays one out apart from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowStatus {
+    Loaded,
+    Draft,
+    Deleted,
 }
 
 /// A foreign key jump was asked for from the row menu.
@@ -356,6 +367,7 @@ impl DataGrid {
             table.delegate_mut().focused_row = row;
             cx.notify();
         });
+        cx.emit(GridEdit::RowFocused(row));
 
         // Leaving a row is what writes it, so the owner hears about it here.
         if let Some(left) = previous
@@ -785,7 +797,9 @@ impl DataGrid {
                 let Some(grid) = grid.upgrade() else {
                     return;
                 };
-                grid.update(cx, |grid, cx| grid.stage_value(row_ix, col_ix, text, cx));
+                grid.update(cx, |grid, cx| {
+                    grid.stage_cell(row_ix, col_ix, Some(text), cx)
+                });
             }) as value_dialog::Save
         });
 
@@ -807,13 +821,20 @@ impl DataGrid {
         }
     }
 
-    /// Stage what the value window was saved with.
-    fn stage_value(&mut self, row_ix: usize, col_ix: usize, value: String, cx: &mut Context<Self>) {
+    /// Stage a value on a cell: what the value window was saved with, or what
+    /// a side panel typed. `None` stages a NULL.
+    pub fn stage_cell(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        value: Cell,
+        cx: &mut Context<Self>,
+    ) {
         self.table.update(cx, |table, cx| {
             if !table.delegate().is_editable(row_ix, col_ix) {
                 return;
             }
-            table.delegate_mut().stage(row_ix, col_ix, Some(value));
+            table.delegate_mut().stage(row_ix, col_ix, value);
             cx.notify();
         });
         cx.emit(GridEdit::Staged);
@@ -903,6 +924,45 @@ impl DataGrid {
     /// the one being typed over it — the key itself may be what changed.
     pub fn baseline_row(&self, row: usize, cx: &App) -> Option<Vec<Cell>> {
         self.table.read(cx).delegate().result.rows.get(row).cloned()
+    }
+
+    /// The row the keyboard is on, if any.
+    pub fn focused_row(&self, cx: &App) -> Option<usize> {
+        self.table.read(cx).delegate().focused_row
+    }
+
+    /// The row as it stands, staged edits and draft values included; `None`
+    /// when `row_ix` is past the last row shown.
+    pub fn row_cells(&self, row_ix: usize, cx: &App) -> Option<Vec<Cell>> {
+        let delegate = self.table.read(cx).delegate();
+        if row_ix >= delegate.rows() {
+            return None;
+        }
+        Some(
+            (0..delegate.result.columns.len())
+                .map(|col_ix| delegate.cell(row_ix, col_ix).clone())
+                .collect(),
+        )
+    }
+
+    /// Whether this cell can be typed into.
+    pub fn is_field_editable(&self, row_ix: usize, col_ix: usize, cx: &App) -> bool {
+        self.table.read(cx).delegate().is_editable(row_ix, col_ix)
+    }
+
+    /// Whether the row shown at `row_ix` is loaded, being built, or on its way out.
+    pub fn row_status(&self, row_ix: usize, cx: &App) -> Option<RowStatus> {
+        let delegate = self.table.read(cx).delegate();
+        if row_ix >= delegate.rows() {
+            return None;
+        }
+        Some(if delegate.draft(row_ix).is_some() {
+            RowStatus::Draft
+        } else if delegate.is_deleted(row_ix) {
+            RowStatus::Deleted
+        } else {
+            RowStatus::Loaded
+        })
     }
 
     /// Take `rows`' staged edits as written: they become the loaded values.
@@ -1006,6 +1066,7 @@ impl DataGrid {
             table.clear_selection(cx);
             table.refresh(cx);
         });
+        cx.emit(GridEdit::RowFocused(None));
         cx.notify();
     }
 
@@ -1028,6 +1089,7 @@ impl DataGrid {
             table.clear_selection(cx);
             table.refresh(cx);
         });
+        cx.emit(GridEdit::RowFocused(None));
         cx.notify();
     }
 

@@ -40,6 +40,7 @@ mod navigation;
 mod paging;
 mod preferences;
 mod quick_switcher;
+mod row_panel;
 mod rows;
 mod running;
 mod safety;

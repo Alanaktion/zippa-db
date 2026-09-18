@@ -17,6 +17,7 @@ use crate::ui::session::{
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::table_view::{
     ApplyEdits, CancelEdit, DeleteRows, DiscardEdits, EditCell, InsertRow, RestoreRows, SetNull,
+    ToggleRowPanel,
 };
 use crate::ui::value_dialog::{CloseValue, SaveValue};
 
@@ -81,6 +82,7 @@ pub fn bind(cx: &mut App) {
             Some("TableView > DataTable > Input"),
         ),
         KeyBinding::new("secondary-z", DiscardEdits, Some("TableView")),
+        KeyBinding::new("secondary-\\", ToggleRowPanel, Some("TableView")),
         // The table binds the arrows, tab, and escape for its own selection
         // but leaves `enter` free, so that opens the editor. Both are scoped
         // under the table view, leaving query results read-only.

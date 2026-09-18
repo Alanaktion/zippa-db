@@ -13,9 +13,10 @@ use gpui_kit::component::tree::{TreeItem, tree};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, SharedString, Window, div};
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 
 use crate::db::{DatabaseObject, ObjectKind};
+use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
 use super::{Session, SessionEvent};
@@ -238,22 +239,7 @@ impl Session {
     }
 }
 
-/// Turn the filter box's text into a matcher.
-///
-/// The pattern is a case-insensitive regex; while it is still being typed it is
-/// often not valid (`user(`), so an unparseable pattern falls back to matching
-/// the text literally rather than showing nothing.
+/// Turn the filter box's text into a matcher; see [`text_filter::compile`].
 pub(super) fn compile_filter(pattern: &str) -> Option<Regex> {
-    if pattern.is_empty() {
-        return None;
-    }
-
-    let case_insensitive = |pattern: &str| {
-        RegexBuilder::new(pattern)
-            .case_insensitive(true)
-            .build()
-            .ok()
-    };
-
-    case_insensitive(pattern).or_else(|| case_insensitive(&regex::escape(pattern)))
+    text_filter::compile(pattern)
 }
