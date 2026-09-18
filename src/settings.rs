@@ -114,7 +114,7 @@ impl Default for Settings {
             dark_theme: None,
             editor_font: None,
             grid_font: None,
-            coerce_null_literal: false,
+            coerce_null_literal: true,
             stripe_rows: true,
             always_show_scrollbars: true,
         }
