@@ -624,12 +624,12 @@ async fn dragging_a_tab_splits_the_view(cx: &mut TestAppContext) {
     .unwrap();
 
     cx.wait_for(handle.into(), Duration::from_secs(1), |window, _| {
-        // "limit" only ever appears in a table view's own footer, so its
+        // "next-page" only ever appears in a table view's own footer, so its
         // presence is the table panel; the query panel keeps its stable
         // per-key id.
         match (
             window.try_find(("session-panel", 0usize)),
-            window.try_find("limit"),
+            window.try_find("next-page"),
         ) {
             (Some(query), Some(table)) => {
                 query.visible()

@@ -18,10 +18,24 @@ pub mod welcome;
 #[cfg(test)]
 mod tests;
 
-use gpui_kit::component::ActiveTheme;
-use gpui_kit::{App, Hsla, rgb};
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::{ActiveTheme, Root, WindowExt};
+use gpui_kit::{App, Hsla, SharedString, Window, rgb};
 
 use crate::db::Engine;
+
+/// Surface `message` as a toast, alongside whatever inline text already names
+/// the error — a failure that lands while attention is elsewhere still gets
+/// seen.
+///
+/// A bare test window has no `Root` mounted to show a toast in, and
+/// `WindowExt::push_notification` panics on that rather than no-op, so this
+/// checks first.
+pub fn notify_error(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
+    if window.root::<Root>().flatten().is_some() {
+        window.push_notification(Notification::error(message.into()), cx);
+    }
+}
 
 /// The accent an engine badge is tinted with, from `assets/colors.md`.
 ///

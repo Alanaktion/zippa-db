@@ -142,6 +142,44 @@ fn closing_the_last_connection_leaves_the_manager(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn closing_a_connection_tab_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let first = connect(cx, &handle);
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the active tab should be a session");
+    handle
+        .update(cx, |_, window, cx| {
+            session.update(cx, |session, cx| {
+                session.prepare_active_editor_for_test("select 1", window, cx)
+            })
+        })
+        .unwrap();
+
+    click(cx, &handle, "close-connection-0");
+    assert_eq!(
+        titles(cx, &handle),
+        [first.config().display_name()],
+        "a connection with unsaved changes should not close until the question is answered"
+    );
+
+    // Saying no leaves the tab open, still connected.
+    click(cx, &handle, "cancel");
+    assert_eq!(titles(cx, &handle), [first.config().display_name()]);
+
+    // Saying yes closes it despite the unsaved changes.
+    click(cx, &handle, "close-connection-0");
+    click(cx, &handle, "ok");
+    assert_eq!(
+        titles(cx, &handle),
+        ["New connection"],
+        "confirming should close the connection"
+    );
+}
+
+#[gpui_kit::test]
 fn disconnecting_returns_the_tab_to_the_manager(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let first = connect(cx, &handle);

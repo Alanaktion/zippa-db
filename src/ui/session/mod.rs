@@ -475,6 +475,13 @@ impl Session {
         &self.panels
     }
 
+    /// Whether any tab in this connection has a buffer that would be lost by
+    /// closing it, so the workspace knows to ask before closing the whole
+    /// connection.
+    pub(crate) fn has_unsaved_changes(&self, cx: &App) -> bool {
+        self.panels.iter().any(|panel| panel.read(cx).is_dirty(cx))
+    }
+
     pub(crate) fn active_tab_index(&self) -> usize {
         let Some(active) = self.active.as_ref() else {
             return 0;
@@ -560,7 +567,8 @@ impl Session {
                 Ok(Some(paths)) => paths,
                 Ok(None) => return,
                 Err(error) => {
-                    this.update(cx, |this, cx| this.report(error, cx)).ok();
+                    this.update_in(cx, |this, window, cx| this.report(error, window, cx))
+                        .ok();
                     return;
                 }
             };
@@ -574,7 +582,8 @@ impl Session {
                         .ok();
                     }
                     Err(error) => {
-                        this.update(cx, |this, cx| this.report(error, cx)).ok();
+                        this.update_in(cx, |this, window, cx| this.report(error, window, cx))
+                            .ok();
                     }
                 }
             }
@@ -632,7 +641,8 @@ impl Session {
             }
             Ok(None) => {}
             Err(error) => {
-                this.update(cx, |this, cx| this.report(error, cx)).ok();
+                this.update_in(cx, |this, window, cx| this.report(error, window, cx))
+                    .ok();
             }
         })
         .detach();
@@ -650,23 +660,30 @@ impl Session {
 
         cx.spawn(async move |this, cx| {
             let written = task.await;
-            this.update(cx, |_this, cx| {
+            this.update_in(cx, |_this, window, cx| {
                 // The tab may have been closed while the file was written.
                 let Some(panel) = panel.upgrade() else {
                     return;
                 };
 
+                let error = match written {
+                    Ok(()) => None,
+                    Err(error) => Some(format!("{error:#}")),
+                };
                 panel.update(cx, |panel, cx| {
-                    match written {
-                        Ok(()) => {
+                    match &error {
+                        None => {
                             panel.set_status(Status::Done(format!("Saved {}", path.display())));
                             panel.set_file(path, cx);
                             panel.set_baseline(sql);
                         }
-                        Err(error) => panel.set_status(Status::Error(format!("{error:#}"))),
+                        Some(error) => panel.set_status(Status::Error(error.clone())),
                     }
                     cx.notify();
                 });
+                if let Some(error) = error {
+                    crate::ui::notify_error(window, cx, format!("Error: {error}"));
+                }
             })
             .ok();
         })
@@ -677,14 +694,16 @@ impl Session {
     ///
     /// Only query tabs carry a status bar, so an error raised while a table
     /// tab is in front goes to the query tab nearest it.
-    fn report(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
+    fn report(&mut self, error: anyhow::Error, window: &mut Window, cx: &mut Context<Self>) {
         let Some(panel) = self.nearest_query_panel(cx) else {
             return;
         };
+        let message = format!("{error:#}");
         panel.update(cx, |panel, cx| {
-            panel.set_status(Status::Error(format!("{error:#}")));
+            panel.set_status(Status::Error(message.clone()));
             cx.notify();
         });
+        crate::ui::notify_error(window, cx, format!("Error: {message}"));
     }
 
     /// The active panel if it holds a query, else the next one that does.
@@ -735,7 +754,7 @@ impl Session {
 
         cx.spawn(async move |this, cx| {
             let loaded = task.await;
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 this.metadata_error = None;
                 match loaded {
                     Ok((databases, objects)) => {
@@ -749,6 +768,9 @@ impl Session {
                         }
                     }
                     Err(_) => this.metadata_error = Some("reading the schema was cancelled".into()),
+                }
+                if let Some(error) = &this.metadata_error {
+                    crate::ui::notify_error(window, cx, format!("Error: {error}"));
                 }
                 this.rebuild_tree(cx);
                 cx.notify();
@@ -780,7 +802,7 @@ impl Session {
 
         cx.spawn(async move |this, cx| {
             let opened = task.await;
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 this.switching = false;
                 match opened {
                     Ok(Ok(connection)) => {
@@ -798,20 +820,22 @@ impl Session {
                         this.reload_metadata(cx);
                     }
                     Ok(Err(error)) => {
+                        let message = format!("{error:#}");
                         if let Some(panel) = this.active_panel() {
                             panel.update(cx, |panel, _| {
-                                panel.set_status(Status::Error(format!("{error:#}")))
+                                panel.set_status(Status::Error(message.clone()))
                             });
                         }
+                        crate::ui::notify_error(window, cx, format!("Error: {message}"));
                     }
                     Err(_) => {
+                        let message = "switching database was cancelled";
                         if let Some(panel) = this.active_panel() {
                             panel.update(cx, |panel, _| {
-                                panel.set_status(Status::Error(
-                                    "switching database was cancelled".into(),
-                                ))
+                                panel.set_status(Status::Error(message.into()))
                             });
                         }
+                        crate::ui::notify_error(window, cx, format!("Error: {message}"));
                     }
                 }
                 cx.notify();
@@ -891,7 +915,7 @@ impl Session {
         let weak = panel.downgrade();
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            this.update(cx, |_this, cx| {
+            this.update_in(cx, |_this, window, cx| {
                 // The tab may have been closed while the query ran.
                 let Some(panel) = weak.upgrade() else {
                     return;
@@ -904,8 +928,10 @@ impl Session {
                     match result {
                         Ok(Ok(results)) => panel.show_results(results, cx),
                         Ok(Err(error)) => {
-                            panel.set_status(Status::Error(format!("{error:#}")));
+                            let message = format!("{error:#}");
+                            panel.set_status(Status::Error(message.clone()));
                             grid.update(cx, |grid, cx| grid.clear(cx));
+                            crate::ui::notify_error(window, cx, format!("Error: {message}"));
                         }
                         // The sender is dropped when the run is given up on,
                         // which is what cancelling does.

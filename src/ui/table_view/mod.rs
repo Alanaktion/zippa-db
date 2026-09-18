@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{
+    InputEvent, InputState, NumberInput, NumberInputEvent, StepAction,
+};
 use gpui_kit::component::table::ColumnSort;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -191,6 +193,13 @@ impl TableView {
         let limit_input = cx.new(|cx| InputState::new(window, cx).default_value(limit.to_string()));
         cx.subscribe_in(&limit_input, window, Self::on_limit_event)
             .detach();
+        // Left unset on the state itself (see `on_limit_step`): with `min`,
+        // `max`, or `step` set there, `NumberInput`'s own +/- buttons would
+        // update the value and emit `InputEvent::Change` internally, which
+        // is what `on_limit_event` ignores to avoid firing a query per
+        // keystroke while typing.
+        cx.subscribe_in(&limit_input, window, Self::on_limit_step)
+            .detach();
 
         let mut view = Self {
             connection,
@@ -349,7 +358,7 @@ impl TableView {
 
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 this.loading = false;
                 match result {
                     Ok(Ok(mut query_result)) => {
@@ -374,8 +383,10 @@ impl TableView {
                         this.loaded_rows = 0;
                         this.columns.clear();
                         this.column_types.clear();
-                        this.error = Some(format!("{error:#}"));
+                        let message = format!("{error:#}");
+                        this.error = Some(message.clone());
                         this.grid.update(cx, |grid, cx| grid.clear(cx));
+                        crate::ui::notify_error(window, cx, format!("Error: {message}"));
                     }
                     Err(_) => this.error = Some("loading the table was cancelled".into()),
                 }
@@ -628,7 +639,7 @@ impl TableView {
 
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 this.committing = false;
                 match result {
                     Ok(Ok(())) => {
@@ -640,7 +651,11 @@ impl TableView {
                                 .update(cx, |grid, cx| grid.apply_staged(&rows, cx));
                         }
                     }
-                    Ok(Err(error)) => this.error = Some(format!("{error:#}")),
+                    Ok(Err(error)) => {
+                        let message = format!("{error:#}");
+                        this.error = Some(message.clone());
+                        crate::ui::notify_error(window, cx, format!("Error: {message}"));
+                    }
                     Err(_) => this.error = Some("the write was cancelled".into()),
                 }
                 cx.notify();
@@ -855,6 +870,32 @@ impl TableView {
             return;
         }
 
+        self.set_limit(limit, cx);
+    }
+
+    /// A click on the number input's own +/- buttons: unlike typing, one
+    /// click is one committed change, so it applies straight away rather
+    /// than waiting on `Enter`.
+    fn on_limit_step(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &NumberInputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let NumberInputEvent::Step(action) = event;
+        let limit = match action {
+            StepAction::Increment => self.limit.saturating_add(1),
+            StepAction::Decrement => self.limit.saturating_sub(1),
+        }
+        .clamp(1, settings::MAX_PAGE_SIZE);
+        if limit == self.limit {
+            return;
+        }
+
+        input.update(cx, |input, cx| {
+            input.set_value(limit.to_string(), window, cx);
+        });
         self.set_limit(limit, cx);
     }
 
@@ -1107,7 +1148,7 @@ impl TableView {
                     .child(
                         div()
                             .w(px(88.))
-                            .child(Input::new(&self.limit_input).id("limit").xsmall()),
+                            .child(NumberInput::new(&self.limit_input).xsmall()),
                     ),
             )
     }

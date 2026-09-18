@@ -156,7 +156,11 @@ impl Welcome {
                 );
                 self.status = Status::Idle;
             }
-            Err(error) => self.status = Status::Error(format!("{error:#}")),
+            Err(error) => {
+                let message = format!("{error:#}");
+                self.status = Status::Error(message.clone());
+                crate::ui::notify_error(window, cx, format!("Error: {message}"));
+            }
         }
         cx.notify();
     }
@@ -200,7 +204,7 @@ impl Welcome {
         cx.notify();
     }
 
-    fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let config = self.config(cx);
         let password = self.password.read(cx).value().to_string();
 
@@ -220,7 +224,11 @@ impl Welcome {
                 self.selected = Some(config.id);
                 Status::Message(format!("Saved {}", config.display_name()))
             }
-            Err(error) => Status::Error(format!("{error:#}")),
+            Err(error) => {
+                let message = format!("{error:#}");
+                crate::ui::notify_error(window, cx, format!("Error: {message}"));
+                Status::Error(message)
+            }
         };
         cx.notify();
     }
@@ -231,7 +239,9 @@ impl Welcome {
         if let Err(error) =
             store::save(&self.connections).and_then(|()| store::delete_password(&id))
         {
-            self.status = Status::Error(format!("{error:#}"));
+            let message = format!("{error:#}");
+            crate::ui::notify_error(window, cx, format!("Error: {message}"));
+            self.status = Status::Error(message);
         }
         if self.selected == Some(id) {
             self.reset(window, cx);
@@ -250,14 +260,22 @@ impl Welcome {
         let task = runtime::spawn(async move { Connection::open(config, password).await });
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(Ok(connection)) => {
                         this.status = Status::Idle;
                         cx.emit(WelcomeEvent::Connected(Arc::new(connection)));
                     }
-                    Ok(Err(error)) => this.status = Status::Error(format!("{error:#}")),
-                    Err(_) => this.status = Status::Error("the connection was cancelled".into()),
+                    Ok(Err(error)) => {
+                        let message = format!("{error:#}");
+                        this.status = Status::Error(message.clone());
+                        crate::ui::notify_error(window, cx, format!("Error: {message}"));
+                    }
+                    Err(_) => {
+                        let message = "the connection was cancelled";
+                        this.status = Status::Error(message.into());
+                        crate::ui::notify_error(window, cx, format!("Error: {message}"));
+                    }
                 }
                 cx.notify();
             })

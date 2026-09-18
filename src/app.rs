@@ -8,7 +8,8 @@
 
 use std::sync::Arc;
 
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Root, Sizable, TitleBar, WindowExt, h_flex, v_flex,
@@ -153,8 +154,67 @@ impl Workspace {
         }
     }
 
-    /// Close a tab, disconnecting it if it holds a connection.
+    /// Close a tab, asking first if it holds a connection with unsaved
+    /// changes in one of its own tabs.
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
+            return;
+        }
+
+        if let TabContent::Session(session) = &self.tabs[index]
+            && session.read(cx).has_unsaved_changes(cx)
+        {
+            self.confirm_close_tab(session.clone(), window, cx);
+            return;
+        }
+
+        self.close_tab_now(index, window, cx);
+    }
+
+    /// Ask before throwing away a connection's unsaved tabs; closes it on
+    /// confirmation, by whatever index it still holds by then.
+    fn confirm_close_tab(
+        &mut self,
+        session: Entity<Session>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = session.read(cx).display_name();
+        let workspace = cx.entity().downgrade();
+
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let workspace = workspace.clone();
+            let session = session.clone();
+            alert
+                .title("Unsaved Changes")
+                .description(format!(
+                    "\"{name}\" has tabs with unsaved changes. Close it anyway?"
+                ))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Close Without Saving")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Keep Open")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.update(cx, |this, cx| {
+                            if let Some(index) = this.tab_of(
+                                |tab| matches!(tab, TabContent::Session(open) if open == &session),
+                            ) {
+                                this.close_tab_now(index, window, cx);
+                            }
+                        });
+                    }
+                    true
+                })
+        });
+    }
+
+    /// Remove a tab outright; the caller has already decided any unsaved
+    /// changes in it do not matter.
+    fn close_tab_now(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if index >= self.tabs.len() {
             return;
         }
