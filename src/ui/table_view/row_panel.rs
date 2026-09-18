@@ -344,18 +344,17 @@ impl RowPanel {
                 h_flex()
                     .gap_1()
                     .justify_between()
-                    .child(div()
-                        .text_size(px(10.))
-                        .line_height(px(12.))
-                        .text_color(cx.theme().muted_foreground)
-                        .when(deleted, |this| this.line_through())
-                        .child(format!("{column} · {type_name}"))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .line_height(px(12.))
+                            .text_color(cx.theme().muted_foreground)
+                            .when(deleted, |this| this.line_through())
+                            .child(format!("{column} · {type_name}")),
                     )
-                    .child(menu)
+                    .child(menu),
             )
-            .child(
-                input
-            )
+            .child(input)
             .when_some(note, |this, note| {
                 this.child(
                     div()

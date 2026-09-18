@@ -29,7 +29,6 @@
 
 * [ ] Syntax highlighting tailored per database engine dialect
 * [ ] Auto-complete (tables, columns, SQL keywords, schemas) powered by live introspection
-* [ ] Line numbers, code folding, and auto-indentation
 
 ### Result Sets & Output Diagnostics
 
@@ -39,7 +38,7 @@
 
 ### Structure & Object Explorer
 
-* [x] Left sidebar navigation tree: Databases > Schemas > Tables / Views (with regex filter; database switcher in place; functions/procedures/sequences not yet included)
+* [x] Left sidebar navigation tree: Databases > Schemas > Tables / Views
 
 ### View & Routine Management
 

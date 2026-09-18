@@ -18,6 +18,21 @@ pub(crate) const OBJECTS_SQL: &str = "SELECT table_schema, table_name, table_typ
      WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
      ORDER BY table_schema, table_name";
 
+/// Functions, procedures and sequences outside the system schemas and the
+/// extensions, with the argument types that tell overloads apart.
+pub(crate) const ROUTINES_SQL: &str = "SELECT n.nspname, p.proname, \
+     CASE p.prokind WHEN 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END, \
+     pg_get_function_identity_arguments(p.oid) \
+     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+     WHERE p.prokind IN ('f', 'p') \
+     AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+     AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') \
+     UNION ALL \
+     SELECT n.nspname, c.relname, 'SEQUENCE', NULL \
+     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+     WHERE c.relkind = 'S' AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+     ORDER BY 1, 2, 4";
+
 pub(crate) async fn connect(config: &ConnectionConfig, password: Option<&str>) -> Result<PgPool> {
     let mut options = PgConnectOptions::new()
         .host(&config.host)

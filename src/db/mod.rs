@@ -32,7 +32,7 @@ pub(crate) mod tests;
 pub(crate) use config::file_name;
 pub use config::{ConnectionConfig, Engine, SafetyMode};
 pub(crate) use connection::POOL_SIZE;
-pub use connection::{Connection, DatabaseObject, ObjectKind, RowKey};
+pub use connection::{Connection, DatabaseObject, ObjectKind, RowKey, StoredKind, StoredObject};
 pub use schema::{ColumnDef, ForeignKeyDef, IndexDef, ReferentialAction, TableSchema};
 pub use sql::quote_identifier;
 pub(crate) use sql::{keyword_literal, placeholder, quote_literal, text_type, typed_placeholder};

@@ -52,9 +52,6 @@ pub fn init(cx: &mut App) {
             MenuItem::action("Close Tab", CloseTab),
             MenuItem::action("Close Connection", CloseConnection),
         ]),
-        Menu::new("Help").items(vec![MenuItem::action(
-            "Keyboard Shortcuts",
-            ShowShortcuts,
-        )]),
+        Menu::new("Help").items(vec![MenuItem::action("Keyboard Shortcuts", ShowShortcuts)]),
     ]);
 }

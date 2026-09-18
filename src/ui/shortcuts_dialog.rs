@@ -55,7 +55,10 @@ const GROUPS: &[Group] = &[
         rows: &[
             ("Open a SQL file", &["secondary-o"]),
             ("Save the active tab", &["secondary-s"]),
-            ("Save the active tab under a new name", &["secondary-shift-s"]),
+            (
+                "Save the active tab under a new name",
+                &["secondary-shift-s"],
+            ),
         ],
     },
     Group {
@@ -65,7 +68,10 @@ const GROUPS: &[Group] = &[
                 "Run the selection, or the statement at the caret",
                 &["secondary-enter"],
             ),
-            ("Run every statement in the buffer", &["secondary-shift-enter"]),
+            (
+                "Run every statement in the buffer",
+                &["secondary-shift-enter"],
+            ),
             ("Give up on a running query", &["secondary-."]),
         ],
     },
@@ -125,7 +131,12 @@ fn body() -> impl IntoElement {
 fn group(group: &Group) -> impl IntoElement {
     v_flex()
         .gap_1()
-        .child(div().text_sm().font_weight(gpui_kit::FontWeight::BOLD).child(group.title))
+        .child(
+            div()
+                .text_sm()
+                .font_weight(gpui_kit::FontWeight::BOLD)
+                .child(group.title),
+        )
         .children(group.rows.iter().map(|(what, keys)| row(what, keys)))
 }
 
@@ -135,20 +146,16 @@ fn row(what: &'static str, keys: &'static [&'static str]) -> impl IntoElement {
         .gap_4()
         .text_sm()
         .child(div().child(what))
-        .child(
-            h_flex()
-                .flex_none()
-                .gap_1()
-                .items_center()
-                .children(keys.iter().enumerate().flat_map(|(ix, keys)| {
-                    let separator = (ix > 0).then(|| div().text_xs().child("or").into_any_element());
-                    let stroke = Keystroke::parse(keys)
-                        .unwrap_or_else(|_| panic!("bad keystroke {keys:?} in the shortcut list"));
-                    separator
-                        .into_iter()
-                        .chain([Kbd::new(stroke).into_any_element()])
-                })),
-        )
+        .child(h_flex().flex_none().gap_1().items_center().children(
+            keys.iter().enumerate().flat_map(|(ix, keys)| {
+                let separator = (ix > 0).then(|| div().text_xs().child("or").into_any_element());
+                let stroke = Keystroke::parse(keys)
+                    .unwrap_or_else(|_| panic!("bad keystroke {keys:?} in the shortcut list"));
+                separator
+                    .into_iter()
+                    .chain([Kbd::new(stroke).into_any_element()])
+            }),
+        ))
 }
 
 #[cfg(test)]

@@ -23,7 +23,7 @@ use gpui_kit::{
 
 use regex::Regex;
 
-use crate::db::{Connection, DatabaseObject, runtime, statement};
+use crate::db::{Connection, DatabaseObject, StoredObject, runtime, statement};
 use crate::ui::filter_bar::FilterSpec;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::sql_file;
@@ -78,6 +78,8 @@ pub struct Session {
     columns: Entity<ResizableState>,
     databases: Vec<String>,
     objects: Vec<DatabaseObject>,
+    /// Functions, procedures and sequences, listed after the tables.
+    stored: Vec<StoredObject>,
     /// Text filter over the object list.
     filter: Entity<InputState>,
     /// Compiled form of the filter; `None` means "show everything".
@@ -126,6 +128,7 @@ impl Session {
             columns: cx.new(|_| ResizableState::default()),
             databases: Vec::new(),
             objects: Vec::new(),
+            stored: Vec::new(),
             filter,
             matcher: None,
             objects_tree: cx.new(|cx| TreeState::new(cx)),
@@ -768,23 +771,30 @@ impl Session {
     /// Read the database list and the current database's tables and views.
     pub(crate) fn reload_metadata(&mut self, cx: &mut Context<Self>) {
         let connection = self.connection.clone();
-        let task =
-            runtime::spawn(
-                async move { (connection.databases().await, connection.objects().await) },
-            );
+        let task = runtime::spawn(async move {
+            (
+                connection.databases().await,
+                connection.objects().await,
+                connection.stored_objects().await,
+            )
+        });
 
         cx.spawn(async move |this, cx| {
             let loaded = task.await;
             this.update_in(cx, |this, window, cx| {
                 this.metadata_error = None;
                 match loaded {
-                    Ok((databases, objects)) => {
+                    Ok((databases, objects, stored)) => {
                         match databases {
                             Ok(databases) => this.databases = databases,
                             Err(error) => this.metadata_error = Some(format!("{error:#}")),
                         }
                         match objects {
                             Ok(objects) => this.objects = objects,
+                            Err(error) => this.metadata_error = Some(format!("{error:#}")),
+                        }
+                        match stored {
+                            Ok(stored) => this.stored = stored,
                             Err(error) => this.metadata_error = Some(format!("{error:#}")),
                         }
                     }
@@ -832,6 +842,7 @@ impl Session {
                         runtime::spawn(async move { previous.close().await });
 
                         this.objects.clear();
+                        this.stored.clear();
                         this.rebuild_tree(cx);
                         let connection = this.connection.clone();
                         for panel in this.panels.clone() {

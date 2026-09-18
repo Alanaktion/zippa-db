@@ -46,6 +46,42 @@ pub enum ObjectKind {
     View,
 }
 
+/// A function, procedure or sequence reported by the server.
+///
+/// Kept apart from [`DatabaseObject`]: those are what a tab can open and a
+/// query can select from, and these are not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredObject {
+    /// Schema the object lives in. `None` for engines without schemas.
+    pub schema: Option<String>,
+    pub name: String,
+    /// Argument types, so overloads of one function can be told apart.
+    pub arguments: Option<String>,
+    pub kind: StoredKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoredKind {
+    Function,
+    Procedure,
+    Sequence,
+}
+
+impl StoredObject {
+    /// Name as shown in the sidebar: schema-qualified when the schema adds
+    /// something, with the argument types of a routine after it.
+    pub fn label(&self) -> String {
+        let name = match &self.schema {
+            Some(schema) => format!("{schema}.{}", self.name),
+            None => self.name.clone(),
+        };
+        match &self.arguments {
+            Some(arguments) => format!("{name}({arguments})"),
+            None => name,
+        }
+    }
+}
+
 impl DatabaseObject {
     /// Name as shown in the sidebar, qualified only when the schema adds
     /// something the user cannot already see.
@@ -164,6 +200,54 @@ impl Connection {
                         });
 
                 Some(DatabaseObject { schema, name, kind })
+            })
+            .collect())
+    }
+
+    /// Functions, procedures and sequences in the current database.
+    pub async fn stored_objects(&self) -> Result<Vec<StoredObject>> {
+        let sql = match self.config.engine {
+            Engine::Postgres => postgres::ROUTINES_SQL,
+            Engine::MySql => mysql::ROUTINES_SQL,
+            // SQLite has no stored routines and no sequences.
+            Engine::Sqlite => return Ok(Vec::new()),
+        };
+
+        let result = self.run_query(sql).await?;
+        Ok(result
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let name = row.get(1)?.clone()?;
+                let kind = match row.get(2).and_then(|cell| cell.as_deref())? {
+                    kind if kind.eq_ignore_ascii_case("PROCEDURE") => StoredKind::Procedure,
+                    kind if kind.eq_ignore_ascii_case("SEQUENCE") => StoredKind::Sequence,
+                    _ => StoredKind::Function,
+                };
+                let schema =
+                    row.first()
+                        .cloned()
+                        .flatten()
+                        .filter(|schema| match self.config.engine {
+                            Engine::Postgres => schema != "public",
+                            Engine::MySql | Engine::Sqlite => false,
+                        });
+                // Postgres gives an empty list for a function of no arguments;
+                // the parentheses still tell it apart from a sequence.
+                let arguments = match kind {
+                    StoredKind::Sequence => None,
+                    _ if self.config.engine == Engine::Postgres => {
+                        Some(row.get(3).cloned().flatten().unwrap_or_default())
+                    }
+                    _ => None,
+                };
+
+                Some(StoredObject {
+                    schema,
+                    name,
+                    arguments,
+                    kind,
+                })
             })
             .collect())
     }

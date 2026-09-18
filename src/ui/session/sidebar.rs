@@ -12,10 +12,10 @@ use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::tree::{TreeItem, tree};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, SharedString, Window, div};
+use gpui_kit::{ClipboardItem, Context, Entity, SharedString, Window, div};
 use regex::Regex;
 
-use crate::db::{DatabaseObject, ObjectKind};
+use crate::db::{DatabaseObject, ObjectKind, StoredKind, StoredObject};
 use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
@@ -50,15 +50,48 @@ impl Session {
             .collect()
     }
 
+    /// The functions, procedures and sequences the filter lets through.
+    pub(super) fn visible_stored(&self) -> Vec<&StoredObject> {
+        self.stored
+            .iter()
+            .filter(|object| match &self.matcher {
+                Some(matcher) => matcher.is_match(&object.label()),
+                None => true,
+            })
+            .collect()
+    }
+
     /// Refill the tree from whatever the filter currently lets through, then
     /// point its selection at the active tab again — new items mean a fresh
     /// [`TreeState`], which forgets which one was selected.
     pub(super) fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
-        let items = self
+        let mut items = self
             .visible_objects()
             .into_iter()
             .map(|object| TreeItem::new(object.label(), object.label()))
             .collect::<Vec<_>>();
+
+        // One folder per kind, after the tables and only when it has members.
+        let stored = self.visible_stored();
+        for kind in [
+            StoredKind::Function,
+            StoredKind::Procedure,
+            StoredKind::Sequence,
+        ] {
+            let children = stored
+                .iter()
+                .filter(|object| object.kind == kind)
+                .map(|object| TreeItem::new(stored_id(object), object.label()))
+                .collect::<Vec<_>>();
+            if !children.is_empty() {
+                let (id, title) = folder(kind);
+                items.push(
+                    TreeItem::new(id, format!("{title} ({})", children.len()))
+                        .expanded(self.matcher.is_some())
+                        .children(children),
+                );
+            }
+        }
         self.objects_tree
             .update(cx, |tree, cx| tree.set_items(items, cx));
         self.sync_tree_selection(cx);
@@ -80,14 +113,15 @@ impl Session {
         let objects = self.visible_objects();
         let filtering = self.matcher.is_some();
 
+        let stored_hidden = self.visible_stored().is_empty();
         let notice = match (
             &self.metadata_error,
-            self.objects.is_empty(),
-            objects.is_empty(),
+            self.objects.is_empty() && self.stored.is_empty(),
+            objects.is_empty() && stored_hidden,
         ) {
             (Some(error), _, _) => Some((error.clone(), cx.theme().danger)),
             (None, true, _) => Some((
-                "No tables or views".to_string(),
+                "No tables, views or routines".to_string(),
                 cx.theme().muted_foreground,
             )),
             (None, false, true) => Some((
@@ -98,7 +132,11 @@ impl Session {
         };
 
         let heading = if filtering {
-            format!("TABLES & VIEWS ({}/{})", objects.len(), self.objects.len())
+            format!(
+                "TABLES & VIEWS ({}/{})",
+                objects.len() + self.visible_stored().len(),
+                self.objects.len() + self.stored.len()
+            )
         } else {
             "TABLES & VIEWS".to_string()
         };
@@ -133,6 +171,26 @@ impl Session {
                         move |_ix, entry, selected, _window, cx| {
                             session.update(cx, |this, cx| {
                                 let label = entry.item().label.clone();
+                                if entry.is_folder() {
+                                    return ListItem::new(SharedString::from(format!(
+                                        "folder-{}",
+                                        entry.item().id
+                                    )))
+                                    .selected(selected)
+                                    .child(div().text_sm().truncate().child(label));
+                                }
+                                if let Some(stored) = this
+                                    .stored
+                                    .iter()
+                                    .find(|object| stored_id(object) == entry.item().id.as_ref())
+                                {
+                                    return ListItem::new(SharedString::from(format!(
+                                        "stored-{}",
+                                        entry.item().id
+                                    )))
+                                    .selected(selected)
+                                    .child(div().text_sm().truncate().child(stored.label()));
+                                }
                                 let object = this
                                     .objects
                                     .iter()
@@ -174,6 +232,21 @@ impl Session {
                     )
                     .context_menu(move |_ix, entry, menu, _window, cx| {
                         let label = entry.item().label.clone();
+                        let stored = menu_session
+                            .read(cx)
+                            .stored
+                            .iter()
+                            .find(|object| stored_id(object) == entry.item().id.as_ref())
+                            .cloned();
+                        if let Some(stored) = stored {
+                            return menu.item(PopupMenuItem::new("Copy name").on_click(
+                                move |_, _window, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        stored.name.clone(),
+                                    ));
+                                },
+                            ));
+                        }
                         let object = menu_session
                             .read(cx)
                             .objects
@@ -236,6 +309,22 @@ impl Session {
                         cx.emit(SessionEvent::Disconnected);
                     })),
             )
+    }
+}
+
+/// A tree id for a function, procedure or sequence, which cannot collide with
+/// the plain label a table or view uses.
+fn stored_id(object: &StoredObject) -> String {
+    let (id, _) = folder(object.kind);
+    format!("{id}:{}", object.label())
+}
+
+/// The folder a kind is listed under: its tree id and its title.
+fn folder(kind: StoredKind) -> (&'static str, &'static str) {
+    match kind {
+        StoredKind::Function => ("folder:functions", "Functions"),
+        StoredKind::Procedure => ("folder:procedures", "Procedures"),
+        StoredKind::Sequence => ("folder:sequences", "Sequences"),
     }
 }
 

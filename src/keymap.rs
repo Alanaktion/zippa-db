@@ -12,8 +12,8 @@ use crate::ui::data_grid::{
 };
 use crate::ui::query_editor::{RunQuery, RunScript};
 use crate::ui::session::{
-    CancelQuery, CloseTab, NewTab, NextTab, OpenFile, PreviousTab, QuickSwitcher, Refresh, SaveFile,
-    SaveFileAs,
+    CancelQuery, CloseTab, NewTab, NextTab, OpenFile, PreviousTab, QuickSwitcher, Refresh,
+    SaveFile, SaveFileAs,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;

@@ -15,6 +15,11 @@ pub(crate) const DATABASES_SQL: &str = "SELECT schema_name FROM information_sche
 pub(crate) const OBJECTS_SQL: &str = "SELECT table_schema, table_name, table_type \
      FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name";
 
+/// Stored functions and procedures in the current database. MySQL has no
+/// sequences, and reports no argument list in this view.
+pub(crate) const ROUTINES_SQL: &str = "SELECT routine_schema, routine_name, routine_type, NULL \
+     FROM information_schema.routines WHERE routine_schema = DATABASE() ORDER BY routine_name";
+
 pub(crate) async fn connect(
     config: &ConnectionConfig,
     password: Option<&str>,
