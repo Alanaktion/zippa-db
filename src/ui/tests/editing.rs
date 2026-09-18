@@ -288,7 +288,18 @@ fn typing_null_means_sql_null_only_when_the_setting_says_so(cx: &mut TestAppCont
     let (database, _handle, view) = table_view(cx);
     cx.run_until_parked();
 
-    // Off by default: an edit means the four characters that were typed.
+    // On by default: typing null means SQL NULL.
+    stage_cell(cx, &view, 0, 1, "null");
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        None,
+        "with the setting on, typing null stores SQL NULL"
+    );
+
+    // Off: an edit means the four characters that were typed.
+    cx.update(|cx| settings::update(cx, |settings| settings.coerce_null_literal = false));
     stage_cell(cx, &view, 0, 1, "NULL");
     view.update(cx, |view, cx| view.commit(cx));
     cx.run_until_parked();
@@ -298,15 +309,8 @@ fn typing_null_means_sql_null_only_when_the_setting_says_so(cx: &mut TestAppCont
         "with the setting off, NULL is text"
     );
 
+    // The settings file is shared, so leave it as the default found it.
     cx.update(|cx| settings::update(cx, |settings| settings.coerce_null_literal = true));
-    stage_cell(cx, &view, 0, 1, "null");
-    view.update(cx, |view, cx| view.commit(cx));
-    cx.run_until_parked();
-    assert_eq!(
-        runtime::block_on(name_of(&database, 1)),
-        None,
-        "with the setting on, typing null stores SQL NULL"
-    );
 }
 
 #[gpui_kit::test]

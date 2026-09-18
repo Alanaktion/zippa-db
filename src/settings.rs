@@ -93,7 +93,7 @@ pub struct Settings {
     /// Font family for the result grid; `None` is the theme's monospace family.
     pub grid_font: Option<SharedString>,
     /// Whether typing `NULL` into a cell stages SQL `NULL` rather than the
-    /// four characters. Off by default, so an edit means what it says.
+    /// four characters. On by default.
     pub coerce_null_literal: bool,
     /// Whether the result grid tints every other row.
     pub stripe_rows: bool,

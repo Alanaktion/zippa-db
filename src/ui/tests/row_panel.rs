@@ -97,3 +97,18 @@ fn the_panel_can_be_hidden_and_brought_back(cx: &mut TestAppContext) {
     view.update(cx, |view, cx| view.toggle_row_panel_for_test(cx));
     assert!(view.read_with(cx, |view, _| view.row_panel_visible_for_test()));
 }
+
+#[gpui_kit::test]
+fn a_staged_field_can_be_reverted_or_set_to_null_from_the_menu_actions(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+
+    grid.update(cx, |grid, cx| grid.stage_cell(0, 1, None, cx));
+    let staged = grid.read_with(cx, |grid, cx| grid.staged(cx));
+    assert_eq!(staged[0].cells, vec![(1, None)]);
+    assert!(grid.read_with(cx, |grid, cx| grid.is_field_staged(0, 1, cx)));
+
+    grid.update(cx, |grid, cx| grid.reset_cell(0, 1, cx));
+    assert!(grid.read_with(cx, |grid, cx| grid.staged(cx).is_empty()));
+}

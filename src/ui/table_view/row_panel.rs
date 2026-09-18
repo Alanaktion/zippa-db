@@ -7,11 +7,11 @@
 //! panel never writes anything itself.
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, EventEmitter, Focusable, Window, div};
+use gpui_kit::{App, Context, Entity, EventEmitter, Focusable, Window, div, px};
 use regex::Regex;
 
 use crate::db::query::{self, Cell};
@@ -25,13 +25,53 @@ pub(crate) enum RowPanelEvent {
 
 impl EventEmitter<RowPanelEvent> for RowPanel {}
 
+/// The most lines a text box grows to before it scrolls.
+const TEXT_LINES: usize = 3;
+
+/// Whether a column holds prose, which wants room to wrap rather than one line.
+fn is_text_type(type_name: &str) -> bool {
+    let name = type_name.trim_matches('"').to_ascii_uppercase();
+    ["TEXT", "CHAR", "STRING", "CLOB", "JSON", "XML", "NAME"]
+        .iter()
+        .any(|kind| name.contains(kind))
+}
+
+/// One column's text box: a line for most types, a few lines for text.
+enum Field {
+    Line(Entity<InputState>),
+    Area(Entity<TextareaState>),
+}
+
+impl Field {
+    fn value(&self, cx: &App) -> String {
+        match self {
+            Field::Line(input) => input.read(cx).value().to_string(),
+            Field::Area(input) => input.read(cx).value().to_string(),
+        }
+    }
+
+    fn set_value(&self, text: String, window: &mut Window, cx: &mut App) {
+        match self {
+            Field::Line(input) => input.update(cx, |input, cx| input.set_value(text, window, cx)),
+            Field::Area(input) => input.update(cx, |input, cx| input.set_value(text, window, cx)),
+        }
+    }
+
+    fn is_focused(&self, window: &Window, cx: &App) -> bool {
+        match self {
+            Field::Line(input) => input.read(cx).focus_handle(cx).is_focused(window),
+            Field::Area(input) => input.read(cx).focus_handle(cx).is_focused(window),
+        }
+    }
+}
+
 pub(crate) struct RowPanel {
     grid: Entity<DataGrid>,
     columns: Vec<String>,
     column_types: Vec<String>,
     focused_row: Option<usize>,
     /// One text box per column, index-aligned with `columns`.
-    fields: Vec<Entity<InputState>>,
+    fields: Vec<Field>,
     filter_input: Entity<InputState>,
     filter: Option<Regex>,
 }
@@ -67,18 +107,39 @@ impl RowPanel {
         self.column_types = column_types.to_vec();
         self.fields = (0..columns.len())
             .map(|col_ix| {
-                let field = cx.new(|cx| InputState::new(window, cx));
-                cx.subscribe_in(
-                    &field,
-                    window,
-                    move |this, _, event: &InputEvent, window, cx| {
-                        if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                            this.commit_field(col_ix, window, cx);
-                        }
-                    },
-                )
-                .detach();
-                field
+                let text = column_types.get(col_ix).is_some_and(|t| is_text_type(t));
+                let on_event = move |this: &mut Self,
+                                     event: &InputEvent,
+                                     window: &mut Window,
+                                     cx: &mut Context<Self>| {
+                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        this.commit_field(col_ix, window, cx);
+                    }
+                };
+                if text {
+                    let field =
+                        cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, TEXT_LINES));
+                    cx.subscribe_in(
+                        &field,
+                        window,
+                        move |this, _, event: &InputEvent, window, cx| {
+                            on_event(this, event, window, cx)
+                        },
+                    )
+                    .detach();
+                    Field::Area(field)
+                } else {
+                    let field = cx.new(|cx| InputState::new(window, cx));
+                    cx.subscribe_in(
+                        &field,
+                        window,
+                        move |this, _, event: &InputEvent, window, cx| {
+                            on_event(this, event, window, cx)
+                        },
+                    )
+                    .detach();
+                    Field::Line(field)
+                }
             })
             .collect();
         self.focused_row = self.grid.read(cx).focused_row(cx);
@@ -132,14 +193,12 @@ impl RowPanel {
         };
 
         for (field, cell) in self.fields.iter().zip(cells) {
-            if !row_changed && field.read(cx).focus_handle(cx).is_focused(window) {
+            if !row_changed && field.is_focused(window, cx) {
                 continue;
             }
             // Raw text, the way the grid's own editor opens: a NULL is empty,
             // not the word.
-            field.update(cx, |input, cx| {
-                input.set_value(cell.unwrap_or_default(), window, cx)
-            });
+            field.set_value(cell.unwrap_or_default(), window, cx);
         }
     }
 
@@ -155,7 +214,7 @@ impl RowPanel {
             return;
         };
 
-        let text = field.read(cx).value().to_string();
+        let text = field.value(cx);
         // A box that shows what the cell already holds has not been edited;
         // staging it would turn a NULL, shown empty, into an empty string.
         let current = cells.get(col_ix).cloned().flatten().unwrap_or_default();
@@ -221,64 +280,86 @@ impl RowPanel {
             None
         };
         let big = needs_a_window(&cell, &type_name);
+        let staged = self.grid.read(cx).is_field_staged(row_ix, col_ix, cx);
+        let draft = status == RowStatus::Draft;
         let grid = self.grid.clone();
-        let null_grid = self.grid.clone();
+        let menu_column = column.clone();
+
+        let menu = Button::new(("row-panel-menu", col_ix))
+            .ghost()
+            .xsmall()
+            .icon(IconName::Ellipsis)
+            .accessibility_label(format!("Options for {menu_column}"))
+            .tooltip("Field options")
+            .dropdown_menu(move |menu, _window, _cx| {
+                let stage = |label: &'static str, value: Cell| {
+                    let grid = grid.clone();
+                    PopupMenuItem::new(label)
+                        .disabled(!editable)
+                        .on_click(move |_, _, cx| {
+                            let value = value.clone();
+                            grid.update(cx, |grid, cx| grid.stage_cell(row_ix, col_ix, value, cx))
+                        })
+                };
+                let reset = |label: &'static str, enabled: bool| {
+                    let grid = grid.clone();
+                    PopupMenuItem::new(label)
+                        .disabled(!enabled)
+                        .on_click(move |_, _, cx| {
+                            grid.update(cx, |grid, cx| grid.reset_cell(row_ix, col_ix, cx))
+                        })
+                };
+                let view = grid.clone();
+                menu.item(stage("Set NULL", None))
+                    .item(stage("Set empty string", Some(String::new())))
+                    // Only a new row has a default to fall back on: a loaded
+                    // row's cell has no way to say "whatever the server picks".
+                    .item(reset("Set Default", editable && draft && staged))
+                    .item(reset("Revert change", editable && !draft && staged))
+                    .item(PopupMenuItem::separator())
+                    .item(
+                        PopupMenuItem::new("View whole value")
+                            .disabled(!big)
+                            .on_click(move |_, _, cx| {
+                                view.update(cx, |grid, cx| grid.view_cell(row_ix, col_ix, cx))
+                            }),
+                    )
+            });
+
+        let input = match &self.fields[col_ix] {
+            Field::Line(input) => Input::new(input)
+                .xsmall()
+                .readonly(!editable)
+                .into_any_element(),
+            Field::Area(input) => Textarea::new(input)
+                .text_xs()
+                .p_0() // TODO: actually apply xsmall()-like style, this padding override doesn't work.
+                .readonly(!editable)
+                .into_any_element(),
+        };
 
         v_flex()
-            .gap_1()
+            .gap_0p5()
             .child(
                 h_flex()
                     .gap_1()
-                    .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .when(deleted, |this| this.line_through())
-                            .child(format!("{column} · {type_name}")),
+                    .child(div()
+                        .text_size(px(10.))
+                        .line_height(px(12.))
+                        .text_color(cx.theme().muted_foreground)
+                        .when(deleted, |this| this.line_through())
+                        .child(format!("{column} · {type_name}"))
                     )
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .when(big, |this| {
-                                this.child(
-                                    Button::new(("row-panel-expand", col_ix))
-                                        .ghost()
-                                        .xsmall()
-                                        .icon(IconName::Eye)
-                                        .accessibility_label(format!("View {column}"))
-                                        .tooltip("View the whole value")
-                                        .on_click(move |_, _, cx| {
-                                            grid.update(cx, |grid, cx| {
-                                                grid.view_cell(row_ix, col_ix, cx)
-                                            })
-                                        }),
-                                )
-                            })
-                            .when(editable, |this| {
-                                this.child(
-                                    Checkbox::new(("row-panel-null", col_ix))
-                                        .accessibility_label(format!("Set {column} to NULL"))
-                                        .label("NULL")
-                                        .checked(cell.is_none())
-                                        .on_click(move |checked: &bool, _, cx| {
-                                            let value: Cell =
-                                                if *checked { None } else { Some(String::new()) };
-                                            null_grid.update(cx, |grid, cx| {
-                                                grid.stage_cell(row_ix, col_ix, value, cx)
-                                            })
-                                        }),
-                                )
-                            }),
-                    ),
+                    .child(menu)
             )
-            .child(Input::new(&self.fields[col_ix]).small().readonly(!editable))
+            .child(
+                input
+            )
             .when_some(note, |this, note| {
                 this.child(
                     div()
-                        .text_xs()
+                        .text_size(px(10.))
                         .text_color(cx.theme().muted_foreground)
                         .child(note),
                 )
@@ -330,7 +411,7 @@ impl Render for RowPanel {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .gap_3()
+                    .gap_2()
                     .p_2()
                     .when(status == RowStatus::Deleted, |this| {
                         this.child(
@@ -376,8 +457,8 @@ impl RowPanel {
         self.focused_row
     }
 
-    pub(crate) fn field_value_for_test(&self, col_ix: usize, cx: &gpui_kit::App) -> String {
-        self.fields[col_ix].read(cx).value().to_string()
+    pub(crate) fn field_value_for_test(&self, col_ix: usize, cx: &App) -> String {
+        self.fields[col_ix].value(cx)
     }
 
     pub(crate) fn set_field_for_test(
@@ -387,9 +468,7 @@ impl RowPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.fields[col_ix].update(cx, |input, cx| {
-            input.set_value(value.to_string(), window, cx)
-        });
+        self.fields[col_ix].set_value(value.to_string(), window, cx);
     }
 
     pub(crate) fn commit_field_for_test(

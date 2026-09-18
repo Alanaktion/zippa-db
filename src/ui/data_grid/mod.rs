@@ -950,6 +950,26 @@ impl DataGrid {
         self.table.read(cx).delegate().is_editable(row_ix, col_ix)
     }
 
+    /// Whether this cell holds a staged edit, or is a new row's typed value.
+    pub fn is_field_staged(&self, row_ix: usize, col_ix: usize, cx: &App) -> bool {
+        self.table.read(cx).delegate().is_staged(row_ix, col_ix)
+    }
+
+    /// Take a cell's staged value back: a loaded cell returns to what the
+    /// server has, and a new row's cell goes back to the server's default.
+    pub fn reset_cell(&mut self, row_ix: usize, col_ix: usize, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            if let Some(draft) = delegate.draft(row_ix) {
+                delegate.drafts[draft].remove(&col_ix);
+            } else if let Some(source) = delegate.source(row_ix) {
+                delegate.edits.remove(&(source, col_ix));
+            }
+            cx.notify();
+        });
+        cx.emit(GridEdit::Staged);
+    }
+
     /// Whether the row shown at `row_ix` is loaded, being built, or on its way out.
     pub fn row_status(&self, row_ix: usize, cx: &App) -> Option<RowStatus> {
         let delegate = self.table.read(cx).delegate();
