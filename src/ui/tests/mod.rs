@@ -27,7 +27,9 @@ use crate::ui::welcome::WelcomeEvent;
 
 use crate::db::query::QueryResult;
 use crate::db::tests::TempDatabase;
-use crate::db::{Connection, ConnectionConfig, DatabaseObject, ObjectKind, SafetyMode, runtime};
+use crate::db::{
+    Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, SafetyMode, TagColor, runtime,
+};
 use crate::ui::filter_bar::Operator;
 use crate::ui::session::Session;
 use crate::ui::welcome::Welcome;
@@ -49,6 +51,7 @@ mod schema;
 mod session;
 mod sorting;
 mod value_dialog;
+mod welcome;
 mod workspace;
 
 const WINDOW: (f32, f32) = (900., 600.);

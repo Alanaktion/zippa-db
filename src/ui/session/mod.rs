@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::dock::{
@@ -14,7 +15,8 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::tree::TreeState;
 use gpui_kit::component::{
-    Disableable, ResizableState, Sizable, WindowExt, h_resizable, resizable_panel,
+    ActiveTheme, Disableable, Icon, ResizableState, Sizable, WindowExt, h_flex, h_resizable,
+    resizable_panel,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -1254,6 +1256,45 @@ impl Session {
             })
             .into_any_element()
     }
+
+    /// A slim, full-width strip in the connection's tag colour, shown under
+    /// the toolbar for the whole session. The tag text is always present, and
+    /// a lock icon plus "Read only" joins it when the safety mode is
+    /// [`SafetyMode::ReadOnly`]; untagged connections show no strip.
+    fn render_tag_strip(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let tag = self.connection.config.tag.as_deref()?;
+        let color = self.connection.config.color;
+        let bg = color
+            .map(|color| color.hsla(cx))
+            .unwrap_or_else(|| cx.theme().muted);
+        let fg = color
+            .map(|color| color.on_color(cx))
+            .unwrap_or_else(|| cx.theme().muted_foreground);
+        let read_only = self.connection.config.safety.is_read_only();
+
+        Some(
+            h_flex()
+                .id("session-tag")
+                .w_full()
+                .flex_none()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .bg(bg)
+                .text_color(fg)
+                .child(div().text_sm().truncate().child(tag.to_string()))
+                .when(read_only, |this| {
+                    this.child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(Icon::new(IconName::Lock).size_3().text_color(fg))
+                            .child(div().text_xs().child("Read only")),
+                    )
+                }),
+        )
+    }
 }
 
 impl Render for Session {
@@ -1271,6 +1312,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::cancel_query))
             .on_action(cx.listener(Self::on_quick_switcher))
+            .when_some(self.render_tag_strip(cx), |this, strip| this.child(strip))
             .child(
                 h_resizable("session-columns")
                     .with_state(&self.columns)

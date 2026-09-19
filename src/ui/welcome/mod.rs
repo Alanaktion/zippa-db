@@ -1,0 +1,702 @@
+//! The welcome screen: a launcher for saved connections.
+//!
+//! The form that used to sit beside the list is now a dialog
+//! ([`ConnectionEditor`]), opened from here. The screen itself is launcher-first:
+//! saved connections are cards the user clicks to connect, searchable and
+//! ordered most-recently-connected first, with an editor behind "New
+//! connection" (and each card's `…` menu).
+
+use std::cmp::Ordering;
+use std::sync::Arc;
+
+use chrono::Utc;
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::dialog::DialogButtonProps;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
+use gpui_kit::prelude::*;
+use gpui_kit::{Context, Entity, EventEmitter, FocusHandle, Window, div, px};
+use uuid::Uuid;
+
+use crate::app::NewConnection;
+use crate::db::{Connection, ConnectionConfig, Engine, runtime, store};
+use crate::ui::{notify_error, sql_file};
+
+mod card;
+mod editor;
+
+use card::render_card;
+use editor::{ConnectionEditor, EditorEvent};
+pub(crate) use editor::{EditorClose, EditorConnect};
+
+/// Width of the editor dialog: enough for the form, not a full window.
+const EDITOR_WIDTH: f32 = 560.;
+
+pub enum WelcomeEvent {
+    /// A connection was opened and the session can start.
+    Connected(Arc<Connection>),
+}
+
+pub struct Welcome {
+    connections: Vec<ConnectionConfig>,
+    /// Search text over the saved list.
+    query: Entity<InputState>,
+    /// The connection being connected to, if any.
+    connecting: Option<Uuid>,
+    /// An error to show in the banner at the top of the screen.
+    error: Option<String>,
+    /// The editor dialog open over the screen, if any.
+    editor: Option<Entity<ConnectionEditor>>,
+    /// Held by the launcher itself, so its own key context answers even when
+    /// the screen has no search box to focus.
+    focus: FocusHandle,
+}
+
+impl EventEmitter<WelcomeEvent> for Welcome {}
+
+impl Welcome {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let (connections, error) = match store::load() {
+            Ok(connections) => (connections, None),
+            Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+        };
+
+        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search connections"));
+        cx.subscribe_in(&query, window, Self::on_search_event)
+            .detach();
+
+        Self {
+            connections,
+            query,
+            connecting: None,
+            error,
+            editor: None,
+            focus: cx.focus_handle(),
+        }
+    }
+
+    fn on_search_event(
+        &mut self,
+        _query: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            cx.notify();
+        }
+    }
+
+    /// Put the caret in the search box when there is something to search, or
+    /// on the launcher itself so its shortcuts keep working on an empty screen.
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.connections.is_empty() {
+            self.query.update(cx, |input, cx| input.focus(window, cx));
+        } else {
+            self.focus.focus(window, cx);
+        }
+    }
+
+    fn is_connecting(&self, id: &Uuid) -> bool {
+        self.connecting == Some(*id)
+    }
+
+    /// Open the editor for a new connection, or pre-filled from `config`.
+    fn open_editor(
+        &mut self,
+        config: Option<ConnectionConfig>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = if config.is_some() {
+            "Edit connection"
+        } else {
+            "New connection"
+        };
+
+        let editor = cx.new(|cx| ConnectionEditor::new(config, window, cx));
+        cx.subscribe_in(&editor, window, Self::on_editor_event)
+            .detach();
+        self.editor = Some(editor.clone());
+
+        let welcome = cx.entity().downgrade();
+        let body = editor.clone();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let welcome = welcome.clone();
+            dialog
+                .w(px(EDITOR_WIDTH))
+                .h(px(600.))
+                .title(title)
+                .keyboard(false)
+                .on_close(move |_, _window, cx| {
+                    welcome
+                        .update(cx, |this, cx| {
+                            this.editor = None;
+                            cx.notify();
+                        })
+                        .ok();
+                })
+                .child(body.clone())
+        });
+
+        editor.update(cx, |editor, cx| editor.focus(window, cx));
+    }
+
+    /// Take the editor away and hand focus back to the launcher.
+    fn close_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor = None;
+        window.close_dialog(cx);
+        cx.notify();
+    }
+
+    fn on_editor_event(
+        &mut self,
+        _editor: &Entity<ConnectionEditor>,
+        event: &EditorEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            EditorEvent::Saved { config, password } => {
+                self.save(config.clone(), password.clone(), window, cx);
+                self.close_editor(window, cx);
+            }
+            EditorEvent::Connect { config, password } => {
+                self.close_editor(window, cx);
+                let password = (!password.is_empty()).then(|| password.clone());
+                self.connect(config.clone(), password, window, cx);
+            }
+            EditorEvent::Dismissed => self.close_editor(window, cx),
+        }
+    }
+
+    fn on_new_connection(
+        &mut self,
+        _: &NewConnection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_editor(None, window, cx);
+    }
+
+    /// Save the editor's config and password into the list and the store.
+    fn save(
+        &mut self,
+        config: ConnectionConfig,
+        password: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self
+            .connections
+            .iter()
+            .position(|saved| saved.id == config.id)
+        {
+            Some(index) => self.connections[index] = config.clone(),
+            None => self.connections.push(config.clone()),
+        }
+
+        match store::save(&self.connections)
+            .and_then(|()| store::set_password(&config.id, &password))
+        {
+            Ok(()) => {}
+            Err(error) => {
+                let message = format!("{error:#}");
+                notify_error(window, cx, format!("Error: {message}"));
+                self.error = Some(message);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Connect to a saved connection, looking its password up on demand.
+    fn connect_saved(
+        &mut self,
+        config: ConnectionConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A file database has no password to look up, and asking the keychain
+        // for one it never stored can prompt the user for nothing.
+        if config.engine.is_file_based() {
+            self.connect(config, None, window, cx);
+            return;
+        }
+
+        match store::password(&config.id) {
+            Ok(password) => self.connect(config, password, window, cx),
+            Err(error) => {
+                self.error = Some(format!("{error:#}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Open `config` with `password`, and hand the live connection on.
+    fn connect(
+        &mut self,
+        config: ConnectionConfig,
+        password: Option<String>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.connecting = Some(config.id);
+        self.error = None;
+        cx.notify();
+
+        let task = runtime::spawn(async move { Connection::open(config.clone(), password).await });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| {
+                this.connecting = None;
+                match result {
+                    Ok(Ok(connection)) => {
+                        this.error = None;
+                        this.mark_connected(&connection.config.id);
+                        cx.emit(WelcomeEvent::Connected(Arc::new(connection)));
+                    }
+                    Ok(Err(error)) => {
+                        let message = format!("{error:#}");
+                        this.error = Some(message.clone());
+                        notify_error(window, cx, format!("Error: {message}"));
+                    }
+                    Err(_) => {
+                        this.error = Some("the connection was cancelled".into());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Record that a connection was just opened, for most-recent-first order.
+    fn mark_connected(&mut self, id: &Uuid) {
+        if let Some(config) = self.connections.iter_mut().find(|config| &config.id == id) {
+            config.last_connected = Some(Utc::now());
+        }
+        if let Err(error) = store::record_connected(id) {
+            eprintln!("could not record the connection: {error:#}");
+        }
+    }
+
+    /// Open the editor pre-filled from the saved connection.
+    fn edit(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(config) = self
+            .connections
+            .iter()
+            .find(|config| config.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        self.open_editor(Some(config), window, cx);
+    }
+
+    /// Copy a saved connection under a new id, without its stored password.
+    fn duplicate(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self
+            .connections
+            .iter()
+            .find(|config| config.id == id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let mut copy = source.clone();
+        copy.id = Uuid::new_v4();
+        copy.last_connected = None;
+        if !source.name.trim().is_empty() {
+            copy.name = format!("{} copy", source.name.trim());
+        }
+        self.connections.push(copy);
+
+        if let Err(error) = store::save(&self.connections) {
+            let message = format!("{error:#}");
+            notify_error(window, cx, format!("Error: {message}"));
+            self.error = Some(message);
+        }
+        cx.notify();
+    }
+
+    /// Ask before throwing a saved connection away.
+    fn delete(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(config) = self
+            .connections
+            .iter()
+            .find(|config| config.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let name = config.display_name();
+        let welcome = cx.entity().downgrade();
+
+        window.open_alert_dialog(cx, move |alert, _window, _cx| {
+            let welcome = welcome.clone();
+            alert
+                .title(format!("Delete \"{name}\"?"))
+                .description("This removes the saved connection and its stored password.")
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Delete")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    if let Some(welcome) = welcome.upgrade() {
+                        welcome.update(cx, |this, cx| this.delete_confirmed(id, window, cx));
+                    }
+                    true
+                })
+        });
+    }
+
+    fn delete_confirmed(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        self.connections.retain(|config| config.id != id);
+
+        if let Err(error) =
+            store::save(&self.connections).and_then(|()| store::delete_password(&id))
+        {
+            let message = format!("{error:#}");
+            notify_error(window, cx, format!("Error: {message}"));
+            self.error = Some(message);
+        }
+        cx.notify();
+    }
+
+    /// Open the platform file picker and start a SQLite connection from it.
+    fn open_sqlite_file(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let prompt = sql_file::prompt_for_open(cx);
+        cx.spawn(async move |this, cx| {
+            let paths = match prompt.await {
+                Ok(Some(paths)) => paths,
+                _ => return,
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+
+            this.update_in(cx, |this, window, cx| {
+                let mut config = ConnectionConfig::new(Engine::Sqlite);
+                config.database = path.to_string_lossy().into_owned();
+                this.open_editor(Some(config), window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .max_w(px(640.))
+            .mx_auto()
+            .flex_none()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .px_6()
+            .pt_6()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(div().text_xl().child("Zippa DB"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Pick a connection, or set up a new one."),
+                    ),
+            )
+            .child(
+                Button::new("welcome-new-connection")
+                    .primary()
+                    .label("New connection")
+                    .tooltip_with_action("New connection", &NewConnection, Some("Welcome"))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_editor(None, window, cx)),
+                    ),
+            )
+    }
+
+    fn render_error(&self, error: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("error-banner")
+            .w_full()
+            .flex_none()
+            .px_6()
+            .pt_3()
+            .child(
+                div()
+                    .w_full()
+                    .max_h(px(96.))
+                    .overflow_y_scrollbar()
+                    .text_sm()
+                    .text_color(cx.theme().danger)
+                    .child(format!("Error: {error}")),
+            )
+    }
+
+    /// The search box and the cards it filters, or the empty state.
+    fn render_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.connections.is_empty() {
+            return self.render_empty(cx).into_any_element();
+        }
+
+        let query = self.query.read(cx).value().trim().to_string();
+        let visible: Vec<&ConnectionConfig> = ordered(&self.connections)
+            .into_iter()
+            .filter(|config| matches_query(config, &query))
+            .collect();
+
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .pt_3()
+            .pb_6()
+            .child(
+                // A single reading column, centered and capped so the cards
+                // stay a comfortable width on a wide window.
+                v_flex()
+                    .w_full()
+                    .max_w(px(640.))
+                    .mx_auto()
+                    .flex_1()
+                    .min_h_0()
+                    .px_6()
+                    .gap_3()
+                    .child(Input::new(&self.query).id("connection-search"))
+                    .when(visible.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("No connections match"),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("connections")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scrollbar()
+                            .child(
+                                v_flex().gap_2().children(
+                                    visible
+                                        .into_iter()
+                                        .map(|config| render_card(self, config, cx)),
+                                ),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The state shown before any connection is saved.
+    fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .flex_1()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .p_6()
+            .child(div().text_lg().child("No connections yet"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Add a connection to start querying your databases."),
+            )
+            .child(
+                Button::new("empty-new-connection")
+                    .primary()
+                    .label("New connection")
+                    .tooltip_with_action("New connection", &NewConnection, Some("Welcome"))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_editor(None, window, cx)),
+                    ),
+            )
+            .child(
+                Button::new("open-sqlite-file")
+                    .outline()
+                    .label("Open SQLite file…")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_sqlite_file(window, cx))),
+            )
+    }
+
+    /// Put the saved list in place without touching the on-disk store.
+    #[cfg(test)]
+    pub(crate) fn set_connections_for_test(
+        &mut self,
+        connections: Vec<ConnectionConfig>,
+        cx: &mut Context<Self>,
+    ) {
+        self.connections = connections;
+        cx.notify();
+    }
+
+    /// Show an error banner without a live connection attempt.
+    #[cfg(test)]
+    pub(crate) fn show_error_for_test(
+        &mut self,
+        message: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.error = Some(message.into());
+        cx.notify();
+    }
+
+    /// Whether the editor dialog is open over the launcher.
+    #[cfg(test)]
+    pub(crate) fn editor_open_for_test(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    /// The saved connections as the launcher holds them.
+    #[cfg(test)]
+    pub(crate) fn connections_for_test(&self) -> &[ConnectionConfig] {
+        &self.connections
+    }
+
+    /// Save a connection the way the editor's Save button does.
+    #[cfg(test)]
+    pub(crate) fn save_for_test(
+        &mut self,
+        config: ConnectionConfig,
+        password: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save(config, password.to_string(), window, cx);
+    }
+
+    /// Duplicate a connection the way the card's `…` menu does.
+    #[cfg(test)]
+    pub(crate) fn duplicate_for_test(
+        &mut self,
+        id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.duplicate(id, window, cx);
+    }
+
+    /// Remove a connection outright, as the confirmation dialog's Delete does.
+    #[cfg(test)]
+    pub(crate) fn delete_confirmed_for_test(
+        &mut self,
+        id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_confirmed(id, window, cx);
+    }
+}
+
+impl Render for Welcome {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .track_focus(&self.focus)
+            .key_context("Welcome")
+            .on_action(cx.listener(Self::on_new_connection))
+            .child(self.render_header(cx))
+            .when_some(self.error.clone(), |this, error| {
+                this.child(self.render_error(&error, cx))
+            })
+            .child(self.render_body(cx))
+    }
+}
+
+/// Saved connections, most recently connected first, then by name.
+fn ordered(connections: &[ConnectionConfig]) -> Vec<&ConnectionConfig> {
+    let mut ordered: Vec<&ConnectionConfig> = connections.iter().collect();
+    ordered.sort_by(|a, b| match (a.last_connected, b.last_connected) {
+        (Some(x), Some(y)) => y
+            .cmp(&x)
+            .then_with(|| a.display_name().cmp(&b.display_name())),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a.display_name().cmp(&b.display_name()),
+    });
+    ordered
+}
+
+/// Whether a connection matches the search text, across name, host, database,
+/// tag and engine.
+fn matches_query(config: &ConnectionConfig, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let query = query.to_lowercase();
+    let tag = config.tag.as_deref().unwrap_or("");
+    config.name.to_lowercase().contains(&query)
+        || config.host.to_lowercase().contains(&query)
+        || config.database.to_lowercase().contains(&query)
+        || tag.to_lowercase().contains(&query)
+        || config.engine.label().to_lowercase().contains(&query)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(name: &str, last_connected: Option<&str>) -> ConnectionConfig {
+        ConnectionConfig {
+            name: name.to_string(),
+            host: "db.internal".into(),
+            database: "app".into(),
+            tag: Some("Production".into()),
+            last_connected: last_connected
+                .map(|when| when.parse::<chrono::DateTime<Utc>>().expect("a timestamp")),
+            ..ConnectionConfig::new(Engine::Postgres)
+        }
+    }
+
+    #[test]
+    fn ordering_puts_recent_first_then_name() {
+        let a = config("alpha", Some("2024-01-01T00:00:00Z"));
+        let b = config("beta", Some("2024-01-03T00:00:00Z"));
+        let c = config("gamma", None);
+
+        let names: Vec<String> = ordered(&[a, c, b])
+            .into_iter()
+            .map(|config| config.name.clone())
+            .collect();
+        assert_eq!(names, ["beta", "alpha", "gamma"]);
+    }
+
+    #[test]
+    fn search_matches_name_host_database_tag_and_engine() {
+        let config = config("Prod DB", None);
+
+        assert!(matches_query(&config, "prod"));
+        assert!(matches_query(&config, "internal"));
+        assert!(matches_query(&config, "app"));
+        assert!(matches_query(&config, "Production"));
+        assert!(matches_query(&config, "postgres"));
+        assert!(!matches_query(&config, "mysql"));
+    }
+
+    #[test]
+    fn ordering_uses_display_name_when_untitled() {
+        let mut a = config("", None);
+        a.database = "zebra.sqlite".into();
+        a.engine = Engine::Sqlite;
+        let mut b = config("", None);
+        b.database = "alpha.sqlite".into();
+        b.engine = Engine::Sqlite;
+
+        let names: Vec<String> = ordered(&[a, b])
+            .into_iter()
+            .map(|config| config.display_name())
+            .collect();
+        assert_eq!(names, ["alpha.sqlite", "zebra.sqlite"]);
+    }
+}

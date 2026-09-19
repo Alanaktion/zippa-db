@@ -3,25 +3,21 @@
 use super::*;
 
 #[gpui_kit::test]
-fn footer_buttons_stay_in_view_with_a_long_error(cx: &mut TestAppContext) {
+fn the_error_banner_keeps_the_new_connection_button_in_view(cx: &mut TestAppContext) {
     cx.update(gpui_kit::component::init);
     let handle = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
         Welcome::new(window, cx)
     });
 
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.draw(cx).clear(cx);
-        let viewport = Bounds {
-            origin: Default::default(),
-            size: size(px(WINDOW.0), px(WINDOW.1)),
-        };
-        assert!(contains(viewport, window.find("connect").bounds()));
-    })
-    .unwrap();
-
-    // Server errors are long: sqlx repeats the whole connection string.
+    // A saved connection gives the launcher a card list; the error banner sits
+    // above it at the top of the screen.
+    let config = ConnectionConfig {
+        name: "Long error".into(),
+        ..ConnectionConfig::new(Engine::Postgres)
+    };
     handle
         .update(cx, |welcome, _, cx| {
+            welcome.set_connections_for_test(vec![config], cx);
             welcome.show_error_for_test(
                 "error returned from database: could not connect to server: Connection refused. \
                  Is the server running on host \"db.internal.example.com\" (10.1.2.3) and \
@@ -37,14 +33,13 @@ fn footer_buttons_stay_in_view_with_a_long_error(cx: &mut TestAppContext) {
             origin: Default::default(),
             size: size(px(WINDOW.0), px(WINDOW.1)),
         };
-        let connect = window.find("connect");
-        assert!(connect.visible(), "the Connect button is not visible");
+        let button = window.find("welcome-new-connection");
+        assert!(button.visible(), "the New connection button is not visible");
         assert!(
-            contains(viewport, connect.bounds()),
-            "a long error pushed Connect out of the window: {:?}",
-            connect.bounds()
+            contains(viewport, button.bounds()),
+            "a long error pushed New connection out of the window: {:?}",
+            button.bounds()
         );
-        assert!(contains(viewport, window.find("save").bounds()));
     })
     .unwrap();
 }
