@@ -12,6 +12,12 @@
       "sourceType": "github",
       "skillPath": "skills/gpui-kit-design-guides/SKILL.md",
       "computedHash": "1c8cd7b6fb0dc3448d00748dfccd2c2719ce7efbb97632ac13d015ed2bd74dc6"
+    },
+    "sqlx": {
+      "source": "melonask/sqlx-skills",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "942a2621efc66cfa13aba98bb7c992339506c1ee521857c241f205afcd9020b9"
     }
   }
 }
