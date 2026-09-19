@@ -4,6 +4,7 @@ mod keymap;
 mod menu;
 mod settings;
 mod ui;
+mod workspace_state;
 
 use std::borrow::Cow;
 
@@ -82,6 +83,19 @@ fn main() {
 
             cx.open_window(options, |window, cx| {
                 let workspace = cx.new(|cx| Workspace::new(window, cx));
+
+                // The last save before the process ends: a checkpoint on every
+                // change covers most of it, but text typed since the last one
+                // would be lost, so the final buffer is written here rather
+                // than left to the background task that is about to be torn
+                // down.
+                let quitting = workspace.clone();
+                cx.on_app_quit(move |cx| {
+                    quitting.update(cx, |workspace, cx| workspace.flush_state(cx));
+                    std::future::ready(())
+                })
+                .detach();
+
                 cx.new(|cx| Root::new(workspace, window, cx))
             })
             .expect("failed to open window");

@@ -233,6 +233,23 @@ impl Welcome {
         }
     }
 
+    /// Open a saved connection by id, connecting to it right away.
+    ///
+    /// This is the path a card click takes, so a restored connection starts up
+    /// exactly the way a manual one does: its password comes from the keychain
+    /// and the failure is shown on the launcher.
+    pub(crate) fn open(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(config) = self
+            .connections
+            .iter()
+            .find(|config| config.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        self.connect_saved(config, window, cx);
+    }
+
     /// Open `config` with `password`, and hand the live connection on.
     fn connect(
         &mut self,

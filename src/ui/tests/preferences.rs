@@ -141,7 +141,7 @@ fn the_toolbar_button_opens_the_settings(cx: &mut TestAppContext) {
 fn scrollbars_stay_on_screen_unless_the_setting_says_otherwise(cx: &mut TestAppContext) {
     cx.update(gpui_kit::component::init);
     let _handle = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
-        Workspace::new(window, cx)
+        Workspace::with_state_for_test(WorkspaceState::default(), window, cx)
     });
 
     let mode = |cx: &mut TestAppContext| cx.update(|cx| Theme::global(cx).scrollbar_mode);
@@ -168,7 +168,7 @@ fn pinning_the_appearance_overrides_the_system(cx: &mut TestAppContext) {
     cx.update(gpui_kit::component::init);
     // The workspace is what subscribes to the window's appearance.
     let _handle = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
-        Workspace::new(window, cx)
+        Workspace::with_state_for_test(WorkspaceState::default(), window, cx)
     });
 
     let mode = |cx: &mut TestAppContext| cx.update(|cx| Theme::global(cx).mode);

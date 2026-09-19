@@ -31,6 +31,7 @@ use crate::ui::filter_bar::FilterSpec;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::sql_file;
 use crate::ui::table_view::{TableView, TableViewEvent};
+use crate::workspace_state::{PanelState, SessionState};
 
 mod panel;
 mod sidebar;
@@ -61,6 +62,9 @@ actions!(
 );
 
 pub enum SessionEvent {
+    /// Something about the session's tabs or its connection changed in a way
+    /// the workspace's saved state should record.
+    Changed,
     /// The user closed the session; the workspace returns to the connection
     /// manager and drains the pool.
     Disconnected,
@@ -180,6 +184,7 @@ impl Session {
         self.panels.push(panel.clone());
         self.active = Some(panel.downgrade());
         self.sync_tree_selection(cx);
+        cx.emit(SessionEvent::Changed);
         cx.notify();
     }
 
@@ -200,6 +205,7 @@ impl Session {
     fn touch(&mut self, panel: &Entity<SessionPanel>, cx: &mut Context<Self>) {
         self.active = Some(panel.downgrade());
         self.sync_tree_selection(cx);
+        cx.emit(SessionEvent::Changed);
         cx.notify();
     }
 
@@ -228,6 +234,7 @@ impl Session {
         }
 
         self.sync_tree_selection(cx);
+        cx.emit(SessionEvent::Changed);
         cx.notify();
     }
 
@@ -472,6 +479,7 @@ impl Session {
             .update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
 
         self.sync_tree_selection(cx);
+        cx.emit(SessionEvent::Changed);
         cx.notify();
     }
 
@@ -513,6 +521,90 @@ impl Session {
             return 0;
         };
         self.panels.iter().position(|p| p == active).unwrap_or(0)
+    }
+
+    /// This session as it would be restored: the connection it belongs to, the
+    /// database it is on, and every tab in creation order.
+    pub(crate) fn snapshot(&self, cx: &App) -> SessionState {
+        SessionState {
+            connection: self.connection.config.id,
+            database: Some(self.connection.database().to_string()),
+            active: self.active_tab_index(),
+            panels: self
+                .panels
+                .iter()
+                .map(|panel| panel.read(cx).snapshot(cx))
+                .collect(),
+        }
+    }
+
+    /// Rebuild the tabs this session had, in order.
+    ///
+    /// Restoring goes through the same constructors a manual open does, so
+    /// panel keys, `opened` numbering, and the dock all stay consistent. A
+    /// restored buffer is not run; a restored table loads its first page the
+    /// way opening it from the sidebar does.
+    pub(crate) fn restore(
+        &mut self,
+        state: SessionState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // `Session::new` always opens one empty editor; it is closed again
+        // below once there is something restored to take its place.
+        let placeholder = self.panels.first().cloned();
+        let mut restored = 0;
+
+        for panel in state.panels {
+            match panel {
+                PanelState::Query { title, sql, file } => {
+                    let panel = self.open_tab(Some(title), sql.clone(), false, window, cx);
+                    // The saved buffer wins: re-reading the file could replace
+                    // unsaved text. The file is only read to decide whether the
+                    // restored buffer matches it, so an unsaved buffer shows as
+                    // dirty and is asked about before closing.
+                    let baseline = file
+                        .as_ref()
+                        .and_then(|path| std::fs::read_to_string(path).ok())
+                        .unwrap_or_default();
+                    panel.update(cx, move |panel, cx| {
+                        if let Some(path) = file {
+                            panel.set_file(path, cx);
+                        }
+                        panel.set_baseline(baseline);
+                    });
+                    restored += 1;
+                }
+                PanelState::Table { object } => {
+                    self.open_object(&object, ObjectViewMode::Data, window, cx);
+                    restored += 1;
+                }
+                PanelState::Schema { object } => {
+                    self.open_object(&object, ObjectViewMode::Schema, window, cx);
+                    restored += 1;
+                }
+                // Written by a newer build; leave it out rather than guess.
+                PanelState::Unknown => {}
+            }
+        }
+
+        if restored > 0
+            && let Some(placeholder) = placeholder
+        {
+            // Opening the restored tabs first and closing the placeholder
+            // after keeps the "a session always shows one editor" rule. That
+            // shifts the restored tabs down one, which is the order they were
+            // saved in, so the saved active index applies directly.
+            self.close_tab_now(&placeholder, window, cx);
+        }
+
+        self.activate_tab(state.active, window, cx);
+
+        if let Some(database) = state.database
+            && database != self.connection.database()
+        {
+            self.switch_database(database, cx);
+        }
     }
 
     pub(crate) fn objects(&self) -> &[DatabaseObject] {
@@ -729,6 +821,9 @@ impl Session {
                 if let Some(error) = error {
                     crate::ui::notify_error(window, cx, format!("Error: {error}"));
                 }
+                // A save changes the file binding and the clean state, both of
+                // which the saved workspace records.
+                cx.emit(SessionEvent::Changed);
             })
             .ok();
         })
@@ -878,6 +973,7 @@ impl Session {
                             panel.update(cx, |panel, cx| panel.set_connection(connection, cx));
                         }
                         this.reload_metadata(cx);
+                        cx.emit(SessionEvent::Changed);
                     }
                     Ok(Err(error)) => {
                         let message = format!("{error:#}");
@@ -1014,6 +1110,9 @@ impl Session {
         let Some((editor, grid)) = panel.read(cx).query_parts() else {
             return;
         };
+
+        // A run is a natural checkpoint for the buffer text.
+        cx.emit(SessionEvent::Changed);
 
         panel.update(cx, |panel, cx| {
             panel.set_status(Status::Running);

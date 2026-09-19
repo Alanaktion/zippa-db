@@ -31,6 +31,7 @@ use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
 use crate::ui::schema_view::SchemaView;
 use crate::ui::sql_file;
 use crate::ui::table_view::TableView;
+use crate::workspace_state::PanelState;
 
 use super::tab::{ObjectViewMode, Status, TabContent};
 use super::{CloseTab, NewTab};
@@ -218,6 +219,24 @@ impl SessionPanel {
             TabContent::Table { .. } => Some(ObjectViewMode::Data),
             TabContent::Schema { .. } => Some(ObjectViewMode::Schema),
             TabContent::Query { .. } => None,
+        }
+    }
+
+    /// This tab as it would be restored: a query keeps its title, its buffer,
+    /// and its file; a table or structure tab keeps the object it shows.
+    pub(crate) fn snapshot(&self, cx: &App) -> PanelState {
+        match &self.content {
+            TabContent::Query { editor, path, .. } => PanelState::Query {
+                title: self.title.to_string(),
+                sql: editor.read(cx).sql(cx),
+                file: path.clone(),
+            },
+            TabContent::Table { view } => PanelState::Table {
+                object: view.read(cx).object().clone(),
+            },
+            TabContent::Schema { view } => PanelState::Schema {
+                object: view.read(cx).object().clone(),
+            },
         }
     }
 

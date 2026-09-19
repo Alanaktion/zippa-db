@@ -11,7 +11,7 @@
 ### Connection Management
 
 * [x] Multi-environment tagging & color-coding (one tag + colour per connection; Red header for `Production`, Green for `Local`)
-* [ ] Workspace state persistence (reopen previous tabs on startup)
+* [x] Workspace state persistence (reopen previous tabs on startup)
 
 ## 2. Tabular Data Grid (Data Browser)
 

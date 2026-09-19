@@ -84,6 +84,14 @@ connection manager in a new one, connecting turns that tab into the session, and
 disconnecting turns it back. Each connection keeps its own sidebar, query tabs,
 and results, so switching between them picks up where you left off.
 
+The window is remembered across restarts: `workspace.json` records which
+connections were open, each one's tabs — query buffers as typed, and the tables
+and structure views that were open — and which tab was in front, so the next
+launch reconnects and restores them. Query text is stored there in plaintext,
+like the connection metadata, so treat it accordingly if a buffer holds pasted
+literals. A buffer is written at checkpoints (opening, closing, running, saving)
+and on a normal quit, so text typed right before a crash may be lost.
+
 Settings live beside it in `settings.json` and are written as you change them.
 Drop theme files into a `themes/` directory next to it — each one a
 `{"themes": [ … ]}` set in the component library's format — and they show up in

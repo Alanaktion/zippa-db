@@ -6,6 +6,7 @@
 //! replacing what the window was showing. The window keeps at least one tab,
 //! the way the session keeps at least one editor.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
@@ -16,17 +17,18 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, Entity, FocusHandle, Hsla, MouseButton, Pixels, SharedString, Window, actions,
-    div, px,
+    App, Context, Entity, EntityId, FocusHandle, Hsla, MouseButton, Pixels, SharedString, Window,
+    actions, div, px,
 };
 
-use crate::db::{Connection, TagColor, runtime};
+use crate::db::{Connection, TagColor, runtime, store};
 use crate::settings;
 use crate::ui::session::{NewTab, QuickSwitcher, Refresh, Session, SessionEvent};
 use crate::ui::settings_window::{self, OpenSettings};
 use crate::ui::shortcuts_dialog::{self, ShowShortcuts};
 use crate::ui::value_dialog::{self, Dismissed, ValueView};
 use crate::ui::welcome::{Welcome, WelcomeEvent};
+use crate::workspace_state::{self, SessionState, WorkspaceState};
 
 /// The value dialog is a reading pane rather than a prompt, so it is wider
 /// and taller than a dialog's default.
@@ -131,10 +133,27 @@ pub struct Workspace {
     /// Held by the window itself, so the connection shortcuts answer even when
     /// nothing inside a tab has the caret.
     focus: FocusHandle,
+    /// Tabs a startup restore is reconnecting, keyed by the connection manager
+    /// that is connecting them. Their contents are kept here until the session
+    /// exists, so a failed reconnect does not erase the user's tabs.
+    pending: HashMap<EntityId, SessionState>,
+    /// The snapshot last written, so an unchanged one is not written again.
+    last_saved: Option<WorkspaceState>,
 }
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // A workspace file that cannot be read must not keep the app from
+        // starting; an empty one is simply the first launch.
+        let state = workspace_state::load().unwrap_or_else(|error| {
+            eprintln!("could not read the workspace: {error:#}");
+            WorkspaceState::default()
+        });
+        Self::build(state, window, cx)
+    }
+
+    /// Build a workspace, restoring `state`'s tabs into it.
+    fn build(state: WorkspaceState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // The window knows the system appearance more reliably than the app
         // does on Linux, and it is the only thing that hears about a change.
         settings::follow_system_appearance(window, cx);
@@ -150,9 +169,58 @@ impl Workspace {
             active: 0,
             value: None,
             focus,
+            pending: HashMap::new(),
+            last_saved: None,
         };
-        workspace.open_connect_tab(window, cx);
+        workspace.restore_tabs(state, window, cx);
         workspace
+    }
+
+    /// Reopen every connection the last session had, then let each turn its
+    /// tab into a session and restore its own tabs.
+    ///
+    /// Nothing is restored synchronously: a connection has to be opened first,
+    /// and that follows the same path a manual connect does.
+    fn restore_tabs(&mut self, state: WorkspaceState, window: &mut Window, cx: &mut Context<Self>) {
+        let connections = if state.sessions.is_empty() {
+            Vec::new()
+        } else {
+            store::load().unwrap_or_else(|error| {
+                eprintln!("could not read the saved connections: {error:#}");
+                Vec::new()
+            })
+        };
+
+        let mut active = 0;
+        for (index, session) in state.sessions.into_iter().enumerate() {
+            // A connection deleted since the file was written is skipped.
+            if !connections
+                .iter()
+                .any(|config| config.id == session.connection)
+            {
+                continue;
+            }
+
+            let welcome = Self::welcome(window, cx);
+            self.pending.insert(welcome.entity_id(), session.clone());
+            welcome.update(cx, |welcome, cx| {
+                welcome.open(session.connection, window, cx)
+            });
+            if index == state.active {
+                active = self.tabs.len();
+            }
+            self.tabs.push(TabContent::Connect(welcome));
+        }
+
+        if self.tabs.is_empty() {
+            // Nothing to restore: the window opens on the connection manager.
+            self.open_connect_tab(window, cx);
+            return;
+        }
+
+        self.active = active.min(self.tabs.len() - 1);
+        self.focus_active(window, cx);
+        cx.notify();
     }
 
     /// Add a tab showing the connection manager and make it active.
@@ -161,6 +229,7 @@ impl Workspace {
         self.tabs.push(TabContent::Connect(welcome));
         self.active = self.tabs.len() - 1;
         self.focus_active(window, cx);
+        self.save_state(cx);
         cx.notify();
     }
 
@@ -178,6 +247,7 @@ impl Workspace {
 
         self.active = index;
         self.focus_active(window, cx);
+        self.save_state(cx);
         cx.notify();
     }
 
@@ -268,6 +338,11 @@ impl Workspace {
         if let TabContent::Session(session) = &self.tabs[index] {
             close(session.read(cx).connection());
         }
+        // A connection manager on its way out has nothing left to restore into.
+        if let TabContent::Connect(welcome) = &self.tabs[index] {
+            let welcome = welcome.entity_id();
+            self.pending.remove(&welcome);
+        }
         self.tabs.remove(index);
 
         if self.tabs.is_empty() {
@@ -283,6 +358,7 @@ impl Workspace {
         }
         self.active = self.active.min(self.tabs.len() - 1);
         self.focus_active(window, cx);
+        self.save_state(cx);
         cx.notify();
     }
 
@@ -298,21 +374,39 @@ impl Workspace {
         cx.subscribe_in(&session, window, Self::on_session_event)
             .detach();
 
+        // A startup restore parked this tab's contents here; a manual connect
+        // has nothing pending. The connection id is checked because a user who
+        // reconnects somewhere else from a failed restore's launcher should not
+        // get the old connection's tabs. The entry stays in `pending` until the
+        // tab has been swapped, so a checkpoint taken while the tabs are being
+        // rebuilt still records them.
+        let pending = self.pending.get(&welcome.entity_id()).cloned();
+        if let Some(state) = pending
+            && state.connection == connection.config.id
+        {
+            session.update(cx, |session, cx| session.restore(state, window, cx));
+        }
+
         // The tab the connection was opened from becomes the connection. Its
         // tab being gone would mean it was closed mid-connect, and the pool is
         // open either way, so it gets a tab of its own instead.
         match self.tab_of(|tab| matches!(tab, TabContent::Connect(open) if open == welcome)) {
             Some(index) => {
                 self.tabs[index] = TabContent::Session(session);
-                self.active = index;
+                // The tab is already in front: a manual connect is started from
+                // the tab showing it, and a restore has already put the saved
+                // tab in front. Stepping to whichever connection finished last
+                // would lose that, so `active` is left alone.
             }
             None => {
                 self.tabs.push(TabContent::Session(session));
                 self.active = self.tabs.len() - 1;
             }
         }
+        self.pending.remove(&welcome.entity_id());
 
         self.focus_active(window, cx);
+        self.save_state(cx);
         cx.notify();
     }
 
@@ -323,19 +417,93 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let SessionEvent::Disconnected = event;
-        let Some(index) =
-            self.tab_of(|tab| matches!(tab, TabContent::Session(open) if open == session))
-        else {
-            return;
-        };
+        match event {
+            // Something about the session's tabs changed; the saved state is
+            // rewritten at these checkpoints rather than on every keystroke.
+            SessionEvent::Changed => self.save_state(cx),
+            SessionEvent::Disconnected => {
+                let Some(index) =
+                    self.tab_of(|tab| matches!(tab, TabContent::Session(open) if open == session))
+                else {
+                    return;
+                };
 
-        close(session.read(cx).connection());
-        // Disconnecting keeps the tab, so another connection can be opened
-        // from where the last one was.
-        self.tabs[index] = TabContent::Connect(Self::welcome(window, cx));
-        self.focus_active(window, cx);
-        cx.notify();
+                close(session.read(cx).connection());
+                // Disconnecting keeps the tab, so another connection can be
+                // opened from where the last one was.
+                self.tabs[index] = TabContent::Connect(Self::welcome(window, cx));
+                self.focus_active(window, cx);
+                self.save_state(cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// The window's tabs as they would be restored.
+    ///
+    /// Only session tabs are recorded: a blank connection manager is scratch
+    /// form state, so it is neither saved nor restored. A manager still holding
+    /// a pending restore is recorded from that state, so a failed reconnect
+    /// does not erase the user's tabs from the file.
+    pub(crate) fn snapshot(&self, cx: &App) -> WorkspaceState {
+        let mut sessions = Vec::new();
+        let mut active = 0;
+
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let state = match tab {
+                TabContent::Session(session) => Some(session.read(cx).snapshot(cx)),
+                TabContent::Connect(welcome) => self.pending.get(&welcome.entity_id()).cloned(),
+            };
+
+            if let Some(state) = state {
+                if index == self.active {
+                    active = sessions.len();
+                }
+                sessions.push(state);
+            }
+        }
+
+        WorkspaceState {
+            active,
+            sessions,
+            ..WorkspaceState::default()
+        }
+    }
+
+    /// Write the current state, unless it is what was written last.
+    ///
+    /// The file is small but the UI thread should not wait on it, so the write
+    /// goes to the background.
+    fn save_state(&mut self, cx: &mut Context<Self>) {
+        let state = self.snapshot(cx);
+        if self.last_saved.as_ref() == Some(&state) {
+            return;
+        }
+        self.last_saved = Some(state.clone());
+
+        cx.background_spawn(async move {
+            if let Err(error) = workspace_state::save(&state) {
+                eprintln!("could not save the workspace: {error:#}");
+            }
+        })
+        .detach();
+    }
+
+    /// Write the current state now, for the process that is about to end.
+    ///
+    /// Synchronous on purpose: this is the last chance to record text typed
+    /// since the last checkpoint, and a background write would race the
+    /// shutdown that is already under way.
+    pub(crate) fn flush_state(&mut self, cx: &mut Context<Self>) {
+        let state = self.snapshot(cx);
+        if self.last_saved.as_ref() == Some(&state) {
+            return;
+        }
+        self.last_saved = Some(state.clone());
+
+        if let Err(error) = workspace_state::save(&state) {
+            eprintln!("could not save the workspace: {error:#}");
+        }
     }
 
     /// Show the value a grid asked for, if one is waiting.
@@ -710,6 +878,21 @@ impl Render for Workspace {
 
 #[cfg(test)]
 impl Workspace {
+    /// Build a workspace from an injected state, so a test never reads the
+    /// developer's real workspace file.
+    pub(crate) fn with_state_for_test(
+        state: WorkspaceState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::build(state, window, cx)
+    }
+
+    /// The state this workspace would write, for a test to check.
+    pub(crate) fn state_for_test(&self, cx: &App) -> WorkspaceState {
+        self.snapshot(cx)
+    }
+
     pub(crate) fn tab_titles_for_test(&self, cx: &App) -> Vec<String> {
         self.tabs
             .iter()

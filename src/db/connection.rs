@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result};
 use futures::StreamExt as _;
+use serde::{Deserialize, Serialize};
 use sqlx::Either;
 use sqlx::{
     AssertSqlSafe, Column, Database, Encode, Executor, IntoArguments, Row, SqlSafeStr, Type,
@@ -33,7 +34,7 @@ enum Pool {
 }
 
 /// A table or view reported by the server.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DatabaseObject {
     /// Schema the object lives in. `None` for engines without schemas.
     pub schema: Option<String>,
@@ -41,7 +42,7 @@ pub struct DatabaseObject {
     pub kind: ObjectKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObjectKind {
     Table,
     View,

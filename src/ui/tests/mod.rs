@@ -24,6 +24,7 @@ use crate::app::Workspace;
 use crate::settings::{self, Appearance, Settings};
 use crate::ui::settings_window;
 use crate::ui::welcome::WelcomeEvent;
+use crate::workspace_state::{PanelState, SessionState, WorkspaceState};
 
 use crate::db::export::Format;
 use crate::db::query::QueryResult;
@@ -271,20 +272,43 @@ impl WorkspaceWindow {
 }
 
 fn workspace(cx: &mut TestAppContext) -> WorkspaceWindow {
+    workspace_from(cx, WorkspaceState::default())
+}
+
+/// A workspace window built from an injected state, the way `main` builds it
+/// from the file — so no test ever reads the developer's own workspace.
+fn workspace_from(cx: &mut TestAppContext, state: WorkspaceState) -> WorkspaceWindow {
     cx.update(|cx| {
         gpui_kit::component::init(cx);
         crate::keymap::bind(cx);
     });
 
+    let state = std::cell::RefCell::new(Some(state));
     let view = std::cell::RefCell::new(None);
     let window = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
-        let workspace = cx.new(|cx| Workspace::new(window, cx));
+        let state = state.borrow_mut().take().expect("the state is taken once");
+        let workspace = cx.new(|cx| Workspace::with_state_for_test(state, window, cx));
         *view.borrow_mut() = Some(workspace.clone());
         Root::new(workspace, window, cx)
     });
     let view = view.into_inner().expect("the workspace is built above");
 
     WorkspaceWindow { window, view }
+}
+
+/// A workspace restored from `state`, with `connections` saved in a scratch
+/// config directory so the reconnect can find them. The directory must outlive
+/// the workspace, so it is handed back.
+fn restored_workspace(
+    cx: &mut TestAppContext,
+    state: WorkspaceState,
+    connections: Vec<ConnectionConfig>,
+) -> (ScratchDir, WorkspaceWindow) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+    crate::db::store::save(&connections).expect("could not save the test connections");
+    let handle = workspace_from(cx, state);
+    (dir, handle)
 }
 
 /// Open a connection to a database of its own from the active tab, the way

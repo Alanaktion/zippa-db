@@ -251,6 +251,240 @@ fn the_toolbar_new_query_button_opens_a_tab(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn restored_connections_reopen_their_tabs_in_order(cx: &mut TestAppContext) {
+    let database = runtime::block_on(TempDatabase::new());
+    let config = database.config();
+    let state = WorkspaceState {
+        active: 0,
+        sessions: vec![SessionState {
+            connection: config.id,
+            database: Some(config.database.clone()),
+            active: 1,
+            panels: vec![
+                PanelState::Query {
+                    title: "Query 1".into(),
+                    sql: "select 1".into(),
+                    file: None,
+                },
+                PanelState::Query {
+                    title: "Query 2".into(),
+                    sql: "select 2".into(),
+                    file: None,
+                },
+            ],
+        }],
+        ..WorkspaceState::default()
+    };
+
+    let (_dir, handle) = restored_workspace(cx, state, vec![config.clone()]);
+    cx.run_until_parked();
+
+    assert_eq!(
+        titles(cx, &handle),
+        [config.display_name()],
+        "the saved connection should reopen as a session tab"
+    );
+    assert_eq!(active(cx, &handle), 0);
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the restored connection should have become a session");
+    assert_eq!(
+        session.read_with(cx, |session, cx| session.tab_titles(cx)),
+        ["Query 1", "Query 2"],
+        "the tabs should come back in order, with no leftover empty editor"
+    );
+    assert_eq!(
+        session.read_with(cx, |session, cx| session.active_sql(cx)),
+        "select 2",
+        "the saved active tab should be the one showing"
+    );
+}
+
+#[gpui_kit::test]
+fn a_restored_table_tab_replaces_the_empty_editor(cx: &mut TestAppContext) {
+    let database = runtime::block_on(TempDatabase::new());
+    let config = database.config();
+    let state = WorkspaceState {
+        sessions: vec![SessionState {
+            connection: config.id,
+            database: Some(config.database.clone()),
+            active: 0,
+            panels: vec![PanelState::Table {
+                object: DatabaseObject {
+                    schema: None,
+                    name: "items".into(),
+                    kind: ObjectKind::Table,
+                },
+            }],
+        }],
+        ..WorkspaceState::default()
+    };
+
+    let (_dir, handle) = restored_workspace(cx, state, vec![config]);
+    cx.run_until_parked();
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the restored connection should have become a session");
+    assert_eq!(
+        session.read_with(cx, |session, cx| session.tab_titles(cx)),
+        ["items"],
+        "a restored table should not leave the empty editor beside it"
+    );
+}
+
+#[gpui_kit::test]
+fn a_restore_with_no_tabs_keeps_the_empty_editor(cx: &mut TestAppContext) {
+    let database = runtime::block_on(TempDatabase::new());
+    let config = database.config();
+    let state = WorkspaceState {
+        sessions: vec![SessionState {
+            connection: config.id,
+            database: Some(config.database.clone()),
+            active: 0,
+            panels: Vec::new(),
+        }],
+        ..WorkspaceState::default()
+    };
+
+    let (_dir, handle) = restored_workspace(cx, state, vec![config]);
+    cx.run_until_parked();
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the restored connection should have become a session");
+    assert_eq!(
+        session.read_with(cx, |session, cx| session.tab_titles(cx)),
+        ["Query 1"],
+        "a session always shows one editor"
+    );
+}
+
+#[gpui_kit::test]
+fn a_connection_deleted_since_the_last_run_is_skipped(cx: &mut TestAppContext) {
+    let database = runtime::block_on(TempDatabase::new());
+    let config = database.config();
+    let state = WorkspaceState {
+        sessions: vec![
+            SessionState {
+                connection: config.id,
+                database: Some(config.database.clone()),
+                active: 0,
+                panels: vec![PanelState::Query {
+                    title: "Query 1".into(),
+                    sql: "select 1".into(),
+                    file: None,
+                }],
+            },
+            SessionState {
+                connection: Uuid::new_v4(),
+                database: None,
+                active: 0,
+                panels: vec![PanelState::Query {
+                    title: "Query 1".into(),
+                    sql: "select 2".into(),
+                    file: None,
+                }],
+            },
+        ],
+        ..WorkspaceState::default()
+    };
+
+    let (_dir, handle) = restored_workspace(cx, state, vec![config.clone()]);
+    cx.run_until_parked();
+
+    assert_eq!(
+        titles(cx, &handle),
+        [config.display_name()],
+        "a connection that no longer exists should not get a tab"
+    );
+}
+
+#[gpui_kit::test]
+fn a_failed_reconnect_keeps_its_tabs_for_retrying(cx: &mut TestAppContext) {
+    // A SQLite file that is not there: `open` refuses to create it, so the
+    // connection fails the way a server being down would.
+    let mut config = ConnectionConfig::new(Engine::Sqlite);
+    config.database = std::env::temp_dir()
+        .join(format!("zippa-missing-{}.sqlite", Uuid::new_v4()))
+        .to_string_lossy()
+        .into_owned();
+    let state = WorkspaceState {
+        sessions: vec![SessionState {
+            connection: config.id,
+            database: Some(config.database.clone()),
+            active: 0,
+            panels: vec![PanelState::Query {
+                title: "Query 1".into(),
+                sql: "select 1".into(),
+                file: None,
+            }],
+        }],
+        ..WorkspaceState::default()
+    };
+
+    let (_dir, handle) = restored_workspace(cx, state.clone(), vec![config]);
+    cx.run_until_parked();
+
+    assert_eq!(
+        titles(cx, &handle),
+        ["New connection"],
+        "a connection that cannot be reopened stays on the launcher"
+    );
+    assert_eq!(
+        handle
+            .view
+            .read_with(cx, |workspace, cx| workspace.state_for_test(cx)),
+        state,
+        "the tabs should still be recorded while the connect is outstanding"
+    );
+}
+
+#[gpui_kit::test]
+fn a_restored_state_round_trips_through_snapshot(cx: &mut TestAppContext) {
+    let database = runtime::block_on(TempDatabase::new());
+    let config = database.config();
+    let state = WorkspaceState {
+        active: 0,
+        sessions: vec![SessionState {
+            connection: config.id,
+            database: Some(config.database.clone()),
+            active: 1,
+            panels: vec![
+                PanelState::Query {
+                    title: "Query 1".into(),
+                    sql: "select 1".into(),
+                    file: None,
+                },
+                PanelState::Table {
+                    object: DatabaseObject {
+                        schema: None,
+                        name: "items".into(),
+                        kind: ObjectKind::Table,
+                    },
+                },
+            ],
+        }],
+        ..WorkspaceState::default()
+    };
+
+    let (_dir, handle) = restored_workspace(cx, state.clone(), vec![config]);
+    cx.run_until_parked();
+
+    let round_tripped = handle
+        .view
+        .read_with(cx, |workspace, cx| workspace.state_for_test(cx));
+    assert_eq!(
+        round_tripped, state,
+        "a restored window should snapshot back to the state it came from"
+    );
+}
+
+#[gpui_kit::test]
 fn clicking_a_saved_connection_opens_it(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let (_database, id) = saved_connection(cx, &handle);
