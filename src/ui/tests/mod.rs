@@ -52,6 +52,7 @@ mod rows;
 mod running;
 mod safety;
 mod schema;
+mod schema_search;
 mod session;
 mod sorting;
 mod value_dialog;

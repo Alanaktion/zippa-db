@@ -20,6 +20,35 @@ pub(crate) const OBJECTS_SQL: &str = "SELECT table_schema, table_name, table_typ
 pub(crate) const ROUTINES_SQL: &str = "SELECT routine_schema, routine_name, routine_type, NULL \
      FROM information_schema.routines WHERE routine_schema = DATABASE() ORDER BY routine_name";
 
+/// Every column in the current database, for the catalog search: owning
+/// database, owning table, whether that object is a view, column name, and the
+/// full type spec [`columns_sql`] produces for one table.
+pub(crate) const CATALOG_COLUMNS_SQL: &str = "SELECT c.table_schema, c.table_name, t.table_type, \
+     c.column_name, c.column_type \
+     FROM information_schema.columns c \
+     JOIN information_schema.tables t \
+       ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
+     WHERE c.table_schema = DATABASE() \
+     ORDER BY c.table_name, c.ordinal_position";
+
+/// Every index in the current database: owning database, owning table, index
+/// name, and its columns in index order. The kind is always a table, but it
+/// rides along so every catalog row has the same five fields.
+pub(crate) const CATALOG_INDEXES_SQL: &str = "SELECT table_schema, table_name, 'BASE TABLE', index_name, \
+     GROUP_CONCAT(column_name ORDER BY seq_in_index SEPARATOR ', ') \
+     FROM information_schema.statistics \
+     WHERE table_schema = DATABASE() \
+     GROUP BY table_schema, table_name, index_name \
+     ORDER BY table_name, index_name";
+
+/// Every trigger in the current database: owning database, owning table,
+/// trigger name, and when it fires.
+pub(crate) const CATALOG_TRIGGERS_SQL: &str = "SELECT trigger_schema, event_object_table, 'BASE TABLE', trigger_name, \
+     CONCAT(action_timing, ' ', event_manipulation) \
+     FROM information_schema.triggers \
+     WHERE trigger_schema = DATABASE() \
+     ORDER BY event_object_table, trigger_name";
+
 pub(crate) async fn connect(
     config: &ConnectionConfig,
     password: Option<&str>,

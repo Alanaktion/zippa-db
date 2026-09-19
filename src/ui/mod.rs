@@ -9,6 +9,7 @@ pub mod import_dialog;
 pub mod plan_view;
 pub mod query_editor;
 pub mod quick_switcher;
+pub mod schema_search;
 pub mod schema_view;
 pub mod session;
 pub mod settings_window;
@@ -39,6 +40,14 @@ use crate::db::{Engine, TagColor};
 pub fn notify_error(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
     if window.root::<Root>().flatten().is_some() {
         window.push_notification(Notification::error(message.into()), cx);
+    }
+}
+
+/// The same, for something that went right — a copy, for one, which has no
+/// other way to say it happened.
+pub fn notify_info(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
+    if window.root::<Root>().flatten().is_some() {
+        window.push_notification(Notification::info(message.into()), cx);
     }
 }
 

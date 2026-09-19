@@ -33,6 +33,62 @@ pub(crate) const ROUTINES_SQL: &str = "SELECT n.nspname, p.proname, \
      WHERE c.relkind = 'S' AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
      ORDER BY 1, 2, 4";
 
+/// Every column outside the system schemas, for the catalog search: owning
+/// schema, owning table, whether that object is a view, column name, and the
+/// same type spelling [`columns_sql`] produces for one table.
+pub(crate) const CATALOG_COLUMNS_SQL: &str = "SELECT c.table_schema, c.table_name, \
+     CASE WHEN t.table_type = 'VIEW' THEN 'VIEW' ELSE 'BASE TABLE' END, \
+     c.column_name, \
+     CASE \
+       WHEN c.data_type = 'character varying' AND c.character_maximum_length IS NOT NULL \
+         THEN 'character varying(' || c.character_maximum_length || ')' \
+       WHEN c.data_type = 'character' AND c.character_maximum_length IS NOT NULL \
+         THEN 'character(' || c.character_maximum_length || ')' \
+       WHEN c.data_type = 'numeric' AND c.numeric_precision IS NOT NULL \
+         THEN 'numeric(' || c.numeric_precision || ',' || COALESCE(c.numeric_scale, 0) || ')' \
+       ELSE c.data_type \
+     END \
+     FROM information_schema.columns c \
+     JOIN information_schema.tables t \
+       ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
+     WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema') \
+     ORDER BY c.table_schema, c.table_name, c.ordinal_position";
+
+/// Every index outside the system schemas: owning schema, owning table, index
+/// name, and its columns in index order. The kind is always a table, but it
+/// rides along so every catalog row has the same five fields.
+pub(crate) const CATALOG_INDEXES_SQL: &str = "SELECT n.nspname, t.relname, 'BASE TABLE', i.relname, \
+     array_to_string(ARRAY( \
+       SELECT a.attname FROM pg_attribute a \
+       WHERE a.attrelid = t.oid AND a.attnum = ANY(ix.indkey) \
+       ORDER BY array_position(ix.indkey, a.attnum) \
+     ), ', ') \
+     FROM pg_index ix \
+     JOIN pg_class t ON t.oid = ix.indrelid \
+     JOIN pg_class i ON i.oid = ix.indexrelid \
+     JOIN pg_namespace n ON n.oid = t.relnamespace \
+     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') \
+     ORDER BY n.nspname, t.relname, i.relname";
+
+/// Every user trigger: owning schema, owning table or view, trigger name, and
+/// the timing and events the trigger fires on.
+pub(crate) const CATALOG_TRIGGERS_SQL: &str = "SELECT n.nspname, c.relname, \
+     CASE WHEN c.relkind = 'v' THEN 'VIEW' ELSE 'BASE TABLE' END, t.tgname, \
+     (CASE WHEN t.tgtype & 2 <> 0 THEN 'BEFORE ' \
+           WHEN t.tgtype & 64 <> 0 THEN 'INSTEAD OF ' \
+           ELSE 'AFTER ' END) || \
+     concat_ws(' OR ', \
+       CASE WHEN t.tgtype & 4 <> 0 THEN 'INSERT' END, \
+       CASE WHEN t.tgtype & 16 <> 0 THEN 'UPDATE' END, \
+       CASE WHEN t.tgtype & 8 <> 0 THEN 'DELETE' END, \
+       CASE WHEN t.tgtype & 32 <> 0 THEN 'TRUNCATE' END) \
+     FROM pg_trigger t \
+     JOIN pg_class c ON c.oid = t.tgrelid \
+     JOIN pg_namespace n ON n.oid = c.relnamespace \
+     WHERE NOT t.tgisinternal \
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+     ORDER BY n.nspname, c.relname, t.tgname";
+
 pub(crate) async fn connect(config: &ConnectionConfig, password: Option<&str>) -> Result<PgPool> {
     let mut options = PgConnectOptions::new()
         .host(&config.host)

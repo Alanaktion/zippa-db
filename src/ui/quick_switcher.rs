@@ -17,7 +17,7 @@ use gpui_kit::{App, Context, Entity, IntoElement, Render, SharedString, Window, 
 use crate::db::{DatabaseObject, ObjectKind};
 use crate::ui::query_editor::{Explain, ExplainAnalyze};
 use crate::ui::session::tab::ObjectViewMode;
-use crate::ui::session::{NewTab, OpenFile, Refresh, Session};
+use crate::ui::session::{NewTab, OpenFile, Refresh, SearchSchema, Session};
 
 /// Actions and destinations selectable from the quick switcher.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,6 +30,7 @@ pub(crate) enum SwitcherTarget {
     Explain,
     ExplainAnalyze,
     SwitchDatabase(String),
+    SearchSchema,
 }
 
 pub struct QuickSwitcherView {
@@ -188,6 +189,17 @@ impl Render for QuickSwitcherView {
 
             act_group = act_group.item(
                 CommandItem::new()
+                    .label("Search Schema...")
+                    .icon(IconName::Search)
+                    .action(Box::new(SearchSchema))
+                    .keywords([
+                        "search", "find", "schema", "column", "index", "routine", "trigger",
+                    ]),
+            );
+            act_targets.push(SwitcherTarget::SearchSchema);
+
+            act_group = act_group.item(
+                CommandItem::new()
                     .label("Explain Query")
                     .icon(IconName::Route)
                     .action(Box::new(Explain))
@@ -249,6 +261,13 @@ impl Render for QuickSwitcherView {
                     .and_then(|s| s.get(index_path.row))
                 {
                     let target = target.clone();
+                    // The schema search is a dialog of its own, and only one can
+                    // be open at a time: close this one before it opens.
+                    if matches!(target, SwitcherTarget::SearchSchema) {
+                        window.close_dialog(cx);
+                        crate::ui::schema_search::open(session_for_confirm.clone(), window, cx);
+                        return;
+                    }
                     session_for_confirm.update(cx, |session, cx| match target {
                         SwitcherTarget::Tab(ix) => {
                             session.activate_tab(ix, window, cx);
@@ -263,7 +282,8 @@ impl Render for QuickSwitcherView {
                         | SwitcherTarget::OpenFile
                         | SwitcherTarget::Refresh
                         | SwitcherTarget::Explain
-                        | SwitcherTarget::ExplainAnalyze => {
+                        | SwitcherTarget::ExplainAnalyze
+                        | SwitcherTarget::SearchSchema => {
                             // Handled via the item's dispatched Action.
                         }
                     });

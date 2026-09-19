@@ -19,7 +19,7 @@ use crate::db::{DatabaseObject, ObjectKind, StoredKind, StoredObject};
 use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
-use super::{ImportSqlDump, Session, SessionEvent};
+use super::{ImportSqlDump, SearchSchema, Session, SessionEvent};
 
 impl Session {
     pub(super) fn on_filter_event(
@@ -297,6 +297,23 @@ impl Session {
             .bg(cx.theme().sidebar)
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
+            .child(
+                Button::new("search-schema")
+                    .outline()
+                    .small()
+                    .w_full()
+                    .label("Search schema…")
+                    .accessibility_label("Search tables, columns, indexes, routines and triggers")
+                    .tooltip_with_action(
+                        "Search the database's schema",
+                        &SearchSchema,
+                        Some("Session"),
+                    )
+                    .on_click(cx.listener(|_this, _, window, cx| {
+                        let session = cx.entity().clone();
+                        crate::ui::schema_search::open(session, window, cx);
+                    })),
+            )
             .child(
                 Button::new("import-dump")
                     .outline()

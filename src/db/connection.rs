@@ -17,6 +17,7 @@ use sqlx::{
     TypeInfo,
 };
 
+use super::catalog::{Catalog, CatalogEntry, CatalogKind, MAX_ENTRIES};
 use super::config::{ConnectionConfig, Engine};
 use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary};
 use super::plan::{self, Explained, Plan};
@@ -253,6 +254,88 @@ impl Connection {
                 })
             })
             .collect())
+    }
+
+    /// A snapshot of the whole schema, for schema search.
+    ///
+    /// One bulk read per kind rather than per table, so a session pays for this
+    /// once. Tables, views and routines reuse [`Self::objects`] and
+    /// [`Self::stored_objects`]; columns, indexes and triggers are the three
+    /// new queries. Capped at [`MAX_ENTRIES`], with the untruncated count kept
+    /// so the caller can say what was left out.
+    pub async fn catalog(&self) -> Result<Catalog> {
+        let (columns, indexes, triggers) = match self.config.engine {
+            Engine::Postgres => (
+                postgres::CATALOG_COLUMNS_SQL,
+                postgres::CATALOG_INDEXES_SQL,
+                postgres::CATALOG_TRIGGERS_SQL,
+            ),
+            Engine::MySql => (
+                mysql::CATALOG_COLUMNS_SQL,
+                mysql::CATALOG_INDEXES_SQL,
+                mysql::CATALOG_TRIGGERS_SQL,
+            ),
+            Engine::Sqlite => (
+                sqlite::CATALOG_COLUMNS_SQL,
+                sqlite::CATALOG_INDEXES_SQL,
+                sqlite::CATALOG_TRIGGERS_SQL,
+            ),
+        };
+
+        let objects = self.objects().await?;
+        let stored = self.stored_objects().await?;
+        let columns = self.run_query(columns).await?;
+        let indexes = self.run_query(indexes).await?;
+        let triggers = self.run_query(triggers).await?;
+
+        let mut entries: Vec<CatalogEntry> = Vec::new();
+        entries.extend(objects.into_iter().map(CatalogEntry::object));
+        entries.extend(stored.into_iter().map(CatalogEntry::routine));
+        for (rows, kind) in [
+            (&columns.rows, CatalogKind::Column),
+            (&indexes.rows, CatalogKind::Index),
+            (&triggers.rows, CatalogKind::Trigger),
+        ] {
+            for row in rows {
+                let (owner, name, detail) = self.catalog_row(row);
+                entries.push(CatalogEntry::member(kind, owner, name, detail));
+            }
+        }
+
+        let total = entries.len();
+        entries.truncate(MAX_ENTRIES);
+        Ok(Catalog { entries, total })
+    }
+
+    /// One catalog row: `(schema, owning table, its kind, entry name, detail)`,
+    /// the layout every engine's catalog query shares.
+    fn catalog_row(&self, row: &[Cell]) -> (DatabaseObject, String, String) {
+        let text = |index: usize| {
+            row.get(index)
+                .and_then(|cell| cell.clone())
+                .unwrap_or_default()
+        };
+        // Only qualify a name when the schema adds something, so a catalog
+        // entry's owner is the same `DatabaseObject` the sidebar's `objects`
+        // would hand back and an already-open tab is found again.
+        let schema = text(0);
+        let schema = match self.config.engine {
+            Engine::Postgres => Some(schema).filter(|schema| schema != "public"),
+            Engine::MySql | Engine::Sqlite => None,
+        };
+        let kind = match text(2) {
+            kind if kind.eq_ignore_ascii_case("VIEW") => ObjectKind::View,
+            _ => ObjectKind::Table,
+        };
+        (
+            DatabaseObject {
+                schema,
+                name: text(1),
+                kind,
+            },
+            text(3),
+            text(4),
+        )
     }
 
     pub async fn run_query(&self, sql: &str) -> Result<QueryResult> {

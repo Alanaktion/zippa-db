@@ -28,6 +28,7 @@ const GROUPS: &[Group] = &[
         rows: &[
             ("Show this list", &["ctrl-/"]),
             ("Quick switcher", &["secondary-k"]),
+            ("Search the schema", &["secondary-shift-o"]),
             ("Settings", &["secondary-,"]),
         ],
     },

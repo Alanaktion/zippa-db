@@ -1384,6 +1384,37 @@ impl DataGrid {
         self.set_sorted_result(result, None, cx);
     }
 
+    /// Put the selection on the first cell of the data column named `name`,
+    /// and scroll it into view.
+    ///
+    /// Returns `false` when the grid has no such column — what a caller sees
+    /// when it opens a table and asks before the page has loaded, so it can
+    /// ask again later.
+    pub fn reveal_column(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
+        let Some(data_ix) = self
+            .table
+            .read(cx)
+            .delegate()
+            .result
+            .columns
+            .iter()
+            .position(|column| column == name)
+        else {
+            return false;
+        };
+        let shown = ResultDelegate::shown_column(data_ix);
+        let has_row = !self.table.read(cx).delegate().result.rows.is_empty();
+        self.table.update(cx, |table, cx| {
+            // An empty page still scrolls to the column's header; a cell
+            // cannot be selected where there is no row.
+            if has_row {
+                table.set_selected_cell(0, shown, cx);
+            }
+            table.scroll_to_col(shown, cx);
+        });
+        true
+    }
+
     /// Show `result`, marking its header as sorted by `sort`.
     ///
     /// The table rebuilds its headers from the delegate whenever the rows

@@ -4,7 +4,7 @@
 
 Zippa DB combines the raw performance of Zed's GPU-accelerated interface engine with the reliability of async Rust. Designed to compete with tools like TablePlus, Zippa DB aims for sub-millisecond tab switching, virtualized streaming for massive datasets, and native support for PostgreSQL, MySQL, and SQLite.
 
-> **Status:** early. You can save connections, connect to PostgreSQL, MySQL, or SQLite, switch databases, browse tables and views in the sidebar, open them in tabs, run queries, read the results, and import a SQL dump. Everything else in [TODO.md](TODO.md) is still ahead.
+> **Status:** early. You can save connections, connect to PostgreSQL, MySQL, or SQLite, switch databases, browse tables and views in the sidebar, open them in tabs, run queries, read the results, search the schema for a column, index, routine, or trigger, and import a SQL dump. Everything else in [TODO.md](TODO.md) is still ahead.
 
 ---
 
@@ -41,6 +41,7 @@ src/
 │   ├── mod.rs        # Module map and re-exports
 │   ├── config.rs     # Engine, SafetyMode, ConnectionConfig
 │   ├── connection.rs # The live pool, and the shared read/write paths
+│   ├── catalog.rs    # The whole schema once per session, for schema search
 │   ├── sql.rs        # Quoting and bind placeholders for generated SQL
 │   ├── statement.rs  # Splitting and classifying the user's own SQL
 │   ├── postgres.rs   # Per-engine pool setup and value formatting
@@ -61,6 +62,8 @@ src/
     │   ├── tab.rs      # What a tab holds and how its last run went
     │   └── sidebar.rs  # Object list and the filter over it
     ├── query_editor.rs # SQL editor (Cmd+Enter to run)
+    ├── quick_switcher.rs # Fuzzy switcher over tabs, objects, and commands (Cmd+K)
+    ├── schema_search.rs # Search columns, indexes, routines, triggers (Cmd+Shift+O)
     ├── sql_file.rs     # Native open/save dialogs for .sql files
     ├── settings_window.rs # Settings window (Cmd+,)
     ├── value_dialog.rs # One cell's value, in full (Cmd+Shift+V)
@@ -178,6 +181,7 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 | Next / previous tab | `Ctrl` + `Tab` / `Ctrl` + `Shift` + `Tab` (or `Ctrl` + `PageDown` / `PageUp`) |
 | Refresh the schema and the open table | `Cmd`/`Ctrl` + `R` |
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
+| Search the schema for a column, index, routine, or trigger | `Cmd`/`Ctrl` + `Shift` + `O` |
 | Import a SQL dump into the connection | `Cmd`/`Ctrl` + `Shift` + `I` |
 | Move between cells | `↑` `↓` `←` `→`, `Home` / `End`, `PageUp` / `PageDown` |
 | Copy the selected cell, or the selected rows | `Cmd`/`Ctrl` + `C` |
@@ -221,6 +225,7 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 * [x] Copy rows or a column from the grid as TSV, CSV, JSON, a Markdown table, SQL `INSERT`, plain values, or a SQL `IN` list
 * [x] SQL editor with SQL syntax highlighting: `Cmd+Enter` runs the statement the caret is in, `Cmd+Shift+Enter` the whole buffer, `Cmd+.` gives up on a run
 * [x] Query plan viewer: `Cmd+E` shows a statement's plan as a tree with costs, rows, timing, and warnings, and `Cmd+Shift+E` runs it for actual times
+* [x] Schema search: find a column, index, routine, or trigger anywhere in the database and open what it belongs to
 * [x] Open and save `.sql` files through the native file dialogs
 * [x] Settings window: page size, editor and grid fonts, striped rows, always-on scrollbars, theme, light/dark
 * [x] Query cancellation and multi-statement scripts, with a result tab per statement

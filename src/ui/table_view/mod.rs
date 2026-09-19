@@ -198,6 +198,9 @@ pub struct TableView {
     pending: Option<Pending>,
     /// A write waiting on an answer about whether to run at all.
     confirming: Option<Confirming>,
+    /// A column to select once a page lands, set by a schema search that opened
+    /// this table and cleared once the grid has it.
+    reveal: Option<String>,
 }
 
 impl TableView {
@@ -273,6 +276,7 @@ impl TableView {
             notice: None,
             pending: None,
             confirming: None,
+            reveal: None,
         };
         view.load_row_key(cx);
         view.load_foreign_keys(cx);
@@ -452,6 +456,7 @@ impl TableView {
                         this.grid.update(cx, |grid, cx| {
                             grid.set_sorted_result(query_result, sort, cx)
                         });
+                        this.apply_reveal(cx);
                     }
                     Ok(Err(error)) => {
                         this.loaded_rows = 0;
@@ -529,6 +534,29 @@ impl TableView {
             return;
         }
         self.reload(cx);
+    }
+
+    /// Select `column` in the grid once the page is there.
+    ///
+    /// A schema search opens the table and asks straight away; the page is
+    /// still loading at that point, so the ask is remembered and applied when
+    /// the rows arrive.
+    pub(crate) fn reveal_column(&mut self, column: &str, cx: &mut Context<Self>) {
+        self.reveal = Some(column.to_string());
+        self.apply_reveal(cx);
+    }
+
+    /// Apply a remembered column once the grid has it, and forget it then.
+    fn apply_reveal(&mut self, cx: &mut Context<Self>) {
+        let Some(column) = self.reveal.clone() else {
+            return;
+        };
+        if self
+            .grid
+            .update(cx, |grid, cx| grid.reveal_column(&column, cx))
+        {
+            self.reveal = None;
+        }
     }
 
     /// Order the rows by `sort` on the server, from the first page.

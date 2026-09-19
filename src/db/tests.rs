@@ -11,8 +11,8 @@ use uuid::Uuid;
 use super::query::Cell;
 use super::schema::ReferentialAction;
 use super::{
-    Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, RowKey, SafetyMode, TagColor,
-    keyword_literal, quote_identifier, typed_placeholder,
+    CatalogKind, Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, RowKey,
+    SafetyMode, TagColor, keyword_literal, quote_identifier, typed_placeholder,
 };
 
 pub(crate) struct TempDatabase {
@@ -154,6 +154,76 @@ async fn lists_databases_and_objects() {
     );
     // SQLite has no schemas, so nothing is qualified.
     assert!(objects.iter().all(|object| object.schema.is_none()));
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn catalog_reads_columns_indexes_and_triggers() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    connection
+        .run_query("CREATE INDEX items_name_idx ON items(name)")
+        .await
+        .expect("could not create the index");
+    connection
+        .run_query("CREATE TRIGGER items_guard AFTER INSERT ON items BEGIN SELECT 1; END")
+        .await
+        .expect("could not create the trigger");
+
+    let catalog = connection
+        .catalog()
+        .await
+        .expect("could not read the catalog");
+    let find = |kind, name: &str| {
+        catalog
+            .entries
+            .iter()
+            .find(|entry| entry.kind == kind && entry.name == name)
+    };
+
+    let id = find(CatalogKind::Column, "id").expect("the id column is missing");
+    assert_eq!(id.detail, "INTEGER");
+    assert_eq!(id.owner().map(|object| object.name.as_str()), Some("items"));
+
+    let index = find(CatalogKind::Index, "items_name_idx").expect("the index is missing");
+    assert_eq!(index.detail, "name");
+    assert_eq!(
+        index.owner().map(|object| object.name.as_str()),
+        Some("items")
+    );
+
+    let trigger = find(CatalogKind::Trigger, "items_guard").expect("the trigger is missing");
+    assert_eq!(
+        trigger.owner().map(|object| object.name.as_str()),
+        Some("items")
+    );
+
+    // Views bring their columns; SQLite's own tables are left out.
+    assert!(
+        catalog
+            .entries
+            .iter()
+            .any(|entry| entry.kind == CatalogKind::View && entry.name == "named_items")
+    );
+    assert!(
+        !catalog
+            .entries
+            .iter()
+            .any(|entry| entry.name.starts_with("sqlite_"))
+    );
+    assert_eq!(
+        catalog
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == CatalogKind::Table)
+            .count(),
+        1
+    );
+    assert_eq!(catalog.truncated(), None);
 
     connection.close().await;
 }

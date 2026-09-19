@@ -17,6 +17,37 @@ pub(crate) const OBJECTS_SQL: &str = "SELECT NULL AS table_schema, name, \
      FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' \
      ORDER BY name";
 
+/// Every column in every user table and view, for the catalog search: owning
+/// table, whether it is a view, column name, and declared type.
+///
+/// `pragma_table_info` is a table-valued function, and SQLite lets its
+/// argument be a column from the table to its left, so one row per column of
+/// every table comes back in a single statement. There are no schemas, so the
+/// first field is a stand-in `NULL`.
+pub(crate) const CATALOG_COLUMNS_SQL: &str = "SELECT NULL, m.name, m.type, ti.name, ti.type \
+     FROM sqlite_master m JOIN pragma_table_info(m.name) ti \
+     WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%' \
+     ORDER BY m.name, ti.cid";
+
+/// Every explicitly created index: owning table, index name, and its columns
+/// in index order. `origin = 'c'` skips the auto-indexes behind a `UNIQUE` or
+/// `PRIMARY KEY`, whose generated names are noise in a search.
+pub(crate) const CATALOG_INDEXES_SQL: &str = "SELECT NULL, m.name, m.type, il.name, \
+     (SELECT group_concat(ii.name, ', ') FROM pragma_index_info(il.name) ii) \
+     FROM sqlite_master m JOIN pragma_index_list(m.name) il \
+     WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%' \
+       AND il.origin = 'c' \
+     ORDER BY m.name, il.name";
+
+/// Every trigger: the table or view it is on, its name, and that object's
+/// kind. SQLite keeps a trigger's timing and event only inside its `CREATE
+/// TRIGGER` text, so the detail line stays empty rather than being guessed at.
+pub(crate) const CATALOG_TRIGGERS_SQL: &str = "SELECT NULL, tr.tbl_name, COALESCE(o.type, 'table'), tr.name, '' \
+     FROM sqlite_master tr \
+     LEFT JOIN sqlite_master o ON o.name = tr.tbl_name AND o.type IN ('table', 'view') \
+     WHERE tr.type = 'trigger' \
+     ORDER BY tr.tbl_name, tr.name";
+
 pub(crate) async fn connect(config: &ConnectionConfig) -> Result<SqlitePool> {
     if config.database.trim().is_empty() {
         anyhow::bail!("no database file selected");

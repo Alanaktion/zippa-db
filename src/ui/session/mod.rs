@@ -26,7 +26,10 @@ use gpui_kit::{
 
 use regex::Regex;
 
-use crate::db::{Connection, DatabaseObject, Explained, StoredObject, runtime, statement};
+use crate::db::{
+    Catalog, CatalogEntry, CatalogKind, Connection, DatabaseObject, Explained, StoredObject,
+    runtime, statement,
+};
 use crate::ui::filter_bar::FilterSpec;
 use crate::ui::import_dialog::{ImportEvent, ImportView};
 use crate::ui::schema_view::SchemaView;
@@ -60,6 +63,7 @@ actions!(
         CancelQuery,
         QuickSwitcher,
         ImportSqlDump,
+        SearchSchema,
     ]
 );
 
@@ -98,6 +102,15 @@ pub struct Session {
     objects_tree: Entity<TreeState>,
     /// Set when the schema could not be read; queries still work.
     metadata_error: Option<String>,
+    /// The whole schema, for [`SearchSchema`]. Read once in the background as
+    /// the session opens and again on refresh, so a keystroke never waits on
+    /// the server. Holds only names until the read lands.
+    catalog: Arc<Catalog>,
+    /// Whether that read is still in flight, so the dialog can say so.
+    catalog_loading: bool,
+    /// Why the full catalog could not be read, when it could not; search then
+    /// finds names but not columns, indexes or triggers.
+    catalog_error: Option<String>,
     switching: bool,
     /// The next panel's stable key. See `SessionPanel`'s `key` field.
     next_key: usize,
@@ -141,6 +154,9 @@ impl Session {
             matcher: None,
             objects_tree: cx.new(|cx| TreeState::new(cx)),
             metadata_error: None,
+            catalog: Arc::new(Catalog::default()),
+            catalog_loading: true,
+            catalog_error: None,
             switching: false,
             next_key: 0,
             import: None,
@@ -678,6 +694,69 @@ impl Session {
         crate::ui::quick_switcher::open(session, window, cx);
     }
 
+    fn on_search_schema(&mut self, _: &SearchSchema, window: &mut Window, cx: &mut Context<Self>) {
+        let session = cx.entity().clone();
+        crate::ui::schema_search::open(session, window, cx);
+    }
+
+    /// Open what a schema search result is about.
+    ///
+    /// A table or view opens its rows; a column opens its table's rows with
+    /// the column selected; an index or trigger opens the table's structure.
+    /// There is no routine view yet, so a routine copies its callable name the
+    /// way the sidebar's routine menu does.
+    pub(crate) fn open_catalog_entry(
+        &mut self,
+        entry: CatalogEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match entry.kind {
+            CatalogKind::Table | CatalogKind::View => {
+                if let Some(object) = entry.owner() {
+                    self.open_object(object, ObjectViewMode::Data, window, cx);
+                }
+            }
+            CatalogKind::Column => {
+                let Some(object) = entry.owner() else {
+                    return;
+                };
+                self.open_object(object, ObjectViewMode::Data, window, cx);
+                if let Some(view) = self.table_view_for(object, cx) {
+                    view.update(cx, |view, cx| view.reveal_column(&entry.name, cx));
+                }
+            }
+            CatalogKind::Index | CatalogKind::Trigger => {
+                if let Some(object) = entry.owner() {
+                    self.open_object(object, ObjectViewMode::Schema, window, cx);
+                }
+            }
+            CatalogKind::Routine => {
+                if let Some(routine) = &entry.routine {
+                    let name = routine.label();
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(name.clone()));
+                    crate::ui::notify_info(window, cx, format!("Copied {name}"));
+                }
+            }
+        }
+    }
+
+    /// The open data tab's view for `object`, if it has one.
+    fn table_view_for(
+        &self,
+        object: &DatabaseObject,
+        cx: &App,
+    ) -> Option<Entity<crate::ui::table_view::TableView>> {
+        self.panels
+            .iter()
+            .find(|panel| {
+                let panel = panel.read(cx);
+                panel.mode() == Some(ObjectViewMode::Data)
+                    && panel.object(cx).as_ref() == Some(object)
+            })
+            .and_then(|panel| panel.read(cx).table_view())
+    }
+
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_panel() {
             self.close_tab(&panel, window, cx);
@@ -996,6 +1075,7 @@ impl Session {
                 connection.databases().await,
                 connection.objects().await,
                 connection.stored_objects().await,
+                connection.catalog().await,
             )
         });
 
@@ -1004,7 +1084,7 @@ impl Session {
             this.update_in(cx, |this, window, cx| {
                 this.metadata_error = None;
                 match loaded {
-                    Ok((databases, objects, stored)) => {
+                    Ok((databases, objects, stored, catalog)) => {
                         match databases {
                             Ok(databases) => this.databases = databases,
                             Err(error) => this.metadata_error = Some(format!("{error:#}")),
@@ -1017,8 +1097,12 @@ impl Session {
                             Ok(stored) => this.stored = stored,
                             Err(error) => this.metadata_error = Some(format!("{error:#}")),
                         }
+                        this.store_catalog(catalog);
                     }
-                    Err(_) => this.metadata_error = Some("reading the schema was cancelled".into()),
+                    Err(_) => {
+                        this.metadata_error = Some("reading the schema was cancelled".into());
+                        this.catalog_loading = false;
+                    }
                 }
                 if let Some(error) = &this.metadata_error {
                     crate::ui::notify_error(window, cx, format!("Error: {error}"));
@@ -1029,6 +1113,45 @@ impl Session {
             .ok();
         })
         .detach();
+    }
+
+    /// Keep the catalog read's answer, falling back to the names the sidebar
+    /// already has when the full read failed — a database whose column query
+    /// times out should still be searchable by name.
+    fn store_catalog(&mut self, catalog: Result<Catalog, anyhow::Error>) {
+        self.catalog_loading = false;
+        match catalog {
+            Ok(catalog) => {
+                self.catalog = Arc::new(catalog);
+                self.catalog_error = None;
+            }
+            Err(error) => {
+                let mut fallback = Catalog::default();
+                fallback.entries = self
+                    .objects
+                    .iter()
+                    .cloned()
+                    .map(CatalogEntry::object)
+                    .chain(self.stored.iter().cloned().map(CatalogEntry::routine))
+                    .collect();
+                fallback.total = fallback.entries.len();
+                self.catalog = Arc::new(fallback);
+                self.catalog_error = Some(format!("{error:#}"));
+            }
+        }
+    }
+
+    /// The whole schema, for [`SearchSchema`].
+    pub(crate) fn catalog(&self) -> Arc<Catalog> {
+        self.catalog.clone()
+    }
+
+    pub(crate) fn catalog_loading(&self) -> bool {
+        self.catalog_loading
+    }
+
+    pub(crate) fn catalog_error(&self) -> Option<&str> {
+        self.catalog_error.as_deref()
     }
 
     /// Reopen the pool against `database` and reload the object list.
@@ -1063,6 +1186,9 @@ impl Session {
 
                         this.objects.clear();
                         this.stored.clear();
+                        this.catalog = Arc::new(Catalog::default());
+                        this.catalog_loading = true;
+                        this.catalog_error = None;
                         this.rebuild_tree(cx);
                         let connection = this.connection.clone();
                         for panel in this.panels.clone() {
@@ -1521,6 +1647,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::cancel_query))
             .on_action(cx.listener(Self::on_import_dump))
             .on_action(cx.listener(Self::on_quick_switcher))
+            .on_action(cx.listener(Self::on_search_schema))
             .when_some(self.render_tag_strip(cx), |this, strip| this.child(strip))
             .child(
                 h_resizable("session-columns")

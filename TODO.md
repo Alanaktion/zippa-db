@@ -40,6 +40,8 @@
 ### Structure & Object Explorer
 
 * [x] Left sidebar navigation tree: Databases > Schemas > Tables / Views
+* [x] Search the whole schema — tables, views, columns, indexes, routines and triggers — and open what a result belongs to
+* [ ] Search the text of view, routine and trigger definitions, showing the matching line
 
 ### View & Routine Management
 

@@ -7,6 +7,7 @@
 //!
 //! * [`config`] — what the user saves about a connection, before it is opened.
 //! * [`connection`] — the live pool, and the shared read and write paths.
+//! * [`catalog`] — the whole schema once per session, and the search over it.
 //! * [`schema`] — a table's own definition: columns, indexes, foreign keys.
 //! * [`sql`] — quoting and placing bind parameters in generated statements.
 //! * [`statement`] — splitting and classifying the user's own SQL.
@@ -17,6 +18,7 @@
 //! * [`runtime`] — the Tokio runtime every database call is submitted to.
 //! * [`store`] — connection metadata on disk, passwords in the OS keychain.
 
+pub mod catalog;
 pub mod config;
 pub mod connection;
 pub mod export;
@@ -35,6 +37,7 @@ pub mod store;
 #[cfg(test)]
 pub(crate) mod tests;
 
+pub use catalog::{Catalog, CatalogEntry, CatalogKind, Query};
 pub(crate) use config::file_name;
 pub use config::{ConnectionConfig, Engine, SafetyMode, TagColor};
 pub(crate) use connection::POOL_SIZE;

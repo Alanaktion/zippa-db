@@ -14,7 +14,7 @@ use crate::ui::import_dialog::CloseImport;
 use crate::ui::query_editor::{Explain, ExplainAnalyze, RunQuery, RunScript};
 use crate::ui::session::{
     CancelQuery, CloseTab, ImportSqlDump, NewTab, NextTab, OpenFile, PreviousTab, QuickSwitcher,
-    Refresh, SaveFile, SaveFileAs,
+    Refresh, SaveFile, SaveFileAs, SearchSchema,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -40,6 +40,33 @@ pub fn bind(cx: &mut App) {
         ),
         KeyBinding::new("secondary-k", QuickSwitcher, Some("DataGrid > DataTable")),
         KeyBinding::new("secondary-k", QuickSwitcher, Some("Workspace")),
+        // Schema search: every column, index, routine and trigger, not just
+        // the names the quick switcher knows. The shifted key of the quick
+        // switcher, and bound everywhere it is.
+        KeyBinding::new("secondary-shift-o", SearchSchema, Some("Session")),
+        KeyBinding::new(
+            "secondary-shift-o",
+            SearchSchema,
+            Some("QueryEditor > Input"),
+        ),
+        KeyBinding::new("secondary-shift-o", SearchSchema, Some("QueryEditor")),
+        KeyBinding::new("secondary-shift-o", SearchSchema, Some("TableView")),
+        KeyBinding::new(
+            "secondary-shift-o",
+            SearchSchema,
+            Some("TableView > DataTable"),
+        ),
+        KeyBinding::new(
+            "secondary-shift-o",
+            SearchSchema,
+            Some("TableView > DataTable > Input"),
+        ),
+        KeyBinding::new(
+            "secondary-shift-o",
+            SearchSchema,
+            Some("DataGrid > DataTable"),
+        ),
+        KeyBinding::new("secondary-shift-o", SearchSchema, Some("Workspace")),
         // The editor's own `Input` context already binds `secondary-enter`
         // (it would insert a newline), so this binds the more specific
         // "Input inside a QueryEditor" to win at that node.

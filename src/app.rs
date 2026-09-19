@@ -23,7 +23,7 @@ use gpui_kit::{
 
 use crate::db::{Connection, TagColor, runtime, store};
 use crate::settings;
-use crate::ui::session::{NewTab, QuickSwitcher, Refresh, Session, SessionEvent};
+use crate::ui::session::{NewTab, QuickSwitcher, Refresh, SearchSchema, Session, SessionEvent};
 use crate::ui::settings_window::{self, OpenSettings};
 use crate::ui::shortcuts_dialog::{self, ShowShortcuts};
 use crate::ui::value_dialog::{self, Dismissed, ValueView};
@@ -697,6 +697,12 @@ impl Workspace {
         }
     }
 
+    fn on_search_schema(&mut self, _: &SearchSchema, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(session) = self.active_session() {
+            crate::ui::schema_search::open(session, window, cx);
+        }
+    }
+
     fn on_refresh_click(
         &mut self,
         _: &gpui_kit::ClickEvent,
@@ -858,6 +864,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_next_connection))
             .on_action(cx.listener(Self::on_previous_connection))
             .on_action(cx.listener(Self::on_quick_switcher))
+            .on_action(cx.listener(Self::on_search_schema))
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
