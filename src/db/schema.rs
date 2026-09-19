@@ -90,6 +90,36 @@ pub struct TableSchema {
     pub foreign_keys: Vec<ForeignKeyDef>,
 }
 
+/// One stored `CREATE` statement on a SQLite table, as `sqlite_master` holds
+/// it. Kept so a rebuild can put the object back exactly as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDefinition {
+    pub name: String,
+    pub sql: String,
+}
+
+/// What a SQLite table rebuild reads before it starts: the table's own
+/// `CREATE TABLE` text, so the rebuild can refuse when it holds something the
+/// procedure would not carry, plus the stored text of the explicit indexes,
+/// the triggers, and the views that have to go back on top of the new table.
+///
+/// SQLite's own `ALTER TABLE` cannot express a column's type, nullability, or
+/// default, or a primary or foreign key, so those are done by copying the
+/// table into a new one with the edited definition and swapping it in —
+/// sqlite.org's "Making Other Kinds Of Table Schema Changes". Everything the
+/// copy does not restate has to be read back here and replayed.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RebuildSource {
+    pub table_sql: String,
+    /// Explicit `CREATE INDEX` statements (`sqlite_master.sql` is not null);
+    /// the auto-indexes behind `UNIQUE`/`PRIMARY KEY` carry no SQL and are
+    /// rebuilt from the table itself.
+    pub indexes: Vec<StoredDefinition>,
+    pub triggers: Vec<StoredDefinition>,
+    /// Every view; the generator keeps the ones that mention the table.
+    pub views: Vec<StoredDefinition>,
+}
+
 impl Connection {
     /// The structure of `object`: its columns, indexes, and foreign keys.
     ///
@@ -145,6 +175,36 @@ impl Connection {
             indexes: parse_indexes(&indexes_result),
             foreign_keys: parse_foreign_keys(&foreign_keys_result),
         })
+    }
+
+    /// The stored SQL a SQLite rebuild has to work from: the table's own
+    /// `CREATE TABLE` text, its explicit indexes, its triggers, and every
+    /// view. Only SQLite needs this; the other engines express all of these
+    /// edits directly.
+    pub async fn rebuild_source(&self, object: &DatabaseObject) -> Result<RebuildSource> {
+        if self.config.engine != Engine::Sqlite {
+            anyhow::bail!("a rebuild source is only read on SQLite");
+        }
+
+        let result = self.run_query(&sqlite::master_sql(&object.name)).await?;
+        let mut source = RebuildSource::default();
+        for row in &result.rows {
+            let kind = text(row, 0);
+            let name = text(row, 1);
+            let sql = text(row, 2);
+            let definition = || StoredDefinition {
+                name: name.clone(),
+                sql: sql.clone(),
+            };
+            match kind.as_str() {
+                "table" => source.table_sql = sql,
+                "index" => source.indexes.push(definition()),
+                "trigger" => source.triggers.push(definition()),
+                "view" => source.views.push(definition()),
+                _ => {}
+            }
+        }
+        Ok(source)
     }
 
     /// Just `object`'s foreign keys — one round trip, for callers that don't

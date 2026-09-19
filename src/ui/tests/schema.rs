@@ -5,6 +5,26 @@ use crate::db::{ReferentialAction, SafetyMode};
 use crate::ui::session::tab::ObjectViewMode;
 use gpui_kit::ScrollDelta;
 
+/// One value out of the test database, read through a second connection so it
+/// is the server's answer rather than the view's.
+fn value(database: &TempDatabase, sql: &str) -> Option<String> {
+    runtime::block_on(async {
+        let connection = Connection::open(database.config(), None)
+            .await
+            .expect("could not reopen the test database");
+        let result = connection
+            .run_query(sql)
+            .await
+            .expect("the verification query failed");
+        connection.close().await;
+        result
+            .rows
+            .first()
+            .and_then(|row| row.first().cloned())
+            .flatten()
+    })
+}
+
 #[gpui_kit::test]
 fn opening_a_tables_structure_shows_its_columns(cx: &mut TestAppContext) {
     let (_database, _handle, view) = schema_view(cx);
@@ -174,8 +194,8 @@ fn adding_a_column_previews_and_applies_an_add_column_statement(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
-fn retyping_a_column_on_sqlite_is_refused_without_a_rebuild(cx: &mut TestAppContext) {
-    let (_database, _handle, view) = schema_view(cx);
+fn retyping_a_column_on_sqlite_rebuilds_the_table(cx: &mut TestAppContext) {
+    let (database, _handle, view) = schema_view(cx);
     cx.run_until_parked();
 
     view.downgrade()
@@ -185,18 +205,59 @@ fn retyping_a_column_on_sqlite_is_refused_without_a_rebuild(cx: &mut TestAppCont
         })
         .unwrap();
 
-    let error = view
-        .read_with(cx, |view, _| view.error_for_test())
-        .expect("a retype should be refused on SQLite");
-    assert!(error.contains("score") && error.contains("rebuilding"));
     assert!(
-        view.read_with(cx, |view, _| view.pending_statements_for_test())
-            .is_none()
+        view.read_with(cx, |view, _| view.pending_is_rebuild_for_test()),
+        "a retype should be staged as a table rebuild"
+    );
+    let statements = view
+        .read_with(cx, |view, _| view.pending_statements_for_test())
+        .expect("a retype should generate statements");
+    assert!(statements[0].contains("CREATE TABLE new_items"));
+    assert!(statements[0].contains("score TEXT"));
+    assert!(statements.iter().any(|s| s == "DROP TABLE items"));
+    assert!(
+        statements
+            .iter()
+            .any(|s| s == "ALTER TABLE new_items RENAME TO items")
+    );
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.apply_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Changes applied".to_string())
+    );
+    let schema = view
+        .read_with(cx, |view, _| view.schema_for_test())
+        .expect("the structure should have reloaded");
+    let score = schema
+        .columns
+        .iter()
+        .find(|column| column.name == "score")
+        .expect("score should still be there");
+    assert_eq!(score.type_name, "TEXT");
+
+    // The rows moved with the table, and `id INTEGER PRIMARY KEY` is still
+    // the rowid alias it was.
+    assert_eq!(
+        value(&database, "select score from items where id = 1"),
+        Some("1.5".to_string())
+    );
+    assert_eq!(
+        value(&database, "select score from items where id = 2"),
+        None
+    );
+    assert_eq!(
+        value(&database, "select rowid from items where id = 1"),
+        Some("1".to_string())
     );
 }
 
 #[gpui_kit::test]
-fn changing_a_columns_default_on_sqlite_is_refused_without_a_rebuild(cx: &mut TestAppContext) {
+fn changing_a_columns_default_on_sqlite_rebuilds_the_table(cx: &mut TestAppContext) {
     let (_database, _handle, view) = schema_view(cx);
     cx.run_until_parked();
 
@@ -207,14 +268,26 @@ fn changing_a_columns_default_on_sqlite_is_refused_without_a_rebuild(cx: &mut Te
         })
         .unwrap();
 
-    let error = view
-        .read_with(cx, |view, _| view.error_for_test())
-        .expect("a default change should be refused on SQLite");
-    assert!(error.contains("score") && error.contains("rebuilding"));
-    assert!(
-        view.read_with(cx, |view, _| view.pending_statements_for_test())
-            .is_none()
+    assert!(view.read_with(cx, |view, _| view.pending_is_rebuild_for_test()));
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.apply_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Changes applied".to_string())
     );
+    let schema = view
+        .read_with(cx, |view, _| view.schema_for_test())
+        .expect("the structure should have reloaded");
+    let score = schema
+        .columns
+        .iter()
+        .find(|column| column.name == "score")
+        .expect("score should still be there");
+    assert_eq!(score.default.as_deref(), Some("0"));
 }
 
 #[gpui_kit::test]
@@ -378,27 +451,46 @@ fn adding_a_composite_unique_index_keeps_the_picked_column_order(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
-fn adding_a_primary_key_index_on_sqlite_is_refused_without_a_rebuild(cx: &mut TestAppContext) {
+fn adding_a_primary_key_index_on_sqlite_rebuilds_the_table(cx: &mut TestAppContext) {
     let (_database, _handle, view) = schema_view(cx);
     cx.run_until_parked();
 
     view.downgrade()
         .update_in(cx, |view, window, cx| {
             view.add_index_for_test(window, cx);
-            view.set_index_name_for_test(0, "items_pkey2", window, cx);
+            view.set_index_name_for_test(0, "items_score_pkey", window, cx);
             view.toggle_index_column_for_test(0, "score", true, cx);
             view.set_index_primary_key_for_test(0, true, cx);
             view.preview_for_test(window, cx);
         })
         .unwrap();
 
-    let error = view
-        .read_with(cx, |view, _| view.error_for_test())
-        .expect("adding a primary key should be refused on SQLite");
-    assert!(error.contains("rebuilding"));
+    assert!(view.read_with(cx, |view, _| view.pending_is_rebuild_for_test()));
+    let statements = view
+        .read_with(cx, |view, _| view.pending_statements_for_test())
+        .expect("a primary key change should generate a rebuild");
+    assert!(statements[0].contains("PRIMARY KEY (score)"));
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.apply_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Changes applied".to_string())
+    );
+    let schema = view
+        .read_with(cx, |view, _| view.schema_for_test())
+        .expect("the structure should have reloaded");
+    let score = schema
+        .columns
+        .iter()
+        .find(|column| column.name == "score")
+        .expect("score should still be there");
     assert!(
-        view.read_with(cx, |view, _| view.pending_statements_for_test())
-            .is_none()
+        score.is_primary_key,
+        "the new primary key should be in the reloaded structure"
     );
 }
 
@@ -460,13 +552,16 @@ fn picking_a_referenced_table_reads_its_columns(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn adding_a_foreign_key_on_sqlite_is_refused_without_a_rebuild(cx: &mut TestAppContext) {
+fn adding_a_foreign_key_on_sqlite_rebuilds_the_table(cx: &mut TestAppContext) {
     let (database, _handle, view) = schema_view(cx);
     cx.run_until_parked();
+    // A referenced value that matches `items.name`, so the check the rebuild
+    // runs before committing passes.
     run_external(
         &database,
-        "CREATE TABLE tags (id INTEGER PRIMARY KEY, label TEXT NOT NULL)",
+        "CREATE TABLE tags (label TEXT PRIMARY KEY, note TEXT)",
     );
+    run_external(&database, "INSERT INTO tags VALUES ('alpha', 'first')");
 
     view.downgrade()
         .update_in(cx, |view, _window, cx| view.reload_for_test(cx))
@@ -481,8 +576,8 @@ fn adding_a_foreign_key_on_sqlite_is_refused_without_a_rebuild(cx: &mut TestAppC
 
     view.downgrade()
         .update_in(cx, |view, window, cx| {
-            view.push_new_foreign_key_row_for_test(window, cx);
-            view.set_foreign_key_name_for_test(0, "items_tag_fkey", window, cx);
+            view.add_foreign_key_for_test(window, cx);
+            view.set_foreign_key_name_for_test(0, "items_name_fkey", window, cx);
             view.toggle_foreign_key_column_for_test(0, "name", true, cx);
             view.pick_referenced_table_for_test(0, tags, cx);
         })
@@ -491,18 +586,87 @@ fn adding_a_foreign_key_on_sqlite_is_refused_without_a_rebuild(cx: &mut TestAppC
 
     view.downgrade()
         .update_in(cx, |view, window, cx| {
-            view.toggle_referenced_column_for_test(0, "id", true, cx);
+            view.toggle_referenced_column_for_test(0, "label", true, cx);
             view.preview_for_test(window, cx);
         })
         .unwrap();
 
+    assert!(view.read_with(cx, |view, _| view.pending_is_rebuild_for_test()));
+    let statements = view
+        .read_with(cx, |view, _| view.pending_statements_for_test())
+        .expect("adding a foreign key should generate a rebuild");
+    assert!(statements[0].contains("FOREIGN KEY (name) REFERENCES tags (label)"));
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.apply_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Changes applied".to_string())
+    );
+    let schema = view
+        .read_with(cx, |view, _| view.schema_for_test())
+        .expect("the structure should have reloaded");
+    assert_eq!(schema.foreign_keys.len(), 1);
+    assert_eq!(schema.foreign_keys[0].columns, ["name"]);
+    assert_eq!(schema.foreign_keys[0].referenced_table, "tags");
+}
+
+#[gpui_kit::test]
+fn a_rebuild_that_breaks_a_foreign_key_is_rolled_back(cx: &mut TestAppContext) {
+    let (database, _handle, view) = schema_view(cx);
+    cx.run_until_parked();
+    // A parent with no matching row for `items.name = 'alpha'`.
+    run_external(&database, "CREATE TABLE tags (label TEXT PRIMARY KEY)");
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.reload_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    let tags = view
+        .read_with(cx, |view, _| view.tables_for_test())
+        .into_iter()
+        .find(|table| table.name == "tags")
+        .expect("tags should be offered as a referenced table");
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.add_foreign_key_for_test(window, cx);
+            view.set_foreign_key_name_for_test(0, "items_name_fkey", window, cx);
+            view.toggle_foreign_key_column_for_test(0, "name", true, cx);
+            view.pick_referenced_table_for_test(0, tags, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.toggle_referenced_column_for_test(0, "label", true, cx);
+            view.preview_for_test(window, cx);
+        })
+        .unwrap();
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.apply_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
     let error = view
         .read_with(cx, |view, _| view.error_for_test())
-        .expect("adding a foreign key should be refused on SQLite");
-    assert!(error.contains("rebuilding"));
-    assert!(
-        view.read_with(cx, |view, _| view.pending_statements_for_test())
-            .is_none()
+        .expect("a broken relationship should fail the rebuild");
+    assert!(error.contains("foreign key"), "unexpected error: {error}");
+
+    // The table is untouched, so it still has no foreign key.
+    let schema = view
+        .read_with(cx, |view, _| view.schema_for_test())
+        .expect("the structure should have reloaded");
+    assert!(schema.foreign_keys.is_empty());
+    assert_eq!(
+        value(&database, "select count(*) from items"),
+        Some("2".to_string())
     );
 }
 
@@ -526,9 +690,7 @@ fn the_on_delete_and_on_update_actions_can_be_set_on_a_new_row(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
-fn dropping_an_existing_foreign_key_on_sqlite_is_refused_without_a_rebuild(
-    cx: &mut TestAppContext,
-) {
+fn dropping_an_existing_foreign_key_on_sqlite_rebuilds_the_table(cx: &mut TestAppContext) {
     let (database, handle) = session_with_objects(cx);
     run_external(
         &database,
@@ -552,6 +714,14 @@ fn dropping_an_existing_foreign_key_on_sqlite_is_refused_without_a_rebuild(
         .unwrap()
         .expect("opening a table's structure should open a schema view");
 
+    assert_eq!(
+        view.read_with(cx, |view, _| view.schema_for_test())
+            .expect("the structure should have loaded")
+            .foreign_keys
+            .len(),
+        1
+    );
+
     view.downgrade()
         .update_in(cx, |view, _window, cx| {
             view.toggle_foreign_key_drop_for_test(0, cx)
@@ -561,18 +731,25 @@ fn dropping_an_existing_foreign_key_on_sqlite_is_refused_without_a_rebuild(
         .update_in(cx, |view, window, cx| view.preview_for_test(window, cx))
         .unwrap();
 
-    let error = view
-        .read_with(cx, |view, _| view.error_for_test())
-        .expect("dropping a foreign key should be refused on SQLite");
-    assert!(error.contains("rebuilding"));
-    assert!(
-        view.read_with(cx, |view, _| view.pending_statements_for_test())
-            .is_none()
+    assert!(view.read_with(cx, |view, _| view.pending_is_rebuild_for_test()));
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.apply_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Changes applied".to_string())
     );
+    let schema = view
+        .read_with(cx, |view, _| view.schema_for_test())
+        .expect("the structure should have reloaded");
+    assert!(schema.foreign_keys.is_empty());
 }
 
 #[gpui_kit::test]
-fn foreign_keys_cannot_be_added_at_all_on_sqlite(cx: &mut TestAppContext) {
+fn foreign_keys_can_be_added_on_sqlite(cx: &mut TestAppContext) {
     let (_database, _handle, view) = schema_view(cx);
     cx.run_until_parked();
 
@@ -582,10 +759,11 @@ fn foreign_keys_cannot_be_added_at_all_on_sqlite(cx: &mut TestAppContext) {
         })
         .unwrap();
 
-    assert!(
+    assert_eq!(
         view.read_with(cx, |view, cx| view.foreign_key_names_for_test(cx))
-            .is_empty(),
-        "the add affordance should be a no-op on SQLite, not just hidden"
+            .len(),
+        1,
+        "the add affordance should stage a new foreign key row on SQLite"
     );
 }
 
@@ -662,4 +840,261 @@ fn a_long_structure_scrolls_down_to_its_foreign_keys(cx: &mut TestAppContext) {
         );
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_rebuild_puts_the_indexes_triggers_and_views_back(cx: &mut TestAppContext) {
+    let (database, _handle, view) = schema_view(cx);
+    cx.run_until_parked();
+    run_external(&database, "CREATE INDEX items_name_idx ON items(name)");
+    run_external(
+        &database,
+        "CREATE TRIGGER items_noop AFTER DELETE ON items BEGIN SELECT 1; END",
+    );
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.reload_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.set_column_type_for_test(2, "TEXT", cx);
+            view.preview_for_test(window, cx);
+        })
+        .unwrap();
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.apply_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Changes applied".to_string())
+    );
+
+    // The index, the trigger, and the view all came back on the new table.
+    assert_eq!(
+        value(
+            &database,
+            "select count(*) from sqlite_master where type = 'index' and name = 'items_name_idx'"
+        ),
+        Some("1".to_string())
+    );
+    assert_eq!(
+        value(
+            &database,
+            "select count(*) from sqlite_master where type = 'trigger' and name = 'items_noop'"
+        ),
+        Some("1".to_string())
+    );
+    assert_eq!(
+        value(
+            &database,
+            "select count(*) from sqlite_master where type = 'view' and name = 'named_items'"
+        ),
+        Some("1".to_string())
+    );
+
+    // The index really points at the rebuilt table's column.
+    assert_eq!(
+        value(
+            &database,
+            "select count(*) from items indexed by items_name_idx"
+        ),
+        Some("2".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn a_rebuild_can_rename_and_retype_in_one_go(cx: &mut TestAppContext) {
+    let (database, _handle, view) = schema_view(cx);
+    cx.run_until_parked();
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.set_column_name_for_test(1, "full_name", window, cx);
+            view.set_column_type_for_test(2, "TEXT", cx);
+            view.preview_for_test(window, cx);
+        })
+        .unwrap();
+
+    assert!(view.read_with(cx, |view, _| view.pending_is_rebuild_for_test()));
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.apply_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, cx| view.column_names_for_test(cx)),
+        ["id", "full_name", "score", "payload"]
+    );
+    assert_eq!(
+        value(&database, "select full_name from items where id = 1"),
+        Some("alpha".to_string())
+    );
+
+    // The view that read the renamed column was recreated reading the new
+    // name, so it still answers.
+    assert_eq!(
+        value(
+            &database,
+            "select count(*) from named_items where full_name is not null"
+        ),
+        Some("1".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn a_table_with_a_check_constraint_cannot_be_rebuilt(cx: &mut TestAppContext) {
+    let (database, handle) = session_with_objects(cx);
+    run_external(
+        &database,
+        "CREATE TABLE checked (id INTEGER PRIMARY KEY, n INTEGER CHECK (n > 0))",
+    );
+
+    let object = DatabaseObject {
+        schema: None,
+        name: "checked".into(),
+        kind: ObjectKind::Table,
+    };
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_schema_for_test(&object, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let view = handle
+        .update(cx, |session, _, cx| session.active_schema_view(cx))
+        .unwrap()
+        .expect("opening a table's structure should open a schema view");
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.set_column_type_for_test(1, "TEXT", cx);
+            view.preview_for_test(window, cx);
+        })
+        .unwrap();
+
+    let error = view
+        .read_with(cx, |view, _| view.error_for_test())
+        .expect("a CHECK constraint should refuse the rebuild");
+    assert!(error.contains("CHECK"), "unexpected error: {error}");
+    assert!(
+        view.read_with(cx, |view, _| view.pending_statements_for_test())
+            .is_none()
+    );
+}
+
+#[gpui_kit::test]
+fn making_a_null_column_not_null_is_rolled_back(cx: &mut TestAppContext) {
+    let (database, _handle, view) = schema_view(cx);
+    cx.run_until_parked();
+
+    // `items.name` has a NULL in it, so the NOT NULL copy cannot succeed.
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.set_column_nullable_for_test(1, false, cx);
+            view.preview_for_test(window, cx);
+        })
+        .unwrap();
+    assert!(view.read_with(cx, |view, _| view.pending_is_rebuild_for_test()));
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.apply_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert!(
+        view.read_with(cx, |view, _| view.error_for_test())
+            .is_some(),
+        "the copy should fail on the NULL"
+    );
+
+    // Nothing changed: the column is still nullable and both rows are there.
+    assert_eq!(
+        value(&database, "select count(*) from items"),
+        Some("2".to_string())
+    );
+    let schema = view
+        .read_with(cx, |view, _| view.schema_for_test())
+        .expect("the structure should have reloaded");
+    let name = schema
+        .columns
+        .iter()
+        .find(|column| column.name == "name")
+        .expect("name should still be there");
+    assert!(name.nullable);
+}
+
+#[gpui_kit::test]
+fn dropping_a_unique_constraint_on_sqlite_rebuilds_the_table(cx: &mut TestAppContext) {
+    let (database, handle) = session_with_objects(cx);
+    run_external(
+        &database,
+        "CREATE TABLE unique_items (id INTEGER, label TEXT UNIQUE)",
+    );
+
+    let object = DatabaseObject {
+        schema: None,
+        name: "unique_items".into(),
+        kind: ObjectKind::Table,
+    };
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_schema_for_test(&object, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let view = handle
+        .update(cx, |session, _, cx| session.active_schema_view(cx))
+        .unwrap()
+        .expect("opening a table's structure should open a schema view");
+
+    // The `UNIQUE` constraint is the table's one index, an auto-index with no
+    // SQL of its own and so no plain `DROP INDEX` to take it off.
+    assert_eq!(
+        view.read_with(cx, |view, _| view.schema_for_test())
+            .expect("the structure should have loaded")
+            .indexes
+            .len(),
+        1
+    );
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| {
+            view.toggle_index_drop_for_test(0, cx)
+        })
+        .unwrap();
+    view.downgrade()
+        .update_in(cx, |view, window, cx| view.preview_for_test(window, cx))
+        .unwrap();
+
+    assert!(view.read_with(cx, |view, _| view.pending_is_rebuild_for_test()));
+
+    view.downgrade()
+        .update_in(cx, |view, _window, cx| view.apply_for_test(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Changes applied".to_string())
+    );
+    let schema = view
+        .read_with(cx, |view, _| view.schema_for_test())
+        .expect("the structure should have reloaded");
+    assert!(schema.indexes.is_empty());
+
+    // The constraint really is gone: a repeated label is now accepted.
+    run_external(&database, "INSERT INTO unique_items VALUES (1, 'x')");
+    run_external(&database, "INSERT INTO unique_items VALUES (2, 'x')");
+    assert_eq!(
+        value(&database, "select count(*) from unique_items"),
+        Some("2".to_string())
+    );
 }

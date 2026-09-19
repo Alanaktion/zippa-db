@@ -806,3 +806,80 @@ async fn explain_needs_a_statement() {
 
     connection.close().await;
 }
+
+#[tokio::test]
+async fn a_failed_table_rebuild_is_rolled_back() {
+    let database = TempDatabase::new().await;
+    let connection = open_with(&database, SafetyMode::default()).await;
+
+    // The first statement would have created the scratch table; the second
+    // fails, so the whole rebuild has to come back off.
+    let error = connection
+        .rebuild_table(vec![
+            "CREATE TABLE scratch (x INTEGER)".to_string(),
+            "this is not sql".to_string(),
+        ])
+        .await
+        .expect_err("a broken statement should fail the rebuild");
+    assert!(format!("{error:#}").contains("statement 2 of 2"));
+
+    let leftover = connection
+        .run_query("select name from sqlite_master where name = 'scratch'")
+        .await
+        .expect("could not read the schema");
+    assert!(leftover.rows.is_empty(), "the scratch table should be gone");
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_read_only_connection_refuses_a_table_rebuild() {
+    let database = TempDatabase::new().await;
+    let connection = open_with(&database, SafetyMode::ReadOnly).await;
+
+    let error = connection
+        .rebuild_table(vec!["CREATE TABLE scratch (x INTEGER)".to_string()])
+        .await
+        .expect_err("a read-only connection must not rebuild");
+    assert!(format!("{error:#}").contains("read-only"));
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_rebuild_leaves_the_data_and_the_schema_behind() {
+    let database = TempDatabase::new().await;
+    let connection = open_with(&database, SafetyMode::default()).await;
+
+    connection
+        .rebuild_table(vec![
+            "CREATE TABLE new_items (id INTEGER, name TEXT, score TEXT, payload BLOB)".to_string(),
+            "INSERT INTO new_items (id, name, score, payload) \
+             SELECT id, name, score, payload FROM items"
+                .to_string(),
+            "DROP TABLE items".to_string(),
+            "ALTER TABLE new_items RENAME TO items".to_string(),
+        ])
+        .await
+        .expect("a plain rebuild should run");
+
+    let score = connection
+        .run_query("select score from items where id = 1")
+        .await
+        .expect("could not read the rebuilt table");
+    assert_eq!(score.rows[0][0].as_deref(), Some("1.5"));
+
+    // The old table is gone and the new definition is what is left.
+    let shape = connection
+        .run_query("select name from pragma_table_info('items') order by cid")
+        .await
+        .expect("could not read the rebuilt columns");
+    let columns: Vec<String> = shape
+        .rows
+        .iter()
+        .filter_map(|row| row.first().cloned().flatten())
+        .collect();
+    assert_eq!(columns, ["id", "name", "score", "payload"]);
+
+    connection.close().await;
+}

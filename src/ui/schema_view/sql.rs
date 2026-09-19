@@ -60,6 +60,16 @@ impl ColumnEdit {
                 || self.nullability_changed()
                 || self.default_changed())
     }
+
+    /// Whether this kept column asks for something SQLite's own `ALTER TABLE`
+    /// cannot express — a type, nullability, or default change — so the whole
+    /// table has to be rebuilt. A rename does not count: SQLite has a native
+    /// `RENAME COLUMN`.
+    pub(crate) fn rebuilds(&self) -> bool {
+        !self.dropped
+            && !self.is_new()
+            && (self.retyped() || self.nullability_changed() || self.default_changed())
+    }
 }
 
 /// `object`, qualified and quoted, the way `TableView::target` reads it.
@@ -118,12 +128,13 @@ pub(crate) fn common_types(engine: Engine) -> &'static [&'static str] {
 
 /// `name type [NOT NULL] [DEFAULT expr]`, the shape an `ADD COLUMN` and every
 /// engine's full column redefinition share.
-fn column_clause(engine: Engine, edit: &ColumnEdit) -> String {
-    let mut clause = format!(
-        "{} {}",
-        quote_identifier(&edit.name, engine),
-        edit.type_name
-    );
+pub(crate) fn column_clause(engine: Engine, edit: &ColumnEdit) -> String {
+    let mut clause = quote_identifier(&edit.name, engine);
+    // SQLite allows a column with no declared type, so the type is optional.
+    if !edit.type_name.trim().is_empty() {
+        clause.push(' ');
+        clause.push_str(edit.type_name.trim());
+    }
     if !edit.nullable {
         clause.push_str(" NOT NULL");
     }
@@ -138,8 +149,10 @@ fn column_clause(engine: Engine, edit: &ColumnEdit) -> String {
 /// (matches `TableView::commit_rows`' update-then-insert-then-delete order),
 /// then add the new ones, then drop the ones marked for it.
 ///
-/// `Err` only for a change phase 2 cannot express — SQLite's column rebuild,
-/// left to phase 3 — or a changed column left with an empty name.
+/// Postgres and MySQL use this directly; SQLite's rebuild path in `rebuild.rs`
+/// bypasses it, so the `Engine::Sqlite` arm is only the generator's own
+/// backstop. `Err` is a changed column left with an empty name, or one of
+/// those SQLite changes plain `ALTER TABLE` cannot express.
 pub(crate) fn generate_alter_statements(
     engine: Engine,
     target: &str,
@@ -262,7 +275,7 @@ fn mysql_modify(target: &str, original: &ColumnDef, edit: &ColumnEdit) -> String
 }
 
 /// SQLite's plain `ALTER TABLE` only reaches a rename; anything else about an
-/// existing column needs the rebuild procedure phase 3 adds.
+/// existing column needs `rebuild.rs`'s copy-and-swap.
 fn sqlite_modify(
     target: &str,
     original: &ColumnDef,
@@ -297,8 +310,8 @@ pub(crate) struct IndexEdit {
     pub unique: bool,
     /// A primary key add/drop takes its own statement shape (`ADD/DROP
     /// CONSTRAINT` on Postgres, `ADD/DROP PRIMARY KEY` on MySQL) rather than
-    /// `CREATE`/`DROP INDEX`, and SQLite cannot do either to an existing
-    /// table without the phase 3 rebuild.
+    /// `CREATE`/`DROP INDEX`, and on SQLite either needs `rebuild.rs`'s
+    /// copy-and-swap.
     pub primary_key: bool,
     /// Only meaningful when `original` is `Some`: a dropped new index is
     /// simply removed from the row list instead, the way a new column is.
@@ -333,9 +346,8 @@ fn qualified_index_name(object: &DatabaseObject, engine: Engine, name: &str) -> 
 /// dropped ones — the same add-then-drop order `generate_alter_statements`
 /// uses for columns.
 ///
-/// `Err` for a primary key add or drop on SQLite, which cannot do either to
-/// an existing table without the phase 3 rebuild, or an added index left
-/// with an empty name or no columns.
+/// `Err` for a primary key add or drop on SQLite, which `rebuild.rs` handles
+/// instead, or an added index left with an empty name or no columns.
 pub(crate) fn generate_index_statements(
     engine: Engine,
     object: &DatabaseObject,
@@ -466,7 +478,7 @@ impl ForeignKeyEdit {
 
     /// Whether this row asks for anything at all — a blank added row, with
     /// no table picked yet, asks for nothing.
-    fn wants_a_statement(&self) -> bool {
+    pub(crate) fn wants_a_statement(&self) -> bool {
         self.dropped
             || (self.is_new()
                 && !self.columns.is_empty()
@@ -479,9 +491,9 @@ impl ForeignKeyEdit {
 /// dropped ones — same add-then-drop order as columns and indexes.
 ///
 /// `Err` for any real add or drop on SQLite, which cannot change a foreign
-/// key on an existing table at all — not even by rebuilding one column at a
-/// time the way phase 3 does for a column — without recreating the whole
-/// table; a changed row left with an empty name is also refused.
+/// key on an existing table at all without `rebuild.rs`'s copy-and-swap —
+/// this is the backstop; a changed row left with an empty name is also
+/// refused.
 pub(crate) fn generate_foreign_key_statements(
     engine: Engine,
     object: &DatabaseObject,

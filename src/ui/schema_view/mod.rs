@@ -29,10 +29,12 @@ use gpui_kit::{App, Context, Entity, Pixels, SharedString, Window, div, px};
 
 use crate::db::{
     ColumnDef, Connection, DatabaseObject, Engine, ForeignKeyDef, IndexDef, ObjectKind,
-    ReferentialAction, TableSchema, runtime,
+    RebuildSource, ReferentialAction, TableSchema, runtime,
 };
 
+mod rebuild;
 mod sql;
+use rebuild::Change;
 use sql::{ColumnEdit, ForeignKeyEdit, IndexEdit};
 
 /// The fixed set of `ON DELETE`/`ON UPDATE` choices, for the action dropdowns.
@@ -219,6 +221,10 @@ pub struct SchemaView {
     /// As loaded, kept for reference: it is what a foreign key's own row
     /// picks its referenced columns from once the target is this table.
     schema: Option<TableSchema>,
+    /// As SQLite stores it, read alongside `schema`: what a rebuild has to put
+    /// back on top of the table (its indexes, triggers, and views). `None` on
+    /// the other engines, and for a view.
+    rebuild_source: Option<RebuildSource>,
     /// The Columns section's own editable state, seeded from `schema` each
     /// time it (re)loads.
     columns: Vec<EditableColumn>,
@@ -238,7 +244,7 @@ pub struct SchemaView {
     /// The generated statements, shown in `preview` and waiting for "Apply?"
     /// — asked unconditionally, regardless of `SafetyMode`. `None` when
     /// nothing is waiting.
-    pending: Option<Vec<String>>,
+    pending: Option<Change>,
     preview: Entity<TextareaState>,
 }
 
@@ -255,6 +261,7 @@ impl SchemaView {
             connection,
             object,
             schema: None,
+            rebuild_source: None,
             columns: Vec::new(),
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
@@ -299,15 +306,23 @@ impl SchemaView {
         self.loading = true;
         self.error = None;
         self.pending = None;
+        self.rebuild_source = None;
         cx.notify();
 
         let connection = self.connection.clone();
         let object = self.object.clone();
+        // Only SQLite needs the stored text a rebuild works from, and only a
+        // table has one.
+        let wants_source =
+            connection.config.engine == Engine::Sqlite && object.kind == ObjectKind::Table;
         let task = runtime::spawn(async move {
-            (
-                connection.table_schema(&object).await,
-                connection.objects().await,
-            )
+            let schema = connection.table_schema(&object).await;
+            let source = if wants_source {
+                connection.rebuild_source(&object).await.ok()
+            } else {
+                None
+            };
+            (schema, connection.objects().await, source)
         });
 
         cx.spawn(async move |this, cx| {
@@ -315,7 +330,7 @@ impl SchemaView {
             this.update_in(cx, |this, window, cx| {
                 this.loading = false;
                 match result {
-                    Ok((Ok(schema), objects)) => {
+                    Ok((Ok(schema), objects, source)) => {
                         let mut columns = Vec::with_capacity(schema.columns.len());
                         for column in schema.columns.clone() {
                             columns.push(this.new_row(Some(column), window, cx));
@@ -346,8 +361,9 @@ impl SchemaView {
                             .collect();
 
                         this.schema = Some(schema);
+                        this.rebuild_source = source;
                     }
-                    Ok((Err(error), _)) => this.error = Some(format!("{error:#}")),
+                    Ok((Err(error), _, _)) => this.error = Some(format!("{error:#}")),
                     Err(_) => {
                         this.error = Some("reading the table's structure was cancelled".into())
                     }
@@ -695,11 +711,10 @@ impl SchemaView {
         }
     }
 
-    /// Whether foreign keys can be changed at all: SQLite cannot add or drop
-    /// one on an existing table without the phase 3 rebuild, so it is
-    /// refused here rather than in the generator alone.
+    /// Whether foreign keys can be changed at all. SQLite now has the table
+    /// rebuild behind an add or drop, so this is the same gate as the rest.
     fn foreign_keys_editable(&self) -> bool {
-        self.is_editable() && self.connection.config.engine != Engine::Sqlite
+        self.is_editable()
     }
 
     /// Append a blank row for the user to name and connect by hand.
@@ -863,30 +878,26 @@ impl SchemaView {
         self.notice = None;
 
         let engine = self.connection.config.engine;
-        let target = sql::target(&self.object, engine);
-        let column_statements = sql::generate_alter_statements(engine, &target, &self.edits(cx));
-        let index_statements =
-            sql::generate_index_statements(engine, &self.object, &self.index_edits(cx));
-        let foreign_key_statements =
-            sql::generate_foreign_key_statements(engine, &self.object, &self.foreign_key_edits(cx));
+        let change = rebuild::plan(
+            engine,
+            &self.object,
+            &self.edits(cx),
+            &self.index_edits(cx),
+            &self.foreign_key_edits(cx),
+            self.rebuild_source.as_ref(),
+        );
 
-        let combined = column_statements.and_then(|mut statements| {
-            statements.extend(index_statements?);
-            statements.extend(foreign_key_statements?);
-            Ok(statements)
-        });
-
-        match combined {
-            Ok(statements) if statements.is_empty() => {
+        match change {
+            Ok(change) if change.is_empty() => {
                 self.error = Some("nothing has changed".into());
                 self.pending = None;
             }
-            Ok(statements) => {
+            Ok(change) => {
                 self.error = None;
-                let text = statements.join(";\n") + ";";
+                let text = change.statements().join(";\n") + ";";
                 self.preview
                     .update(cx, |input, cx| input.set_value(text, window, cx));
-                self.pending = Some(statements);
+                self.pending = Some(change);
             }
             Err(message) => {
                 self.error = Some(message);
@@ -903,11 +914,10 @@ impl SchemaView {
         cx.notify();
     }
 
-    /// Run the previewed statements in order, then reload from the server —
-    /// a rename or a retype changes identity, so nothing here is patched in
-    /// place.
+    /// Run the previewed change, then reload from the server — a rename or a
+    /// retype changes identity, so nothing here is patched in place.
     fn apply(&mut self, cx: &mut Context<Self>) {
-        let Some(statements) = self.pending.take() else {
+        let Some(change) = self.pending.take() else {
             return;
         };
 
@@ -917,15 +927,26 @@ impl SchemaView {
         cx.notify();
 
         let connection = self.connection.clone();
-        let total = statements.len();
+        let total = change.statements().len();
         let task = runtime::spawn(async move {
-            // No transaction yet, same as `Connection::run_script`: a
-            // statement that fails leaves the ones before it applied.
-            for (position, statement) in statements.iter().enumerate() {
-                connection
-                    .execute(statement, Vec::new())
+            match change {
+                // Plain statements run one at a time, same as
+                // `Connection::run_script`: a statement that fails leaves the
+                // ones before it applied.
+                Change::Statements(statements) => {
+                    for (position, statement) in statements.iter().enumerate() {
+                        connection
+                            .execute(statement, Vec::new())
+                            .await
+                            .with_context(|| format!("statement {} of {total}", position + 1))?;
+                    }
+                }
+                // A rebuild is all or nothing: one connection, one
+                // transaction, foreign keys checked before it commits.
+                Change::Rebuild(statements) => connection
+                    .rebuild_table(statements)
                     .await
-                    .with_context(|| format!("statement {} of {total}", position + 1))?;
+                    .context("the table rebuild failed")?,
             }
             Ok::<(), anyhow::Error>(())
         });
@@ -1243,18 +1264,9 @@ impl SchemaView {
     fn render_index_row(&self, index: &EditableIndex, cx: &mut Context<Self>) -> TableRow {
         let id = index.id;
         let editable = self.is_editable();
-        let engine = self.connection.config.engine;
         let edit = index.snapshot(cx);
         let is_new = edit.is_new();
         let dropped = index.dropped;
-        // SQLite cannot add or drop a primary key on an existing table at
-        // all without the rebuild phase 3 adds; a plain index is unaffected.
-        let is_primary_key = index
-            .original
-            .as_ref()
-            .is_some_and(|original| original.is_primary_key)
-            || index.primary_key;
-        let pk_blocked_on_sqlite = engine == Engine::Sqlite && is_primary_key;
 
         let row_tint = if dropped {
             Some(cx.theme().danger.opacity(0.15))
@@ -1313,11 +1325,7 @@ impl SchemaView {
                                     Checkbox::new(("index-primary-key", id))
                                         .accessibility_label("Primary key")
                                         .checked(index.primary_key)
-                                        .disabled(
-                                            !editable
-                                                || engine == Engine::Sqlite
-                                                || self.has_existing_primary_key(),
-                                        )
+                                        .disabled(!editable || self.has_existing_primary_key())
                                         .on_click(cx.listener(
                                             move |this, checked: &bool, _window, cx| {
                                                 this.set_index_primary_key(id, *checked, cx);
@@ -1382,15 +1390,6 @@ impl SchemaView {
 
         row.child(sized(
             TableCell::new().justify_end().when(editable, |this| {
-                if pk_blocked_on_sqlite {
-                    return this.child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Needs a rebuild on SQLite"),
-                    );
-                }
-
                 let label = if index.original.is_some() {
                     if dropped { "Undrop" } else { "Drop" }
                 } else {
@@ -1842,18 +1841,13 @@ impl SchemaView {
 
     fn render_foreign_keys(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let editable = self.foreign_keys_editable();
-        // The table can otherwise be edited, but not its foreign keys —
-        // SQLite cannot change one on an existing table at all.
-        let sqlite_blocked = self.is_editable() && !editable;
 
         let rows: Vec<TableRow> = self
             .foreign_keys
             .iter()
             .map(|key| self.render_foreign_key_row(key, cx))
             .collect();
-        let empty = if sqlite_blocked {
-            "SQLite needs a table rebuild to change foreign keys."
-        } else if editable {
+        let empty = if editable {
             "No foreign keys. Use Add foreign key to create one."
         } else {
             "No foreign keys."
@@ -1878,14 +1872,6 @@ impl SchemaView {
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.add_foreign_key(window, cx);
                                 })),
-                        )
-                    })
-                    .when(sqlite_blocked, |this| {
-                        this.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("SQLite: rebuild required to change"),
                         )
                     }),
             )
@@ -2024,7 +2010,25 @@ impl Render for SchemaView {
                     ),
             )
             .when(self.pending.is_some(), |this| {
-                this.child(
+                this.when(
+                    self.pending.as_ref().is_some_and(Change::is_rebuild),
+                    |this| {
+                        this.child(
+                            div()
+                                .flex_none()
+                                .px_3()
+                                .pt_2()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    "This rebuilds the table: its rows are copied into a new one \
+                                     and swapped in, in a single transaction, with the foreign keys \
+                                     checked before it commits.",
+                                ),
+                        )
+                    },
+                )
+                .child(
                     div().flex_none().px_3().pb_2().child(
                         Textarea::new(&self.preview)
                             .h(px(120.))
@@ -2289,7 +2293,13 @@ impl SchemaView {
     }
 
     pub(crate) fn pending_statements_for_test(&self) -> Option<Vec<String>> {
-        self.pending.clone()
+        self.pending
+            .as_ref()
+            .map(|change| change.statements().to_vec())
+    }
+
+    pub(crate) fn pending_is_rebuild_for_test(&self) -> bool {
+        self.pending.as_ref().is_some_and(Change::is_rebuild)
     }
 
     pub(crate) fn apply_for_test(&mut self, cx: &mut Context<Self>) {

@@ -504,6 +504,27 @@ impl Connection {
         }
     }
 
+    /// Rebuild a SQLite table as one atomic change.
+    ///
+    /// The caller has already generated the body of the procedure (create the
+    /// scratch table, copy the rows, drop the old one, rename, put its
+    /// indexes/triggers/views back); this owns the parts that cannot be plain
+    /// statements: one dedicated connection, foreign keys off around a
+    /// transaction, and a foreign-key check before it commits.
+    pub async fn rebuild_table(&self, statements: Vec<String>) -> Result<()> {
+        if self.config.safety.is_read_only() {
+            anyhow::bail!("this connection is read-only");
+        }
+        match &self.pool {
+            Pool::Sqlite(pool) => sqlite::rebuild(pool, &statements).await,
+            // Only SQLite needs the copy-and-swap: the other engines restate
+            // the table in place.
+            Pool::Postgres(_) | Pool::MySql(_) => {
+                anyhow::bail!("a table rebuild is only used on SQLite")
+            }
+        }
+    }
+
     pub async fn close(&self) {
         match &self.pool {
             Pool::Postgres(pool) => pool.close().await,

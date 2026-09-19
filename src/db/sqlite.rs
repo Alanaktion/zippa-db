@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use sqlx::sqlite::{
     SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteQueryResult, SqliteRow,
 };
-use sqlx::{Row, TypeInfo, ValueRef};
+use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 
 use super::query::{self, Cell};
 use super::{ConnectionConfig, POOL_SIZE, decode, quote_literal};
@@ -89,6 +89,102 @@ pub(crate) fn foreign_keys_sql(table: &str) -> String {
 
 pub(crate) fn rows_affected(result: &SqliteQueryResult) -> u64 {
     result.rows_affected()
+}
+
+/// The stored SQL a table rebuild reads before it starts: the table's own
+/// definition, its explicit indexes and triggers, and every view (the caller
+/// keeps the ones that mention the table). Auto-indexes behind a `UNIQUE` or
+/// `PRIMARY KEY` constraint have no SQL of their own, so they are left out and
+/// rebuilt from the table.
+pub(crate) fn master_sql(table: &str) -> String {
+    format!(
+        "SELECT type, name, sql FROM sqlite_master \
+         WHERE sql IS NOT NULL AND (tbl_name = {} OR type = 'view') \
+         ORDER BY type, name",
+        quote_literal(table)
+    )
+}
+
+/// Run the body of a table rebuild as one atomic change.
+///
+/// The procedure cannot be a plain list of statements: foreign keys have to be
+/// off before the transaction starts — SQLite ignores the pragma inside one —
+/// the whole rebuild has to run on a single connection, and the foreign keys
+/// are re-checked before it commits, so a rebuild that breaks a relationship
+/// rolls itself back rather than leaving a half-moved table.
+///
+/// The connection is closed rather than returned to the pool, so a rebuild
+/// cancelled halfway cannot hand back a connection with a transaction still
+/// open or foreign keys still off.
+pub(crate) async fn rebuild(pool: &SqlitePool, statements: &[String]) -> Result<()> {
+    let mut connection = pool
+        .acquire()
+        .await
+        .context("could not take a connection for the table rebuild")?;
+    connection.close_on_drop();
+
+    // `PRAGMA foreign_keys` is a no-op inside a transaction, so it is set
+    // before one is opened and read first so a connection that never asked for
+    // the enforcement does not suddenly turn it on.
+    let foreign_keys: bool = sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
+        .fetch_one(&mut *connection)
+        .await
+        .map(|value| value != 0)
+        .unwrap_or(false);
+    if foreign_keys {
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *connection)
+            .await
+            .context("could not turn foreign keys off for the table rebuild")?;
+    }
+
+    // Modern SQLite rewrites every reference to the renamed table, and refuses
+    // to when a view that reads the old table has been left dangling by the
+    // `DROP TABLE` — which is exactly the state a rebuild passes through. This
+    // connection is discarded afterwards, so the setting cannot leak, and the
+    // procedure's own recreation of the indexes, triggers, and views is what
+    // puts the references back.
+    sqlx::query("PRAGMA legacy_alter_table = ON")
+        .execute(&mut *connection)
+        .await
+        .context("could not prepare the table rebuild")?;
+
+    let mut transaction = sqlx::Connection::begin(&mut *connection)
+        .await
+        .context("could not start the table rebuild's transaction")?;
+
+    for (position, statement) in statements.iter().enumerate() {
+        sqlx::query(AssertSqlSafe(statement.clone()))
+            .execute(&mut *transaction)
+            .await
+            .with_context(|| format!("statement {} of {}", position + 1, statements.len()))?;
+    }
+
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&mut *transaction)
+        .await
+        .context("could not check foreign keys after the table rebuild")?;
+    if !violations.is_empty() {
+        transaction.rollback().await.ok();
+        anyhow::bail!(
+            "the rebuild would leave {} foreign key relationship{} broken, so it was rolled back",
+            violations.len(),
+            if violations.len() == 1 { "" } else { "s" }
+        );
+    }
+
+    transaction
+        .commit()
+        .await
+        .context("could not commit the table rebuild")?;
+
+    if foreign_keys {
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *connection)
+            .await
+            .ok();
+    }
+    Ok(())
 }
 
 pub(crate) fn cell(row: &SqliteRow, index: usize) -> Cell {
