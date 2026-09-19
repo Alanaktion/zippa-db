@@ -667,7 +667,7 @@ impl Session {
         }
 
         let title = panel.read(cx).title();
-        let prompt = sql_file::prompt_for_save(file.as_deref(), &title, cx);
+        let prompt = sql_file::prompt_for_save(file.as_deref(), &title, "sql", cx);
         let weak = panel.downgrade();
 
         cx.spawn(async move |this, cx| match prompt.await {

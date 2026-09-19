@@ -12,11 +12,13 @@
 //! * [`statement`] — splitting and classifying the user's own SQL.
 //! * [`plan`] — reading an `EXPLAIN` into a tree.
 //! * [`query`] — what a run comes back as.
+//! * [`export`] — laying a result out as CSV, JSON, or SQL `INSERT`.
 //! * [`runtime`] — the Tokio runtime every database call is submitted to.
 //! * [`store`] — connection metadata on disk, passwords in the OS keychain.
 
 pub mod config;
 pub mod connection;
+pub mod export;
 pub mod mysql;
 pub mod plan;
 pub mod postgres;

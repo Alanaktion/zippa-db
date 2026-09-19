@@ -47,6 +47,7 @@ src/
 │   ├── mysql.rs
 │   ├── sqlite.rs
 │   ├── query.rs      # QueryResult
+│   ├── export.rs     # Laying a result out as CSV, JSON, or SQL INSERT
 │   ├── runtime.rs    # Tokio runtime bridging sqlx futures back to GPUI
 │   └── store.rs      # connections.json + OS keychain
 ├── settings.rs       # Settings global, settings.json, theme/appearance
@@ -205,6 +206,7 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 * [ ] Data grid pagination, row limits, and specialized cell renderers
 * [x] Staged cell editing in a table tab, with a per-connection safety mode: read-only, confirm every write, apply by hand, or write when the selection leaves the row
 * [x] Drag across rows to select them, delete them from the row's menu, and fill in new rows in the grid itself — edited cells, new rows, and rows marked for deletion are coloured in the grid and written together when applied
+* [x] Export a whole table or the rows picked out of it to CSV, JSON, or SQL `INSERT`, honouring the current filter and sort
 * [x] SQL editor with SQL syntax highlighting: `Cmd+Enter` runs the statement the caret is in, `Cmd+Shift+Enter` the whole buffer, `Cmd+.` gives up on a run
 * [x] Query plan viewer: `Cmd+E` shows a statement's plan as a tree with costs, rows, timing, and warnings, and `Cmd+Shift+E` runs it for actual times
 * [x] Open and save `.sql` files through the native file dialogs

@@ -50,7 +50,8 @@
 
 ### Import & Export Tools
 
-* [ ] Export selected rows or entire tables to `CSV`, `JSON`, and SQL `INSERT` statements
+* [x] Export selected rows or entire tables to `CSV`, `JSON`, and SQL `INSERT` statements
+* [ ] Stream a large export instead of reading the whole table into memory first
 * [ ] Import SQL dumps
 * [ ] Import CSV data into existing table
 * [ ] Database backup dump (`pg_dump` / `mysqldump` integration)

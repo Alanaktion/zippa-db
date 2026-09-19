@@ -50,6 +50,15 @@ impl TableView {
     /// statement — except for `IN` and `NOT IN`, whose value is SQL the user
     /// wrote and is meant to run as written.
     pub fn query_with_params(&self, cx: &gpui_kit::App) -> (String, Vec<Cell>) {
+        self.select_sql(true, cx)
+    }
+
+    /// The `select` for this view, paged for the grid or whole for an export.
+    ///
+    /// A whole-table export still honours the filters and the sort; only the
+    /// `limit` / `offset` are left off, since every row is what an export is
+    /// for.
+    pub(super) fn select_sql(&self, paged: bool, cx: &gpui_kit::App) -> (String, Vec<Cell>) {
         let engine = self.connection.config.engine;
         let target = self.target();
 
@@ -76,11 +85,14 @@ impl TableView {
                 quote_identifier(column, engine)
             ));
         }
-        sql.push_str(&format!(
-            " limit {} offset {}",
-            self.limit,
-            self.page * self.limit
-        ));
+
+        if paged {
+            sql.push_str(&format!(
+                " limit {} offset {}",
+                self.limit,
+                self.page * self.limit
+            ));
+        }
         (sql, params)
     }
 
@@ -157,21 +169,13 @@ impl TableView {
         self.key_values.clear();
         self.key_type = None;
 
-        if !matches!(self.row_key, Some(RowKey::RowId(_))) || result.columns.is_empty() {
+        if !matches!(self.row_key, Some(RowKey::RowId(_))) {
             return;
         }
 
-        result.columns.remove(0);
-        if !result.column_types.is_empty() {
-            self.key_type = Some(result.column_types.remove(0));
-        }
-        for row in &mut result.rows {
-            if row.is_empty() {
-                self.key_values.push(None);
-                continue;
-            }
-            self.key_values.push(row.remove(0));
-        }
+        let (values, key_type) = take_row_id(result);
+        self.key_values = values;
+        self.key_type = key_type;
     }
 
     /// How a row is addressed in a write: the left-hand side, the type to cast
@@ -355,4 +359,32 @@ impl TableView {
                 .is_some_and(|name| key.contains(name))
         })
     }
+}
+
+/// Take the row identifier column out of a freshly loaded result, handing back
+/// its values and its driver type.
+///
+/// It was asked for so rows could be addressed by a write, not so it could be
+/// shown, so the grid is handed the table's own columns. An export drops it for
+/// the same reason and ignores what comes back.
+pub(super) fn take_row_id(result: &mut QueryResult) -> (Vec<Cell>, Option<String>) {
+    let mut values = Vec::new();
+    if result.columns.is_empty() {
+        return (values, None);
+    }
+
+    result.columns.remove(0);
+    let key_type = if result.column_types.is_empty() {
+        None
+    } else {
+        Some(result.column_types.remove(0))
+    };
+    for row in &mut result.rows {
+        if row.is_empty() {
+            values.push(None);
+            continue;
+        }
+        values.push(row.remove(0));
+    }
+    (values, key_type)
 }

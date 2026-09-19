@@ -25,6 +25,7 @@ use gpui_kit::{
     Window, actions, div,
 };
 
+use crate::db::export::Format;
 use crate::db::query::{self, Cell, QueryResult};
 use crate::settings::{self, Settings};
 use crate::ui::value_dialog::{self, ValueRequest};
@@ -84,6 +85,10 @@ type NavReporter = Rc<dyn Fn(usize, usize, &mut App)>;
 /// whatever is selected.
 type CopyReporter = Rc<dyn Fn(Option<(usize, usize)>, &mut App)>;
 
+/// Asks the owner to export the picked rows, in the chosen format, from the
+/// menu the delegate built.
+type ExportReporter = Rc<dyn Fn(Format, &mut App)>;
+
 /// Emitted when the user clicks a column header on a [`Sorting::Delegated`]
 /// grid.
 pub struct SortRequested {
@@ -117,6 +122,11 @@ pub struct GridNavigate {
     pub col: usize,
 }
 
+/// The picked rows were asked to be exported, in `format`.
+pub struct ExportRequested {
+    pub format: Format,
+}
+
 /// One row's staged cells, by column index, for the owner to turn into SQL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedRow {
@@ -124,6 +134,11 @@ pub struct StagedRow {
     pub row: usize,
     pub cells: Vec<(usize, Cell)>,
 }
+
+/// The rows picked out of the grid: the columns and driver types they were read
+/// under, and one row of cells per picked row.
+pub type PickedRows = (Vec<String>, Vec<String>, Vec<Vec<Cell>>);
+
 pub struct DataGrid {
     table: Entity<TableState<ResultDelegate>>,
     has_result: bool,
@@ -144,6 +159,7 @@ impl Focusable for DataGrid {
 impl EventEmitter<SortRequested> for DataGrid {}
 impl EventEmitter<GridEdit> for DataGrid {}
 impl EventEmitter<GridNavigate> for DataGrid {}
+impl EventEmitter<ExportRequested> for DataGrid {}
 
 impl DataGrid {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -205,6 +221,16 @@ impl DataGrid {
             }
         });
 
+        let report_export: ExportReporter = Rc::new({
+            let grid = cx.weak_entity();
+            move |format: Format, cx: &mut App| {
+                let Some(grid) = grid.upgrade() else {
+                    return;
+                };
+                grid.update(cx, |_, cx| cx.emit(ExportRequested { format }));
+            }
+        });
+
         let editor = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
@@ -232,6 +258,8 @@ impl DataGrid {
                     report_view,
                     report_navigate,
                     report_copy,
+                    report_export,
+                    exportable: false,
                     foreign_keys: HashSet::new(),
                     drafts: Vec::new(),
                     editing: None,
@@ -436,6 +464,18 @@ impl DataGrid {
         });
     }
 
+    /// Say whether the owner can export the picked rows. Only a table view can,
+    /// since only it knows a table name to write into an `INSERT`.
+    pub fn set_exportable(&mut self, exportable: bool, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            if table.delegate().exportable == exportable {
+                return;
+            }
+            table.delegate_mut().exportable = exportable;
+            cx.notify();
+        });
+    }
+
     /// Open the editor on a cell, seeded with the value as it stands.
     pub fn begin_edit(
         &mut self,
@@ -615,7 +655,7 @@ impl DataGrid {
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let table = self.table.downgrade();
 
-        move |menu, _window, cx| {
+        move |menu, window, cx| {
             let Some(table) = table.upgrade() else {
                 return menu;
             };
@@ -627,7 +667,9 @@ impl DataGrid {
             };
 
             table.update(cx, |table, cx| {
-                table.delegate_mut().row_menu_items(row_ix, menu, cx)
+                table
+                    .delegate_mut()
+                    .row_menu_items(row_ix, menu, window, cx)
             })
         }
     }
@@ -943,6 +985,36 @@ impl DataGrid {
                 .map(|col_ix| delegate.cell(row_ix, col_ix).clone())
                 .collect(),
         )
+    }
+
+    /// The rows picked out, with the columns and driver types they were read
+    /// under: `(columns, column_types, rows)`, or `None` when nothing is picked.
+    ///
+    /// Cells come through the delegate's own `cell`, so a staged edit is
+    /// exported as it stands, the way `Copy` writes it to the clipboard.
+    pub fn picked(&self, cx: &App) -> Option<PickedRows> {
+        let delegate = self.table.read(cx).delegate();
+        if delegate.rows_selected.is_empty() {
+            return None;
+        }
+
+        let mut selected: Vec<usize> = delegate.rows_selected.iter().copied().collect();
+        selected.sort_unstable();
+
+        let rows = selected
+            .iter()
+            .map(|row_ix| {
+                (0..delegate.result.columns.len())
+                    .map(|col_ix| delegate.cell(*row_ix, col_ix).clone())
+                    .collect()
+            })
+            .collect();
+
+        Some((
+            delegate.result.columns.clone(),
+            delegate.result.column_types.clone(),
+            rows,
+        ))
     }
 
     /// Whether this cell can be typed into.

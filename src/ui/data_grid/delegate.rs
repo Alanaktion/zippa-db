@@ -20,13 +20,15 @@ use gpui_kit::{
     Pixels, SharedString, Stateful, Window, div, px,
 };
 
+use crate::db::export::Format;
 use crate::db::query::{self, Cell, QueryResult};
 use crate::settings::Settings;
 
 use super::layout::MIN_COLUMN_WIDTH;
 
 use super::{
-    ChangeReporter, CopyReporter, CopyValue, NavReporter, SortReporter, Sorting, ViewReporter,
+    ChangeReporter, CopyReporter, CopyValue, ExportReporter, NavReporter, SortReporter, Sorting,
+    ViewReporter,
 };
 
 pub(super) struct ResultDelegate {
@@ -72,6 +74,12 @@ pub(super) struct ResultDelegate {
     pub(super) report_view: ViewReporter,
     pub(super) report_navigate: NavReporter,
     pub(super) report_copy: CopyReporter,
+    /// Asks the owner to export the picked rows in a format.
+    pub(super) report_export: ExportReporter,
+    /// Whether the owner can export the picked rows at all. Only a table view
+    /// can, since only it knows which table the rows came from; a query
+    /// result's grid leaves this false so its menu offers no dead command.
+    pub(super) exportable: bool,
     /// Column indices with a usable single-column foreign key, set by the
     /// table view once it has read the table's own schema. Empty for an
     /// ad-hoc query result, which has no owner that could look one up.
@@ -501,6 +509,7 @@ impl ResultDelegate {
         &mut self,
         row_ix: usize,
         menu: PopupMenu,
+        window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
         // Looking at a value is not editing it, so this one is offered even on
@@ -554,6 +563,30 @@ impl ResultDelegate {
                     .action(Box::new(CopyValue))
                     .on_click(move |_, _window, cx| report(None, cx)),
             )
+        } else {
+            menu
+        };
+
+        // Exporting is a read, so it is offered on a read-only grid too. The
+        // formats open a save dialog, hence the ellipsis on the submenu that
+        // holds them. A query result's grid has no owner that knows a table
+        // name, and sets `exportable` false so it offers none of this.
+        let menu = if self.exportable && copies_rows {
+            let label = match picked {
+                1 => "Export row…".to_string(),
+                rows => format!("Export {rows} rows…"),
+            };
+            let report = self.report_export.clone();
+            let submenu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
+                Format::ALL.into_iter().fold(menu, |menu, format| {
+                    let report = report.clone();
+                    menu.item(
+                        PopupMenuItem::new(format.label())
+                            .on_click(move |_, _window, cx| report(format, cx)),
+                    )
+                })
+            });
+            menu.item(PopupMenuItem::submenu(label, submenu))
         } else {
             menu
         };

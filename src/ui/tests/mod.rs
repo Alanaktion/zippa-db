@@ -25,6 +25,7 @@ use crate::settings::{self, Appearance, Settings};
 use crate::ui::settings_window;
 use crate::ui::welcome::WelcomeEvent;
 
+use crate::db::export::Format;
 use crate::db::query::QueryResult;
 use crate::db::tests::TempDatabase;
 use crate::db::{
@@ -36,6 +37,7 @@ use crate::ui::welcome::Welcome;
 
 mod editing;
 mod explain;
+mod export;
 mod files;
 mod filters;
 mod layout;
@@ -633,6 +635,36 @@ fn pick_row(cx: &mut TestAppContext, handle: WindowHandle<Session>, row_ix: usiz
         window.click(("pick", row_ix), cx);
     })
     .unwrap();
+}
+
+/// Export the open table, answering the save dialog with `path`.
+fn export_table(
+    cx: &mut TestAppContext,
+    view: &gpui_kit::Entity<crate::ui::table_view::TableView>,
+    format: Format,
+    path: &std::path::Path,
+) {
+    view.update(cx, |view, cx| view.export(format, cx));
+    cx.simulate_new_path_selection({
+        let path = path.to_path_buf();
+        move |_directory| Some(path)
+    });
+    cx.run_until_parked();
+}
+
+/// The same, for the rows picked out in the grid.
+fn export_picked_rows(
+    cx: &mut TestAppContext,
+    view: &gpui_kit::Entity<crate::ui::table_view::TableView>,
+    format: Format,
+    path: &std::path::Path,
+) {
+    view.update(cx, |view, cx| view.export_picked(format, cx));
+    cx.simulate_new_path_selection({
+        let path = path.to_path_buf();
+        move |_directory| Some(path)
+    });
+    cx.run_until_parked();
 }
 
 /// Shift-click `row_ix`'s pick box, which takes everything between it and the

@@ -37,6 +37,20 @@ pub(crate) fn quote_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// Quote `value` as a SQL string literal for `engine`.
+///
+/// MySQL reads a backslash inside a string as the start of an escape sequence,
+/// so a value holding one — a Windows path, a JSON document with `\n` in it —
+/// has to have it doubled or the server reads a different value back. The other
+/// two engines take a backslash literally.
+pub(crate) fn quote_literal_for(engine: Engine, value: &str) -> String {
+    let escaped = match engine {
+        Engine::MySql => value.replace('\\', "\\\\").replace('\'', "''"),
+        Engine::Postgres | Engine::Sqlite => value.replace('\'', "''"),
+    };
+    format!("'{escaped}'")
+}
+
 /// The placeholder for the `index`-th bind parameter, counting from one.
 pub(crate) fn placeholder(engine: Engine, index: usize) -> String {
     match engine {
