@@ -52,7 +52,7 @@
 
 * [x] Export selected rows or entire tables to `CSV`, `JSON`, and SQL `INSERT` statements
 * [ ] Stream a large export instead of reading the whole table into memory first
-* [ ] Import SQL dumps
+* [x] Import SQL dumps (streamed, gzip/bzip2/zstd, with a progress bar and a choice of what a failed statement does)
 * [ ] Import CSV data into existing table
 * [ ] Database backup dump (`pg_dump` / `mysqldump` integration)
 

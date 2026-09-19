@@ -54,6 +54,7 @@ const GROUPS: &[Group] = &[
         title: "Files",
         rows: &[
             ("Open a SQL file", &["secondary-o"]),
+            ("Import a SQL dump", &["secondary-shift-i"]),
             ("Save the active tab", &["secondary-s"]),
             (
                 "Save the active tab under a new name",

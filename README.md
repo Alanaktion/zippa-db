@@ -4,7 +4,7 @@
 
 Zippa DB combines the raw performance of Zed's GPU-accelerated interface engine with the reliability of async Rust. Designed to compete with tools like TablePlus, Zippa DB aims for sub-millisecond tab switching, virtualized streaming for massive datasets, and native support for PostgreSQL, MySQL, and SQLite.
 
-> **Status:** early. You can save connections, connect to PostgreSQL, MySQL, or SQLite, switch databases, browse tables and views in the sidebar, open them in tabs, run queries, and read the results. Everything else in [TODO.md](TODO.md) is still ahead.
+> **Status:** early. You can save connections, connect to PostgreSQL, MySQL, or SQLite, switch databases, browse tables and views in the sidebar, open them in tabs, run queries, read the results, and import a SQL dump. Everything else in [TODO.md](TODO.md) is still ahead.
 
 ---
 
@@ -178,6 +178,7 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 | Next / previous tab | `Ctrl` + `Tab` / `Ctrl` + `Shift` + `Tab` (or `Ctrl` + `PageDown` / `PageUp`) |
 | Refresh the schema and the open table | `Cmd`/`Ctrl` + `R` |
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
+| Import a SQL dump into the connection | `Cmd`/`Ctrl` + `Shift` + `I` |
 | Move between cells | `↑` `↓` `←` `→`, `Home` / `End`, `PageUp` / `PageDown` |
 | Copy the selected cell, or the selected rows | `Cmd`/`Ctrl` + `C` |
 | Copy the rows with a header line, tab-separated | `Cmd`/`Ctrl` + `Shift` + `C` |
@@ -216,6 +217,7 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 * [x] Staged cell editing in a table tab, with a per-connection safety mode: read-only, confirm every write, apply by hand, or write when the selection leaves the row
 * [x] Drag across rows to select them, delete them from the row's menu, and fill in new rows in the grid itself — edited cells, new rows, and rows marked for deletion are coloured in the grid and written together when applied
 * [x] Export a whole table or the rows picked out of it to CSV, JSON, or SQL `INSERT`, honouring the current filter and sort
+* [x] Import a SQL dump from a file — streamed, compressed (gzip, bzip2, zstd), with a progress bar and a stop / roll back / continue error policy
 * [x] Copy rows or a column from the grid as TSV, CSV, JSON, a Markdown table, SQL `INSERT`, plain values, or a SQL `IN` list
 * [x] SQL editor with SQL syntax highlighting: `Cmd+Enter` runs the statement the caret is in, `Cmd+Shift+Enter` the whole buffer, `Cmd+.` gives up on a run
 * [x] Query plan viewer: `Cmd+E` shows a statement's plan as a tree with costs, rows, timing, and warnings, and `Cmd+Shift+E` runs it for actual times

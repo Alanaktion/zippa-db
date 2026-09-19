@@ -19,7 +19,7 @@ use crate::db::{DatabaseObject, ObjectKind, StoredKind, StoredObject};
 use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
-use super::{Session, SessionEvent};
+use super::{ImportSqlDump, Session, SessionEvent};
 
 impl Session {
     pub(super) fn on_filter_event(
@@ -297,6 +297,20 @@ impl Session {
             .bg(cx.theme().sidebar)
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
+            .child(
+                Button::new("import-dump")
+                    .outline()
+                    .small()
+                    .w_full()
+                    .label("Import SQL dump…")
+                    .accessibility_label("Import a SQL dump into this connection")
+                    .tooltip_with_action(
+                        "Import a SQL dump into this connection",
+                        &ImportSqlDump,
+                        Some("Session"),
+                    )
+                    .on_click(cx.listener(|this, _, _window, cx| this.import_dump(cx))),
+            )
             .child(self.render_objects(cx))
             .child(
                 Button::new("disconnect")

@@ -13,12 +13,14 @@
 //! * [`plan`] — reading an `EXPLAIN` into a tree.
 //! * [`query`] — what a run comes back as.
 //! * [`export`] — laying a result out as CSV, JSON, or SQL `INSERT`.
+//! * [`import`] — reading a SQL dump back in as statements.
 //! * [`runtime`] — the Tokio runtime every database call is submitted to.
 //! * [`store`] — connection metadata on disk, passwords in the OS keychain.
 
 pub mod config;
 pub mod connection;
 pub mod export;
+pub mod import;
 pub mod mysql;
 pub mod plan;
 pub mod postgres;
@@ -37,6 +39,7 @@ pub(crate) use config::file_name;
 pub use config::{ConnectionConfig, Engine, SafetyMode, TagColor};
 pub(crate) use connection::POOL_SIZE;
 pub use connection::{Connection, DatabaseObject, ObjectKind, RowKey, StoredKind, StoredObject};
+pub use import::{ImportProgress, ImportRequest, ImportSummary, OnError};
 pub use plan::{Explained, Plan, PlanNode};
 pub use schema::{ColumnDef, ForeignKeyDef, IndexDef, ReferentialAction, TableSchema};
 pub use sql::quote_identifier;

@@ -34,6 +34,30 @@ pub fn prompt_for_open(cx: &App) -> impl Future<Output = Result<Option<Vec<PathB
     }
 }
 
+/// Ask the platform which file to import a dump from.
+///
+/// One file rather than many, since each import runs against the connection it
+/// was started from. `Ok(None)` means the user cancelled.
+pub fn prompt_for_import(cx: &App) -> impl Future<Output = Result<Option<PathBuf>>> + use<> {
+    let paths = cx.prompt_for_paths(PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: false,
+        prompt: Some("Import".into()),
+    });
+
+    async move {
+        match paths.await {
+            Ok(paths) => {
+                let paths = paths.context("the file picker could not be opened")?;
+                Ok(paths.and_then(|paths| paths.into_iter().next()))
+            }
+            // The dialog went away without answering.
+            Err(_) => Ok(None),
+        }
+    }
+}
+
 /// Ask the platform where to save.
 ///
 /// The dialog starts at `path` for a buffer that already has a file, and at a

@@ -28,6 +28,7 @@ use regex::Regex;
 
 use crate::db::{Connection, DatabaseObject, Explained, StoredObject, runtime, statement};
 use crate::ui::filter_bar::FilterSpec;
+use crate::ui::import_dialog::{ImportEvent, ImportView};
 use crate::ui::schema_view::SchemaView;
 use crate::ui::sql_file;
 use crate::ui::table_view::{TableView, TableViewEvent};
@@ -58,6 +59,7 @@ actions!(
         Refresh,
         CancelQuery,
         QuickSwitcher,
+        ImportSqlDump,
     ]
 );
 
@@ -99,6 +101,8 @@ pub struct Session {
     switching: bool,
     /// The next panel's stable key. See `SessionPanel`'s `key` field.
     next_key: usize,
+    /// The import dialog, while one is open over the window.
+    import: Option<Entity<ImportView>>,
 }
 
 impl EventEmitter<SessionEvent> for Session {}
@@ -139,6 +143,7 @@ impl Session {
             metadata_error: None,
             switching: false,
             next_key: 0,
+            import: None,
         };
         session.open_tab(None, String::new(), false, window, cx);
         session.reload_metadata(cx);
@@ -692,6 +697,98 @@ impl Session {
     fn on_save_file_as(&mut self, _: &SaveFileAs, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.active_panel() {
             self.save(&panel, true, cx);
+        }
+    }
+
+    fn on_import_dump(&mut self, _: &ImportSqlDump, _window: &mut Window, cx: &mut Context<Self>) {
+        self.import_dump(cx);
+    }
+
+    /// Ask for a dump file, then open the import dialog over the session.
+    pub(crate) fn import_dump(&mut self, cx: &mut Context<Self>) {
+        let prompt = sql_file::prompt_for_import(cx);
+
+        cx.spawn(async move |this, cx| match prompt.await {
+            Ok(Some(path)) => {
+                this.update_in(cx, |this, window, cx| {
+                    this.open_import_dialog(path, window, cx)
+                })
+                .ok();
+            }
+            Ok(None) => {}
+            Err(error) => {
+                this.update_in(cx, |this, window, cx| this.report(error, window, cx))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Build the import dialog for `path`, if one is not already open.
+    fn open_import_dialog(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.import.is_some() {
+            return;
+        }
+
+        let view = cx.new(|cx| ImportView::new(self.connection.clone(), path, window, cx));
+        cx.subscribe_in(&view, window, Self::on_import_event)
+            .detach();
+
+        let session = cx.entity().downgrade();
+        let body = view.clone();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let session = session.clone();
+            dialog
+                .title("Import SQL dump")
+                .w(px(560.))
+                .h(px(460.))
+                // The dialog's own keys are off so `enter` cannot dismiss it;
+                // `escape` is bound to `CloseImport` on the body instead.
+                .keyboard(false)
+                .on_close(move |_, _window, cx| {
+                    session
+                        .update(cx, |this, cx| {
+                            this.import = None;
+                            cx.notify();
+                        })
+                        .ok();
+                })
+                .child(body.clone())
+        });
+
+        // Put the keyboard on the body so `escape` reaches `CloseImport`.
+        view.update(cx, |view, cx| view.focus(window, cx));
+        self.import = Some(view);
+    }
+
+    /// The dialog's own buttons: dismiss it, or note that the run changed the
+    /// schema.
+    fn on_import_event(
+        &mut self,
+        _: &Entity<ImportView>,
+        event: &ImportEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ImportEvent::Dismissed => {
+                self.import = None;
+                window.close_dialog(cx);
+                cx.notify();
+            }
+            ImportEvent::Finished => {
+                // The import wrote objects and rows; the sidebar and any open
+                // table are stale.
+                self.refresh(cx);
+            }
+        }
+    }
+
+    /// Give up on an import in flight, the way [`Self::cancel_query`] gives up
+    /// on a query.
+    pub(crate) fn cancel_import(&mut self, cx: &mut Context<Self>) {
+        if let Some(view) = self.import.clone() {
+            view.update(cx, |view, cx| view.cancel(cx));
         }
     }
 
@@ -1289,6 +1386,9 @@ impl Session {
 
     /// Give up on the run in the active tab.
     fn cancel_query(&mut self, _: &CancelQuery, _window: &mut Window, cx: &mut Context<Self>) {
+        // An import in flight is the other long-running thing a session owns,
+        // so the same key gives up on it.
+        self.cancel_import(cx);
         if let Some(panel) = self.active_panel() {
             panel.update(cx, |panel, cx| {
                 panel.cancel_running(cx);
@@ -1419,6 +1519,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_save_file_as))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::cancel_query))
+            .on_action(cx.listener(Self::on_import_dump))
             .on_action(cx.listener(Self::on_quick_switcher))
             .when_some(self.render_tag_strip(cx), |this, strip| this.child(strip))
             .child(

@@ -10,10 +10,11 @@ use crate::ui::data_grid::{
     ClearRowSelection, CopyValue, CopyWithHeaders, ExtendSelectionDown, ExtendSelectionUp,
     SelectAllRows, ToggleRow, ViewCell,
 };
+use crate::ui::import_dialog::CloseImport;
 use crate::ui::query_editor::{Explain, ExplainAnalyze, RunQuery, RunScript};
 use crate::ui::session::{
-    CancelQuery, CloseTab, NewTab, NextTab, OpenFile, PreviousTab, QuickSwitcher, Refresh,
-    SaveFile, SaveFileAs,
+    CancelQuery, CloseTab, ImportSqlDump, NewTab, NextTab, OpenFile, PreviousTab, QuickSwitcher,
+    Refresh, SaveFile, SaveFileAs,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -63,6 +64,12 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-shift-e", ExplainAnalyze, Some("QueryEditor")),
         // Give up on a query that is taking too long.
         KeyBinding::new("secondary-.", CancelQuery, Some("Session")),
+        // Import a SQL dump into the connection. The table view binds the same
+        // key for "add a row", which wins while its grid has focus.
+        KeyBinding::new("secondary-shift-i", ImportSqlDump, Some("Session")),
+        // Giving up on the import dialog: its own `keyboard` handling is off so
+        // that `enter` cannot dismiss it, which leaves `escape` to this.
+        KeyBinding::new("escape", CloseImport, Some("ImportDialog")),
         // The caret is usually in the editor, whose own context claims keys
         // before the session sees them.
         KeyBinding::new("secondary-.", CancelQuery, Some("QueryEditor > Input")),

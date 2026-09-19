@@ -10,6 +10,7 @@ use gpui_kit::{App, Context, Entity, SharedString, Window};
 
 use crate::db::DatabaseObject;
 use crate::ui::data_grid::DataGrid;
+use crate::ui::import_dialog::ImportView;
 use crate::ui::plan_view::PlanView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
@@ -262,6 +263,23 @@ impl Session {
     #[cfg(test)]
     pub(crate) fn panel_for_test(&self, index: usize) -> Entity<SessionPanel> {
         self.panels[index].clone()
+    }
+
+    /// The import dialog, if one is open in this session.
+    #[cfg(test)]
+    pub(crate) fn import_view_for_test(&self) -> Option<Entity<ImportView>> {
+        self.import.clone()
+    }
+
+    /// Open the import dialog for `path` without going through the file picker.
+    #[cfg(test)]
+    pub(crate) fn open_import_for_test(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_import_dialog(path, window, cx);
     }
 
     /// The id of the close button on the tab at `index`, which is keyed by

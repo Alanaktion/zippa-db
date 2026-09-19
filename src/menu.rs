@@ -11,7 +11,7 @@ use gpui_kit::{App, KeyBinding, Menu, MenuItem, actions};
 
 use crate::app::{CloseConnection, NewConnection};
 use crate::ui::query_editor::{Explain, ExplainAnalyze};
-use crate::ui::session::{CloseTab, NewTab, OpenFile, SaveFile, SaveFileAs};
+use crate::ui::session::{CloseTab, ImportSqlDump, NewTab, OpenFile, SaveFile, SaveFileAs};
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
 
@@ -49,6 +49,8 @@ pub fn init(cx: &mut App) {
             MenuItem::action("Open…", OpenFile),
             MenuItem::action("Save", SaveFile),
             MenuItem::action("Save As…", SaveFileAs),
+            MenuItem::separator(),
+            MenuItem::action("Import SQL Dump…", ImportSqlDump),
             MenuItem::separator(),
             MenuItem::action("Close Tab", CloseTab),
             MenuItem::action("Close Connection", CloseConnection),

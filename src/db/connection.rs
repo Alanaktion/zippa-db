@@ -18,6 +18,7 @@ use sqlx::{
 };
 
 use super::config::{ConnectionConfig, Engine};
+use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary};
 use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
 use super::{mysql, postgres, sqlite, statement};
@@ -398,6 +399,39 @@ impl Connection {
             results.push(result);
         }
         Ok(results)
+    }
+
+    /// Run a SQL dump against this connection.
+    ///
+    /// Everything runs on one dedicated connection, so the session state a dump
+    /// sets up survives from one statement to the next, and the selected error
+    /// policy decides what a failure does. Progress is reported through
+    /// `progress` as the dump is read.
+    ///
+    /// A read-only connection is refused here rather than by the server, so the
+    /// reason can name the safety mode.
+    pub async fn import_dump(
+        &self,
+        request: ImportRequest,
+        progress: tokio::sync::mpsc::UnboundedSender<ImportProgress>,
+    ) -> Result<ImportSummary> {
+        if self.config.safety.is_read_only() {
+            anyhow::bail!("this connection is read-only, so a dump cannot be imported");
+        }
+
+        let dialect = match self.config.engine {
+            Engine::Postgres => Dialect::Postgres,
+            Engine::MySql => Dialect::MySql,
+            Engine::Sqlite => Dialect::Sqlite,
+        };
+
+        let session = match &self.pool {
+            Pool::Postgres(pool) => import::Session::postgres(pool).await?,
+            Pool::MySql(pool) => import::Session::mysql(pool).await?,
+            Pool::Sqlite(pool) => import::Session::sqlite(pool).await?,
+        };
+
+        import::run(session, dialect, &request, progress).await
     }
 
     /// How the rows of `object` can be addressed by a write.
