@@ -172,6 +172,7 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
 | Move between cells | `↑` `↓` `←` `→`, `Home` / `End`, `PageUp` / `PageDown` |
 | Copy the selected cell, or the selected rows | `Cmd`/`Ctrl` + `C` |
+| Copy the rows with a header line, tab-separated | `Cmd`/`Ctrl` + `Shift` + `C` |
 | Select the row the selection is on, or unselect it | `Space` |
 | Extend the row selection up / down | `Shift` + `↑` / `↓` |
 | Select every row | `Cmd`/`Ctrl` + `A` |
@@ -207,6 +208,7 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 * [x] Staged cell editing in a table tab, with a per-connection safety mode: read-only, confirm every write, apply by hand, or write when the selection leaves the row
 * [x] Drag across rows to select them, delete them from the row's menu, and fill in new rows in the grid itself — edited cells, new rows, and rows marked for deletion are coloured in the grid and written together when applied
 * [x] Export a whole table or the rows picked out of it to CSV, JSON, or SQL `INSERT`, honouring the current filter and sort
+* [x] Copy rows or a column from the grid as TSV, CSV, JSON, a Markdown table, SQL `INSERT`, plain values, or a SQL `IN` list
 * [x] SQL editor with SQL syntax highlighting: `Cmd+Enter` runs the statement the caret is in, `Cmd+Shift+Enter` the whole buffer, `Cmd+.` gives up on a run
 * [x] Query plan viewer: `Cmd+E` shows a statement's plan as a tree with costs, rows, timing, and warnings, and `Cmd+Shift+E` runs it for actual times
 * [x] Open and save `.sql` files through the native file dialogs

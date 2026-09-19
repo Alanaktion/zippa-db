@@ -274,7 +274,16 @@ impl Session {
         let key = self.next_key;
         self.next_key += 1;
 
-        let panel = cx.new(|cx| SessionPanel::query(key, title, sql.clone(), window, cx));
+        let panel = cx.new(|cx| {
+            SessionPanel::query(
+                key,
+                title,
+                sql.clone(),
+                self.connection.config.engine,
+                window,
+                cx,
+            )
+        });
         self.install(panel.clone(), window, cx);
 
         if run && !sql.trim().is_empty() {

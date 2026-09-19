@@ -22,9 +22,10 @@ use gpui_kit::{
 
 use crate::db::Connection;
 use crate::db::DatabaseObject;
+use crate::db::Engine;
 use crate::db::Plan;
 use crate::db::query::QueryResult;
-use crate::ui::data_grid::DataGrid;
+use crate::ui::data_grid::{Copied, DataGrid};
 use crate::ui::plan_view::PlanView;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
 use crate::ui::schema_view::SchemaView;
@@ -85,6 +86,7 @@ impl SessionPanel {
         key: usize,
         title: impl Into<SharedString>,
         sql: String,
+        engine: Engine,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -92,12 +94,16 @@ impl SessionPanel {
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
 
+        let grid = cx.new(|cx| DataGrid::new(engine, window, cx));
+        cx.subscribe_in(&grid, window, Self::on_grid_copied)
+            .detach();
+
         Self {
             key,
             title: title.into(),
             content: TabContent::Query {
                 editor,
-                grid: cx.new(|cx| DataGrid::new(window, cx)),
+                grid,
                 status: Status::Idle,
                 path: None,
                 results: Vec::new(),
@@ -164,6 +170,19 @@ impl SessionPanel {
             QueryEditorEvent::Open => cx.emit(SessionPanelEvent::OpenFile),
             QueryEditorEvent::Save => cx.emit(SessionPanelEvent::Save),
         }
+    }
+
+    /// A copy went to the clipboard; the status bar says what it was. This is
+    /// the query tab's counterpart to the table view's footer notice.
+    fn on_grid_copied(
+        &mut self,
+        _: &Entity<DataGrid>,
+        event: &Copied,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_status(Status::Done(event.message.clone()));
+        cx.notify();
     }
 
     #[cfg(test)]

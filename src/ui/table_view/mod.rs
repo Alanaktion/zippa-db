@@ -30,7 +30,8 @@ use crate::db::query::{Cell, QueryResult};
 use crate::db::{Connection, DatabaseObject, ForeignKeyDef, ObjectKind, RowKey, runtime};
 use crate::settings::{self, Settings};
 use crate::ui::data_grid::{
-    DataGrid, ExportRequested, GridEdit, GridNavigate, SortRequested, Sorting, StagedRow,
+    Copied, DataGrid, ExportRequested, GridEdit, GridNavigate, Scope, SortRequested, Sorting,
+    StagedRow,
 };
 use crate::ui::filter_bar::{FilterBar, FilterSpec, FiltersChanged, Operator};
 use crate::ui::sql_file;
@@ -206,7 +207,9 @@ impl TableView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let grid = cx.new(|cx| DataGrid::with_sorting(Sorting::Delegated, window, cx));
+        let grid = cx.new(|cx| {
+            DataGrid::with_sorting(Sorting::Delegated, connection.config.engine, window, cx)
+        });
         cx.subscribe_in(&grid, window, Self::on_sort_requested)
             .detach();
         cx.subscribe_in(&grid, window, Self::on_grid_edit).detach();
@@ -214,8 +217,11 @@ impl TableView {
             .detach();
         cx.subscribe_in(&grid, window, Self::on_grid_export)
             .detach();
-        // Only this view can export: it knows which table the rows came from.
-        grid.update(cx, |grid, cx| grid.set_exportable(true, cx));
+        cx.subscribe_in(&grid, window, Self::on_grid_copied)
+            .detach();
+        // The grid quotes copies for this connection's engine, and names this
+        // table in a SQL `INSERT` copy; only this view knows either.
+        grid.update(cx, |grid, cx| grid.set_table(Some(object.name.clone()), cx));
 
         let row_panel = cx.new(|cx| RowPanel::new(grid.clone(), window, cx));
         cx.subscribe_in(&row_panel, window, Self::on_row_panel_event)
@@ -770,15 +776,16 @@ impl TableView {
     ///
     /// Cells come through the grid, so a staged edit is exported as it stands.
     pub(crate) fn export_picked(&mut self, format: Format, cx: &mut Context<Self>) {
-        let Some((columns, column_types, rows)) = self.grid.read(cx).picked(cx) else {
+        let snapshot = self.grid.read(cx).snapshot(Scope::Picked, cx);
+        if snapshot.rows.is_empty() {
             return;
-        };
+        }
 
         let table = self.object.name.clone();
         let result = QueryResult {
-            columns,
-            column_types,
-            rows,
+            columns: snapshot.columns,
+            column_types: snapshot.types,
+            rows: snapshot.rows,
             ..QueryResult::default()
         };
         let query = async move { Ok(result) };
@@ -932,6 +939,18 @@ impl TableView {
         cx: &mut Context<Self>,
     ) {
         self.export_picked(event.format, cx);
+    }
+
+    /// A copy went to the clipboard; the footer says what it was.
+    fn on_grid_copied(
+        &mut self,
+        _: &Entity<DataGrid>,
+        event: &Copied,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.notice = Some(event.message.clone());
+        cx.notify();
     }
 
     /// A jump to a foreign key's referenced row was asked for from the row
@@ -1354,7 +1373,7 @@ impl TableView {
                             .tooltip("Write the whole table to a file")
                             .disabled(self.loading || self.committing)
                             .dropdown_menu(move |mut menu, _window, _cx| {
-                                for format in Format::ALL {
+                                for format in Format::FILE {
                                     let view = view.clone();
                                     menu =
                                         menu.item(

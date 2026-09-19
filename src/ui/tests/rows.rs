@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::ui::data_grid::CopyAs;
+
 #[gpui_kit::test]
 fn checking_rows_selects_them_and_shift_takes_the_range(cx: &mut TestAppContext) {
     let (_database, handle, view) = table_view(cx);
@@ -388,6 +390,217 @@ fn an_edit_on_a_row_marked_for_deletion_goes_with_it(cx: &mut TestAppContext) {
         None,
         "updating a row that is being deleted should never be attempted"
     );
+}
+
+#[gpui_kit::test]
+fn copy_with_headers_writes_a_header_line(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    select_cell(cx, &view, 0, 1);
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-shift-c");
+    cx.run_until_parked();
+
+    // A blob the driver only described is not real data, so it copies empty.
+    assert_eq!(
+        clipboard(cx),
+        Some("id\tname\tscore\tpayload\n1\talpha\t1.5\t\n2\t\t\t\n".to_string())
+    );
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Copied 2 rows as TSV (1 value not read back, copied as NULL)".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn copying_as_csv_takes_only_the_picked_rows(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    pick_row(cx, handle, 0);
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Csv), cx));
+
+    assert_eq!(
+        clipboard(cx),
+        Some("id,name,score,payload\n1,alpha,1.5,\n".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn copying_with_nothing_picked_takes_every_row_as_it_stands(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "renamed");
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Csv), cx));
+
+    assert_eq!(
+        clipboard(cx),
+        Some("id,name,score,payload\n1,renamed,1.5,\n2,,,\n".to_string()),
+        "a staged edit should copy as it stands"
+    );
+}
+
+#[gpui_kit::test]
+fn a_row_marked_for_deletion_is_still_copied(cx: &mut TestAppContext) {
+    // The same as `Copy N rows` does today: the row is what the grid is
+    // showing, and the mark only says it will go when the changes are applied.
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    pick_row(cx, handle, 0);
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.delete_selected(cx));
+    grid.update(cx, |grid, cx| grid.clear_row_selection(cx));
+    grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Csv), cx));
+
+    assert_eq!(
+        clipboard(cx),
+        Some("id,name,score,payload\n1,alpha,1.5,\n2,,,\n".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn copying_as_json_is_typed(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Json), cx));
+
+    assert_eq!(
+        clipboard(cx),
+        Some(
+            concat!(
+                "[\n",
+                "  {\n",
+                "    \"id\": 1,\n",
+                "    \"name\": \"alpha\",\n",
+                "    \"score\": 1.5,\n",
+                "    \"payload\": null\n",
+                "  },\n",
+                "  {\n",
+                "    \"id\": 2,\n",
+                "    \"name\": null,\n",
+                "    \"score\": null,\n",
+                "    \"payload\": null\n",
+                "  }\n",
+                "]"
+            )
+            .to_string()
+        )
+    );
+}
+
+#[gpui_kit::test]
+fn copying_as_sql_writes_inserts_for_the_table(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Sql), cx));
+
+    assert_eq!(
+        clipboard(cx),
+        Some(
+            "insert into items (id, name, score, payload) values (1, 'alpha', 1.5, NULL);\n\
+             insert into items (id, name, score, payload) values (2, NULL, NULL, NULL);\n"
+                .to_string()
+        )
+    );
+}
+
+#[gpui_kit::test]
+fn a_column_copies_as_values_or_an_in_list(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.copy_as(CopyAs::ColumnValues(0), cx));
+    assert_eq!(clipboard(cx), Some("1\n2".to_string()));
+
+    grid.update(cx, |grid, cx| grid.copy_as(CopyAs::ColumnInList(0), cx));
+    assert_eq!(clipboard(cx), Some("(1, 2)".to_string()));
+
+    // `payload` holds a stand-in for a value that was never read back, and the
+    // other row's is NULL, so there is nothing to list.
+    grid.update(cx, |grid, cx| grid.copy_as(CopyAs::ColumnInList(3), cx));
+    assert_eq!(clipboard(cx), Some("()".to_string()));
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("No values to copy".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn a_copy_too_large_for_the_clipboard_is_capped_and_says_so(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    let result = QueryResult {
+        columns: vec!["n".to_string()],
+        column_types: vec!["INTEGER".to_string()],
+        rows: (0..100_001).map(|n| vec![Some(n.to_string())]).collect(),
+        ..QueryResult::default()
+    };
+    grid.update(cx, |grid, cx| grid.set_result(result, cx));
+    grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Csv), cx));
+
+    let text = clipboard(cx).expect("something should be on the clipboard");
+    assert_eq!(
+        text.lines().count(),
+        100_001,
+        "the header and the first 100,000 rows"
+    );
+    assert!(text.starts_with("n\n0\n1\n"), "{}", text);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Copied first 100000 of 100001 rows as CSV".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn a_query_result_copies_and_says_so_in_the_status_bar(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |session, _, cx| {
+            session.show_result_for_test(
+                QueryResult {
+                    columns: vec!["id".to_string(), "name".to_string()],
+                    column_types: vec!["INTEGER".to_string(), "TEXT".to_string()],
+                    rows: vec![vec![Some("1".to_string()), Some("alpha".to_string())]],
+                    ..QueryResult::default()
+                },
+                cx,
+            );
+        })
+        .unwrap();
+
+    let grid = handle
+        .update(cx, |session, _, cx| session.active_grid(cx))
+        .unwrap()
+        .expect("the query tab should have a grid");
+
+    // A query result has no table name, so a SQL copy is not on offer; the
+    // other shapes are, and a query tab reports them in its status bar rather
+    // than in a footer.
+    grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Csv), cx));
+    assert_eq!(clipboard(cx), Some("id,name\n1,alpha\n".to_string()));
+    assert_eq!(
+        handle
+            .update(cx, |session, _, cx| session.active_status_for_test(cx))
+            .unwrap(),
+        "Copied 1 row as CSV"
+    );
+
+    grid.update(cx, |grid, cx| grid.copy_as(CopyAs::ColumnInList(0), cx));
+    assert_eq!(clipboard(cx), Some("(1)".to_string()));
 }
 
 #[gpui_kit::test]

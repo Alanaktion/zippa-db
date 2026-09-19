@@ -7,8 +7,8 @@ use gpui_kit::{App, KeyBinding, NoAction};
 
 use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
 use crate::ui::data_grid::{
-    ClearRowSelection, CopyValue, ExtendSelectionDown, ExtendSelectionUp, SelectAllRows, ToggleRow,
-    ViewCell,
+    ClearRowSelection, CopyValue, CopyWithHeaders, ExtendSelectionDown, ExtendSelectionUp,
+    SelectAllRows, ToggleRow, ViewCell,
 };
 use crate::ui::query_editor::{Explain, ExplainAnalyze, RunQuery, RunScript};
 use crate::ui::session::{
@@ -136,6 +136,13 @@ pub fn bind(cx: &mut App) {
         // grid answers them exactly as a table tab's does.
         KeyBinding::new("secondary-shift-v", ViewCell, Some("DataGrid > DataTable")),
         KeyBinding::new("secondary-c", CopyValue, Some("DataGrid > DataTable")),
+        // Copying a whole line per row, with a header, is the spreadsheet-shaped
+        // copy; the plain key above remains cell-or-rows without a header.
+        KeyBinding::new(
+            "secondary-shift-c",
+            CopyWithHeaders,
+            Some("DataGrid > DataTable"),
+        ),
         // The table binds the plain arrows for the selection itself; shifted,
         // they take the rows they pass over with them.
         KeyBinding::new("shift-up", ExtendSelectionUp, Some("DataGrid > DataTable")),

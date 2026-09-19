@@ -25,7 +25,8 @@ use gpui_kit::{
     Window, actions, div,
 };
 
-use crate::db::export::Format;
+use crate::db::Engine;
+use crate::db::export::{self, Format};
 use crate::db::query::{self, Cell, QueryResult};
 use crate::settings::{self, Settings};
 use crate::ui::value_dialog::{self, ValueRequest};
@@ -45,6 +46,8 @@ actions!(
         ViewCell,
         /// Copy what is selected: the picked rows, or the selected cell.
         CopyValue,
+        /// Copy the rows shown with a header line, tab-separated.
+        CopyWithHeaders,
         /// Pick every row out.
         SelectAllRows,
         /// Put every picked row back.
@@ -89,6 +92,10 @@ type CopyReporter = Rc<dyn Fn(Option<(usize, usize)>, &mut App)>;
 /// menu the delegate built.
 type ExportReporter = Rc<dyn Fn(Format, &mut App)>;
 
+/// Asks the grid to copy what the menu is about, in a chosen shape, from the
+/// menu the delegate built.
+type CopyAsReporter = Rc<dyn Fn(CopyAs, &mut App)>;
+
 /// Emitted when the user clicks a column header on a [`Sorting::Delegated`]
 /// grid.
 pub struct SortRequested {
@@ -127,6 +134,44 @@ pub struct ExportRequested {
     pub format: Format,
 }
 
+/// What a `Copy as` menu item asks the grid to put on the clipboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyAs {
+    /// The rows a copy acts on, laid out in [`Format`].
+    Rows(Format),
+    /// One column, one value per line.
+    ColumnValues(usize),
+    /// One column as a SQL `IN (...)` list.
+    ColumnInList(usize),
+}
+
+/// Which rows — and how many columns — a [`DataGrid::snapshot`] takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// The rows picked out with the checkboxes, in display order. Empty when
+    /// nothing is picked.
+    Picked,
+    /// Every row the grid is showing, picked or not.
+    All,
+    /// One column of the rows a copy acts on: the picked ones when any are
+    /// picked, every row shown otherwise.
+    Column(usize),
+}
+
+/// A result laid out for copying or exporting: the columns and driver types it
+/// was read under, and one row of cells per row a [`Scope`] named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub columns: Vec<String>,
+    pub types: Vec<String>,
+    pub rows: Vec<Vec<Cell>>,
+}
+
+/// What a copy put on the clipboard, for the owner's status line.
+pub struct Copied {
+    pub message: String,
+}
+
 /// One row's staged cells, by column index, for the owner to turn into SQL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedRow {
@@ -134,10 +179,6 @@ pub struct StagedRow {
     pub row: usize,
     pub cells: Vec<(usize, Cell)>,
 }
-
-/// The rows picked out of the grid: the columns and driver types they were read
-/// under, and one row of cells per picked row.
-pub type PickedRows = (Vec<String>, Vec<String>, Vec<Vec<Cell>>);
 
 pub struct DataGrid {
     table: Entity<TableState<ResultDelegate>>,
@@ -160,13 +201,19 @@ impl EventEmitter<SortRequested> for DataGrid {}
 impl EventEmitter<GridEdit> for DataGrid {}
 impl EventEmitter<GridNavigate> for DataGrid {}
 impl EventEmitter<ExportRequested> for DataGrid {}
+impl EventEmitter<Copied> for DataGrid {}
 
 impl DataGrid {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with_sorting(Sorting::InPlace, window, cx)
+    pub fn new(engine: Engine, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_sorting(Sorting::InPlace, engine, window, cx)
     }
 
-    pub fn with_sorting(sorting: Sorting, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn with_sorting(
+        sorting: Sorting,
+        engine: Engine,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let font = settings::grid_font(cx);
 
         let grid = cx.entity().downgrade();
@@ -231,6 +278,16 @@ impl DataGrid {
             }
         });
 
+        let report_copy_as: CopyAsReporter = Rc::new({
+            let grid = cx.weak_entity();
+            move |what: CopyAs, cx: &mut App| {
+                let Some(grid) = grid.upgrade() else {
+                    return;
+                };
+                grid.update(cx, |grid, cx| grid.copy_as(what, cx));
+            }
+        });
+
         let editor = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
@@ -259,7 +316,9 @@ impl DataGrid {
                     report_navigate,
                     report_copy,
                     report_export,
-                    exportable: false,
+                    report_copy_as,
+                    engine,
+                    table: None,
                     foreign_keys: HashSet::new(),
                     drafts: Vec::new(),
                     editing: None,
@@ -464,14 +523,15 @@ impl DataGrid {
         });
     }
 
-    /// Say whether the owner can export the picked rows. Only a table view can,
-    /// since only it knows a table name to write into an `INSERT`.
-    pub fn set_exportable(&mut self, exportable: bool, cx: &mut Context<Self>) {
+    /// Name the table this result came from, so the row menu can offer a SQL
+    /// `INSERT` copy. A query result never gets one, and offers no SQL copy as a
+    /// result.
+    pub fn set_table(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
-            if table.delegate().exportable == exportable {
+            if table.delegate().table == name {
                 return;
             }
-            table.delegate_mut().exportable = exportable;
+            table.delegate_mut().table = name;
             cx.notify();
         });
     }
@@ -661,15 +721,26 @@ impl DataGrid {
             };
 
             // A click that landed on no row — the header, or the space below
-            // the last one — has nothing to offer.
-            let Some(row_ix) = table.read(cx).delegate().menu_row else {
+            // the last one — has nothing to offer. The selected column is the
+            // fallback for the menu's column copies when the click was beside
+            // the cells rather than on one.
+            let (row_ix, selected_column) = {
+                let table = table.read(cx);
+                (
+                    table.delegate().menu_row,
+                    table
+                        .selected_cell()
+                        .and_then(|(_, col)| table.delegate().data_column(col)),
+                )
+            };
+            let Some(row_ix) = row_ix else {
                 return menu;
             };
 
             table.update(cx, |table, cx| {
                 table
                     .delegate_mut()
-                    .row_menu_items(row_ix, menu, window, cx)
+                    .row_menu_items(row_ix, menu, selected_column, window, cx)
             })
         }
     }
@@ -680,6 +751,15 @@ impl DataGrid {
 
     fn on_copy_value(&mut self, _: &CopyValue, _window: &mut Window, cx: &mut Context<Self>) {
         self.copy_selection(cx);
+    }
+
+    fn on_copy_with_headers(
+        &mut self,
+        _: &CopyWithHeaders,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.copy_as(CopyAs::Rows(Format::Tsv), cx);
     }
 
     /// Put what is selected on the clipboard.
@@ -698,36 +778,170 @@ impl DataGrid {
     fn copy(&mut self, cell: Option<(usize, usize)>, cx: &mut Context<Self>) {
         self.commit_editor(cx);
 
-        let selected = self.selected_cell(cx);
-        let delegate = self.table.read(cx).delegate();
-        let columns = delegate.result.columns.len();
-
         if let Some((row_ix, col_ix)) = cell {
-            let text = delegate.cell(row_ix, col_ix).clone().unwrap_or_default();
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            let text = self
+                .table
+                .read(cx)
+                .delegate()
+                .cell(row_ix, col_ix)
+                .clone()
+                .unwrap_or_default();
+            self.put_on_clipboard(text, "Copied value".to_string(), cx);
             return;
         }
 
-        let text = if !delegate.rows_selected.is_empty() {
-            let mut rows: Vec<usize> = delegate.rows_selected.iter().copied().collect();
-            rows.sort_unstable();
-            rows.iter()
-                .map(|row_ix| {
-                    (0..columns)
-                        .map(|col_ix| delegate.cell(*row_ix, col_ix).clone().unwrap_or_default())
+        if !self.table.read(cx).delegate().rows_selected.is_empty() {
+            let mut snapshot = self.snapshot(Scope::Picked, cx);
+            let total = snapshot.rows.len();
+            if total > MAX_COPY_ROWS {
+                snapshot.rows.truncate(MAX_COPY_ROWS);
+            }
+            let rows = snapshot.rows.len();
+            let text = snapshot
+                .rows
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| cell.clone().unwrap_or_default())
                         .collect::<Vec<String>>()
                         .join("\t")
                 })
                 .collect::<Vec<String>>()
-                .join("\n")
-        } else {
-            let Some((row_ix, col_ix)) = selected else {
-                return;
+                .join("\n");
+            let (text, capped_bytes) = cap_bytes(text);
+            let message = if rows < total {
+                format!("Copied first {rows} of {total} rows")
+            } else if capped_bytes {
+                format!("Copied the first {} MB", MAX_COPY_BYTES / (1024 * 1024))
+            } else {
+                format!("Copied {}", count_of(rows, "row", "rows"))
             };
-            delegate.cell(row_ix, col_ix).clone().unwrap_or_default()
+            self.put_on_clipboard(text, message, cx);
+            return;
+        }
+
+        let Some((row_ix, col_ix)) = self.selected_cell(cx) else {
+            return;
+        };
+        let text = self
+            .table
+            .read(cx)
+            .delegate()
+            .cell(row_ix, col_ix)
+            .clone()
+            .unwrap_or_default();
+        self.put_on_clipboard(text, "Copied value".to_string(), cx);
+    }
+
+    /// Copy what a `Copy as` menu item asked for, in the shape it named.
+    pub fn copy_as(&mut self, what: CopyAs, cx: &mut Context<Self>) {
+        self.commit_editor(cx);
+
+        match what {
+            CopyAs::Rows(format) => {
+                let snapshot = self.snapshot(self.row_scope(cx), cx);
+                self.copy_snapshot(format, snapshot, cx);
+            }
+            CopyAs::ColumnValues(column) => {
+                let snapshot = self.snapshot(Scope::Column(column), cx);
+                let cells = column_cells(&snapshot);
+                let rendered = export::values(&cells);
+                let message = with_skipped(
+                    format!("Copied {}", count_of(cells.len(), "value", "values")),
+                    rendered.skipped,
+                );
+                self.put_on_clipboard(rendered.text, message, cx);
+            }
+            CopyAs::ColumnInList(column) => {
+                let snapshot = self.snapshot(Scope::Column(column), cx);
+                let cells = column_cells(&snapshot);
+                let type_name = snapshot.types.first().cloned().unwrap_or_default();
+                let rendered = export::in_list(self.engine(cx), &type_name, &cells);
+                let copied = cells
+                    .iter()
+                    .filter(|cell| cell.is_some() && !query::is_placeholder(cell))
+                    .count();
+                let message = if copied == 0 {
+                    "No values to copy".to_string()
+                } else {
+                    with_skipped(
+                        format!(
+                            "Copied {} as an IN list",
+                            count_of(copied, "value", "values")
+                        ),
+                        rendered.skipped,
+                    )
+                };
+                self.put_on_clipboard(rendered.text, message, cx);
+            }
+        }
+    }
+
+    /// Lay a snapshot out in `format` and copy it, capping a result too large
+    /// to put on the clipboard whole.
+    fn copy_snapshot(&mut self, format: Format, mut snapshot: Snapshot, cx: &mut Context<Self>) {
+        let total = snapshot.rows.len();
+        if total > MAX_COPY_ROWS {
+            snapshot.rows.truncate(MAX_COPY_ROWS);
+        }
+        let rows = snapshot.rows.len();
+
+        let engine = self.engine(cx);
+        let table = self.table_name(cx).unwrap_or_default();
+        let rendered = export::render(
+            format,
+            engine,
+            &table,
+            &snapshot.columns,
+            &snapshot.types,
+            &snapshot.rows,
+        );
+        let (text, capped_bytes) = cap_bytes(rendered.text);
+
+        let message = if rows < total {
+            format!("Copied first {rows} of {total} rows as {}", format.label())
+        } else if capped_bytes {
+            format!(
+                "Copied the first {} MB as {}",
+                MAX_COPY_BYTES / (1024 * 1024),
+                format.label()
+            )
+        } else {
+            format!(
+                "Copied {} as {}",
+                count_of(rows, "row", "rows"),
+                format.label()
+            )
         };
 
+        self.put_on_clipboard(text, with_skipped(message, rendered.skipped), cx);
+    }
+
+    /// Put `text` on the clipboard and tell the owner what it was.
+    fn put_on_clipboard(&mut self, text: String, message: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+        cx.emit(Copied { message });
+    }
+
+    /// The rows a copy acts on: the picked ones when any are picked, every row
+    /// shown otherwise.
+    fn row_scope(&self, cx: &App) -> Scope {
+        if self.table.read(cx).delegate().rows_selected.is_empty() {
+            Scope::All
+        } else {
+            Scope::Picked
+        }
+    }
+
+    /// The engine a copy quotes its values for.
+    fn engine(&self, cx: &App) -> Engine {
+        self.table.read(cx).delegate().engine
+    }
+
+    /// The table a SQL copy writes an `INSERT` against, if the owner named
+    /// one.
+    fn table_name(&self, cx: &App) -> Option<String> {
+        self.table.read(cx).delegate().table.clone()
     }
 
     fn on_select_all_rows(
@@ -987,34 +1201,78 @@ impl DataGrid {
         )
     }
 
-    /// The rows picked out, with the columns and driver types they were read
-    /// under: `(columns, column_types, rows)`, or `None` when nothing is picked.
+    /// The rows a [`Scope`] names, with the columns and driver types they were
+    /// read under and every cell as it stands.
     ///
-    /// Cells come through the delegate's own `cell`, so a staged edit is
-    /// exported as it stands, the way `Copy` writes it to the clipboard.
-    pub fn picked(&self, cx: &App) -> Option<PickedRows> {
+    /// This is the one place that decides what a copy or an export acts on:
+    /// cells come through the delegate's own `cell`, so a staged edit goes out
+    /// as it stands, and a row being built by hand is a row like any other.
+    pub fn snapshot(&self, scope: Scope, cx: &App) -> Snapshot {
         let delegate = self.table.read(cx).delegate();
-        if delegate.rows_selected.is_empty() {
-            return None;
-        }
 
-        let mut selected: Vec<usize> = delegate.rows_selected.iter().copied().collect();
-        selected.sort_unstable();
+        let row_ixs: Vec<usize> = match scope {
+            Scope::All => (0..delegate.rows()).collect(),
+            Scope::Picked => {
+                let mut rows: Vec<usize> = delegate.rows_selected.iter().copied().collect();
+                rows.sort_unstable();
+                rows
+            }
+            // A column is copied whole: the picked rows when any are picked,
+            // and every row otherwise.
+            Scope::Column(_) => {
+                let mut rows: Vec<usize> = if delegate.rows_selected.is_empty() {
+                    (0..delegate.rows()).collect()
+                } else {
+                    delegate.rows_selected.iter().copied().collect()
+                };
+                rows.sort_unstable();
+                rows
+            }
+        };
 
-        let rows = selected
+        let (columns, types): (Vec<String>, Vec<String>) = match scope {
+            Scope::Column(column) => (
+                delegate
+                    .result
+                    .columns
+                    .get(column)
+                    .cloned()
+                    .into_iter()
+                    .collect(),
+                delegate
+                    .result
+                    .column_types
+                    .get(column)
+                    .cloned()
+                    .into_iter()
+                    .collect(),
+            ),
+            _ => (
+                delegate.result.columns.clone(),
+                delegate.result.column_types.clone(),
+            ),
+        };
+
+        let rows = row_ixs
             .iter()
             .map(|row_ix| {
-                (0..delegate.result.columns.len())
-                    .map(|col_ix| delegate.cell(*row_ix, col_ix).clone())
+                (0..columns.len())
+                    .map(|index| {
+                        let col_ix = match scope {
+                            Scope::Column(column) => column,
+                            _ => index,
+                        };
+                        delegate.cell(*row_ix, col_ix).clone()
+                    })
                     .collect()
             })
             .collect();
 
-        Some((
-            delegate.result.columns.clone(),
-            delegate.result.column_types.clone(),
+        Snapshot {
+            columns,
+            types,
             rows,
-        ))
+        }
     }
 
     /// Whether this cell can be typed into.
@@ -1371,6 +1629,59 @@ impl DataGrid {
     }
 }
 
+/// The most rows one copy puts on the clipboard. The payload is built on the
+/// UI thread, so a result past this is copied a page at a time and the notice
+/// says which part went.
+const MAX_COPY_ROWS: usize = 100_000;
+
+/// The most text one copy puts on the clipboard, for a result that is few rows
+/// but each a very large value.
+const MAX_COPY_BYTES: usize = 50 * 1024 * 1024;
+
+/// The single column of a [`Scope::Column`] snapshot, as cells.
+fn column_cells(snapshot: &Snapshot) -> Vec<Cell> {
+    snapshot
+        .rows
+        .iter()
+        .map(|row| row.first().cloned().unwrap_or(None))
+        .collect()
+}
+
+/// `1 row` / `3 rows`, for a notice.
+fn count_of(count: usize, one: &str, many: &str) -> String {
+    if count == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{count} {many}")
+    }
+}
+
+/// Add how many cells could not be read back, when any could not.
+fn with_skipped(mut message: String, skipped: usize) -> String {
+    if skipped > 0 {
+        message.push_str(&format!(
+            " ({} not read back, copied as NULL)",
+            count_of(skipped, "value", "values")
+        ));
+    }
+    message
+}
+
+/// Keep a payload under [`MAX_COPY_BYTES`], on a character boundary. A
+/// structured format cut this way is no longer valid, which is why the notice
+/// says so rather than pretending the copy is whole.
+fn cap_bytes(mut text: String) -> (String, bool) {
+    if text.len() <= MAX_COPY_BYTES {
+        return (text, false);
+    }
+    let mut end = MAX_COPY_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    (text, true)
+}
+
 impl Render for DataGrid {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.is_empty(cx) {
@@ -1402,6 +1713,7 @@ impl Render for DataGrid {
             .key_context("DataGrid")
             .on_action(cx.listener(Self::on_view_cell))
             .on_action(cx.listener(Self::on_copy_value))
+            .on_action(cx.listener(Self::on_copy_with_headers))
             .on_action(cx.listener(Self::on_select_all_rows))
             .on_action(cx.listener(Self::on_clear_row_selection))
             .on_action(cx.listener(Self::on_toggle_row))

@@ -87,6 +87,7 @@ const GROUPS: &[Group] = &[
         title: "Result grid",
         rows: &[
             ("Copy the selected cell or rows", &["secondary-c"]),
+            ("Copy the rows with a header line", &["secondary-shift-c"]),
             ("Open the cell's value in a dialog", &["secondary-shift-v"]),
             ("Pick the focused row", &["space"]),
             ("Extend the picked rows", &["shift-up", "shift-down"]),
