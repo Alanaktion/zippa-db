@@ -3,6 +3,7 @@
 use super::*;
 use crate::db::{ReferentialAction, SafetyMode};
 use crate::ui::session::tab::ObjectViewMode;
+use gpui_kit::ScrollDelta;
 
 #[gpui_kit::test]
 fn opening_a_tables_structure_shows_its_columns(cx: &mut TestAppContext) {
@@ -610,4 +611,55 @@ fn a_tables_data_and_structure_are_different_tabs(cx: &mut TestAppContext) {
             .unwrap(),
         ["Query 1", "items — Structure", "items"]
     );
+}
+
+/// A structure taller than the pane has to scroll: the foreign keys at the
+/// bottom must not be stranded below the fold with no way to reach them.
+#[gpui_kit::test]
+fn a_long_structure_scrolls_down_to_its_foreign_keys(cx: &mut TestAppContext) {
+    let (_database, handle, view) = schema_view(cx);
+
+    // Pad the index list until the page is taller than the 600px window.
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            for _ in 0..24 {
+                view.add_index_for_test(window, cx);
+            }
+        })
+        .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        let keys = window.find("foreign-keys-section");
+        assert!(
+            !keys.visible(),
+            "the foreign keys should start below the fold: {:?}",
+            keys.bounds()
+        );
+
+        // A negative y delta scrolls the page down, as a wheel over it would.
+        window.scroll(
+            "schema-view",
+            ScrollDelta::Pixels(point(px(0.), px(-4000.))),
+            cx,
+        );
+        window.render_frame(cx);
+
+        let keys = window.find("foreign-keys-section");
+        assert!(
+            keys.visible(),
+            "scrolling down should bring the foreign keys into view: {:?}",
+            keys.bounds()
+        );
+        // The foreign-key table is wider than the pane, so its overflow must
+        // live in the per-table scroll region rather than stretching the
+        // section past the window, where it would be clipped with no way back.
+        assert!(
+            keys.bounds().right() <= px(WINDOW.0),
+            "the foreign keys should be contained by the pane: {:?}",
+            keys.bounds()
+        );
+    })
+    .unwrap();
 }

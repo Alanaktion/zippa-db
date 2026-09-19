@@ -5,9 +5,11 @@
 //! into statements (`sql.rs`), previewed and confirmed before they run —
 //! unconditionally, on every `SafetyMode`, since a dropped column or foreign
 //! key can lose data or break other tables in a way a single row's edit
-//! cannot. A table's own structure is a handful of rows with heterogeneous
-//! per-row detail, which is a form rather than a data grid, so this does not
-//! reach for `gpui_kit::component::table` the way `DataGrid` does.
+//! cannot. Every section lays its rows out in a `gpui_kit::component::table`
+//! `Table`, so the fields line up under column headings the way they do
+//! elsewhere in the app. The rows stay form controls — text boxes, dropdowns,
+//! and checkboxes — rather than a virtualized data grid, because a row here is
+//! a handful of heterogeneous fields being edited, not one record among many.
 
 use std::sync::Arc;
 
@@ -18,9 +20,12 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::table::{
+    Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow,
+};
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, SharedString, Window, div, px};
+use gpui_kit::{App, Context, Entity, Pixels, SharedString, Window, div, px};
 
 use crate::db::{
     ColumnDef, Connection, DatabaseObject, Engine, ForeignKeyDef, IndexDef, ObjectKind,
@@ -40,6 +45,64 @@ fn referential_actions() -> [ReferentialAction; 5] {
         ReferentialAction::SetDefault,
     ]
 }
+
+/// How a structure table sizes a column. The same value is given to the
+/// heading row and to every body row, so the two stay in line.
+#[derive(Clone, Copy)]
+enum ColWidth {
+    /// A fixed width, for short, predictable fields such as a key marker or a
+    /// flag.
+    Fixed(f32),
+    /// Grows to fill the space left over, with a floor so the text stays
+    /// readable when the pane is narrow.
+    Flex(f32),
+}
+
+impl ColWidth {
+    /// The narrowest the column will be: its width when fixed, its floor when
+    /// it grows.
+    const fn floor(self) -> f32 {
+        match self {
+            ColWidth::Fixed(width) | ColWidth::Flex(width) => width,
+        }
+    }
+}
+
+/// Size a heading or body cell as its column's [`ColWidth`].
+fn sized<E: Styled>(cell: E, width: ColWidth) -> E {
+    match width {
+        ColWidth::Fixed(width) => cell.flex_none().w(px(width)).min_w(px(width)),
+        ColWidth::Flex(min) => cell.flex_1().min_w(px(min)),
+    }
+}
+
+/// The narrowest a table can be and still show all of `columns`, counting the
+/// small-cell padding on both sides of each. The page scrolls sideways past
+/// this instead of letting the table clip a column away.
+fn table_min_width(columns: &[ColWidth]) -> Pixels {
+    px(columns.iter().map(|column| column.floor() + 8.).sum())
+}
+
+/// Columns table: which column holds the primary key, then the fields the user
+/// can change, then the row's own action.
+const COL_KEY: ColWidth = ColWidth::Fixed(48.);
+const COL_NAME: ColWidth = ColWidth::Flex(140.);
+const COL_TYPE: ColWidth = ColWidth::Fixed(150.);
+const COL_NULLABLE: ColWidth = ColWidth::Fixed(80.);
+const COL_DEFAULT: ColWidth = ColWidth::Flex(120.);
+
+/// Trailing action cell, shared by every section.
+const COL_ACTIONS: ColWidth = ColWidth::Fixed(110.);
+
+/// Indexes table.
+const COL_INDEX_NAME: ColWidth = ColWidth::Flex(150.);
+const COL_INDEX_KIND: ColWidth = ColWidth::Fixed(160.);
+const COL_INDEX_COLUMNS: ColWidth = ColWidth::Flex(180.);
+
+/// Foreign keys table.
+const COL_FK_NAME: ColWidth = ColWidth::Flex(130.);
+const COL_FK_REFERENCE: ColWidth = ColWidth::Flex(220.);
+const COL_FK_ACTION: ColWidth = ColWidth::Fixed(110.);
 
 /// One column row as the form shows it: a stable identity (so a rename is
 /// tracked by which row it is, not by matching names) plus the fields the
@@ -927,7 +990,7 @@ impl SchemaView {
         Button::new(("column-type", id))
             .outline()
             .xsmall()
-            .w(px(160.))
+            .w_full()
             .label(current.clone())
             .dropdown_caret(true)
             .disabled(!editable)
@@ -951,18 +1014,34 @@ impl SchemaView {
             })
     }
 
-    fn render_column_row(
-        &self,
-        column: &EditableColumn,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    /// The heading row the columns table's header and every body row share.
+    fn render_columns_header(&self) -> TableRow {
+        TableRow::new()
+            .child(sized(TableHead::new().text_center().child("Key"), COL_KEY))
+            .child(sized(TableHead::new().child("Name"), COL_NAME))
+            .child(sized(TableHead::new().child("Type"), COL_TYPE))
+            .child(sized(
+                TableHead::new().text_center().child("Nullable"),
+                COL_NULLABLE,
+            ))
+            .child(sized(TableHead::new().child("Default"), COL_DEFAULT))
+            .child(sized(TableHead::new(), COL_ACTIONS))
+    }
+
+    fn render_column_row(&self, column: &EditableColumn, cx: &mut Context<Self>) -> TableRow {
         let id = column.id;
         let editable = self.is_editable();
         let edit = column.snapshot(cx);
         let is_new = edit.is_new();
         let changed = edit.changed();
         let dropped = column.dropped;
+        let is_primary_key = column
+            .original
+            .as_ref()
+            .is_some_and(|column| column.is_primary_key);
 
+        // Strongest state first: red for a row about to be dropped, blue for
+        // one added by hand, then green for a row with an edit staged on it.
         let row_tint = if dropped {
             Some(cx.theme().danger.opacity(0.15))
         } else if is_new {
@@ -973,102 +1052,90 @@ impl SchemaView {
             None
         };
 
-        h_flex()
-            .w_full()
-            .items_center()
-            .gap_3()
-            .px_1()
-            .py_1()
-            .border_b_1()
-            .border_color(cx.theme().border)
+        TableRow::new()
             .when_some(row_tint, |this, color| this.bg(color))
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(20.))
-                    .text_xs()
-                    .text_color(cx.theme().warning)
-                    .child(
-                        if column.original.as_ref().is_some_and(|c| c.is_primary_key) {
-                            "PK"
-                        } else {
-                            ""
-                        },
-                    ),
-            )
-            .child(
-                div().flex_1().min_w_0().child(
-                    Input::new(&column.name)
-                        .id(SharedString::from(format!("column-name-{id}")))
-                        .xsmall()
-                        .readonly(!editable || dropped)
-                        .when(dropped, |this| this.line_through()),
+            .child(sized(
+                TableCell::new().text_center().child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().warning)
+                        .child(if is_primary_key { "PK" } else { "" }),
                 ),
-            )
-            .child(self.render_type_picker(column, cx))
-            .child(
-                h_flex()
-                    .flex_none()
-                    .gap_1()
-                    .items_center()
-                    .child(
-                        Checkbox::new(("column-nullable", id))
-                            .accessibility_label("Nullable")
-                            .checked(column.nullable)
-                            .disabled(!editable || dropped)
-                            .on_click(cx.listener(move |this, nullable: &bool, _window, cx| {
-                                this.set_nullable(id, *nullable, cx);
-                            })),
+                COL_KEY,
+            ))
+            .child(sized(
+                TableCell::new().child(
+                    div().w_full().min_w_0().child(
+                        Input::new(&column.name)
+                            .id(SharedString::from(format!("column-name-{id}")))
+                            .xsmall()
+                            .readonly(!editable || dropped)
+                            .when(dropped, |this| this.line_through()),
+                    ),
+                ),
+                COL_NAME,
+            ))
+            .child(sized(
+                TableCell::new().child(self.render_type_picker(column, cx)),
+                COL_TYPE,
+            ))
+            .child(sized(
+                TableCell::new().text_center().child(
+                    Checkbox::new(("column-nullable", id))
+                        .accessibility_label("Nullable")
+                        .checked(column.nullable)
+                        .disabled(!editable || dropped)
+                        .on_click(cx.listener(move |this, nullable: &bool, _window, cx| {
+                            this.set_nullable(id, *nullable, cx);
+                        })),
+                ),
+                COL_NULLABLE,
+            ))
+            .child(sized(
+                TableCell::new().child(
+                    div().w_full().min_w_0().child(
+                        Input::new(&column.default)
+                            .id(SharedString::from(format!("column-default-{id}")))
+                            .xsmall()
+                            .readonly(!editable || dropped),
+                    ),
+                ),
+                COL_DEFAULT,
+            ))
+            .child(sized(
+                TableCell::new().justify_end().when(editable, |this| {
+                    let label = if column.original.is_some() {
+                        if dropped { "Undrop" } else { "Drop" }
+                    } else {
+                        "Remove"
+                    };
+                    this.child(
+                        Button::new(("column-drop", id))
+                            .ghost()
+                            .xsmall()
+                            .label(label)
+                            .on_click(
+                                cx.listener(move |this, _, _window, cx| this.toggle_drop(id, cx)),
+                            ),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("NULL"),
-                    ),
-            )
-            .child(
-                div().flex_1().min_w_0().child(
-                    Input::new(&column.default)
-                        .id(SharedString::from(format!("column-default-{id}")))
-                        .xsmall()
-                        .readonly(!editable || dropped),
-                ),
-            )
-            .when(editable, |this| {
-                let label = if column.original.is_some() {
-                    if dropped { "Undrop" } else { "Drop" }
-                } else {
-                    "Remove"
-                };
-                this.child(
-                    Button::new(("column-drop", id))
-                        .ghost()
-                        .xsmall()
-                        .label(label)
-                        .on_click(
-                            cx.listener(move |this, _, _window, cx| this.toggle_drop(id, cx)),
-                        ),
-                )
-            })
+                }),
+                COL_ACTIONS,
+            ))
     }
 
     fn render_columns(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let editable = self.is_editable();
-
-        // A `.map(...).collect()` here would tie each row's element to a
-        // reborrow of `cx` that ends inside the closure — the row needs
-        // `cx` mutably (for its own `cx.listener`s), so it is built in a
-        // plain loop instead, reborrowing `cx` fresh each time, and turned
-        // into an owned `AnyElement` before it joins the others.
-        let mut rows = Vec::with_capacity(self.columns.len());
-        for column in &self.columns {
-            rows.push(self.render_column_row(column, cx).into_any_element());
-        }
+        let rows: Vec<TableRow> = self
+            .columns
+            .iter()
+            .map(|column| self.render_column_row(column, cx))
+            .collect();
 
         v_flex()
+            .id("columns-section")
+            .test_support()
             .w_full()
-            .gap_1()
+            .gap_2()
             .child(
                 h_flex()
                     .w_full()
@@ -1086,7 +1153,29 @@ impl SchemaView {
                         )
                     }),
             )
-            .children(rows)
+            .child(
+                div()
+                    .id("columns-table-scroll")
+                    .w_full()
+                    .min_w_0()
+                    .h_auto()
+                    .overflow_x_scrollbar()
+                    .child(
+                        Table::new()
+                            .xsmall()
+                            .accessibility_label("Columns")
+                            .min_w(table_min_width(&[
+                                COL_KEY,
+                                COL_NAME,
+                                COL_TYPE,
+                                COL_NULLABLE,
+                                COL_DEFAULT,
+                                COL_ACTIONS,
+                            ]))
+                            .child(TableHeader::new().child(self.render_columns_header()))
+                            .child(TableBody::new().children(rows)),
+                    ),
+            )
     }
 
     /// A checkbox per column the table has, letting a new index pick which
@@ -1142,7 +1231,16 @@ impl SchemaView {
             .children(boxes)
     }
 
-    fn render_index_row(&self, index: &EditableIndex, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The heading row the indexes table's header and every body row share.
+    fn render_indexes_header(&self) -> TableRow {
+        TableRow::new()
+            .child(sized(TableHead::new().child("Name"), COL_INDEX_NAME))
+            .child(sized(TableHead::new().child("Kind"), COL_INDEX_KIND))
+            .child(sized(TableHead::new().child("Columns"), COL_INDEX_COLUMNS))
+            .child(sized(TableHead::new(), COL_ACTIONS))
+    }
+
+    fn render_index_row(&self, index: &EditableIndex, cx: &mut Context<Self>) -> TableRow {
         let id = index.id;
         let editable = self.is_editable();
         let engine = self.connection.config.engine;
@@ -1166,80 +1264,80 @@ impl SchemaView {
             None
         };
 
-        let row = h_flex()
-            .w_full()
-            .items_center()
-            .gap_3()
-            .px_1()
-            .py_1()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .when_some(row_tint, |this, color| this.bg(color));
+        let row = TableRow::new().when_some(row_tint, |this, color| this.bg(color));
 
         let row = if is_new {
-            row.child(
-                div().flex_1().min_w_0().child(
-                    Input::new(&index.name)
-                        .id(SharedString::from(format!("index-name-{id}")))
-                        .xsmall()
-                        .readonly(!editable),
-                ),
-            )
-            .child(self.render_index_column_picker(index, cx))
-            .child(
-                h_flex()
-                    .flex_none()
-                    .gap_3()
-                    .items_center()
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .child(
-                                Checkbox::new(("index-unique", id))
-                                    .accessibility_label("Unique")
-                                    .checked(index.unique)
-                                    .disabled(!editable || index.primary_key)
-                                    .on_click(cx.listener(
-                                        move |this, checked: &bool, _window, cx| {
-                                            this.set_index_unique(id, *checked, cx);
-                                        },
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("UNIQUE"),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .child(
-                                Checkbox::new(("index-primary-key", id))
-                                    .accessibility_label("Primary key")
-                                    .checked(index.primary_key)
-                                    .disabled(
-                                        !editable
-                                            || engine == Engine::Sqlite
-                                            || self.has_existing_primary_key(),
-                                    )
-                                    .on_click(cx.listener(
-                                        move |this, checked: &bool, _window, cx| {
-                                            this.set_index_primary_key(id, *checked, cx);
-                                        },
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("PK"),
-                            ),
+            row.child(sized(
+                TableCell::new().child(
+                    div().w_full().min_w_0().child(
+                        Input::new(&index.name)
+                            .id(SharedString::from(format!("index-name-{id}")))
+                            .xsmall()
+                            .readonly(!editable),
                     ),
-            )
+                ),
+                COL_INDEX_NAME,
+            ))
+            .child(sized(
+                TableCell::new().child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(
+                                    Checkbox::new(("index-unique", id))
+                                        .accessibility_label("Unique")
+                                        .checked(index.unique)
+                                        .disabled(!editable || index.primary_key)
+                                        .on_click(cx.listener(
+                                            move |this, checked: &bool, _window, cx| {
+                                                this.set_index_unique(id, *checked, cx);
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("UNIQUE"),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(
+                                    Checkbox::new(("index-primary-key", id))
+                                        .accessibility_label("Primary key")
+                                        .checked(index.primary_key)
+                                        .disabled(
+                                            !editable
+                                                || engine == Engine::Sqlite
+                                                || self.has_existing_primary_key(),
+                                        )
+                                        .on_click(cx.listener(
+                                            move |this, checked: &bool, _window, cx| {
+                                                this.set_index_primary_key(id, *checked, cx);
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("PK"),
+                                ),
+                        ),
+                ),
+                COL_INDEX_KIND,
+            ))
+            .child(sized(
+                TableCell::new().child(self.render_index_column_picker(index, cx)),
+                COL_INDEX_COLUMNS,
+            ))
         } else {
             let kind = match (index.primary_key, index.unique) {
                 (true, _) => "PRIMARY KEY",
@@ -1247,73 +1345,89 @@ impl SchemaView {
                 (false, false) => "INDEX",
             };
 
-            row.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_sm()
-                    .truncate()
-                    .when(dropped, |this| this.line_through())
-                    .child(edit.name.clone()),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(100.))
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(kind),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .truncate()
-                    .child(edit.columns.join(", ")),
-            )
-        };
-
-        row.when(editable, |this| {
-            if pk_blocked_on_sqlite {
-                return this.child(
+            row.child(sized(
+                TableCell::new().child(
                     div()
-                        .flex_none()
+                        .w_full()
+                        .min_w_0()
+                        .text_sm()
+                        .truncate()
+                        .when(dropped, |this| this.line_through())
+                        .child(edit.name.clone()),
+                ),
+                COL_INDEX_NAME,
+            ))
+            .child(sized(
+                TableCell::new().child(
+                    div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("Needs a rebuild on SQLite"),
-                );
-            }
+                        .child(kind),
+                ),
+                COL_INDEX_KIND,
+            ))
+            .child(sized(
+                TableCell::new().child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .truncate()
+                        .child(edit.columns.join(", ")),
+                ),
+                COL_INDEX_COLUMNS,
+            ))
+        };
 
-            let label = if index.original.is_some() {
-                if dropped { "Undrop" } else { "Drop" }
-            } else {
-                "Remove"
-            };
-            this.child(
-                Button::new(("index-drop", id))
-                    .ghost()
-                    .xsmall()
-                    .label(label)
-                    .on_click(
-                        cx.listener(move |this, _, _window, cx| this.toggle_index_drop(id, cx)),
-                    ),
-            )
-        })
+        row.child(sized(
+            TableCell::new().justify_end().when(editable, |this| {
+                if pk_blocked_on_sqlite {
+                    return this.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Needs a rebuild on SQLite"),
+                    );
+                }
+
+                let label = if index.original.is_some() {
+                    if dropped { "Undrop" } else { "Drop" }
+                } else {
+                    "Remove"
+                };
+                this.child(
+                    Button::new(("index-drop", id))
+                        .ghost()
+                        .xsmall()
+                        .label(label)
+                        .on_click(
+                            cx.listener(move |this, _, _window, cx| this.toggle_index_drop(id, cx)),
+                        ),
+                )
+            }),
+            COL_ACTIONS,
+        ))
     }
 
     fn render_indexes(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let editable = self.is_editable();
-
-        let mut rows = Vec::with_capacity(self.indexes.len());
-        for index in &self.indexes {
-            rows.push(self.render_index_row(index, cx).into_any_element());
-        }
+        let rows: Vec<TableRow> = self
+            .indexes
+            .iter()
+            .map(|index| self.render_index_row(index, cx))
+            .collect();
+        let empty = if editable {
+            "No indexes. Use Add index to create one."
+        } else {
+            "No indexes."
+        };
 
         v_flex()
+            .id("indexes-section")
+            .test_support()
             .w_full()
-            .gap_1()
+            .gap_2()
             .child(
                 h_flex()
                     .w_full()
@@ -1331,16 +1445,30 @@ impl SchemaView {
                         )
                     }),
             )
-            .when(self.indexes.is_empty(), |this| {
-                this.child(
-                    div()
-                        .px_1()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("No indexes"),
-                )
-            })
-            .children(rows)
+            .child(
+                div()
+                    .id("indexes-table-scroll")
+                    .w_full()
+                    .min_w_0()
+                    .h_auto()
+                    .overflow_x_scrollbar()
+                    .child(
+                        Table::new()
+                            .xsmall()
+                            .accessibility_label("Indexes")
+                            .min_w(table_min_width(&[
+                                COL_INDEX_NAME,
+                                COL_INDEX_KIND,
+                                COL_INDEX_COLUMNS,
+                                COL_ACTIONS,
+                            ]))
+                            .child(TableHeader::new().child(self.render_indexes_header()))
+                            .child(TableBody::new().children(rows))
+                            .when(self.indexes.is_empty(), |this| {
+                                this.child(TableCaption::new().child(empty))
+                            }),
+                    ),
+            )
     }
 
     /// A checkbox per column `self.schema` has, letting a new foreign key
@@ -1473,7 +1601,7 @@ impl SchemaView {
         Button::new(("fk-table", id))
             .outline()
             .xsmall()
-            .w(px(180.))
+            .w_full()
             .label(label)
             .dropdown_caret(true)
             .disabled(!editable)
@@ -1515,7 +1643,7 @@ impl SchemaView {
         Button::new(SharedString::from(format!("fk-{field}-{key_id}")))
             .outline()
             .xsmall()
-            .w(px(110.))
+            .w_full()
             .label(current.label())
             .dropdown_caret(true)
             .disabled(!editable)
@@ -1542,11 +1670,17 @@ impl SchemaView {
             })
     }
 
-    fn render_foreign_key_row(
-        &self,
-        key: &EditableForeignKey,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    /// The heading row the foreign keys table's header and rows share.
+    fn render_foreign_keys_header(&self) -> TableRow {
+        TableRow::new()
+            .child(sized(TableHead::new().child("Name"), COL_FK_NAME))
+            .child(sized(TableHead::new().child("Reference"), COL_FK_REFERENCE))
+            .child(sized(TableHead::new().child("On delete"), COL_FK_ACTION))
+            .child(sized(TableHead::new().child("On update"), COL_FK_ACTION))
+            .child(sized(TableHead::new(), COL_ACTIONS))
+    }
+
+    fn render_foreign_key_row(&self, key: &EditableForeignKey, cx: &mut Context<Self>) -> TableRow {
         let id = key.id;
         let editable = self.foreign_keys_editable();
         let edit = key.snapshot(cx);
@@ -1561,14 +1695,7 @@ impl SchemaView {
             None
         };
 
-        let container = v_flex()
-            .w_full()
-            .gap_1()
-            .px_1()
-            .py_1()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .when_some(row_tint, |this, color| this.bg(color));
+        let row = TableRow::new().when_some(row_tint, |this, color| this.bg(color));
 
         if is_new {
             // Each of these borrows `cx` mutably for its own `cx.listener`s;
@@ -1591,107 +1718,125 @@ impl SchemaView {
                 .render_referential_action_picker(id, false, key.on_update, cx)
                 .into_any_element();
 
-            container
-                .child(
-                    h_flex()
+            row.child(sized(
+                TableCell::new().child(
+                    div().w_full().min_w_0().child(
+                        Input::new(&key.name)
+                            .id(SharedString::from(format!("fk-name-{id}")))
+                            .xsmall()
+                            .readonly(!editable),
+                    ),
+                ),
+                COL_FK_NAME,
+            ))
+            .child(sized(
+                TableCell::new().child(
+                    v_flex()
                         .w_full()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            div().flex_1().min_w_0().child(
-                                Input::new(&key.name)
-                                    .id(SharedString::from(format!("fk-name-{id}")))
-                                    .xsmall()
-                                    .readonly(!editable),
-                            ),
-                        )
+                        .min_w_0()
+                        .gap_1()
                         .child(table_picker)
-                        .child(delete_picker)
-                        .child(update_picker)
                         .child(
-                            Button::new(("fk-drop", id))
-                                .ghost()
-                                .xsmall()
-                                .label("Remove")
-                                .disabled(!editable)
-                                .on_click(cx.listener(move |this, _, _window, cx| {
-                                    this.toggle_foreign_key_drop(id, cx);
-                                })),
+                            h_flex()
+                                .w_full()
+                                .min_w_0()
+                                .gap_2()
+                                .items_center()
+                                .child(local_picker)
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("→"),
+                                )
+                                .child(referenced_picker),
                         ),
-                )
-                .child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .gap_2()
-                        .child(local_picker)
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("→"),
-                        )
-                        .child(referenced_picker),
-                )
+                ),
+                COL_FK_REFERENCE,
+            ))
+            .child(sized(TableCell::new().child(delete_picker), COL_FK_ACTION))
+            .child(sized(TableCell::new().child(update_picker), COL_FK_ACTION))
+            .child(sized(
+                TableCell::new().justify_end().child(
+                    Button::new(("fk-drop", id))
+                        .ghost()
+                        .xsmall()
+                        .label("Remove")
+                        .disabled(!editable)
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.toggle_foreign_key_drop(id, cx);
+                        })),
+                ),
+                COL_ACTIONS,
+            ))
         } else {
             let reference = match &edit.referenced_schema {
                 Some(schema) => format!("{schema}.{}", edit.referenced_table),
                 None => edit.referenced_table.clone(),
             };
 
-            container.child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_sm()
-                            .truncate()
-                            .when(dropped, |this| this.line_through())
-                            .child(edit.name.clone()),
+            row.child(sized(
+                TableCell::new().child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .text_sm()
+                        .truncate()
+                        .when(dropped, |this| this.line_through())
+                        .child(edit.name.clone()),
+                ),
+                COL_FK_NAME,
+            ))
+            .child(sized(
+                TableCell::new().child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .truncate()
+                        .child(format!(
+                            "{} → {reference}({})",
+                            edit.columns.join(", "),
+                            edit.referenced_columns.join(", ")
+                        )),
+                ),
+                COL_FK_REFERENCE,
+            ))
+            .child(sized(
+                TableCell::new().child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(edit.on_delete.label()),
+                ),
+                COL_FK_ACTION,
+            ))
+            .child(sized(
+                TableCell::new().child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(edit.on_update.label()),
+                ),
+                COL_FK_ACTION,
+            ))
+            .child(sized(
+                TableCell::new().justify_end().when(editable, |this| {
+                    let label = if dropped { "Undrop" } else { "Drop" };
+                    this.child(
+                        Button::new(("fk-drop", id))
+                            .ghost()
+                            .xsmall()
+                            .label(label)
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.toggle_foreign_key_drop(id, cx)
+                            })),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .child(format!(
-                                "{} → {reference}({})",
-                                edit.columns.join(", "),
-                                edit.referenced_columns.join(", ")
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(220.))
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "ON DELETE {} · ON UPDATE {}",
-                                edit.on_delete.label(),
-                                edit.on_update.label()
-                            )),
-                    )
-                    .when(editable, |this| {
-                        let label = if dropped { "Undrop" } else { "Drop" };
-                        this.child(
-                            Button::new(("fk-drop", id))
-                                .ghost()
-                                .xsmall()
-                                .label(label)
-                                .on_click(cx.listener(move |this, _, _window, cx| {
-                                    this.toggle_foreign_key_drop(id, cx)
-                                })),
-                        )
-                    }),
-            )
+                }),
+                COL_ACTIONS,
+            ))
         }
     }
 
@@ -1701,14 +1846,24 @@ impl SchemaView {
         // SQLite cannot change one on an existing table at all.
         let sqlite_blocked = self.is_editable() && !editable;
 
-        let mut rows = Vec::with_capacity(self.foreign_keys.len());
-        for key in &self.foreign_keys {
-            rows.push(self.render_foreign_key_row(key, cx).into_any_element());
-        }
+        let rows: Vec<TableRow> = self
+            .foreign_keys
+            .iter()
+            .map(|key| self.render_foreign_key_row(key, cx))
+            .collect();
+        let empty = if sqlite_blocked {
+            "SQLite needs a table rebuild to change foreign keys."
+        } else if editable {
+            "No foreign keys. Use Add foreign key to create one."
+        } else {
+            "No foreign keys."
+        };
 
         v_flex()
+            .id("foreign-keys-section")
+            .test_support()
             .w_full()
-            .gap_1()
+            .gap_2()
             .child(
                 h_flex()
                     .w_full()
@@ -1734,16 +1889,31 @@ impl SchemaView {
                         )
                     }),
             )
-            .when(self.foreign_keys.is_empty(), |this| {
-                this.child(
-                    div()
-                        .px_1()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("No foreign keys"),
-                )
-            })
-            .children(rows)
+            .child(
+                div()
+                    .id("foreign-keys-table-scroll")
+                    .w_full()
+                    .min_w_0()
+                    .h_auto()
+                    .overflow_x_scrollbar()
+                    .child(
+                        Table::new()
+                            .xsmall()
+                            .accessibility_label("Foreign keys")
+                            .min_w(table_min_width(&[
+                                COL_FK_NAME,
+                                COL_FK_REFERENCE,
+                                COL_FK_ACTION,
+                                COL_FK_ACTION,
+                                COL_ACTIONS,
+                            ]))
+                            .child(TableHeader::new().child(self.render_foreign_keys_header()))
+                            .child(TableBody::new().children(rows))
+                            .when(self.foreign_keys.is_empty(), |this| {
+                                this.child(TableCaption::new().child(empty))
+                            }),
+                    ),
+            )
     }
 
     fn render_confirm(&self, cx: &mut Context<Self>) -> impl IntoElement {
