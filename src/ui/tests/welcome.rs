@@ -50,6 +50,10 @@ fn saving_a_connection_persists_its_tag_and_colour(cx: &mut TestAppContext) {
         })
         .unwrap();
 
+    // The write goes to the background executor; let it land before reading it
+    // back from the scratch dir.
+    cx.run_until_parked();
+
     // The launcher holds it, and the store wrote it to the scratch dir.
     let (tag, color) = welcome.update(cx, |welcome, _| {
         let saved = welcome
@@ -146,6 +150,7 @@ fn deleting_a_connection_removes_it_and_persists(cx: &mut TestAppContext) {
         0,
         "deleting should remove the connection"
     );
+    cx.run_until_parked();
     assert!(
         crate::db::store::load()
             .expect("the store should be readable")

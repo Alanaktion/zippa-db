@@ -171,16 +171,16 @@ impl Welcome {
                 // connects with whatever the keychain holds, the way a card
                 // click does. A file database has no password to look up, and a
                 // connection that was never saved has nothing stored.
-                let password = match password {
-                    Some(password) => Some(password.clone()),
-                    None if !config.engine.is_file_based()
-                        && self.connections.iter().any(|saved| saved.id == config.id) =>
-                    {
-                        store::password(&config.id).ok().flatten()
+                let saved = self.connections.iter().any(|saved| saved.id == config.id);
+                match password {
+                    Some(password) => {
+                        self.connect(config.clone(), Some(password.clone()), window, cx)
                     }
-                    None => None,
-                };
-                self.connect(config.clone(), password, window, cx);
+                    None if saved && !config.engine.is_file_based() => {
+                        self.connect_using_stored_password(config.clone(), cx)
+                    }
+                    None => self.connect(config.clone(), None, window, cx),
+                }
             }
             EditorEvent::Dismissed => self.close_editor(window, cx),
         }
@@ -204,7 +204,7 @@ impl Welcome {
         &mut self,
         config: ConnectionConfig,
         password: Option<String>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match self
@@ -223,17 +223,20 @@ impl Welcome {
             None => self.connections.push(config.clone()),
         }
 
-        match store::save(&self.connections).and_then(|()| match &password {
-            Some(password) => store::set_password(&config.id, password),
-            None => Ok(()),
-        }) {
-            Ok(()) => {}
-            Err(error) => {
-                let message = format!("{error:#}");
-                notify_error(window, cx, format!("Error: {message}"));
-                self.error = Some(message);
-            }
-        }
+        // The list is small, but writing it is still disk I/O; the keychain is a
+        // second, slower one behind it.
+        let connections = self.connections.clone();
+        let id = config.id;
+        store_in_background(
+            move || {
+                store::save(&connections)?;
+                if let Some(password) = password {
+                    store::set_password(&id, &password)?;
+                }
+                Ok(())
+            },
+            cx,
+        );
         cx.notify();
     }
 
@@ -251,13 +254,28 @@ impl Welcome {
             return;
         }
 
-        match store::password(&config.id) {
-            Ok(password) => self.connect(config, password, window, cx),
-            Err(error) => {
-                self.error = Some(format!("{error:#}"));
-                cx.notify();
-            }
-        }
+        self.connect_using_stored_password(config, cx);
+    }
+
+    /// Look the connection's password up off the UI thread and connect with it.
+    ///
+    /// The credential store can prompt, or simply be slow, so it is not read on
+    /// the UI thread; the connect starts when the password comes back.
+    fn connect_using_stored_password(&mut self, config: ConnectionConfig, cx: &mut Context<Self>) {
+        let id = config.id;
+        let password = cx.background_spawn(async move { store::password(&id) });
+        cx.spawn(async move |this, cx| {
+            let password = password.await;
+            this.update_in(cx, |this, window, cx| match password {
+                Ok(password) => this.connect(config, password, window, cx),
+                Err(error) => {
+                    this.error = Some(format!("{error:#}"));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Open a saved connection by id, connecting to it right away.
@@ -297,7 +315,7 @@ impl Welcome {
                 match result {
                     Ok(Ok(connection)) => {
                         this.error = None;
-                        this.mark_connected(&connection.config.id);
+                        this.mark_connected(&connection.config.id, cx);
                         cx.emit(WelcomeEvent::Connected(Arc::new(connection)));
                     }
                     Ok(Err(error)) => {
@@ -317,13 +335,20 @@ impl Welcome {
     }
 
     /// Record that a connection was just opened, for most-recent-first order.
-    fn mark_connected(&mut self, id: &Uuid) {
+    fn mark_connected(&mut self, id: &Uuid, cx: &mut Context<Self>) {
         if let Some(config) = self.connections.iter_mut().find(|config| &config.id == id) {
             config.last_connected = Some(Utc::now());
         }
-        if let Err(error) = store::record_connected(id) {
-            eprintln!("could not record the connection: {error:#}");
-        }
+
+        // The store rewrites the whole file to change one timestamp; it goes to
+        // the background rather than holding up the connection it just opened.
+        let id = *id;
+        cx.background_spawn(async move {
+            if let Err(error) = store::record_connected(&id) {
+                eprintln!("could not record the connection: {error:#}");
+            }
+        })
+        .detach();
     }
 
     /// Open the editor pre-filled from the saved connection.
@@ -340,7 +365,7 @@ impl Welcome {
     }
 
     /// Copy a saved connection under a new id, without its stored password.
-    fn duplicate(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+    fn duplicate(&mut self, id: Uuid, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(source) = self
             .connections
             .iter()
@@ -358,11 +383,8 @@ impl Welcome {
         }
         self.connections.push(copy);
 
-        if let Err(error) = store::save(&self.connections) {
-            let message = format!("{error:#}");
-            notify_error(window, cx, format!("Error: {message}"));
-            self.error = Some(message);
-        }
+        let connections = self.connections.clone();
+        store_in_background(move || store::save(&connections), cx);
         cx.notify();
     }
 
@@ -400,16 +422,17 @@ impl Welcome {
         });
     }
 
-    fn delete_confirmed(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+    fn delete_confirmed(&mut self, id: Uuid, _window: &mut Window, cx: &mut Context<Self>) {
         self.connections.retain(|config| config.id != id);
 
-        if let Err(error) =
-            store::save(&self.connections).and_then(|()| store::delete_password(&id))
-        {
-            let message = format!("{error:#}");
-            notify_error(window, cx, format!("Error: {message}"));
-            self.error = Some(message);
-        }
+        let connections = self.connections.clone();
+        store_in_background(
+            move || {
+                store::save(&connections)?;
+                store::delete_password(&id)
+            },
+            cx,
+        );
         cx.notify();
     }
 
@@ -670,6 +693,30 @@ impl Welcome {
     ) {
         self.delete_confirmed(id, window, cx);
     }
+}
+
+/// Run a store write on the background executor, reporting a failure on the
+/// launcher the way a synchronous write used to.
+///
+/// The connection list is small, but writing it is still disk I/O and the UI
+/// thread should not wait on it; the keychain behind it is slower still.
+fn store_in_background<F>(work: F, cx: &mut Context<Welcome>)
+where
+    F: FnOnce() -> anyhow::Result<()> + Send + 'static,
+{
+    let result = cx.background_spawn(async move { work() });
+    cx.spawn(async move |this, cx| {
+        if let Err(error) = result.await {
+            let message = format!("{error:#}");
+            this.update_in(cx, |this, window, cx| {
+                notify_error(window, cx, format!("Error: {message}"));
+                this.error = Some(message);
+                cx.notify();
+            })
+            .ok();
+        }
+    })
+    .detach();
 }
 
 impl Render for Welcome {
