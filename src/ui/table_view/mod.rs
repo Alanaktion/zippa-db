@@ -240,7 +240,11 @@ impl TableView {
             .page_size
             .clamp(1, settings::MAX_PAGE_SIZE);
 
-        let limit_input = cx.new(|cx| InputState::new(window, cx).default_value(limit.to_string()));
+        let limit_input = cx.new(|cx| InputState::new(window, cx)
+            .default_value(limit.to_string())
+            .step_by(|v, _, _cx| if v < 50. { 1. } else if v < 1000. { 10. } else { 100. })
+            .min(1.)
+        );
         cx.subscribe_in(&limit_input, window, Self::on_limit_event)
             .detach();
         // Left unset on the state itself (see `on_limit_step`): with `min`,
@@ -1313,6 +1317,17 @@ impl TableView {
                     .child(
                         div()
                             .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Limit"),
+                    )
+                    .child(
+                        div()
+                            .w(px(88.))
+                            .child(NumberInput::new(&self.limit_input).xsmall()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
                             .text_color(message.1)
                             .child(message.0.clone()),
                     ),
@@ -1449,17 +1464,6 @@ impl TableView {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_toggle_row_panel(&ToggleRowPanel, window, cx)
                             })),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Limit"),
-                    )
-                    .child(
-                        div()
-                            .w(px(88.))
-                            .child(NumberInput::new(&self.limit_input).xsmall()),
                     ),
             )
     }
