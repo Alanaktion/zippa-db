@@ -433,6 +433,9 @@ impl Session {
             TableViewEvent::NavigateToForeignKey { object, filter } => {
                 self.open_object_filtered(object, filter.clone(), window, cx);
             }
+            TableViewEvent::ViewStructure { object } => {
+                self.open_object(object, ObjectViewMode::Schema, window, cx);
+            }
         }
     }
 

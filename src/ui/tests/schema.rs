@@ -68,7 +68,7 @@ fn the_structure_tab_is_named_after_its_table(cx: &mut TestAppContext) {
         handle
             .update(cx, |session, _, cx| session.tab_icons(cx))
             .unwrap(),
-        [IconName::SquareTerminal, IconName::TableProperties],
+        [IconName::SquareTerminal, IconName::ListTree],
         "the icon is what tells a structure tab from a data one"
     );
 }
@@ -805,7 +805,7 @@ fn a_tables_data_and_structure_are_different_tabs(cx: &mut TestAppContext) {
             .unwrap(),
         [
             IconName::SquareTerminal,
-            IconName::TableProperties,
+            IconName::ListTree,
             IconName::Table
         ],
         "so the icon is what tells them apart"

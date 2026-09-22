@@ -874,3 +874,49 @@ fn closing_a_panel_from_the_dock_forgets_it(cx: &mut TestAppContext) {
         })
         .unwrap();
 }
+
+#[gpui_kit::test]
+fn the_footers_view_structure_opens_the_structure_tab(cx: &mut TestAppContext) {
+    let (_database, handle, _view) = table_view(cx);
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |session, _, cx| {
+            assert_eq!(session.tab_titles(cx), ["Query 1", "items"]);
+        })
+        .unwrap();
+
+    click_in_session(cx, handle, "view-structure");
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |session, _, cx| {
+            assert_eq!(
+                session.tab_titles(cx),
+                ["Query 1", "items", "items"],
+                "the structure tab sits beside the data tab, not on top of it"
+            );
+            assert!(
+                session.active_schema_view(cx).is_some(),
+                "the footer button should open the table's structure tab"
+            );
+        })
+        .unwrap();
+
+    // Ask again from the data tab: the structure tab is brought forward rather
+    // than opened a second time.
+    handle
+        .update(cx, |session, window, cx| {
+            session.activate_tab_for_test(1, window, cx);
+        })
+        .unwrap();
+    click_in_session(cx, handle, "view-structure");
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |session, _, cx| {
+            assert_eq!(session.tab_titles(cx), ["Query 1", "items", "items"]);
+            assert!(session.active_schema_view(cx).is_some());
+        })
+        .unwrap();
+}

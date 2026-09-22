@@ -28,7 +28,7 @@ gpui_kit::assets::icon_assets!(
         DatabasePlus,
         Settings,
         Table,
-        TableProperties,
+        ListTree,
         Route,
         Gauge,
         Braces,

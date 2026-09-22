@@ -154,6 +154,10 @@ pub(crate) enum TableViewEvent {
         object: DatabaseObject,
         filter: FilterSpec,
     },
+    /// The footer asked for `object`'s structure tab, which is the session's
+    /// to open or bring forward — a table's data tab and its structure tab are
+    /// different tabs.
+    ViewStructure { object: DatabaseObject },
 }
 
 impl EventEmitter<TableViewEvent> for TableView {}
@@ -309,6 +313,14 @@ impl TableView {
 
     pub fn object(&self) -> &DatabaseObject {
         &self.object
+    }
+
+    /// Ask the session for this table's structure tab, the same tab the
+    /// sidebar's row menu opens.
+    fn view_structure(&mut self, cx: &mut Context<Self>) {
+        cx.emit(TableViewEvent::ViewStructure {
+            object: self.object.clone(),
+        });
     }
 
     /// Point the view at a new connection, as when the database is switched.
@@ -1450,6 +1462,15 @@ impl TableView {
                                 menu
                             })
                     })
+                    .child(
+                        Button::new("view-structure")
+                            .ghost()
+                            .xsmall()
+                            .label("View structure")
+                            .on_click(
+                                cx.listener(|this, _, _window, cx| this.view_structure(cx)),
+                            ),
+                    )
                     .child(
                         Button::new("toggle-row-panel")
                             .ghost()

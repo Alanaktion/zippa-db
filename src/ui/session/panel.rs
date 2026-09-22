@@ -231,7 +231,7 @@ impl SessionPanel {
         match &self.content {
             TabContent::Query { .. } => IconName::SquareTerminal,
             TabContent::Table { .. } => IconName::Table,
-            TabContent::Schema { .. } => IconName::TableProperties,
+            TabContent::Schema { .. } => IconName::ListTree,
         }
     }
 
