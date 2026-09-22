@@ -53,7 +53,8 @@ pub struct ImportView {
     connection: Arc<Connection>,
     path: PathBuf,
     name: SharedString,
-    preflight: Preflight,
+    /// What the pre-flight read found; `None` until the background read lands.
+    preflight: Option<Preflight>,
     on_error: OnError,
     state: State,
     progress: ImportProgress,
@@ -73,18 +74,34 @@ impl ImportView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let preflight = import::preflight(&path, connection.config.engine);
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string())
             .into();
 
+        // Reading and decompressing the head of the dump is blocking I/O, so it
+        // runs off the UI thread; the panel says it is checking until it lands.
+        let engine = connection.config.engine;
+        let task = cx.background_spawn({
+            let path = path.clone();
+            async move { import::preflight(&path, engine) }
+        });
+        cx.spawn(async move |this, cx| {
+            let preflight = task.await;
+            this.update(cx, |this, cx| {
+                this.preflight = Some(preflight);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+
         Self {
             connection,
             path,
             name,
-            preflight,
+            preflight: None,
             on_error: OnError::default(),
             state: State::Ready,
             progress: ImportProgress::default(),
@@ -102,8 +119,12 @@ impl ImportView {
 
     /// The reason the import cannot start, if there is one.
     fn blocked_reason(&self) -> Option<String> {
-        if let Some(error) = &self.preflight.error {
-            return Some(error.clone());
+        if let Some(error) = self
+            .preflight
+            .as_ref()
+            .and_then(|preflight| preflight.error.clone())
+        {
+            return Some(error);
         }
         if self.connection.config.safety.is_read_only() {
             return Some(format!(
@@ -112,6 +133,12 @@ impl ImportView {
             ));
         }
         None
+    }
+
+    /// Whether a run can start: the pre-flight has answered and nothing blocks
+    /// it.
+    fn can_start(&self) -> bool {
+        self.preflight.is_some() && self.blocked_reason().is_none()
     }
 
     /// The database a run writes into, named on the button.
@@ -124,7 +151,7 @@ impl ImportView {
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
-        if self.state != State::Ready || self.blocked_reason().is_some() {
+        if self.state != State::Ready || !self.can_start() {
             return;
         }
 
@@ -212,7 +239,12 @@ impl ImportView {
             .as_ref()
             .map(|summary| summary.total_bytes)
             .filter(|bytes| *bytes > 0)
-            .unwrap_or(self.preflight.total_bytes);
+            .unwrap_or_else(|| {
+                self.preflight
+                    .as_ref()
+                    .map(|preflight| preflight.total_bytes)
+                    .unwrap_or(0)
+            });
         let mut text = format!("Import of {} ({})\n", self.path.display(), bytes(size));
         if let Some(failure) = &self.failure {
             text.push_str(&format!("Failed: {failure}\n"));
@@ -250,11 +282,14 @@ impl ImportView {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} · {}",
-                                bytes(self.preflight.total_bytes),
-                                self.preflight.compression.label()
-                            )),
+                            .child(match &self.preflight {
+                                Some(preflight) => format!(
+                                    "{} · {}",
+                                    bytes(preflight.total_bytes),
+                                    preflight.compression.label()
+                                ),
+                                None => "Checking the dump…".to_string(),
+                            }),
                     ),
             )
             .child(
@@ -271,8 +306,15 @@ impl ImportView {
     }
 
     fn render_warnings(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mismatch = self.preflight.dialect_mismatch.clone();
-        let destructive = self.preflight.destructive;
+        let mismatch = self
+            .preflight
+            .as_ref()
+            .and_then(|preflight| preflight.dialect_mismatch.clone());
+        let destructive = self
+            .preflight
+            .as_ref()
+            .map(|preflight| preflight.destructive)
+            .unwrap_or(0);
         let fallback = self.connection.config.engine == Engine::MySql;
 
         v_flex()
@@ -341,7 +383,14 @@ impl ImportView {
 
     fn render_ready(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let blocked = self.blocked_reason();
-        let blocked_for_button = blocked.clone();
+        let can_start = self.can_start();
+        // While the pre-flight is still reading, the button is off with a tooltip
+        // that says why; a real block takes its place once it is known.
+        let blocked_for_button = blocked.clone().or_else(|| {
+            self.preflight
+                .is_none()
+                .then(|| "Checking the dump…".to_string())
+        });
 
         v_flex()
             .flex_1()
@@ -373,7 +422,7 @@ impl ImportView {
                             .primary()
                             .small()
                             .label(format!("Import into {}", self.target()))
-                            .disabled(blocked_for_button.is_some())
+                            .disabled(!can_start)
                             .when_some(blocked_for_button, |button, reason| {
                                 button.tooltip(SharedString::from(reason))
                             })
