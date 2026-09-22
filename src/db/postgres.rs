@@ -116,6 +116,25 @@ pub(crate) async fn connect(config: &ConnectionConfig, password: Option<&str>) -
     Ok(pool)
 }
 
+/// How many raw units of `money` make up one whole one — `100` for a
+/// currency with two fraction digits, `1` for one with none, and so on.
+///
+/// Not the fixed `100` the type's name suggests: `money` scales by
+/// `lc_monetary`'s fraction-digit count, which is two almost everywhere but
+/// zero for a currency like the yen — confirmed against a live server with
+/// `lc_monetary` set to `ja_JP`, where `'1'::money` comes back raw `1`
+/// rather than `100`. Asking the server this directly, once per connection,
+/// sidesteps parsing a locale name to guess its digit count.
+pub(crate) async fn money_scale(pool: &PgPool) -> i64 {
+    match sqlx::query_scalar::<_, PgMoney>("SELECT '1'::money")
+        .fetch_one(pool)
+        .await
+    {
+        Ok(PgMoney(raw)) if raw > 0 => raw,
+        _ => DEFAULT_MONEY_SCALE,
+    }
+}
+
 /// Primary key columns of a table, in key order.
 pub(crate) fn primary_key_sql(schema: &str, table: &str) -> String {
     format!(
@@ -210,11 +229,12 @@ pub(crate) fn rows_affected(result: &PgQueryResult) -> u64 {
     result.rows_affected()
 }
 
-/// Frac digits `money` values are scaled by. Postgres takes this from
-/// `lc_monetary`, which is two digits in every locale it ships with.
-const MONEY_SCALE: i64 = 100;
+/// The scale [`money_scale`]'s probe falls back to if it cannot run, and what
+/// `Connection` carries for the other two engines, which never read it — two
+/// fraction digits, the common case.
+pub(crate) const DEFAULT_MONEY_SCALE: i64 = 100;
 
-pub(crate) fn cell(row: &PgRow, index: usize) -> Cell {
+pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
     let Ok(raw) = row.try_get_raw(index) else {
         return None;
     };
@@ -256,7 +276,7 @@ pub(crate) fn cell(row: &PgRow, index: usize) -> Cell {
         "FLOAT4" => value!(f32),
         "FLOAT8" => value!(f64),
         "NUMERIC" => value!(sqlx::types::BigDecimal),
-        "MONEY" => value!(PgMoney, format_money),
+        "MONEY" => value!(PgMoney, |value: PgMoney| format_money(value, money_scale)),
         "UUID" => value!(sqlx::types::Uuid),
         "JSON" | "JSONB" => value!(sqlx::types::JsonValue),
         "DATE" => value!(chrono::NaiveDate),
@@ -380,12 +400,19 @@ fn format_timetz(value: PgTimeTz<chrono::NaiveTime, chrono::FixedOffset>) -> Str
 }
 
 /// `12.34`, the way Postgres prints `money` without its currency symbol —
-/// which is also the form it reads back.
-fn format_money(money: PgMoney) -> String {
+/// which is also the form it reads back. `scale` is [`money_scale`]'s probe:
+/// no decimal point at all for a currency with no fraction digits, rather
+/// than assuming two.
+fn format_money(money: PgMoney, scale: i64) -> String {
     let sign = if money.0 < 0 { "-" } else { "" };
     let units = money.0.unsigned_abs();
-    let scale = MONEY_SCALE.unsigned_abs();
-    format!("{sign}{}.{:02}", units / scale, units % scale)
+    let scale = scale.unsigned_abs().max(1);
+    let digits = scale.ilog10() as usize;
+    if digits == 0 {
+        format!("{sign}{units}")
+    } else {
+        format!("{sign}{}.{:0digits$}", units / scale, units % scale)
+    }
 }
 
 /// `192.168.0.1` for an `inet` host, `10.0.0.0/8` where the prefix says
@@ -454,11 +481,27 @@ mod tests {
     }
 
     #[test]
-    fn money_keeps_both_digits() {
-        assert_eq!(format_money(PgMoney(1234)), "12.34");
-        assert_eq!(format_money(PgMoney(5)), "0.05");
-        assert_eq!(format_money(PgMoney(-1234)), "-12.34");
-        assert_eq!(format_money(PgMoney(0)), "0.00");
+    fn money_keeps_both_digits_at_the_common_scale() {
+        assert_eq!(format_money(PgMoney(1234), 100), "12.34");
+        assert_eq!(format_money(PgMoney(5), 100), "0.05");
+        assert_eq!(format_money(PgMoney(-1234), 100), "-12.34");
+        assert_eq!(format_money(PgMoney(0), 100), "0.00");
+    }
+
+    #[test]
+    fn money_has_no_decimal_point_at_all_with_no_fraction_digits() {
+        // A currency like the yen, whose `lc_monetary` scales `money` by 1
+        // rather than 100 — `12.34` here would not be a value the same
+        // server would read back as the same amount.
+        assert_eq!(format_money(PgMoney(1234), 1), "1234");
+        assert_eq!(format_money(PgMoney(-7), 1), "-7");
+    }
+
+    #[test]
+    fn money_pads_three_fraction_digits_the_same_way() {
+        // A currency like the Bahraini dinar, three fraction digits.
+        assert_eq!(format_money(PgMoney(1234), 1000), "1.234");
+        assert_eq!(format_money(PgMoney(5), 1000), "0.005");
     }
 
     #[test]

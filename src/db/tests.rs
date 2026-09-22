@@ -1138,6 +1138,168 @@ async fn live_mysql_routines_carry_their_argument_types() {
     pool.close().await;
 }
 
+/// A column edit on MySQL restates the whole column (`MODIFY`/`CHANGE
+/// COLUMN`), so anything `table_schema` does not carry into
+/// `ColumnDef::mysql_extra` would silently vanish from a real edit even
+/// though the generator that reads it is only unit-tested against literal
+/// `ColumnDef`s. This is the read half: that a live server's
+/// `information_schema.columns` actually comes back shaped the way
+/// `mysql::columns_sql`/`schema::parse_columns` assume.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_table_schema_carries_auto_increment_collation_comment_and_on_update() {
+    let (connection, pool) = live_mysql().await;
+
+    for sql in [
+        "DROP TABLE IF EXISTS zippa_probe",
+        "CREATE TABLE zippa_probe (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(50) COLLATE utf8mb4_bin COMMENT 'the display name',
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP \
+                ON UPDATE CURRENT_TIMESTAMP,
+            price DECIMAL(10,2),
+            tax DECIMAL(10,2) GENERATED ALWAYS AS (price * 0.1) STORED,
+            plain INT DEFAULT 5
+        )",
+    ] {
+        pool.execute(AssertSqlSafe(sql.to_string()))
+            .await
+            .unwrap_or_else(|error| panic!("{sql}: {error}"));
+    }
+
+    let object = DatabaseObject {
+        schema: None,
+        name: "zippa_probe".to_string(),
+        kind: ObjectKind::Table,
+    };
+    let schema = connection
+        .table_schema(&object)
+        .await
+        .expect("could not read the table schema");
+    let column = |name: &str| {
+        schema
+            .columns
+            .iter()
+            .find(|column| column.name == name)
+            .unwrap_or_else(|| panic!("no {name} column came back"))
+    };
+
+    assert!(column("id").mysql_extra.auto_increment);
+    assert!(!column("plain").mysql_extra.auto_increment);
+
+    assert!(column("updated_at").mysql_extra.on_update_current_timestamp);
+    assert!(!column("plain").mysql_extra.on_update_current_timestamp);
+
+    assert_eq!(
+        column("name").mysql_extra.collation.as_deref(),
+        Some("utf8mb4_bin")
+    );
+    assert_eq!(column("plain").mysql_extra.collation, None);
+
+    assert_eq!(
+        column("name").mysql_extra.comment.as_deref(),
+        Some("the display name")
+    );
+    assert_eq!(
+        column("plain").mysql_extra.comment,
+        None,
+        "an unset comment is an empty string on the server, folded to None"
+    );
+
+    assert_eq!(
+        column("tax").mysql_extra.generation_expression.as_deref(),
+        Some("(`price` * 0.1)")
+    );
+    assert_eq!(column("plain").mysql_extra.generation_expression, None);
+
+    connection.close().await;
+    pool.execute(AssertSqlSafe("DROP TABLE zippa_probe".to_string()))
+        .await
+        .expect("could not drop the probe table");
+    pool.close().await;
+}
+
+/// `money` scales by `lc_monetary`'s fraction-digit count, which is two in
+/// most locales but zero for a currency like the yen — so the raw integer a
+/// `money` column decodes to means a different amount depending on the
+/// server's locale, and a client that always divides by 100 would silently
+/// show the wrong number for the others. This is the live half of
+/// `postgres::money_keeps_both_digits_at_the_common_scale` and its sibling
+/// scale tests: that `Connection::open`'s probe actually reads a real
+/// server's scale rather than assuming it.
+///
+/// Ignored by default because it needs a server. Start one and run it:
+///
+/// ```text
+/// docker run --rm -d -p 5433:5432 --name zippa-postgres \
+///   -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=app postgres:16
+/// docker exec zippa-postgres psql -U postgres -c "CREATE DATABASE zippa_yen"
+/// docker exec zippa-postgres psql -U postgres -d zippa_yen \
+///   -c "ALTER DATABASE zippa_yen SET lc_monetary = 'ja_JP.utf8'"
+/// cargo test -- --ignored live_postgres
+/// ```
+///
+/// The yen locale needs generating first if the image does not already carry
+/// it (`locale-gen ja_JP.UTF-8` inside the container, then a restart) —
+/// confirmed against a plain `postgres:16` image, which does not.
+///
+/// `ZIPPA_TEST_POSTGRES_YEN_URL` (default
+/// `postgres://postgres:secret@127.0.0.1:5433/zippa_yen`) points the test at
+/// another server; `ZIPPA_TEST_POSTGRES_URL` (default
+/// `postgres://postgres:secret@127.0.0.1:5433/app`) is the same server's
+/// ordinary, two-digit database, for contrast.
+#[tokio::test]
+#[ignore = "needs a live Postgres server with a yen-locale database; see the doc comment"]
+async fn live_postgres_money_scales_by_the_servers_locale_not_always_by_100() {
+    let usual = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    let result = usual
+        .run_query("SELECT '12.34'::money")
+        .await
+        .expect("could not read the ordinary-locale money value");
+    assert_eq!(
+        result.rows[0][0].as_deref(),
+        Some("12.34"),
+        "a two-digit locale should read back the way it was written"
+    );
+    usual.close().await;
+
+    let yen = live_postgres("ZIPPA_TEST_POSTGRES_YEN_URL", "zippa_yen").await;
+    let result = yen
+        .run_query("SELECT '1234'::money")
+        .await
+        .expect("could not read the yen-locale money value");
+    assert_eq!(
+        result.rows[0][0].as_deref(),
+        Some("1234"),
+        "a zero-digit locale's value should not be shown divided by 100"
+    );
+    yen.close().await;
+}
+
+/// Open a Postgres connection for a live test, against the database named by
+/// `var` (falling back to `127.0.0.1:5433`/`database` when unset).
+async fn live_postgres(var: &str, database: &str) -> Connection {
+    let url = env::var(var)
+        .unwrap_or_else(|_| format!("postgres://postgres:secret@127.0.0.1:5433/{database}"));
+    let rest = url.strip_prefix("postgres://").expect("a postgres:// URL");
+    let (credentials, rest) = rest.split_once('@').expect("user:pass@host:port/db");
+    let (username, password) = credentials.split_once(':').expect("user:pass");
+    let (authority, database) = rest.split_once('/').expect("host:port/db");
+    let (host, port) = authority.split_once(':').expect("host:port");
+    let port: u16 = port.parse().expect("a port");
+
+    let config = ConnectionConfig {
+        host: host.to_string(),
+        port,
+        username: username.to_string(),
+        database: database.to_string(),
+        ..ConnectionConfig::new(Engine::Postgres)
+    };
+    Connection::open(config, Some(password.to_string()))
+        .await
+        .expect("could not open the live Postgres connection")
+}
+
 /// Open the MySQL server a live test runs against, and a pool onto the same
 /// database for fixtures that need the text protocol.
 async fn live_mysql() -> (Connection, sqlx::MySqlPool) {

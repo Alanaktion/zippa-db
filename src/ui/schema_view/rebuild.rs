@@ -762,6 +762,7 @@ mod tests {
                 nullable,
                 default: default.map(str::to_string),
                 is_primary_key: false,
+                mysql_extra: Default::default(),
             }),
             name: name.to_string(),
             type_name: type_name.to_string(),

@@ -4,6 +4,7 @@
 //! this is DDL generation for one screen, not a shared query path.
 
 use crate::db::schema::{ColumnDef, ForeignKeyDef, IndexDef, ReferentialAction};
+use crate::db::sql::quote_literal_for;
 use crate::db::{DatabaseObject, Engine, quote_identifier};
 
 /// One column row as the user has edited it, ready to be diffed against
@@ -206,7 +207,7 @@ fn modify_statements(
 
     match engine {
         Engine::Postgres => Ok(postgres_modify(target, original, edit)),
-        Engine::MySql => Ok(vec![mysql_modify(target, original, edit)]),
+        Engine::MySql => mysql_modify(target, original, edit).map(|statement| vec![statement]),
         Engine::Sqlite => sqlite_modify(target, original, edit),
     }
 }
@@ -257,21 +258,50 @@ fn postgres_modify(target: &str, original: &ColumnDef, edit: &ColumnEdit) -> Vec
 }
 
 /// MySQL restates the whole column either way: `CHANGE COLUMN` for a rename
-/// (it has no standalone rename), `MODIFY COLUMN` otherwise.
-fn mysql_modify(target: &str, original: &ColumnDef, edit: &ColumnEdit) -> String {
+/// (it has no standalone rename), `MODIFY COLUMN` otherwise. There is no
+/// narrower way to change one property, so whatever `type_name`/`nullable`/
+/// `default` cannot express has to be folded back in from `original` or the
+/// restate would silently drop it: `AUTO_INCREMENT`, a `TIMESTAMP`/
+/// `DATETIME` column's own `ON UPDATE CURRENT_TIMESTAMP`, a comment, an
+/// explicit collation (which also pins the character set — a collation
+/// belongs to exactly one). A generated column's expression cannot be
+/// restated safely this way, so an edit to one is refused instead of risking
+/// a wrong `GENERATED ALWAYS AS (...)`.
+fn mysql_modify(target: &str, original: &ColumnDef, edit: &ColumnEdit) -> Result<String, String> {
     let engine = Engine::MySql;
-    if edit.renamed() {
+    let extra = &original.mysql_extra;
+    if extra.generation_expression.is_some() {
+        return Err(format!(
+            "{} is a generated column; the schema editor cannot restate its \
+             expression safely, so it cannot be edited here",
+            original.name
+        ));
+    }
+
+    let mut clause = column_clause(engine, edit);
+    if extra.on_update_current_timestamp {
+        clause.push_str(" ON UPDATE CURRENT_TIMESTAMP");
+    }
+    if extra.auto_increment {
+        clause.push_str(" AUTO_INCREMENT");
+    }
+    if let Some(comment) = &extra.comment {
+        clause.push_str(" COMMENT ");
+        clause.push_str(&quote_literal_for(engine, comment));
+    }
+    if let Some(collation) = &extra.collation {
+        clause.push_str(" COLLATE ");
+        clause.push_str(collation);
+    }
+
+    Ok(if edit.renamed() {
         format!(
-            "ALTER TABLE {target} CHANGE COLUMN {} {}",
+            "ALTER TABLE {target} CHANGE COLUMN {} {clause}",
             quote_identifier(&original.name, engine),
-            column_clause(engine, edit)
         )
     } else {
-        format!(
-            "ALTER TABLE {target} MODIFY COLUMN {}",
-            column_clause(engine, edit)
-        )
-    }
+        format!("ALTER TABLE {target} MODIFY COLUMN {clause}")
+    })
 }
 
 /// SQLite's plain `ALTER TABLE` only reaches a rename; anything else about an
@@ -565,6 +595,7 @@ pub(crate) fn generate_foreign_key_statements(
 mod tests {
     use super::*;
     use crate::db::ObjectKind;
+    use crate::db::schema::MySqlColumnExtra;
 
     fn column(name: &str, type_name: &str, nullable: bool, default: Option<&str>) -> ColumnDef {
         ColumnDef {
@@ -573,6 +604,7 @@ mod tests {
             nullable,
             default: default.map(str::to_string),
             is_primary_key: false,
+            mysql_extra: Default::default(),
         }
     }
 
@@ -674,6 +706,108 @@ mod tests {
             statements,
             ["ALTER TABLE items MODIFY COLUMN score bigint NOT NULL"]
         );
+    }
+
+    #[test]
+    fn mysql_restate_preserves_auto_increment() {
+        let original = ColumnDef {
+            mysql_extra: MySqlColumnExtra {
+                auto_increment: true,
+                ..Default::default()
+            },
+            ..column("id", "int", false, None)
+        };
+        let mut retyped = kept(original);
+        retyped.type_name = "bigint".to_string();
+
+        let statements =
+            generate_alter_statements(Engine::MySql, "items", &[retyped]).expect("should generate");
+        assert_eq!(
+            statements,
+            ["ALTER TABLE items MODIFY COLUMN id bigint NOT NULL AUTO_INCREMENT"]
+        );
+    }
+
+    #[test]
+    fn mysql_restate_preserves_on_update_current_timestamp() {
+        let original = ColumnDef {
+            default: Some("CURRENT_TIMESTAMP".to_string()),
+            mysql_extra: MySqlColumnExtra {
+                on_update_current_timestamp: true,
+                ..Default::default()
+            },
+            ..column("updated_at", "timestamp", false, Some("CURRENT_TIMESTAMP"))
+        };
+        let mut retyped = kept(original);
+        retyped.type_name = "datetime".to_string();
+
+        let statements =
+            generate_alter_statements(Engine::MySql, "items", &[retyped]).expect("should generate");
+        assert_eq!(
+            statements,
+            [
+                "ALTER TABLE items MODIFY COLUMN updated_at datetime NOT NULL \
+                 DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
+            ]
+        );
+    }
+
+    #[test]
+    fn mysql_restate_preserves_a_comment_and_escapes_it() {
+        let original = ColumnDef {
+            mysql_extra: MySqlColumnExtra {
+                comment: Some("the user's name".to_string()),
+                ..Default::default()
+            },
+            ..column("name", "varchar(50)", true, None)
+        };
+        let mut retyped = kept(original);
+        retyped.type_name = "varchar(100)".to_string();
+
+        let statements =
+            generate_alter_statements(Engine::MySql, "items", &[retyped]).expect("should generate");
+        assert_eq!(
+            statements,
+            ["ALTER TABLE items MODIFY COLUMN name varchar(100) COMMENT 'the user''s name'"]
+        );
+    }
+
+    #[test]
+    fn mysql_restate_preserves_an_explicit_collation() {
+        let original = ColumnDef {
+            mysql_extra: MySqlColumnExtra {
+                collation: Some("utf8mb4_bin".to_string()),
+                ..Default::default()
+            },
+            ..column("name", "varchar(50)", true, None)
+        };
+        let mut retyped = kept(original);
+        retyped.type_name = "varchar(100)".to_string();
+
+        let statements =
+            generate_alter_statements(Engine::MySql, "items", &[retyped]).expect("should generate");
+        assert_eq!(
+            statements,
+            ["ALTER TABLE items MODIFY COLUMN name varchar(100) COLLATE utf8mb4_bin"]
+        );
+    }
+
+    #[test]
+    fn mysql_refuses_to_edit_a_generated_column() {
+        let original = ColumnDef {
+            mysql_extra: MySqlColumnExtra {
+                generation_expression: Some("(`price` * 0.1)".to_string()),
+                ..Default::default()
+            },
+            ..column("tax", "decimal(10,2)", true, None)
+        };
+        let mut retyped = kept(original);
+        retyped.type_name = "decimal(12,2)".to_string();
+
+        let error = generate_alter_statements(Engine::MySql, "items", &[retyped])
+            .expect_err("a generated column should be refused");
+        assert!(error.contains("tax"), "{error}");
+        assert!(error.contains("generated"), "{error}");
     }
 
     #[test]

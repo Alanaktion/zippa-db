@@ -123,6 +123,12 @@ pub struct Connection {
     /// asking the user for the password again. Never written to disk.
     password: Option<String>,
     pool: Pool,
+    /// Postgres only: how many raw units of a `money` value make up one whole
+    /// one, probed once per connection by [`postgres::money_scale`] rather
+    /// than assumed — `money` scales by `lc_monetary`'s fraction-digit count,
+    /// which is not always two. Unused, left at the default, on the other
+    /// engines.
+    money_scale: i64,
 }
 
 impl Connection {
@@ -134,10 +140,15 @@ impl Connection {
             Engine::MySql => Pool::MySql(mysql::connect(&config, password).await?),
             Engine::Sqlite => Pool::Sqlite(sqlite::connect(&config).await?),
         };
+        let money_scale = match &pool {
+            Pool::Postgres(pool) => postgres::money_scale(pool).await,
+            Pool::MySql(_) | Pool::Sqlite(_) => postgres::DEFAULT_MONEY_SCALE,
+        };
         Ok(Self {
             config,
             password: password.map(str::to_string),
             pool,
+            money_scale,
         })
     }
 
@@ -359,7 +370,15 @@ impl Connection {
     async fn fetch(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
         match &self.pool {
             Pool::Postgres(pool) => {
-                fetch_all(pool, sql, params, postgres::cell, postgres::rows_affected).await
+                let scale = self.money_scale;
+                fetch_all(
+                    pool,
+                    sql,
+                    params,
+                    move |row, index| postgres::cell(row, index, scale),
+                    postgres::rows_affected,
+                )
+                .await
             }
             Pool::MySql(pool) => {
                 fetch_all(pool, sql, params, mysql::cell, mysql::rows_affected).await
@@ -496,8 +515,14 @@ impl Connection {
         }
         match &self.pool {
             Pool::Postgres(pool) => {
-                run_script_transactional(pool, &statements, postgres::cell, postgres::rows_affected)
-                    .await
+                let scale = self.money_scale;
+                run_script_transactional(
+                    pool,
+                    &statements,
+                    move |row, index| postgres::cell(row, index, scale),
+                    postgres::rows_affected,
+                )
+                .await
             }
             Pool::Sqlite(pool) => {
                 run_script_transactional(pool, &statements, sqlite::cell, sqlite::rows_affected)

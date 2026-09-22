@@ -2,7 +2,7 @@
 
 **Revision audited:** `60e7002` "Add schema search dialog with full catalog" (2026-09-19), branch `main`.
 **Audit date:** 2026-09-21.
-**This revision:** the findings that have since been fixed are removed, so only what is still open is listed. The `file:line` anchors date from the audit revision and have drifted with the fixes; treat them as a starting point, not an exact position. The resolved findings and their regression tests are in the git history (the commits touching `src/app.rs`, `src/db/mysql.rs`, `src/settings.rs`, `src/ui/welcome/mod.rs`, `src/ui/data_grid/`, `src/ui/import_dialog.rs`, `src/ui/session/mod.rs`, and `src/menu.rs`).
+**This revision:** the findings that have since been fixed are removed, so only what is still open is listed. The `file:line` anchors date from the audit revision and have drifted with the fixes; treat them as a starting point, not an exact position. The resolved findings and their regression tests are in the git history (the commits touching `src/app.rs`, `src/db/mysql.rs`, `src/settings.rs`, `src/ui/welcome/mod.rs`, `src/ui/data_grid/`, `src/ui/import_dialog.rs`, `src/ui/session/mod.rs`, `src/menu.rs`, `src/db/connection.rs`, `src/db/schema.rs`, `src/db/postgres.rs`, `src/db/import/splitter.rs`, and `src/ui/schema_view/`).
 
 ## How this audit was done
 
@@ -27,17 +27,13 @@ There are no "unfinished feature" placeholders in the usual sense: no `todo!()`/
 
 ## 1. Incomplete features and stubs
 
-### [M] `run_script` has no transaction — documented, but a real correctness gap
-
-`Connection::run_script` runs statements one at a time with no transaction (`src/db/connection.rs:469-485`); its doc says so ("there is no transaction around this yet"). A script that fails at statement *n* leaves 1..*n*−1 applied. The import path already has rollback machinery (`src/db/import/mod.rs:48-51`), so the capability exists elsewhere.
-
 ### [M] The catalog cap is applied only after everything is built
 
 `Connection::catalog` materialises every column/index/trigger row and every entry, then calls `entries.truncate(MAX_ENTRIES)` (`src/db/connection.rs:285-307`). `MAX_ENTRIES` is 200 000 (`src/db/catalog.rs:21`) and the doc says "a database past this is truncated rather than held whole" (`src/db/catalog.rs:19-20`) — which is exactly what the code does not do. The three per-kind queries are also fully materialised `QueryResult`s first.
 
 ### [M] Postgres `cell` has no arm for several types sqlx can decode
 
-`postgres.rs` handles `MACADDR` but not `MACADDR8`, and none of sqlx 0.9's geometric/hstore/lrange types (`PgPoint`, `PgBox`, `PgCircle`, `PgHstore`, ranges, …). Those fall to the `_ => value!(String)` arm, fail, and render as `<POINT>`-style stand-ins (`src/db/postgres.rs:250-287`) — which export as NULL and cannot be edited. `money` is decoded with a hardcoded scale of 100 (`src/db/postgres.rs:213-215`, `:384-389`), even though the doc admits the scale comes from `lc_monetary`.
+`postgres.rs` handles `MACADDR` but not `MACADDR8`, and none of sqlx 0.9's geometric/hstore/lrange types (`PgPoint`, `PgBox`, `PgCircle`, `PgHstore`, ranges, …). Those fall to the `_ => value!(String)` arm, fail, and render as `<POINT>`-style stand-ins (`src/db/postgres.rs:250-287`) — which export as NULL and cannot be edited.
 
 ### [M] Import pre-flight heuristics
 
@@ -62,8 +58,6 @@ The "destructive statement" count treats a `DELETE` as destructive only when the
 
 ### Engine divergence
 
-- **[M] The same schema edit is safe on Postgres and lossy on MySQL.** MySQL restates the whole column with only name/type/nullability/default (`src/ui/schema_view/sql.rs:259-275`), because `ColumnDef` models nothing else (`src/db/schema.rs:17-29`) and `mysql::columns_sql` reads only those four fields (`src/db/mysql.rs:105-113`). A nullability or type edit therefore drops `AUTO_INCREMENT`, `CHARACTER SET`/`COLLATE`, `COMMENT`, `ON UPDATE CURRENT_TIMESTAMP` and generated expressions. Postgres emits per-property `ALTER COLUMN` statements and preserves them (`src/ui/schema_view/sql.rs:214-257`). SQLite refuses what it cannot model (`src/ui/schema_view/rebuild.rs:383-433`). Three defensible choices — but the difference is neither documented at the point of edit nor refused.
-- **[M] Schema changes are atomic on SQLite only.** `Change::Statements` runs one statement at a time with no transaction and the doc accepts a half-applied result (`src/ui/schema_view/mod.rs:931-943`); SQLite's `Change::Rebuild` is one atomic procedure with a foreign-key check (`src/ui/schema_view/rebuild.rs:46-49`). Postgres DDL is transactional, so a rename+retype can be left half-applied there when it need not be.
 - **[M] Timestamps are labelled differently per engine.** Postgres renders `timestamptz` in the local zone with an explicit offset (`src/db/postgres.rs:266-275`); MySQL renders `TIMESTAMP` as a bare UTC wall clock (`src/db/mysql.rs:188-196`), which happens to be right only because sqlx defaults the MySQL session to `time_zone='+00:00'`. A `TIMESTAMP` and a `DATETIME` therefore look identical while meaning different things.
 - **[L] The `INSERT` export is not schema-qualified** while every other generated statement is: `export_result` passes `self.object.name` (`src/ui/table_view/mod.rs:779`, `:812`) and `render_sql` quotes it bare (`src/db/export.rs:399`), whereas `TableView::target()` qualifies with the schema (`src/ui/table_view/sql.rs:29-38`). Exporting `myschema.items` writes `insert into items …`.
 - **[L] The editor splitter and the dump splitter are different tools.** `db/statement.rs:37-55` has no trigger-body, `DELIMITER`, `\.`-meta-line or `COPY` handling, all of which `db/import/splitter.rs` has (`:60-80`, `:114-125`, `:191-213`). `Cmd+Shift+Enter` on a `CREATE TRIGGER … BEGIN … END;` or a `COPY … FROM stdin` header splits in the wrong place. `import/splitter.rs:1-14` notes the editor's version covers "the common cases", but nothing at the editor says so.
@@ -154,7 +148,6 @@ Small in number and mostly guarded, but they are panics in paths that process us
 
 - `AssertSqlSafe` waives sqlx's guard on both the user's buffer and generated SQL (`src/db/connection.rs:639-641`, `:721-723`). The generated paths rely entirely on `quote_identifier`/`quote_literal`.
 - DDL interpolates free-text: `column_clause` pastes `edit.default` (documented as "Raw expression text, bound for `DEFAULT` verbatim", `src/db/schema.rs:22`) and `edit.type_name` straight into the statement (`src/ui/schema_view/sql.rs:131-146`), and Postgres reuses the type in `USING {current}::{type}` (`:229-234`). A default like `0; DROP …` is not quoted or rejected client-side; the statements run through prepared `execute`, so this is injection-adjacent rather than directly exploitable.
-- **[M] The dump splitter reads one line without a size bound** (`read_until(b'\n', …)` into an unbounded `Vec`, `src/db/import/splitter.rs:151-158`) before `MAX_STATEMENT` applies to the assembled statement (`:240-246`); compressed input can expand arbitrarily.
 - **[L] `rebuild.rs` rewrites identifiers textually**, so renaming `items.name` also rewrites a trigger's reference to a *different* table's `name` (`src/ui/schema_view/rebuild.rs:580-609`, `:544-550`). Inherent to text-based replay, only partly guarded.
 
 ### Memory and hot paths
@@ -177,7 +170,7 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 - **In `#[cfg(test)]` the keychain is a no-op** (`src/db/store.rs:99-135`), so the real credential-store contract is never exercised and each call site has two code paths to keep right.
 - **Column dragging, the row-limit entry/stepper, and a grid keybinding inside a query tab** have no tests (`src/ui/table_view/mod.rs:1131-1152`, `:246-252`; `src/ui/tests/rows.rs:593` calls `copy_as` directly).
 - **MySQL is only tested for metadata and imports through paths that cannot reach most of them** — every pure test in `src/db/tests.rs` opens a SQLite `TempDatabase`, and the MySQL rollback→stop fallback and session-variable restore (`src/db/import/mod.rs:242-265`, `:353-356`) are MySQL-only.
-- **No test runs against a live Postgres, and only one against a live MySQL.** `db::tests::live_mysql_routines_carry_their_argument_types` is an ignored test that runs against a live server (its doc comment names the container); the other engine-divergence findings (timestamp labelling, MySQL column restating, unsupported-type stand-ins) are still unverified end to end.
+- **Only three tests run against a live server, all ignored by default.** `db::tests::live_mysql_routines_carry_their_argument_types`, `live_mysql_table_schema_carries_auto_increment_collation_comment_and_on_update`, and `live_postgres_money_scales_by_the_servers_locale_not_always_by_100` (each doc comment names the container); the other engine-divergence findings (timestamp labelling, unsupported-type stand-ins) are still unverified end to end.
 
 ## 6. CI
 
@@ -185,17 +178,14 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 
 ## 7. Suggested triage order
 
-1. **MySQL schema-edit lossiness** (§2) — a column edit silently drops `AUTO_INCREMENT`, `COLLATE`, `COMMENT`, `ON UPDATE` and generated expressions; either model those properties or refuse the edit the way SQLite does.
-2. **Schema changes atomic on SQLite only** (§2) — wrap `Change::Statements` in a transaction where the engine's DDL is transactional.
-3. **Postgres `cell` arms** (§1) — geometric/hstore/range/`MACADDR8` values currently stand in as unreadable and uneditable.
-4. **`run_script` transaction** (§1) — a failing script leaves a half-applied run.
-5. **Copy-path consistency** (§2) — stand-ins and the uneven caps; make every copy path agree on what a stand-in is and where the cap applies.
-6. **Export streaming** (§1) and the **catalog cap** (§1) — the two largest unbounded allocations.
-7. **Doc alignment** (§3) — the README roadmap/status and the `AGENTS.md`/`CLAUDE.md` duplication.
-8. **Accessibility gaps** (§2) — the missing keybindings on tooltips, the colour-only new-row cue, and the placeholder accessible names.
+1. **Postgres `cell` arms** (§1) — geometric/hstore/range/`MACADDR8` values currently stand in as unreadable and uneditable. (`money`'s hardcoded scale, the same finding's other half, is fixed — verified against a live server with `lc_monetary` set to a zero-fraction-digit locale.)
+2. **Copy-path consistency** (§2) — stand-ins and the uneven caps; make every copy path agree on what a stand-in is and where the cap applies.
+3. **Export streaming** (§1) and the **catalog cap** (§1) — the two largest unbounded allocations.
+4. **Doc alignment** (§3) — the README roadmap/status and the `AGENTS.md`/`CLAUDE.md` duplication.
+5. **Accessibility gaps** (§2) — the missing keybindings on tooltips, the colour-only new-row cue, and the placeholder accessible names.
 
 ## 8. What this audit did and did not cover
 
 - **Read in full:** every file under `src/` (78 `.rs` files) plus `README.md`, `TODO.md`, `AGENTS.md`, `CLAUDE.md`, `IDEAS.md`, `IDEAS2.md`, `Cargo.toml`, `about.toml`, `.editorconfig`, `.github/workflows/ci.yml`, and the vendored `gpui-component`/`gpui-pre` sources where a finding depended on their defaults.
-- **Not run for the audit:** the app itself and no live server; every UI symptom and server-behaviour claim above is marked ⚠︎ inferred or "unverified" rather than asserted. A MySQL container was later used for one ignored test (see §5).
+- **Not run for the audit:** the app itself and no live server; every UI symptom and server-behaviour claim above is marked ⚠︎ inferred or "unverified" rather than asserted. MySQL and Postgres containers were later used for the three ignored live-server tests (see §5).
 - **Not audited:** packaging (`cargo packager`) and the icon assets; the bundled theme files; licensing (`about.toml` lists `Apache-2.0`/`MIT` as accepted, and `LICENSE` was not cross-checked against them).

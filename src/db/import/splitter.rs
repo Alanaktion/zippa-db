@@ -16,7 +16,7 @@
 use std::collections::VecDeque;
 use std::io::BufRead;
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 
 /// Which engine's syntax the dump is written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +150,8 @@ impl<R: BufRead> Splitter<R> {
     /// Read one line and fold it into the state machine.
     fn advance(&mut self) -> Result<()> {
         let mut raw = Vec::new();
-        let read = self.reader.read_until(b'\n', &mut raw)?;
+        let read = read_line_bounded(&mut self.reader, &mut raw, MAX_STATEMENT)
+            .with_context(|| format!("line {}", self.line + 1))?;
         if read == 0 {
             self.finish()?;
             return Ok(());
@@ -563,6 +564,45 @@ fn dollar_tag(characters: &[char], index: usize) -> Option<String> {
     None
 }
 
+/// Read one line into `buf`, refusing to grow past `limit` bytes.
+///
+/// `BufRead::read_until` has no such bound on its own: a dump with no
+/// newline for a long stretch — a corrupted file, or compressed input that
+/// expands far past its size on disk — would otherwise grow `buf` without
+/// limit before the statement-length check downstream ever runs. Reading in
+/// `fill_buf` chunks keeps the overrun bounded by the reader's own buffer
+/// rather than by how far past `limit` the missing newline turns out to be.
+fn read_line_bounded<R: BufRead + ?Sized>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    limit: usize,
+) -> Result<usize> {
+    let mut total = 0;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(total);
+        }
+
+        let found = available.iter().position(|&byte| byte == b'\n');
+        let used = found.map_or(available.len(), |pos| pos + 1);
+        buf.extend_from_slice(&available[..used]);
+        total += used;
+        reader.consume(used);
+
+        if found.is_some() {
+            return Ok(total);
+        }
+        if total > limit {
+            bail!(
+                "no newline within the {} MiB limit — the dump may be corrupted, \
+                 or compressed input may be expanding past what its size on disk suggests",
+                limit / (1024 * 1024)
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -709,5 +749,44 @@ mod tests {
         assert!(!is_copy("COPY t FROM '/tmp/data.csv'"));
         assert!(!is_copy("COPY t TO STDOUT"));
         assert!(!is_copy("SELECT 1"));
+    }
+
+    #[test]
+    fn a_line_within_the_limit_reads_whole() {
+        let mut reader = Cursor::new(b"hello\nworld\n".to_vec());
+        let mut buf = Vec::new();
+        let read = read_line_bounded(&mut reader, &mut buf, 64).expect("should read the line");
+        assert_eq!(read, 6);
+        assert_eq!(buf, b"hello\n");
+    }
+
+    #[test]
+    fn a_line_with_no_newline_past_the_limit_is_refused() {
+        // No newline anywhere: a corrupted file, or compressed input that
+        // decodes to far more than its size on disk suggested. Wrapped in a
+        // small-capacity `BufReader` so `fill_buf` hands back a few bytes at a
+        // time, the way a real file or decoder's buffer would — proving the
+        // overrun is bounded by that chunk size rather than by how far past
+        // the limit the missing newline turns out to be.
+        let mut reader = std::io::BufReader::with_capacity(16, Cursor::new(vec![b'x'; 1024]));
+        let mut buf = Vec::new();
+        let error = read_line_bounded(&mut reader, &mut buf, 64)
+            .expect_err("a line past the limit with no newline should be refused");
+        assert!(format!("{error}").contains("MiB limit"), "{error}");
+        assert!(
+            buf.len() < 128,
+            "memory should stay close to the limit, not grow to the reader's full \
+             unterminated content: {}",
+            buf.len()
+        );
+    }
+
+    #[test]
+    fn a_final_line_with_no_trailing_newline_still_reads() {
+        let mut reader = Cursor::new(b"SELECT 1".to_vec());
+        let mut buf = Vec::new();
+        let read = read_line_bounded(&mut reader, &mut buf, 64).expect("should read to EOF");
+        assert_eq!(read, 8);
+        assert_eq!(buf, b"SELECT 1");
     }
 }

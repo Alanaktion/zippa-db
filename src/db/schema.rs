@@ -26,6 +26,28 @@ pub struct ColumnDef {
     /// SQLite's common single-column `INTEGER PRIMARY KEY` is the `rowid`
     /// itself and has no backing index to read it from.
     pub is_primary_key: bool,
+    /// Empty (the default) on Postgres and SQLite, which change one property
+    /// of a column in its own statement. MySQL restates the whole column for
+    /// any change (`MODIFY`/`CHANGE COLUMN`), so this is what an edit's
+    /// generated statement has to fold back in rather than silently drop.
+    pub mysql_extra: MySqlColumnExtra,
+}
+
+/// The parts of a MySQL column `type_name`/`nullable`/`default` cannot
+/// express, read from `information_schema.columns` alongside them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MySqlColumnExtra {
+    pub auto_increment: bool,
+    /// A `TIMESTAMP`/`DATETIME` column's own `ON UPDATE CURRENT_TIMESTAMP`.
+    pub on_update_current_timestamp: bool,
+    /// Also pins the character set: a collation belongs to exactly one.
+    pub collation: Option<String>,
+    pub comment: Option<String>,
+    /// A generated column's expression. Present means the column is not a
+    /// stored value at all, so restating it safely is out of scope for the
+    /// schema editor; an edit to it is refused instead of risking a wrong
+    /// restatement of `GENERATED ALWAYS AS (...) [VIRTUAL | STORED]`.
+    pub generation_expression: Option<String>,
 }
 
 /// One index, in the order its columns are searched.
@@ -252,12 +274,26 @@ fn parse_columns(result: &QueryResult) -> Vec<ColumnDef> {
     result
         .rows
         .iter()
-        .map(|row| ColumnDef {
-            name: text(row, 0),
-            type_name: text(row, 1),
-            nullable: flag(row, 2),
-            default: text_opt(row, 3),
-            is_primary_key: false,
+        .map(|row| {
+            // Columns 4-7 are MySQL-only (`mysql::columns_sql`); Postgres and
+            // SQLite's queries have no such columns, so `row.get` comes back
+            // `None` for them and every field below stays at its default.
+            let extra = text(row, 4).to_ascii_lowercase();
+            ColumnDef {
+                name: text(row, 0),
+                type_name: text(row, 1),
+                nullable: flag(row, 2),
+                default: text_opt(row, 3),
+                is_primary_key: false,
+                mysql_extra: MySqlColumnExtra {
+                    auto_increment: extra.contains("auto_increment"),
+                    on_update_current_timestamp: extra.contains("on update current_timestamp"),
+                    collation: text_opt(row, 5),
+                    comment: text_opt(row, 6).filter(|comment| !comment.is_empty()),
+                    generation_expression: text_opt(row, 7)
+                        .filter(|expression| !expression.is_empty()),
+                },
+            }
         })
         .collect()
 }

@@ -112,10 +112,15 @@ pub(crate) fn primary_key_sql(table: &str) -> String {
 }
 
 /// Columns of a table in the current database: name, full type spec (as
-/// `COLUMN_TYPE` already spells it, e.g. `varchar(255)`), nullability, default.
+/// `COLUMN_TYPE` already spells it, e.g. `varchar(255)`), nullability,
+/// default, then the four MySQL-only properties `schema::parse_columns`
+/// reads into `ColumnDef::mysql_extra` — a full restate (`MODIFY`/`CHANGE
+/// COLUMN`) has to fold these back in itself, since MySQL has no narrower way
+/// to change one property of a column.
 pub(crate) fn columns_sql(table: &str) -> String {
     format!(
-        "SELECT column_name, column_type, (is_nullable = 'YES'), column_default \
+        "SELECT column_name, column_type, (is_nullable = 'YES'), column_default, \
+         extra, collation_name, column_comment, generation_expression \
          FROM information_schema.columns \
          WHERE table_schema = DATABASE() AND table_name = {} \
          ORDER BY ordinal_position",
