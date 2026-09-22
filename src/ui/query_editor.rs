@@ -164,7 +164,10 @@ impl QueryEditor {
     }
 
     /// Ask for the current statement's plan.
-    fn emit_explain(&mut self, analyze: bool, cx: &mut Context<Self>) {
+    ///
+    /// Also how the session reaches this from outside the editor's own
+    /// shortcut — the quick switcher's Explain items.
+    pub(crate) fn emit_explain(&mut self, analyze: bool, cx: &mut Context<Self>) {
         if self.running {
             return;
         }

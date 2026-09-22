@@ -646,6 +646,23 @@ impl Session {
         self.open_tab(None, String::new(), false, window, cx);
     }
 
+    /// Read the active tab's statement plan, for a caller that is not the
+    /// editor's own shortcut — the quick switcher's Explain items.
+    ///
+    /// The editor is asked the way its own buttons ask it, so an `ANALYZE`
+    /// still goes through the confirmation a careful connection wants, and the
+    /// plan lands in the tab exactly as the shortcut would put it there. A tab
+    /// that has no editor, or an empty one, has nothing to explain.
+    pub(crate) fn explain_active(&mut self, analyze: bool, cx: &mut Context<Self>) {
+        let Some(panel) = self.active_panel() else {
+            return;
+        };
+        let Some(editor) = panel.read(cx).editor() else {
+            return;
+        };
+        editor.update(cx, |editor, cx| editor.emit_explain(analyze, cx));
+    }
+
     fn on_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         self.step_tab(1, window, cx);
     }

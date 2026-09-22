@@ -15,9 +15,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, IntoElement, Render, SharedString, Window, div, px};
 
 use crate::db::{DatabaseObject, ObjectKind};
-use crate::ui::query_editor::{Explain, ExplainAnalyze};
+use crate::ui::session::Session;
 use crate::ui::session::tab::ObjectViewMode;
-use crate::ui::session::{NewTab, OpenFile, Refresh, SearchSchema, Session};
 
 /// Actions and destinations selectable from the quick switcher.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,6 +41,55 @@ impl QuickSwitcherView {
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = cx.new(|cx| CommandState::new(window, cx));
         Self { state, session }
+    }
+
+    /// Do what the chosen item asks for.
+    ///
+    /// The items name a destination rather than carrying an action to dispatch:
+    /// the dialog's focus path runs to the workspace, and the session and editor
+    /// an action would have to reach are a sibling branch of it, so a dispatched
+    /// action finds no listener — which is what left these items inert. Every
+    /// destination is driven through the session here instead.
+    fn choose(&self, target: SwitcherTarget, window: &mut Window, cx: &mut Context<Self>) {
+        let session = self.session.clone();
+        match target {
+            SwitcherTarget::Tab(ix) => {
+                session.update(cx, |session, cx| session.activate_tab(ix, window, cx))
+            }
+            SwitcherTarget::Object(object) => session.update(cx, |session, cx| {
+                session.open_object(&object, ObjectViewMode::Data, window, cx)
+            }),
+            SwitcherTarget::SwitchDatabase(database) => {
+                session.update(cx, |session, cx| session.switch_database(database, cx))
+            }
+            SwitcherTarget::NewTab => {
+                session.update(cx, |session, cx| session.new_query_tab(window, cx))
+            }
+            SwitcherTarget::OpenFile => session.update(cx, |session, cx| session.open_file(cx)),
+            SwitcherTarget::Refresh => session.update(cx, |session, cx| session.refresh(cx)),
+            SwitcherTarget::Explain => {
+                session.update(cx, |session, cx| session.explain_active(false, cx))
+            }
+            SwitcherTarget::ExplainAnalyze => {
+                session.update(cx, |session, cx| session.explain_active(true, cx))
+            }
+            // A dialog of its own, and only one can be open at a time: the
+            // caller has closed this one already.
+            SwitcherTarget::SearchSchema => {
+                crate::ui::schema_search::open(session, window, cx);
+            }
+        }
+    }
+
+    /// Do what a chosen item asks for, for a test to drive.
+    #[cfg(test)]
+    pub(crate) fn choose_for_test(
+        &self,
+        target: SwitcherTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.choose(target, window, cx);
     }
 }
 
@@ -70,7 +118,6 @@ pub fn open(session: Entity<Session>, window: &mut Window, cx: &mut App) {
 
 impl Render for QuickSwitcherView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let session = self.session.clone();
         let (tabs_info, objects, databases, is_file_based, current_db, active_tab_ix) = {
             let s = self.session.read(cx);
             let tabs: Vec<(SharedString, bool, Option<String>)> = s
@@ -164,7 +211,6 @@ impl Render for QuickSwitcherView {
                 CommandItem::new()
                     .label("New Query Tab")
                     .icon(IconName::Plus)
-                    .action(Box::new(NewTab))
                     .keywords(["new", "query", "tab", "sql", "editor", "create"]),
             );
             act_targets.push(SwitcherTarget::NewTab);
@@ -173,7 +219,6 @@ impl Render for QuickSwitcherView {
                 CommandItem::new()
                     .label("Open SQL File...")
                     .icon(IconName::FolderOpen)
-                    .action(Box::new(OpenFile))
                     .keywords(["open", "file", "sql", "load", "import"]),
             );
             act_targets.push(SwitcherTarget::OpenFile);
@@ -182,7 +227,6 @@ impl Render for QuickSwitcherView {
                 CommandItem::new()
                     .label("Refresh Schema & Tables")
                     .icon(IconName::RefreshCw)
-                    .action(Box::new(Refresh))
                     .keywords(["refresh", "reload", "schema", "tables", "metadata"]),
             );
             act_targets.push(SwitcherTarget::Refresh);
@@ -191,7 +235,6 @@ impl Render for QuickSwitcherView {
                 CommandItem::new()
                     .label("Search Schema...")
                     .icon(IconName::Search)
-                    .action(Box::new(SearchSchema))
                     .keywords([
                         "search", "find", "schema", "column", "index", "routine", "trigger",
                     ]),
@@ -202,7 +245,6 @@ impl Render for QuickSwitcherView {
                 CommandItem::new()
                     .label("Explain Query")
                     .icon(IconName::Route)
-                    .action(Box::new(Explain))
                     .keywords(["explain", "plan", "query", "cost", "tree"]),
             );
             act_targets.push(SwitcherTarget::Explain);
@@ -211,7 +253,6 @@ impl Render for QuickSwitcherView {
                 CommandItem::new()
                     .label("Explain Query & Analyze")
                     .icon(IconName::Gauge)
-                    .action(Box::new(ExplainAnalyze))
                     .keywords(["explain", "analyze", "plan", "query", "timing"]),
             );
             act_targets.push(SwitcherTarget::ExplainAnalyze);
@@ -241,7 +282,7 @@ impl Render for QuickSwitcherView {
 
         let targets = Rc::new(targets);
         let targets_for_confirm = targets.clone();
-        let session_for_confirm = session.clone();
+        let view_for_confirm = cx.weak_entity();
 
         let mut command = Command::new(&self.state)
             .placeholder("Search tables, views, open queries, commands...")
@@ -256,39 +297,28 @@ impl Render for QuickSwitcherView {
                     .child("No matching tables, views, queries or commands")
             })
             .on_confirm(move |index_path, window, cx| {
-                if let Some(target) = targets_for_confirm
+                let target = targets_for_confirm
                     .get(index_path.section)
-                    .and_then(|s| s.get(index_path.row))
-                {
-                    let target = target.clone();
-                    // The schema search is a dialog of its own, and only one can
-                    // be open at a time: close this one before it opens.
-                    if matches!(target, SwitcherTarget::SearchSchema) {
-                        window.close_dialog(cx);
-                        crate::ui::schema_search::open(session_for_confirm.clone(), window, cx);
-                        return;
-                    }
-                    session_for_confirm.update(cx, |session, cx| match target {
-                        SwitcherTarget::Tab(ix) => {
-                            session.activate_tab(ix, window, cx);
-                        }
-                        SwitcherTarget::Object(object) => {
-                            session.open_object(&object, ObjectViewMode::Data, window, cx);
-                        }
-                        SwitcherTarget::SwitchDatabase(db) => {
-                            session.switch_database(db, cx);
-                        }
-                        SwitcherTarget::NewTab
-                        | SwitcherTarget::OpenFile
-                        | SwitcherTarget::Refresh
-                        | SwitcherTarget::Explain
-                        | SwitcherTarget::ExplainAnalyze
-                        | SwitcherTarget::SearchSchema => {
-                            // Handled via the item's dispatched Action.
-                        }
-                    });
-                }
+                    .and_then(|section| section.get(index_path.row))
+                    .cloned();
+
+                // Taken before the dialog is closed: closing drops the last
+                // strong reference to this view, and the choice still has to be
+                // carried through it.
+                let view = view_for_confirm.upgrade();
+
+                // The dialog goes first. Several of these open a dialog of
+                // their own — the file picker, the schema search, the
+                // confirmation an analysed write asks for — and closing after
+                // would take that one off the screen instead. Doing it first
+                // also leaves the focus where the action puts it rather than
+                // back on the grid.
                 window.close_dialog(cx);
+
+                let (Some(target), Some(view)) = (target, view) else {
+                    return;
+                };
+                view.update(cx, |view, cx| view.choose(target, window, cx));
             })
             .on_cancel(move |window, cx| {
                 window.close_dialog(cx);

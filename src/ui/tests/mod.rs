@@ -867,6 +867,20 @@ fn draw_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow) {
     cx.run_until_parked();
 }
 
+/// The quick switcher over `session`, built the way opening it does but without
+/// the dialog around it, so a test can choose an item and see what it did.
+fn switcher_view(
+    cx: &mut TestAppContext,
+    handle: &WorkspaceWindow,
+    session: &Entity<Session>,
+) -> Entity<crate::ui::quick_switcher::QuickSwitcherView> {
+    let session = session.clone();
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        cx.new(|cx| crate::ui::quick_switcher::QuickSwitcherView::new(session, window, cx))
+    })
+    .unwrap()
+}
+
 /// Put `sql` in the active editor and the caret at `cursor`.
 fn prepare_editor(
     cx: &mut TestAppContext,

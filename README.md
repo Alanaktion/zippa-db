@@ -37,6 +37,7 @@ src/
 ├── main.rs           # Entry point: opens the GPUI window
 ├── app.rs            # Root view: one tab per open connection
 ├── keymap.rs         # Key bindings (platform-aware via `secondary`)
+├── menu.rs           # OS menu bar, from the same actions the keymap binds
 ├── db/
 │   ├── mod.rs        # Module map and re-exports
 │   ├── config.rs     # Engine, SafetyMode, ConnectionConfig
@@ -165,6 +166,8 @@ Building the AppImage needs `fuse`/`libfuse2` installed on the machine doing the
 ## ⌨️ Shortcuts
 
 `Cmd` on macOS, `Ctrl` on Linux and Windows.
+
+Most of these are also in the menu bar — File, Edit, Query, Table and View — where each item carries the key it answers to. An item that has nothing to act on is dimmed rather than hidden.
 
 | Action | Shortcut |
 | --- | --- |
