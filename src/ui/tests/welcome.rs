@@ -45,7 +45,7 @@ fn saving_a_connection_persists_its_tag_and_colour(cx: &mut TestAppContext) {
     handle
         .update(cx, |_, window, cx| {
             welcome.update(cx, |welcome, cx| {
-                welcome.save_for_test(config.clone(), "", window, cx)
+                welcome.save_for_test(config.clone(), None, window, cx)
             })
         })
         .unwrap();
@@ -152,6 +152,69 @@ fn deleting_a_connection_removes_it_and_persists(cx: &mut TestAppContext) {
             .iter()
             .all(|c| c.id != id),
         "the deleted connection should not be on disk"
+    );
+}
+
+#[gpui_kit::test]
+fn editing_a_connection_leaves_its_stored_password_alone(cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+
+    let handle = workspace(cx);
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("the active tab should be showing the connection manager");
+
+    let config = ConnectionConfig {
+        name: "Prod DB".into(),
+        ..ConnectionConfig::new(Engine::Postgres)
+    };
+    let id = config.id;
+    welcome.update(cx, |welcome, cx| {
+        welcome.set_connections_for_test(vec![config], cx)
+    });
+
+    // Open the editor on the saved connection, the way its card's `…` menu
+    // does. `update_window` rather than `handle.update`: opening a dialog
+    // updates the window's `Root`, which the latter already holds.
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| welcome.edit_for_test(id, window, cx));
+    })
+    .unwrap();
+    assert!(
+        welcome.update(cx, |welcome, _| welcome.editor_open_for_test()),
+        "the editor should be open on the saved connection"
+    );
+
+    // The stored password is never loaded into the form, so an edit that was
+    // not about the password has to say "leave it alone" rather than "write an
+    // empty one", which would delete it.
+    assert_eq!(
+        welcome.update(cx, |welcome, cx| welcome
+            .editor_password_intent_for_test(cx)),
+        None,
+        "an untouched password box must not claim a password to write"
+    );
+
+    // Typing one still reports it, so the box keeps working.
+    draw_workspace(cx, &handle);
+    welcome
+        .downgrade()
+        .update_in(cx, |welcome, window, cx| {
+            welcome.focus_editor_password_for_test(window, cx)
+        })
+        .unwrap();
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.input("hunter2", cx);
+    })
+    .unwrap();
+
+    assert_eq!(
+        welcome.update(cx, |welcome, cx| welcome
+            .editor_password_intent_for_test(cx)),
+        Some("hunter2".to_string()),
+        "typing in the box reports the new password"
     );
 }
 

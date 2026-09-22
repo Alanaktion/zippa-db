@@ -142,6 +142,80 @@ fn the_dialog_saves_with_the_platform_shortcut(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn saving_an_untouched_null_leaves_it_null(cx: &mut TestAppContext) {
+    let (database, handle, view) = workspace_table(cx);
+
+    // The second row has no name, so the box opens on the word `NULL`.
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.view_cell(1, 1, cx));
+    draw_workspace(cx, &handle);
+
+    let dialog = handle
+        .update(cx, |workspace, _, _| workspace.value_dialog_for_test())
+        .unwrap()
+        .expect("the dialog should be open over the window");
+    assert_eq!(
+        dialog.read_with(cx, |dialog, cx| dialog.value_for_test(cx)),
+        "NULL"
+    );
+
+    // Saving it as it stood is not an edit, so the NULL must survive.
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.press("secondary-enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(
+        grid.read_with(cx, |grid, cx| grid.staged(cx).is_empty()),
+        "saving the box untouched stages nothing"
+    );
+
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        runtime::block_on(name_of(&database, 2)),
+        None,
+        "an untouched NULL must not become the word NULL"
+    );
+}
+
+#[gpui_kit::test]
+fn the_dialog_coerces_a_typed_null_like_the_cell_editor(cx: &mut TestAppContext) {
+    let (database, handle, view) = workspace_table(cx);
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
+    draw_workspace(cx, &handle);
+
+    let dialog = handle
+        .update(cx, |workspace, _, _| workspace.value_dialog_for_test())
+        .unwrap()
+        .expect("the dialog should be open over the window");
+    dialog
+        .downgrade()
+        .update_in(cx, |dialog, window, cx| {
+            dialog.set_value_for_test("null", window, cx);
+        })
+        .unwrap();
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.press("secondary-enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        None,
+        "with the setting on, typing null in the dialog stores SQL NULL"
+    );
+}
+
+#[gpui_kit::test]
 fn escape_closes_the_dialog_without_saving(cx: &mut TestAppContext) {
     let (database, handle, view) = workspace_table(cx);
 

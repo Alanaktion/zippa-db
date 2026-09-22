@@ -611,12 +611,7 @@ impl DataGrid {
         };
 
         let text = self.editor.read(cx).value().to_string();
-        let coerce = Settings::global(cx).coerce_null_literal;
-        let value = if coerce && text.eq_ignore_ascii_case("null") {
-            None
-        } else {
-            Some(text)
-        };
+        let value = staged_value(text, Settings::global(cx).coerce_null_literal);
 
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
@@ -1036,6 +1031,9 @@ impl DataGrid {
             .cloned()
             .unwrap_or_default();
         let value = delegate.cell(row_ix, col_ix).clone();
+        // What the box opens with, and what the save closure compares against:
+        // the display form, not the value itself.
+        let text = format_value(&value, &type_name);
 
         // The stand-ins the driver hands back describe a value rather than
         // holding it, so there is nothing to edit and the window says why.
@@ -1049,12 +1047,21 @@ impl DataGrid {
 
         let save: Option<value_dialog::Save> = delegate.is_editable(row_ix, col_ix).then(|| {
             let grid = cx.weak_entity();
-            Rc::new(move |text: String, cx: &mut App| {
+            let opened_with = text.clone();
+            Rc::new(move |typed: String, cx: &mut App| {
                 let Some(grid) = grid.upgrade() else {
                     return;
                 };
+                // The box opens with the value laid out for reading — `NULL`,
+                // JSON indented — so saving it as it stood is not an edit. This
+                // is what keeps an untouched `NULL` a `NULL` rather than the
+                // four characters the box spelled it with.
+                if typed == opened_with {
+                    return;
+                }
                 grid.update(cx, |grid, cx| {
-                    grid.stage_cell(row_ix, col_ix, Some(text), cx)
+                    let value = staged_value(typed, Settings::global(cx).coerce_null_literal);
+                    grid.stage_cell(row_ix, col_ix, value, cx)
                 });
             }) as value_dialog::Save
         });
@@ -1062,7 +1069,7 @@ impl DataGrid {
         value_dialog::open(
             ValueRequest {
                 column: column.into(),
-                text: format_value(&value, &type_name),
+                text,
                 note: note.map(Into::into),
                 save,
             },
@@ -1711,6 +1718,19 @@ fn cap_bytes(mut text: String) -> (String, bool) {
     }
     text.truncate(end);
     (text, true)
+}
+
+/// The value a typed string stages: `NULL` in any capitalisation means SQL
+/// `NULL` when the setting says so, and the text itself otherwise.
+///
+/// Shared by the cell editor and the value dialog, so the two agree on what
+/// typing `null` into a cell means.
+fn staged_value(text: String, coerce: bool) -> Cell {
+    if coerce && text.eq_ignore_ascii_case("null") {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 impl Render for DataGrid {

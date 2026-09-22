@@ -8,7 +8,7 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Icon, Selectable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -21,15 +21,19 @@ actions!(zippa_db, [EditorClose, EditorConnect]);
 
 /// What the editor asks its owner to do.
 pub enum EditorEvent {
-    /// Save the connection (and its password) without connecting.
+    /// Save the connection without connecting.
+    ///
+    /// `password` is `None` when the user never touched the box, so a save that
+    /// was not about the password leaves the stored one alone.
     Saved {
         config: ConnectionConfig,
-        password: String,
+        password: Option<String>,
     },
-    /// Connect immediately with this config and password.
+    /// Connect immediately with this config. `password` is `None` when the box
+    /// is blank, which is no password rather than the stored one.
     Connect {
         config: ConnectionConfig,
-        password: String,
+        password: Option<String>,
     },
     /// The dialog was dismissed without saving or connecting.
     Dismissed,
@@ -56,6 +60,10 @@ pub struct ConnectionEditor {
     password: Entity<InputState>,
     database: Entity<InputState>,
     tag: Entity<InputState>,
+    /// Whether the user has typed in the password box since the dialog opened.
+    /// The stored password is never loaded into it, so an untouched box has to
+    /// mean "leave it alone" rather than "no password".
+    password_edited: bool,
 }
 
 impl EventEmitter<EditorEvent> for ConnectionEditor {}
@@ -71,6 +79,7 @@ impl ConnectionEditor {
             .as_ref()
             .map(|c| c.engine)
             .unwrap_or(Engine::Postgres);
+        let editing = config.is_some();
 
         let mut editor = Self {
             id: config.as_ref().map(|c| c.id),
@@ -83,15 +92,49 @@ impl ConnectionEditor {
                 InputState::new(window, cx).default_value(engine.default_port().to_string())
             }),
             username: cx.new(|cx| InputState::new(window, cx).placeholder("postgres")),
-            password: cx.new(|cx| InputState::new(window, cx).masked(true)),
+            password: cx.new(|cx| {
+                let input = InputState::new(window, cx).masked(true);
+                // A saved connection's password is never read back into the
+                // form, so the placeholder is what tells the user that leaving
+                // it blank keeps what is already stored.
+                if editing {
+                    input.placeholder("Leave blank to keep the saved password")
+                } else {
+                    input
+                }
+            }),
             database: cx.new(|cx| InputState::new(window, cx).placeholder("postgres")),
             tag: cx.new(|cx| InputState::new(window, cx).placeholder("Production")),
+            password_edited: false,
         };
 
         if let Some(config) = config {
             editor.load(&config, window, cx);
         }
+
+        // Subscribed after `load`, so filling the form in is not mistaken for
+        // the user typing: only a change made from here on is a new password.
+        let password = editor.password.clone();
+        cx.subscribe_in(&password, window, Self::on_password_event)
+            .detach();
+
         editor
+    }
+
+    /// Note that the user typed in the password box.
+    ///
+    /// This is what tells an untouched box (keep the stored password) apart
+    /// from one the user emptied (forget it).
+    fn on_password_event(
+        &mut self,
+        _password: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            self.password_edited = true;
+        }
     }
 
     fn set_field(
@@ -192,14 +235,26 @@ impl ConnectionEditor {
 
     fn save(&mut self, cx: &mut Context<Self>) {
         let config = self.config(cx);
-        let password = self.password.read(cx).value().to_string();
+        let password = self.password(cx);
         cx.emit(EditorEvent::Saved { config, password });
     }
 
     fn connect(&mut self, cx: &mut Context<Self>) {
         let config = self.config(cx);
-        let password = self.password.read(cx).value().to_string();
+        // A blank box means no password here: connecting cannot pick up the
+        // stored one from inside the dialog.
+        let password = self.password(cx).filter(|password| !password.is_empty());
         cx.emit(EditorEvent::Connect { config, password });
+    }
+
+    /// What the password box means for the keychain.
+    ///
+    /// `None` when the user never touched it, so an edit that was not about the
+    /// password leaves the stored one in place; `Some("")` when they emptied
+    /// it, which is how a saved password is forgotten.
+    fn password(&self, cx: &App) -> Option<String> {
+        self.password_edited
+            .then(|| self.password.read(cx).value().to_string())
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
@@ -376,6 +431,19 @@ impl ConnectionEditor {
             })
             .child(self.render_tag(cx))
             .child(self.render_safety(cx))
+    }
+
+    /// The password this form would write to the keychain, for a test to read.
+    #[cfg(test)]
+    pub(crate) fn password_intent_for_test(&self, cx: &App) -> Option<String> {
+        self.password(cx)
+    }
+
+    /// Put the caret in the password box, the way a click would.
+    #[cfg(test)]
+    pub(crate) fn focus_password_for_test(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.password
+            .update(cx, |input, cx| input.focus(window, cx));
     }
 }
 

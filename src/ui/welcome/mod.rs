@@ -16,6 +16,9 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::*;
+// `App` is only named by the test-only reach-in below.
+#[cfg(test)]
+use gpui_kit::App;
 use gpui_kit::{Context, Entity, EventEmitter, FocusHandle, Window, div, px};
 use uuid::Uuid;
 
@@ -164,8 +167,7 @@ impl Welcome {
             }
             EditorEvent::Connect { config, password } => {
                 self.close_editor(window, cx);
-                let password = (!password.is_empty()).then(|| password.clone());
-                self.connect(config.clone(), password, window, cx);
+                self.connect(config.clone(), password.clone(), window, cx);
             }
             EditorEvent::Dismissed => self.close_editor(window, cx),
         }
@@ -180,11 +182,15 @@ impl Welcome {
         self.open_editor(None, window, cx);
     }
 
-    /// Save the editor's config and password into the list and the store.
+    /// Save the editor's config into the list and the store.
+    ///
+    /// `password` is `None` when the user never touched the password box, which
+    /// leaves whatever the keychain already holds alone; an empty string means
+    /// they emptied the box on purpose, which forgets the password.
     fn save(
         &mut self,
         config: ConnectionConfig,
-        password: String,
+        password: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -197,9 +203,10 @@ impl Welcome {
             None => self.connections.push(config.clone()),
         }
 
-        match store::save(&self.connections)
-            .and_then(|()| store::set_password(&config.id, &password))
-        {
+        match store::save(&self.connections).and_then(|()| match &password {
+            Some(password) => store::set_password(&config.id, password),
+            None => Ok(()),
+        }) {
             Ok(()) => {}
             Err(error) => {
                 let message = format!("{error:#}");
@@ -581,16 +588,45 @@ impl Welcome {
         &self.connections
     }
 
-    /// Save a connection the way the editor's Save button does.
+    /// Save a connection the way the editor's Save button does. `password` is
+    /// `None` for a box the user never touched.
     #[cfg(test)]
     pub(crate) fn save_for_test(
         &mut self,
         config: ConnectionConfig,
-        password: &str,
+        password: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.save(config, password.to_string(), window, cx);
+        self.save(config, password.map(str::to_string), window, cx);
+    }
+
+    /// Open the editor pre-filled from a saved connection, as its card does.
+    #[cfg(test)]
+    pub(crate) fn edit_for_test(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        self.edit(id, window, cx);
+    }
+
+    /// The password the open editor would write to the keychain, for a test to
+    /// read. `None` when the box has not been typed in.
+    #[cfg(test)]
+    pub(crate) fn editor_password_intent_for_test(&self, cx: &App) -> Option<String> {
+        self.editor
+            .as_ref()
+            .and_then(|editor| editor.read(cx).password_intent_for_test(cx))
+    }
+
+    /// Put the caret in the open editor's password box, the way a click would.
+    #[cfg(test)]
+    pub(crate) fn focus_editor_password_for_test(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.editor.clone() else {
+            return;
+        };
+        editor.update(cx, |editor, cx| editor.focus_password_for_test(window, cx));
     }
 
     /// Duplicate a connection the way the card's `…` menu does.
