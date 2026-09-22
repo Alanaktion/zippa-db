@@ -37,6 +37,30 @@ fn each_connection_opens_in_a_tab_of_its_own(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_connection_bar_only_shows_with_more_than_one_tab(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+
+    let bar = |cx: &mut TestAppContext, expect: bool| {
+        let found = cx
+            .update_window(handle.window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find("connection-bar").is_some()
+            })
+            .unwrap();
+        assert_eq!(found, expect, "the connection bar's visibility");
+    };
+
+    // A single connection — the manager included — needs no strip.
+    bar(cx, false);
+
+    let _database = connect(cx, &handle);
+    bar(cx, false);
+
+    click(cx, &handle, "new-connection");
+    bar(cx, true);
+}
+
+#[gpui_kit::test]
 fn the_shortcut_opens_the_editor_on_the_welcome_screen(cx: &mut TestAppContext) {
     let handle = workspace(cx);
 
@@ -141,7 +165,9 @@ fn closing_the_last_connection_leaves_the_manager(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let _database = connect(cx, &handle);
 
-    click(cx, &handle, "close-connection-0");
+    // A lone connection has no strip to close it from, so the shortcut (and
+    // the menu item behind it) is the way out.
+    press_workspace(cx, &handle, "secondary-shift-w");
 
     assert_eq!(
         titles(cx, &handle),
@@ -167,7 +193,7 @@ fn closing_a_connection_tab_with_unsaved_changes_asks_first(cx: &mut TestAppCont
         })
         .unwrap();
 
-    click(cx, &handle, "close-connection-0");
+    press_workspace(cx, &handle, "secondary-shift-w");
     assert_eq!(
         titles(cx, &handle),
         [first.config().display_name()],
@@ -179,7 +205,7 @@ fn closing_a_connection_tab_with_unsaved_changes_asks_first(cx: &mut TestAppCont
     assert_eq!(titles(cx, &handle), [first.config().display_name()]);
 
     // Saying yes closes it despite the unsaved changes.
-    click(cx, &handle, "close-connection-0");
+    press_workspace(cx, &handle, "secondary-shift-w");
     click(cx, &handle, "ok");
     assert_eq!(
         titles(cx, &handle),

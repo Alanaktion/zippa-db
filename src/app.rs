@@ -4,11 +4,14 @@
 //! turns the tab it was opened from into that session and disconnecting turns
 //! it back, so a connection is always somewhere on the bar rather than
 //! replacing what the window was showing. The window keeps at least one tab,
-//! the way the session keeps at least one editor.
+//! the way the session keeps at least one editor. The bar only takes a row of
+//! the window once there is more than one tab to choose between; a lone
+//! connection is closed from its shortcut or the File menu.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
@@ -924,14 +927,22 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
-            .child(
-                div()
-                    .w_full()
-                    .flex_none()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(self.render_tab_bar(cx)),
-            )
+            // A strip for a single connection is a title the title bar already
+            // carries, so it is only worth the row once there is more than one
+            // tab to choose between. Closing the last one still works from
+            // `Cmd`/`Ctrl`+`Shift`+`W` and the File menu.
+            .when(self.tabs.len() > 1, |this| {
+                this.child(
+                    v_flex()
+                        .id("connection-bar")
+                        .test_support()
+                        .w_full()
+                        .flex_none()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(self.render_tab_bar(cx)),
+                )
+            })
             .child(div().flex_1().min_h_0().child(body))
             // The value dialog lives in the window's `Root` rather than in the
             // tree above, so it covers the whole window and takes the focus.
