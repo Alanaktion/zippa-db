@@ -211,6 +211,46 @@ fn disconnecting_returns_the_tab_to_the_manager(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn disconnecting_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let first = connect(cx, &handle);
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the active tab should be a session");
+    handle
+        .update(cx, |_, window, cx| {
+            session.update(cx, |session, cx| {
+                session.prepare_active_editor_for_test("select 1", window, cx)
+            })
+        })
+        .unwrap();
+
+    click(cx, &handle, "disconnect");
+    assert_eq!(
+        titles(cx, &handle),
+        [first.config().display_name()],
+        "a connection with unsaved changes should not disconnect until the question is answered"
+    );
+
+    // Saying no leaves it connected.
+    click(cx, &handle, "cancel");
+    assert_eq!(titles(cx, &handle), [first.config().display_name()]);
+    cx.run_until_parked();
+
+    // Saying yes disconnects it, keeping the tab for the next connection.
+    click(cx, &handle, "disconnect");
+    click(cx, &handle, "ok");
+    cx.run_until_parked();
+    assert_eq!(
+        titles(cx, &handle),
+        ["New connection"],
+        "confirming should disconnect the connection"
+    );
+}
+
+#[gpui_kit::test]
 fn the_toolbar_buttons_are_disabled_without_a_connection(cx: &mut TestAppContext) {
     let handle = workspace(cx);
 

@@ -328,6 +328,67 @@ impl Workspace {
         });
     }
 
+    /// Replace a session's tab with a fresh connection manager, the way the
+    /// sidebar's Disconnect button does. The caller has already decided any
+    /// unsaved work in the session's tabs does not matter.
+    fn disconnect(
+        &mut self,
+        session: Entity<Session>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) =
+            self.tab_of(|tab| matches!(tab, TabContent::Session(open) if open == &session))
+        else {
+            return;
+        };
+
+        close(session.read(cx).connection());
+        // Disconnecting keeps the tab, so another connection can be opened
+        // from where the last one was.
+        self.tabs[index] = TabContent::Connect(Self::welcome(window, cx));
+        self.focus_active(window, cx);
+        self.save_state(cx);
+        cx.notify();
+    }
+
+    /// Ask before disconnecting a connection whose own tabs hold unsaved
+    /// changes; disconnects it on confirmation.
+    fn confirm_disconnect(
+        &mut self,
+        session: Entity<Session>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = session.read(cx).display_name();
+        let workspace = cx.entity().downgrade();
+
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let workspace = workspace.clone();
+            let session = session.clone();
+            alert
+                .title("Unsaved Changes")
+                .description(format!(
+                    "\"{name}\" has tabs with unsaved changes. Disconnect anyway?"
+                ))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Disconnect Without Saving")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Keep Connected")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        workspace.update(cx, |this, cx| {
+                            this.disconnect(session.clone(), window, cx);
+                        });
+                    }
+                    true
+                })
+        });
+    }
+
     /// Remove a tab outright; the caller has already decided any unsaved
     /// changes in it do not matter.
     fn close_tab_now(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -422,19 +483,14 @@ impl Workspace {
             // rewritten at these checkpoints rather than on every keystroke.
             SessionEvent::Changed => self.save_state(cx),
             SessionEvent::Disconnected => {
-                let Some(index) =
-                    self.tab_of(|tab| matches!(tab, TabContent::Session(open) if open == session))
-                else {
+                // Disconnecting drops the session and every tab in it, so ask
+                // first when any of them holds work that was never written —
+                // the same guard closing the tab uses.
+                if session.read(cx).has_unsaved_changes(cx) {
+                    self.confirm_disconnect(session.clone(), window, cx);
                     return;
-                };
-
-                close(session.read(cx).connection());
-                // Disconnecting keeps the tab, so another connection can be
-                // opened from where the last one was.
-                self.tabs[index] = TabContent::Connect(Self::welcome(window, cx));
-                self.focus_active(window, cx);
-                self.save_state(cx);
-                cx.notify();
+                }
+                self.disconnect(session.clone(), window, cx);
             }
         }
     }
