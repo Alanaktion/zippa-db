@@ -575,25 +575,18 @@ impl Session {
         // below once there is something restored to take its place.
         let placeholder = self.panels.first().cloned();
         let mut restored = 0;
+        // Restored query tabs whose file is read to decide whether the buffer is
+        // dirty. The reads happen after the loop, off the UI thread.
+        let mut file_backed: Vec<(Entity<SessionPanel>, PathBuf)> = Vec::new();
 
         for panel in state.panels {
             match panel {
                 PanelState::Query { title, sql, file } => {
                     let panel = self.open_tab(Some(title), sql.clone(), false, window, cx);
-                    // The saved buffer wins: re-reading the file could replace
-                    // unsaved text. The file is only read to decide whether the
-                    // restored buffer matches it, so an unsaved buffer shows as
-                    // dirty and is asked about before closing.
-                    let baseline = file
-                        .as_ref()
-                        .and_then(|path| std::fs::read_to_string(path).ok())
-                        .unwrap_or_default();
-                    panel.update(cx, move |panel, cx| {
-                        if let Some(path) = file {
-                            panel.set_file(path, cx);
-                        }
-                        panel.set_baseline(baseline);
-                    });
+                    if let Some(path) = file {
+                        panel.update(cx, |panel, cx| panel.set_file(path.clone(), cx));
+                        file_backed.push((panel, path));
+                    }
                     restored += 1;
                 }
                 PanelState::Table { object } => {
@@ -607,6 +600,38 @@ impl Session {
                 // Written by a newer build; leave it out rather than guess.
                 PanelState::Unknown => {}
             }
+        }
+
+        // The saved buffer wins: re-reading the file could replace unsaved text.
+        // The file is only read to decide whether the restored buffer matches it,
+        // so an unsaved buffer shows as dirty and is asked about before closing.
+        // Reading it is blocking I/O, so it goes to the background executor and
+        // folds in when it lands; a file that cannot be read is reported rather
+        // than left to look like an empty one.
+        if !file_backed.is_empty() {
+            let paths: Vec<PathBuf> = file_backed.iter().map(|(_, path)| path.clone()).collect();
+            let reads = cx.background_spawn(async move {
+                paths
+                    .into_iter()
+                    .map(|path| std::fs::read_to_string(&path).ok())
+                    .collect::<Vec<_>>()
+            });
+            cx.spawn(async move |_this, cx| {
+                let texts = reads.await;
+                for ((panel, path), text) in file_backed.into_iter().zip(texts) {
+                    panel.update(cx, |panel, _cx| match text {
+                        Some(text) => panel.set_baseline(text),
+                        None => {
+                            panel.set_baseline(String::new());
+                            panel.set_status(Status::Error(format!(
+                                "could not read {}",
+                                path.display()
+                            )));
+                        }
+                    });
+                }
+            })
+            .detach();
         }
 
         if restored > 0

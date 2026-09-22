@@ -343,6 +343,42 @@ fn restored_connections_reopen_their_tabs_in_order(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_restored_file_tab_reads_its_file_to_decide_dirty(cx: &mut TestAppContext) {
+    let file_dir = ScratchDir::new();
+    let file = file_dir.file("report.sql", "select 1;\n");
+
+    let database = runtime::block_on(TempDatabase::new());
+    let config = database.config();
+    let state = WorkspaceState {
+        sessions: vec![SessionState {
+            connection: config.id,
+            database: Some(config.database.clone()),
+            active: 0,
+            panels: vec![PanelState::Query {
+                title: "report.sql".into(),
+                // The saved buffer differs from what is on disk, so the tab is
+                // unsaved work once the file has been read back.
+                sql: "select 2;\n".into(),
+                file: Some(file),
+            }],
+        }],
+        ..WorkspaceState::default()
+    };
+
+    let (_config_dir, handle) = restored_workspace(cx, state, vec![config]);
+    cx.run_until_parked();
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the restored connection should have become a session");
+    assert!(
+        session.read_with(cx, |session, cx| session.tab_is_dirty_for_test(0, cx)),
+        "a restored buffer that differs from its file should show as unsaved"
+    );
+}
+
+#[gpui_kit::test]
 fn a_restored_table_tab_replaces_the_empty_editor(cx: &mut TestAppContext) {
     let database = runtime::block_on(TempDatabase::new());
     let config = database.config();
