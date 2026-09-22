@@ -344,9 +344,10 @@ pub fn values(cells: &[Cell]) -> Rendered {
 /// One column as a SQL `IN` list: `('a', 'b', 3)`.
 ///
 /// A numeric or boolean column goes in bare and everything else is quoted for
-/// `engine`. `NULL` — and a placeholder, which is `NULL` in every format — is
+/// `NULL` — and a placeholder, which is `NULL` in every format — is
 /// left out, but the order and the duplicates are kept: this is meant to be
-/// pasted into a `WHERE` beside the values the user picked.
+/// pasted into a `WHERE` beside the values the user picked. If nothing is left,
+/// a single `NULL` keeps the list valid rather than emitting `()`.
 pub fn in_list(engine: Engine, type_name: &str, cells: &[Cell]) -> Rendered {
     let mut skipped = 0;
     let mut values = Vec::new();
@@ -374,10 +375,16 @@ pub fn in_list(engine: Engine, type_name: &str, cells: &[Cell]) -> Rendered {
         }
     }
 
-    Rendered {
-        text: format!("({})", values.join(", ")),
-        skipped,
-    }
+    // An `IN` list cannot be empty — `in ()` is a syntax error — so a column
+    // whose values were all NULL (or all stand-ins) keeps one: comparing
+    // against NULL is unknown, which is what the dropped values meant anyway.
+    let text = if values.is_empty() {
+        "(NULL)".to_string()
+    } else {
+        format!("({})", values.join(", "))
+    };
+
+    Rendered { text, skipped }
 }
 
 /// One row per `INSERT`, with numbers bare and everything else quoted.
@@ -747,6 +754,11 @@ mod tests {
         assert_eq!(rendered.text, "('C:\\\\tmp')");
 
         let empty = in_list(Engine::Sqlite, "TEXT", &[]);
-        assert_eq!(empty.text, "()");
+        assert_eq!(empty.text, "(NULL)", "an empty list is still valid SQL");
+
+        // A column of only NULLs keeps a NULL rather than emitting `()`, which
+        // no server parses.
+        let all_null = in_list(Engine::Sqlite, "TEXT", &[None, None]);
+        assert_eq!(all_null.text, "(NULL)");
     }
 }

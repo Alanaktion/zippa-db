@@ -526,9 +526,10 @@ fn a_column_copies_as_values_or_an_in_list(cx: &mut TestAppContext) {
     assert_eq!(clipboard(cx), Some("(1, 2)".to_string()));
 
     // `payload` holds a stand-in for a value that was never read back, and the
-    // other row's is NULL, so there is nothing to list.
+    // other row's is NULL, so there is no value to list — the list keeps a NULL
+    // rather than emitting `()`.
     grid.update(cx, |grid, cx| grid.copy_as(CopyAs::ColumnInList(3), cx));
-    assert_eq!(clipboard(cx), Some("()".to_string()));
+    assert_eq!(clipboard(cx), Some("(NULL)".to_string()));
     assert_eq!(
         view.read_with(cx, |view, _| view.notice_for_test()),
         Some("No values to copy".to_string())
