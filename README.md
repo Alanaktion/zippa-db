@@ -176,7 +176,7 @@ Most of these are also in the menu bar — File, Edit, Query, Table and View —
 | Show the statement's execution plan without running it | `Cmd`/`Ctrl` + `E` |
 | Show the plan and run the statement for actual times (Postgres and MySQL; SQLite has no `EXPLAIN ANALYZE`) | `Cmd`/`Ctrl` + `Shift` + `E` |
 | Give up on a running query | `Cmd`/`Ctrl` + `.` |
-| New connection (or another connection tab) | `Cmd`/`Ctrl` + `N` |
+| New connection (or another connection tab; on the connection manager it opens the editor dialog) | `Cmd`/`Ctrl` + `N` |
 | Close the active connection | `Cmd`/`Ctrl` + `Shift` + `W` |
 | Next / previous connection | `Cmd`/`Ctrl` + `Shift` + `]` / `[` |
 | New query tab | `Cmd`/`Ctrl` + `T` |
@@ -185,6 +185,7 @@ Most of these are also in the menu bar — File, Edit, Query, Table and View —
 | Refresh the schema and the open table | `Cmd`/`Ctrl` + `R` |
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
 | Search the schema for a column, index, routine, or trigger | `Cmd`/`Ctrl` + `Shift` + `O` |
+| Open the quick switcher over tabs, objects, databases and actions | `Cmd`/`Ctrl` + `K` |
 | Import a SQL dump into the connection | `Cmd`/`Ctrl` + `Shift` + `I` |
 | Move between cells | `↑` `↓` `←` `→`, `Home` / `End`, `PageUp` / `PageDown` |
 | Copy the selected cell, or the selected rows | `Cmd`/`Ctrl` + `C` |
@@ -203,6 +204,7 @@ Most of these are also in the menu bar — File, Edit, Query, Table and View —
 | Save the active tab, or write a table tab's staged edits | `Cmd`/`Ctrl` + `S` |
 | Discard a table tab's staged edits | `Cmd`/`Ctrl` + `Z` |
 | Save the active tab under a new name | `Cmd`/`Ctrl` + `Shift` + `S` |
+| Toggle the row panel beside a table | `Cmd`/`Ctrl` + `\` |
 | Settings | `Cmd`/`Ctrl` + `,` (or the gear in the toolbar) |
 | Close the settings window | `Cmd`/`Ctrl` + `W`, `Alt` + `F4`, or `Escape` |
 | Keyboard shortcut list | `Ctrl` + `/` (or Help menu) |

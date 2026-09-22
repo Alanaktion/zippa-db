@@ -30,6 +30,10 @@ const GROUPS: &[Group] = &[
             ("Quick switcher", &["secondary-k"]),
             ("Search the schema", &["secondary-shift-o"]),
             ("Settings", &["secondary-,"]),
+            (
+                "Close the settings window",
+                &["secondary-w", "alt-f4", "escape"],
+            ),
         ],
     },
     Group {
@@ -39,6 +43,7 @@ const GROUPS: &[Group] = &[
             ("Close the active connection", &["secondary-shift-w"]),
             ("Next connection", &["secondary-shift-]"]),
             ("Previous connection", &["secondary-shift-["]),
+            ("Connect from the connection editor", &["secondary-enter"]),
         ],
     },
     Group {
@@ -46,8 +51,8 @@ const GROUPS: &[Group] = &[
         rows: &[
             ("New query tab", &["secondary-t"]),
             ("Close the active tab", &["secondary-w"]),
-            ("Next tab", &["ctrl-tab"]),
-            ("Previous tab", &["ctrl-shift-tab"]),
+            ("Next tab", &["ctrl-tab", "ctrl-pagedown"]),
+            ("Previous tab", &["ctrl-shift-tab", "ctrl-pageup"]),
             ("Refresh the schema and the open table", &["secondary-r"]),
         ],
     },
