@@ -9,7 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::dock::{
     DockArea, DockLayout, DockPlacement, DockSkin, InsertTarget, NodeId, PanelId, PanelStyle,
-    panel_handle,
+    TabGroup, panel_handle,
 };
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
@@ -43,6 +43,7 @@ pub(crate) mod tab;
 #[cfg(test)]
 mod test_support;
 
+pub(crate) use panel::CloseScope;
 use panel::{SessionPanel, SessionPanelEvent};
 use tab::{ObjectViewMode, Status};
 
@@ -243,20 +244,64 @@ impl Session {
             return;
         }
 
+        let group = panel.read(cx).group().and_then(|group| group.upgrade());
+        let index = self.panels.iter().position(|p| p == panel).unwrap_or(0);
+
         self.panels.retain(|p| p != panel);
+        // Whatever the dock decides to show, it is not the tab that has just
+        // gone; the choice is made below, once the dock has made it.
         if self.active.as_ref().is_some_and(|w| w == panel) {
-            self.active = self.panels.last().map(|p| p.downgrade());
+            self.active = None;
         }
 
         if self.panels.is_empty() {
             // The session always shows one editor.
             self.open_tab(None, String::new(), false, window, cx);
+            self.focus(window, cx);
             return;
         }
 
+        self.adopt_dock_active(group, index, cx);
         self.sync_tree_selection(cx);
+        self.focus(window, cx);
         cx.emit(SessionEvent::Changed);
         cx.notify();
+    }
+
+    /// Take the dock's word for which tab is in front.
+    ///
+    /// A tab closing is the dock's cue to slide the one after it into its
+    /// place, or the one before it when it was last. That tab is what is on
+    /// screen, so it is the one the session has to call active: leaving it on
+    /// the tab that has just gone — or guessing from creation order — points
+    /// the keyboard at an element the dock is no longer drawing, and the next
+    /// keystroke, `Cmd+W` included, lands nowhere at all.
+    ///
+    /// `index` is the closed tab's place in creation order, used only when the
+    /// dock cannot be asked.
+    fn adopt_dock_active(&mut self, group: Option<Entity<TabGroup>>, index: usize, cx: &App) {
+        // A tab opened while this one was going keeps the session's active tab
+        // pointing at something that exists, and the dock agrees with it.
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| self.panels.iter().any(|panel| panel.downgrade() == *active))
+        {
+            return;
+        }
+
+        let displayed = group.and_then(|group| {
+            let id = group.read(cx).active_panel(cx)?.panel_id(cx);
+            self.panels
+                .iter()
+                .find(|panel| PanelId::from(panel.entity_id()) == id)
+                .cloned()
+        });
+
+        self.active = displayed
+            .or_else(|| self.panels.get(index).cloned())
+            .or_else(|| self.panels.last().cloned())
+            .map(|panel| panel.downgrade());
     }
 
     /// The hub every panel event passes through.
@@ -271,6 +316,9 @@ impl Session {
             SessionPanelEvent::Focused => self.touch(panel, cx),
             SessionPanelEvent::Removed => self.forget(panel, window, cx),
             SessionPanelEvent::CloseRequested => self.close_tab(panel, window, cx),
+            SessionPanelEvent::CloseScopeRequested(scope) => {
+                self.close_scope(panel, *scope, window, cx)
+            }
             SessionPanelEvent::NewTabRequested => {
                 self.touch(panel, cx);
                 self.open_tab(None, String::new(), false, window, cx);
@@ -491,17 +539,207 @@ impl Session {
             self.open_tab(None, String::new(), false, window, cx);
         }
 
+        let group = panel.read(cx).group().and_then(|group| group.upgrade());
+        let index = self.panels.iter().position(|p| p == panel).unwrap_or(0);
+
         self.panels.retain(|p| p != panel);
         if self.active.as_ref().is_some_and(|w| w == panel) {
-            self.active = self.panels.last().map(|p| p.downgrade());
+            self.active = None;
         }
 
         self.dock
             .update(cx, |dock, cx| dock.remove_panel(panel.clone(), window, cx));
 
+        // The dock slides a tab into the closed one's place and drops the
+        // focus with the panel, so which tab is in front — and where the
+        // keyboard goes — is settled after the removal, not before it.
+        self.adopt_dock_active(group, index, cx);
         self.sync_tree_selection(cx);
+        self.focus(window, cx);
         cx.emit(SessionEvent::Changed);
         cx.notify();
+    }
+
+    /// Close the tabs a tab command named.
+    fn close_scope(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        scope: CloseScope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let targets = self.scope_targets(panel, scope, cx);
+        if targets.is_empty() {
+            return;
+        }
+
+        self.close_tabs(targets, window, cx);
+    }
+
+    /// The tabs a command takes with the tab it was opened from: its
+    /// neighbours in the strip, or every tab of one kind in the session.
+    fn scope_targets(
+        &self,
+        panel: &Entity<SessionPanel>,
+        scope: CloseScope,
+        cx: &App,
+    ) -> Vec<Entity<SessionPanel>> {
+        match scope {
+            CloseScope::QueryTabs => self
+                .panels
+                .iter()
+                .filter(|panel| panel.read(cx).is_query())
+                .cloned()
+                .collect(),
+            CloseScope::TableTabs => self
+                .panels
+                .iter()
+                .filter(|panel| !panel.read(cx).is_query())
+                .cloned()
+                .collect(),
+            CloseScope::Others | CloseScope::ToTheRight => {
+                let strip = self.strip(panel, cx);
+                let Some(index) = strip.iter().position(|candidate| candidate == panel) else {
+                    return Vec::new();
+                };
+                match scope {
+                    CloseScope::Others => strip
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(ix, _)| *ix != index)
+                        .map(|(_, panel)| panel)
+                        .collect(),
+                    _ => strip.into_iter().skip(index + 1).collect(),
+                }
+            }
+        }
+    }
+
+    /// The tabs shown in the same strip as `panel`, in the order they appear
+    /// on screen. A drag can reorder a strip, so the dock is asked rather than
+    /// the session's creation order used; that order is the fallback for a
+    /// panel the dock cannot place.
+    fn strip(&self, panel: &Entity<SessionPanel>, cx: &App) -> Vec<Entity<SessionPanel>> {
+        let order: Option<Vec<PanelId>> = panel
+            .read(cx)
+            .group()
+            .and_then(|group| group.upgrade())
+            .map(|group| {
+                group
+                    .read(cx)
+                    .panels()
+                    .iter()
+                    .map(|panel| panel.panel_id(cx))
+                    .collect()
+            });
+        let Some(order) = order else {
+            return self.panels.clone();
+        };
+
+        let strip: Vec<_> = order
+            .iter()
+            .filter_map(|id| {
+                self.panels
+                    .iter()
+                    .find(|panel| PanelId::from(panel.entity_id()) == *id)
+                    .cloned()
+            })
+            .collect();
+        if strip.is_empty() {
+            self.panels.clone()
+        } else {
+            strip
+        }
+    }
+
+    /// Close `targets` together, asking once when any of them holds work that
+    /// was never written.
+    fn close_tabs(
+        &mut self,
+        targets: Vec<Entity<SessionPanel>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dirty = targets
+            .iter()
+            .filter(|panel| panel.read(cx).is_dirty(cx))
+            .count();
+        if dirty == 0 {
+            self.close_tabs_now(&targets, window, cx);
+            return;
+        }
+
+        self.confirm_close_tabs(targets, dirty, window, cx);
+    }
+
+    /// Ask before throwing away several tabs' unsaved buffers at once.
+    ///
+    /// One question about the set, rather than one per tab: the user picked a
+    /// command about a group of tabs, and a dialog each is not what they asked
+    /// for. The tabs are held in the dialog's closure, so the answer closes
+    /// exactly the tabs that were on screen when the question was asked.
+    fn confirm_close_tabs(
+        &mut self,
+        targets: Vec<Entity<SessionPanel>>,
+        dirty: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = targets.len();
+        let title = targets
+            .first()
+            .map(|panel| panel.read(cx).title())
+            .unwrap_or_default();
+        let session = cx.entity().downgrade();
+
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let session = session.clone();
+            let targets = targets.clone();
+
+            alert
+                .title(match count {
+                    1 => format!("Close \"{title}\" without saving?"),
+                    _ => format!("Close {count} tabs without saving?"),
+                })
+                .description(match count {
+                    1 => "The tab has unsaved changes.".to_string(),
+                    _ => format!("{dirty} of them have unsaved changes."),
+                })
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Close Without Saving")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Keep Open")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    if let Some(session) = session.upgrade() {
+                        session.update(cx, |session, cx| {
+                            session.close_tabs_now(&targets, window, cx)
+                        });
+                    }
+                    true
+                })
+        });
+    }
+
+    /// Remove every tab in `targets`; the caller has already decided their
+    /// unsaved work does not matter.
+    ///
+    /// One at a time, through [`Self::close_tab_now`]: that is what keeps the
+    /// session's "always one editor" rule and the tab in front in step when
+    /// the set takes the last of them.
+    fn close_tabs_now(
+        &mut self,
+        targets: &[Entity<SessionPanel>],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for panel in targets {
+            if self.panels.iter().any(|open| open == panel) {
+                self.close_tab_now(panel, window, cx);
+            }
+        }
     }
 
     pub(crate) fn activate_tab(
@@ -1701,7 +1939,8 @@ impl Render for Session {
                             .child(self.render_sidebar(cx)),
                     )
                     .child(
-                        resizable_panel().child(div().flex_1().min_h_0().child(self.dock.clone())),
+                        resizable_panel()
+                            .child(div().flex_1().min_w_0().min_h_0().child(self.dock.clone())),
                     ),
             )
     }

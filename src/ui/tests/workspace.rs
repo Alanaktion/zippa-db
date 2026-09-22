@@ -291,6 +291,35 @@ fn the_toolbar_new_query_button_opens_a_tab(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn many_connection_tabs_scroll_inside_the_bar(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let _database = connect(cx, &handle);
+    for _ in 0..20 {
+        click(cx, &handle, "new-connection");
+    }
+
+    // The outer bar wraps every screen, so a connection tab strip that grew
+    // with its tabs would push the session — and the toolbar above it — out of
+    // the window.
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let viewport = Bounds {
+            origin: Default::default(),
+            size: size(px(WINDOW.0), px(WINDOW.1)),
+        };
+        for id in ["new-connection", "welcome-new-connection"] {
+            let found = window.find(id);
+            assert!(
+                contains(viewport, found.bounds()),
+                "{id} ran outside the window with 21 connection tabs open: {:?}",
+                found.bounds()
+            );
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn restored_connections_reopen_their_tabs_in_order(cx: &mut TestAppContext) {
     let database = runtime::block_on(TempDatabase::new());
     let config = database.config();

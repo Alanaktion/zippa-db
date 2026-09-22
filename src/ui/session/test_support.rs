@@ -17,7 +17,7 @@ use crate::ui::schema_view::SchemaView;
 use crate::ui::table_view::TableView;
 
 use super::Session;
-use super::panel::SessionPanel;
+use super::panel::{CloseScope, SessionPanel, SessionPanelEvent};
 use super::sidebar::compile_filter;
 use super::tab::Status;
 
@@ -107,6 +107,26 @@ impl Session {
     ) {
         let panel = self.panel_for_test(index);
         self.close_tab(&panel, window, cx);
+    }
+
+    /// Drive one of a tab's menu commands the way its own item does — emit the
+    /// event the item emits.
+    ///
+    /// The menu itself cannot be opened in a test: a `PopupMenu` keeps itself
+    /// alive through the subscription its context menu registers, so a test
+    /// that opens one ends in the harness's leaked-entity panic (see
+    /// `ui/tests/mod.rs`).
+    #[cfg(test)]
+    pub(crate) fn close_scope_for_test(
+        &mut self,
+        index: usize,
+        scope: CloseScope,
+        cx: &mut Context<Self>,
+    ) {
+        let panel = self.panels[index].clone();
+        panel.update(cx, |_, cx| {
+            cx.emit(SessionPanelEvent::CloseScopeRequested(scope))
+        });
     }
 
     #[cfg(test)]

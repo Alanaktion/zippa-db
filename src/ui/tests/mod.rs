@@ -33,7 +33,7 @@ use crate::db::{
     Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, SafetyMode, TagColor, runtime,
 };
 use crate::ui::filter_bar::Operator;
-use crate::ui::session::Session;
+use crate::ui::session::{CloseScope, Session};
 use crate::ui::welcome::Welcome;
 
 mod editing;
@@ -782,7 +782,9 @@ fn click_row(
 // subscription its own context menu registers, so every such test ends in the
 // harness's leaked-entity panic. The menu's own logic is covered through
 // `request_delete_for_test` and `discard_draft_for_test`, which call exactly
-// what the items call.
+// what the items call. A tab's menu takes the same two steps: the throwaway
+// test confirmed that a right click on a tab's title opens it and that its
+// items run, and `Session::close_scope_for_test` calls what they call.
 
 /// Put one saved SQLite connection in the manager's list.
 fn saved_connection(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> (TempDatabase, Uuid) {

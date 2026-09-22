@@ -87,6 +87,52 @@ fn result_grid_is_visible_after_a_query(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn many_tabs_keep_the_result_grid_inside_the_window(cx: &mut TestAppContext) {
+    let database = runtime::block_on(TempDatabase::new());
+    let connection = runtime::block_on(Connection::open(database.config(), None))
+        .expect("could not open the test database");
+
+    cx.update(gpui_kit::component::init);
+    let handle = {
+        let connection = Arc::new(connection);
+        cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
+            Session::new(connection, window, cx)
+        })
+    };
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.show_result_for_test(result_fixture(), cx);
+            for _ in 0..24 {
+                session.open_tab_for_test(window, cx);
+            }
+            session.activate_tab_for_test(0, window, cx);
+        })
+        .unwrap();
+
+    // A tab strip wide enough to need scrolling has to scroll inside its own
+    // pane. It is the last resizable panel's content, so a strip that grew the
+    // panel instead would push the whole session — grid included — off the
+    // right of the window.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let viewport = Bounds {
+            origin: Default::default(),
+            size: size(px(WINDOW.0), px(WINDOW.1)),
+        };
+        for id in ["table", "sidebar"] {
+            let found = window.find(id);
+            assert!(
+                contains(viewport, found.bounds()),
+                "{id} ran outside the window with 25 tabs open: {:?}",
+                found.bounds()
+            );
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn sidebar_lists_objects_beside_the_panes(cx: &mut TestAppContext) {
     let database = runtime::block_on(TempDatabase::new());
     let connection = runtime::block_on(Connection::open(database.config(), None))

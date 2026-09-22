@@ -9,7 +9,7 @@ use std::sync::Arc;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent, PanelId, TabGroup};
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{
     ActiveTheme, Disableable, IconName, ResizableState, Sizable, h_flex, resizable_panel, v_flex,
     v_resizable,
@@ -41,6 +41,26 @@ use super::{CloseTab, NewTab};
 /// a single shared height would fight between them.
 const EDITOR_HEIGHT: f32 = 220.;
 
+/// Which tabs a close command takes along with the tab it was opened from.
+///
+/// The two "beside it" commands work along the strip the tab is shown in — a
+/// session split into two groups has two strips, and a menu opened in one is
+/// about that one. The two category commands clear the session instead: a
+/// table tab is usually opened on the way somewhere rather than kept, so
+/// "close the tables, keep my queries" is a command about the connection
+/// rather than about one strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloseScope {
+    /// Every other tab in the same strip.
+    Others,
+    /// Every tab after this one in the same strip.
+    ToTheRight,
+    /// Every query tab in the session.
+    QueryTabs,
+    /// Every table tab in the session, its rows and its structure alike.
+    TableTabs,
+}
+
 pub(crate) enum SessionPanelEvent {
     /// The user is working in this panel now.
     Focused,
@@ -48,6 +68,8 @@ pub(crate) enum SessionPanelEvent {
     Removed,
     /// The tab's ✕, or a middle click on it.
     CloseRequested,
+    /// A tab command that closes more than the tab it was opened from.
+    CloseScopeRequested(CloseScope),
     /// The strip's + — a query tab beside this one.
     NewTabRequested,
     Run(String),
@@ -202,6 +224,46 @@ impl SessionPanel {
     /// The tab group displaying this panel, if the dock has taken it yet.
     pub(crate) fn group(&self) -> Option<WeakEntity<TabGroup>> {
         self.group.clone()
+    }
+
+    /// The commands a tab offers about itself and its neighbours.
+    ///
+    /// Shared by the tab's own right-click menu and the dock's `…` menu: both
+    /// belong to one tab — the context menu hangs off its title element, and
+    /// the `…` menu belongs to the group's displayed panel — so both offer the
+    /// same commands about the same tab.
+    ///
+    /// Nothing here is disabled against how many tabs there are: the panel is
+    /// drawn *by* its tab group, so reading the group to count them — the only
+    /// place that knows — is a read of the group while it is being updated,
+    /// which is a panic. A command with nothing to close does nothing instead,
+    /// and the session's half of it decides that against the dock at the
+    /// moment it runs.
+    fn tab_menu(menu: PopupMenu, panel: WeakEntity<Self>) -> PopupMenu {
+        let item = |label: &'static str, event: fn() -> SessionPanelEvent| {
+            let panel = panel.clone();
+            PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                if let Some(panel) = panel.upgrade() {
+                    panel.update(cx, |_, cx| cx.emit(event()));
+                }
+            })
+        };
+
+        menu.item(item("Close", || SessionPanelEvent::CloseRequested))
+            .separator()
+            .item(item("Close Others", || {
+                SessionPanelEvent::CloseScopeRequested(CloseScope::Others)
+            }))
+            .item(item("Close to the Right", || {
+                SessionPanelEvent::CloseScopeRequested(CloseScope::ToTheRight)
+            }))
+            .separator()
+            .item(item("Close All Table Tabs", || {
+                SessionPanelEvent::CloseScopeRequested(CloseScope::TableTabs)
+            }))
+            .item(item("Close All Query Tabs", || {
+                SessionPanelEvent::CloseScopeRequested(CloseScope::QueryTabs)
+            }))
     }
 
     /// The table this tab shows, if it is a table or structure tab.
@@ -813,6 +875,13 @@ impl Panel for SessionPanel {
                     cx.emit(SessionPanelEvent::CloseRequested);
                 }
             }))
+            // The title is the only part of a dock tab this app draws, so the
+            // tab's right-click menu hangs off it. The same commands sit in
+            // the `…` menu, which is reachable without a right click.
+            .context_menu({
+                let me = cx.weak_entity();
+                move |menu, _, _| SessionPanel::tab_menu(menu, me.clone())
+            })
             .child(div().child(label))
             .child(
                 Button::new(SharedString::from(format!("close-tab-{key}")))
@@ -859,11 +928,15 @@ impl Panel for SessionPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        if self.is_dirty(cx) {
+        let menu = if self.is_dirty(cx) {
             menu.item(PopupMenuItem::new("Close (unsaved changes)").disabled(true))
         } else {
             menu
-        }
+        };
+
+        // The `…` menu belongs to the group's displayed panel, so the tab
+        // commands mean the same thing here as on the tab's own menu.
+        Self::tab_menu(menu, cx.weak_entity())
     }
 
     /// The bodies carry their own footers and fill the pane.

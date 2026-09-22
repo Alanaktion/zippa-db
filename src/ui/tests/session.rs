@@ -474,6 +474,173 @@ fn the_platform_shortcut_opens_and_closes_tabs(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_close_shortcut_keeps_working_from_tab_to_tab(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_tab_for_test(window, cx);
+            session.open_tab_for_test(window, cx);
+            session.activate_tab_for_test(0, window, cx);
+            assert_eq!(session.tab_titles(cx), ["Query 1", "Query 2", "Query 3"]);
+        })
+        .unwrap();
+
+    // Twice in a row: closing a tab has to leave the one that takes its place
+    // in front and holding the keyboard, or the second press lands on nothing.
+    for _ in 0..2 {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.press("secondary-w", cx);
+        })
+        .unwrap();
+    }
+
+    handle
+        .update(cx, |session, _, cx| {
+            assert_eq!(
+                session.tab_titles(cx),
+                ["Query 3"],
+                "the shortcut should keep closing the tab in front"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+fn closing_other_tabs_keeps_the_tab_the_command_came_from(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_tab_for_test(window, cx);
+            session.open_tab_for_test(window, cx);
+            assert_eq!(session.tab_titles(cx), ["Query 1", "Query 2", "Query 3"]);
+            session.close_scope_for_test(1, CloseScope::Others, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |session, _, cx| {
+            assert_eq!(
+                session.tab_titles(cx),
+                ["Query 2"],
+                "closing the others should leave the tab the command came from"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+fn closing_tabs_to_the_right_keeps_the_ones_before_them(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_tab_for_test(window, cx);
+            session.open_tab_for_test(window, cx);
+            session.close_scope_for_test(0, CloseScope::ToTheRight, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |session, _, cx| {
+            assert_eq!(session.tab_titles(cx), ["Query 1"]);
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+fn closing_all_table_tabs_keeps_the_queries(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    let object = DatabaseObject {
+        schema: None,
+        name: "items".into(),
+        kind: ObjectKind::Table,
+    };
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_schema_for_test(&object, window, cx);
+            session.open_tab_for_test(window, cx);
+            assert_eq!(
+                session.tab_titles(cx),
+                ["Query 1", "items — Structure", "Query 2"],
+                "the structure tab should sit between the two query tabs"
+            );
+            session.close_scope_for_test(1, CloseScope::TableTabs, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |session, _, cx| {
+            assert_eq!(
+                session.tab_titles(cx),
+                ["Query 1", "Query 2"],
+                "only the table tabs should have gone"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+fn closing_several_dirty_tabs_asks_once(cx: &mut TestAppContext) {
+    let (_database, handle, session) = workspace_session(cx);
+
+    // Two query tabs, each holding text that was never written anywhere.
+    prepare_workspace_editor(cx, &handle, &session, "SELECT 1;");
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        session.update(cx, |session, cx| session.open_tab_for_test(window, cx));
+    })
+    .unwrap();
+    prepare_workspace_editor(cx, &handle, &session, "SELECT 2;");
+
+    // One command, two dirty tabs.
+    session.update(cx, |session, cx| {
+        session.close_scope_for_test(0, CloseScope::QueryTabs, cx)
+    });
+    cx.run_until_parked();
+
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "closing dirty tabs should ask first"
+    );
+    assert_eq!(
+        session.read_with(cx, |session, cx| session.tab_titles(cx)),
+        ["Query 1", "Query 2"],
+        "nothing should close while the question is up"
+    );
+
+    // Saying no leaves both of them open.
+    click_workspace(cx, &handle, "cancel");
+    assert_eq!(
+        session.read_with(cx, |session, cx| session.tab_titles(cx)),
+        ["Query 1", "Query 2"]
+    );
+
+    // Saying yes closes them both on one answer, and the session's own rule
+    // leaves a fresh editor behind.
+    session.update(cx, |session, cx| {
+        session.close_scope_for_test(0, CloseScope::QueryTabs, cx)
+    });
+    cx.run_until_parked();
+    click_workspace(cx, &handle, "ok");
+    // The answer reaches the session on the dialog's own effects, so the set
+    // is not closed until those have run.
+    cx.run_until_parked();
+    assert_eq!(
+        session.read_with(cx, |session, cx| session.tab_titles(cx)),
+        ["Query 3"],
+        "one answer should close the whole set"
+    );
+    assert!(!session.read_with(cx, |session, cx| session.tab_is_dirty_for_test(0, cx)));
+}
+
+#[gpui_kit::test]
 fn the_platform_shortcut_runs_the_query(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
 
