@@ -6,12 +6,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent, PanelId, TabGroup};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, IconName, ResizableState, Sizable, h_flex, resizable_panel, v_flex,
+    ActiveTheme, Disableable, Icon, ResizableState, Sizable, h_flex, resizable_panel, v_flex,
     v_resizable,
 };
 use gpui_kit::prelude::*;
@@ -219,6 +220,32 @@ impl SessionPanel {
 
     pub(crate) fn is_query(&self) -> bool {
         matches!(self.content, TabContent::Query { .. })
+    }
+
+    /// The icon that tells this tab's kind apart at a glance.
+    ///
+    /// A table's data tab and its structure tab carry the same name, so the
+    /// icon is what tells them apart; the query icon is the one the quick
+    /// switcher already uses for an open query tab.
+    pub(crate) fn icon(&self) -> IconName {
+        match &self.content {
+            TabContent::Query { .. } => IconName::SquareTerminal,
+            TabContent::Table { .. } => IconName::Table,
+            TabContent::Schema { .. } => IconName::TableProperties,
+        }
+    }
+
+    /// What this tab shows, in words.
+    ///
+    /// The icon is what tells a data tab from a structure one, but an icon
+    /// names nothing to a screen reader, so the close button says the kind
+    /// rather than leaving two identically named tabs to be guessed at.
+    pub(crate) fn kind(&self) -> &'static str {
+        match &self.content {
+            TabContent::Query { .. } => "query",
+            TabContent::Table { .. } => "table",
+            TabContent::Schema { .. } => "table structure",
+        }
     }
 
     /// The tab group displaying this panel, if the dock has taken it yet.
@@ -860,6 +887,8 @@ impl Panel for SessionPanel {
         };
         let key = self.key;
         let title = self.title.clone();
+        let kind = self.kind();
+        let icon = self.icon();
 
         h_flex()
             .id(("session-panel-title", key))
@@ -882,6 +911,11 @@ impl Panel for SessionPanel {
                 let me = cx.weak_entity();
                 move |menu, _, _| SessionPanel::tab_menu(menu, me.clone())
             })
+            .child(
+                Icon::new(icon)
+                    .flex_none()
+                    .text_color(cx.theme().muted_foreground),
+            )
             .child(div().child(label))
             .child(
                 Button::new(SharedString::from(format!("close-tab-{key}")))
@@ -889,9 +923,9 @@ impl Panel for SessionPanel {
                     .xsmall()
                     .icon(IconName::Close)
                     .accessibility_label(if dirty {
-                        format!("Close the tab {title} (unsaved changes)")
+                        format!("Close the {kind} tab {title} (unsaved changes)")
                     } else {
-                        format!("Close the tab {title}")
+                        format!("Close the {kind} tab {title}")
                     })
                     .tooltip_with_action("Close tab", &CloseTab, Some("Session"))
                     .on_click(cx.listener(|_this, _, _window, cx| {

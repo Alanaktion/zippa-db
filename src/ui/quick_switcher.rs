@@ -120,12 +120,17 @@ impl Render for QuickSwitcherView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (tabs_info, objects, databases, is_file_based, current_db, active_tab_ix) = {
             let s = self.session.read(cx);
-            let tabs: Vec<(SharedString, bool, Option<String>)> = s
+            let tabs: Vec<(SharedString, IconName, bool, Option<String>)> = s
                 .panels()
                 .iter()
                 .map(|panel| {
                     let panel = panel.read(cx);
-                    (panel.title(), panel.is_query(), panel.file_name())
+                    (
+                        panel.title(),
+                        panel.icon(),
+                        panel.is_query(),
+                        panel.file_name(),
+                    )
                 })
                 .collect();
             let objects = s.objects().to_vec();
@@ -150,12 +155,7 @@ impl Render for QuickSwitcherView {
         if !tabs_info.is_empty() {
             let mut tab_targets = Vec::new();
             let mut tab_group = CommandGroup::new().label("Open Tabs");
-            for (ix, (title, is_query, path)) in tabs_info.into_iter().enumerate() {
-                let icon = if is_query {
-                    IconName::SquareTerminal
-                } else {
-                    IconName::Table
-                };
+            for (ix, (title, icon, is_query, path)) in tabs_info.into_iter().enumerate() {
                 let mut keywords = vec!["tab", if is_query { "query" } else { "table" }, "open"];
                 if let Some(p) = &path {
                     keywords.push(p.as_str());

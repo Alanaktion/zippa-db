@@ -410,7 +410,9 @@ impl Session {
             ObjectViewMode::Schema => {
                 let view = cx
                     .new(|cx| SchemaView::new(self.connection.clone(), object.clone(), window, cx));
-                let title = format!("{} — Structure", object.label());
+                // No "Structure" suffix: the tab's icon tells it from the data
+                // tab of the same table.
+                let title = object.label();
                 cx.new(|cx| SessionPanel::schema(key, title, view, cx))
             }
         };

@@ -568,7 +568,7 @@ fn closing_all_table_tabs_keeps_the_queries(cx: &mut TestAppContext) {
             session.open_tab_for_test(window, cx);
             assert_eq!(
                 session.tab_titles(cx),
-                ["Query 1", "items — Structure", "Query 2"],
+                ["Query 1", "items", "Query 2"],
                 "the structure tab should sit between the two query tabs"
             );
             session.close_scope_for_test(1, CloseScope::TableTabs, cx);

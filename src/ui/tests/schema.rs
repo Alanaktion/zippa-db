@@ -4,6 +4,7 @@ use super::*;
 use crate::db::{ReferentialAction, SafetyMode};
 use crate::ui::session::tab::ObjectViewMode;
 use gpui_kit::ScrollDelta;
+use gpui_kit::assets::IconName;
 
 /// One value out of the test database, read through a second connection so it
 /// is the server's answer rather than the view's.
@@ -53,14 +54,22 @@ fn opening_a_tables_structure_shows_its_columns(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_tab_title_says_structure(cx: &mut TestAppContext) {
+fn the_structure_tab_is_named_after_its_table(cx: &mut TestAppContext) {
     let (_database, handle, _view) = schema_view(cx);
 
     assert_eq!(
         handle
             .update(cx, |session, _, cx| session.tab_titles(cx))
             .unwrap(),
-        ["Query 1", "items — Structure"]
+        ["Query 1", "items"],
+        "a structure tab takes the table's name, with no suffix"
+    );
+    assert_eq!(
+        handle
+            .update(cx, |session, _, cx| session.tab_icons(cx))
+            .unwrap(),
+        [IconName::SquareTerminal, IconName::TableProperties],
+        "the icon is what tells a structure tab from a data one"
     );
 }
 
@@ -84,7 +93,7 @@ fn a_structure_tab_already_open_is_brought_forward(cx: &mut TestAppContext) {
         handle
             .update(cx, |session, _, cx| session.tab_titles(cx))
             .unwrap(),
-        ["Query 1", "items — Structure"],
+        ["Query 1", "items"],
         "opening the same table's structure again should not duplicate the tab"
     );
 }
@@ -787,7 +796,19 @@ fn a_tables_data_and_structure_are_different_tabs(cx: &mut TestAppContext) {
         handle
             .update(cx, |session, _, cx| session.tab_titles(cx))
             .unwrap(),
-        ["Query 1", "items — Structure", "items"]
+        ["Query 1", "items", "items"],
+        "the data tab and the structure tab share a title"
+    );
+    assert_eq!(
+        handle
+            .update(cx, |session, _, cx| session.tab_icons(cx))
+            .unwrap(),
+        [
+            IconName::SquareTerminal,
+            IconName::TableProperties,
+            IconName::Table
+        ],
+        "so the icon is what tells them apart"
     );
 }
 

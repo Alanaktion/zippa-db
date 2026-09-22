@@ -49,6 +49,17 @@ impl Session {
             .collect()
     }
 
+    /// The kind icon of every tab, in creation order. A data tab and the
+    /// structure tab of the same table share a title, so this is what tells
+    /// them apart on screen.
+    #[cfg(test)]
+    pub(crate) fn tab_icons(&self, cx: &App) -> Vec<gpui_kit::assets::IconName> {
+        self.panels
+            .iter()
+            .map(|panel| panel.read(cx).icon())
+            .collect()
+    }
+
     /// Whether the tab at `index` has unsaved changes.
     #[cfg(test)]
     pub(crate) fn tab_is_dirty_for_test(&self, index: usize, cx: &App) -> bool {
