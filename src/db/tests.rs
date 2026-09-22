@@ -745,6 +745,26 @@ fn mysql_bit_digits_are_converted_rather_than_stored_as_text() {
     assert_eq!(typed_placeholder(Engine::Sqlite, 1, "DATETIME"), "?");
 }
 
+#[test]
+fn mysql_metadata_escapes_a_backslash_the_way_the_server_reads_it() {
+    // MySQL reads a backslash inside a string as an escape, so a table name
+    // holding one has to be doubled or the `information_schema` query names a
+    // different table. Every metadata builder that pastes a name must do it.
+    let name = r"odd\name";
+    let queries = [
+        super::mysql::primary_key_sql(name),
+        super::mysql::columns_sql(name),
+        super::mysql::indexes_sql(name),
+        super::mysql::foreign_keys_sql(name),
+    ];
+    for sql in queries {
+        assert!(
+            sql.contains(r"'odd\\name'"),
+            "the name should be escaped for MySQL: {sql}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn explain_reads_a_sqlite_plan_tree() {
     let database = TempDatabase::new().await;

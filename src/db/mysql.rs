@@ -4,8 +4,10 @@ use anyhow::Result;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlQueryResult, MySqlRow};
 use sqlx::{Executor, Row, TypeInfo, ValueRef};
 
+use super::config::Engine;
 use super::query::{self, Cell};
-use super::{ConnectionConfig, POOL_SIZE, decode, quote_literal};
+use super::sql::quote_literal_for;
+use super::{ConnectionConfig, POOL_SIZE, decode};
 
 /// Schemas double as databases in MySQL; the server's own are hidden.
 pub(crate) const DATABASES_SQL: &str = "SELECT schema_name FROM information_schema.schemata \
@@ -97,7 +99,7 @@ pub(crate) fn primary_key_sql(table: &str) -> String {
          WHERE tc.constraint_type = 'PRIMARY KEY' \
          AND tc.table_schema = DATABASE() AND tc.table_name = {} \
          ORDER BY kcu.ordinal_position",
-        quote_literal(table)
+        quote_literal_for(Engine::MySql, table)
     )
 }
 
@@ -109,7 +111,7 @@ pub(crate) fn columns_sql(table: &str) -> String {
          FROM information_schema.columns \
          WHERE table_schema = DATABASE() AND table_name = {} \
          ORDER BY ordinal_position",
-        quote_literal(table)
+        quote_literal_for(Engine::MySql, table)
     )
 }
 
@@ -124,7 +126,7 @@ pub(crate) fn indexes_sql(table: &str) -> String {
          WHERE table_schema = DATABASE() AND table_name = {} \
          GROUP BY index_name, non_unique \
          ORDER BY index_name",
-        quote_literal(table)
+        quote_literal_for(Engine::MySql, table)
     )
 }
 
@@ -146,7 +148,7 @@ pub(crate) fn foreign_keys_sql(table: &str) -> String {
          GROUP BY kcu.constraint_name, kcu.referenced_table_schema, \
            kcu.referenced_table_name, rc.delete_rule, rc.update_rule \
          ORDER BY kcu.constraint_name",
-        quote_literal(table)
+        quote_literal_for(Engine::MySql, table)
     )
 }
 
