@@ -644,12 +644,15 @@ impl ResultDelegate {
             menu
         };
 
-        // Exporting is a read, so it is offered on a read-only grid too. The
-        // formats open a save dialog, hence the ellipsis on the submenu that
-        // holds them. A query result's grid has no table name, so it offers
-        // none of this.
-        let menu = if self.table.is_some() && copies_rows {
-            let label = match picked {
+        // Exporting is a read, so it is offered on a read-only grid too. Like
+        // Delete below, it is about the row the menu was opened on even when
+        // that row was not picked out, so the row is taken into the selection
+        // first — `Scope::Picked` would otherwise export every row. The formats
+        // open a save dialog, hence the ellipsis on the submenu that holds them.
+        // A query result's grid has no table name, so it offers none of this.
+        let menu = if self.table.is_some() {
+            let rows = self.mark_for_menu(row_ix);
+            let label = match rows {
                 1 => "Export row…".to_string(),
                 rows => format!("Export {rows} rows…"),
             };
