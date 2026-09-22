@@ -330,6 +330,24 @@ fn connect_with_safety(
         safety,
         ..database.config()
     };
+    connect_config(cx, handle, config);
+    database
+}
+
+/// The same, on a connection named `name`, which is what a user gives one so
+/// its tab does not read as its database alone.
+fn connect_named(cx: &mut TestAppContext, handle: &WorkspaceWindow, name: &str) -> TempDatabase {
+    let database = runtime::block_on(TempDatabase::new());
+    let config = ConnectionConfig {
+        name: name.to_string(),
+        ..database.config()
+    };
+    connect_config(cx, handle, config);
+    database
+}
+
+/// Connect the active connection-manager tab with `config`.
+fn connect_config(cx: &mut TestAppContext, handle: &WorkspaceWindow, config: ConnectionConfig) {
     let connection = Arc::new(
         runtime::block_on(Connection::open(config, None))
             .expect("could not open the test database"),
@@ -342,8 +360,6 @@ fn connect_with_safety(
 
     welcome.update(cx, |_, cx| cx.emit(WelcomeEvent::Connected(connection)));
     cx.run_until_parked();
-
-    database
 }
 
 /// Open a session inside a workspace, which is where the `Root` an
@@ -432,6 +448,12 @@ fn workspace_dialog_open(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> b
 fn titles(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> Vec<String> {
     handle
         .update(cx, |workspace, _, cx| workspace.tab_titles_for_test(cx))
+        .unwrap()
+}
+
+fn labels(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> Vec<String> {
+    handle
+        .update(cx, |workspace, _, cx| workspace.tab_labels_for_test(cx))
         .unwrap()
 }
 

@@ -37,6 +37,31 @@ fn each_connection_opens_in_a_tab_of_its_own(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_connection_tab_names_the_connection_and_its_database(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+
+    // An unnamed SQLite connection takes the file's name as its own, so the
+    // one line it draws already says which database it is on.
+    let database = connect(cx, &handle);
+    let unnamed = crate::db::file_name(&database.config().database);
+    assert_eq!(
+        labels(cx, &handle),
+        [unnamed.as_str()],
+        "an unnamed connection should not repeat its database under its name"
+    );
+
+    // Named, the two are different things and both are worth a line.
+    click(cx, &handle, "new-connection");
+    let named = connect_named(cx, &handle, "Reporting");
+    let named_file = crate::db::file_name(&named.config().database);
+    assert_eq!(
+        labels(cx, &handle),
+        [unnamed, format!("Reporting · {named_file}")],
+        "a named connection should name the database it is on"
+    );
+}
+
+#[gpui_kit::test]
 fn the_connection_bar_only_shows_with_more_than_one_tab(cx: &mut TestAppContext) {
     let handle = workspace(cx);
 

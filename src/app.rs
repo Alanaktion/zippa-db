@@ -16,12 +16,13 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Root, Sizable, TitleBar, WindowExt, h_flex, v_flex,
+    ActiveTheme, Disableable, Icon, IconName, Root, Sizable, Size, TitleBar, WindowExt, h_flex,
+    v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, Entity, EntityId, FocusHandle, Hsla, MouseButton, Pixels, SharedString, Window,
-    actions, div, px,
+    AnyElement, App, Context, Entity, EntityId, FocusHandle, Hsla, MouseButton, Pixels,
+    SharedString, Window, actions, div, px,
 };
 
 use crate::db::{Connection, TagColor, runtime, store};
@@ -62,14 +63,19 @@ impl TabContent {
         }
     }
 
-    /// Tells a connection to a server from one to a file at a glance.
-    fn icon(&self, cx: &App) -> Option<IconName> {
+    /// The icon a tab leads with, telling a connection to a server from one to
+    /// a file at a glance.
+    ///
+    /// The manager is not a connection and is not on a database, so it is not
+    /// an engine that decides its icon — but it takes the slot all the same, so
+    /// every tab's name starts at one spine.
+    fn icon(&self, cx: &App) -> IconName {
         match self {
-            Self::Connect(_) => None,
+            Self::Connect(_) => IconName::Plus,
             Self::Session(session) => {
                 match session.read(cx).connection().config.engine.is_file_based() {
-                    true => Some(IconName::File),
-                    false => Some(IconName::Globe),
+                    true => IconName::File,
+                    false => IconName::Globe,
                 }
             }
         }
@@ -98,33 +104,98 @@ impl TabContent {
         }
     }
 
-    /// The tab's title, with the tag appended so the environment reads at a
-    /// glance without losing the name.
-    fn label(&self, cx: &App) -> SharedString {
-        match self.tag(cx) {
-            Some((tag, _)) => format!("{} · {}", self.title(cx), tag).into(),
-            None => self.title(cx),
-        }
+    /// The database the session is on, named the way a tab wants it.
+    ///
+    /// A file-based engine is one database, and that database is the file, so
+    /// the tab shows the file's name rather than its whole path — the same
+    /// short form the database picker uses.
+    fn database(&self, cx: &App) -> Option<String> {
+        let Self::Session(session) = self else {
+            return None;
+        };
+        let connection = session.read(cx).connection();
+        Some(match connection.config.engine.is_file_based() {
+            true => crate::db::file_name(connection.database()),
+            false => connection.database().to_string(),
+        })
     }
 
-    /// The icon and tag chip shown before the label.
-    fn prefix(&self, cx: &App) -> Option<impl IntoElement> {
-        let icon = self.icon(cx)?;
-        let icon = Icon::new(icon);
-        let icon = match self.icon_color(cx) {
-            Some(color) => icon.text_color(color),
-            None => icon,
+    /// The database line a tab should draw, kept only when it says something the
+    /// name does not.
+    ///
+    /// An unnamed SQLite connection takes the file's name as its own, so the
+    /// tab would otherwise read the same name twice.
+    fn database_line(&self, cx: &App) -> Option<String> {
+        let database = self.database(cx)?;
+        (database.as_str() != self.title(cx).as_str()).then_some(database)
+    }
+
+    /// Name, tag and database in one line, for a screen reader. The label below
+    /// is drawn as an icon beside two stacked lines, so it carries no text of
+    /// its own for a name to come from.
+    fn aria_label(&self, cx: &App) -> SharedString {
+        let mut label = self.title(cx).to_string();
+        if let Some((tag, _)) = self.tag(cx) {
+            label.push_str(" · ");
+            label.push_str(&tag);
+        }
+        if let Some(database) = self.database_line(cx) {
+            label.push_str(" · ");
+            label.push_str(&database);
+        }
+        label.into()
+    }
+
+    /// The tab's contents: the engine icon beside the name, with the database
+    /// it is on beneath it for a connection.
+    ///
+    /// The name keeps the tab's own colour and the database sits muted and a
+    /// step smaller underneath, so a bar of connections is scanned by name and
+    /// the database is read when it matters. The manager is neither a
+    /// connection nor on a database, so it is its icon and its name alone.
+    fn content(&self, cx: &App) -> AnyElement {
+        let icon = {
+            let icon = Icon::new(self.icon(cx));
+            match self.icon_color(cx) {
+                Some(color) => icon.text_color(color),
+                None => icon,
+            }
         };
 
-        Some(
-            h_flex()
-                .gap_1()
-                .items_center()
-                .child(icon)
-                .when_some(self.tag(cx), |this, (tag, color)| {
-                    this.child(crate::ui::tag_chip(&tag, color, cx))
-                }),
-        )
+        let label = match self {
+            Self::Connect(_) => v_flex().min_w_0().child(self.title(cx)),
+            Self::Session(_) => {
+                let name = h_flex()
+                    .gap_1()
+                    .items_center()
+                    .min_w_0()
+                    .child(div().min_w_0().truncate().child(self.title(cx)).text_sm())
+                    .when_some(self.tag(cx), |this, (tag, color)| {
+                        this.child(crate::ui::tag_chip(&tag, color, cx))
+                    });
+
+                // The database is secondary to the name, so it sits muted and
+                // a step smaller underneath it.
+                let database = self.database_line(cx).map(|database| {
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(database)
+                });
+
+                v_flex().min_w_0().child(name).children(database)
+            }
+        };
+
+        h_flex()
+            .gap_2()
+            .items_center()
+            .min_w_0()
+            .child(icon)
+            .child(label)
+            .into_any_element()
     }
 }
 
@@ -484,7 +555,13 @@ impl Workspace {
         match event {
             // Something about the session's tabs changed; the saved state is
             // rewritten at these checkpoints rather than on every keystroke.
-            SessionEvent::Changed => self.save_state(cx),
+            // A tab also draws the connection's name and the database it is on,
+            // and a connection changing database is only heard about here, so
+            // the bar is redrawn with it.
+            SessionEvent::Changed => {
+                self.save_state(cx);
+                cx.notify();
+            }
             SessionEvent::Disconnected => {
                 // Disconnecting drops the session and every tab in it, so ask
                 // first when any of them holds work that was never written —
@@ -681,8 +758,10 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
 
         TabBar::new("connection-tabs")
-            .with_variant(TabVariant::Outline)
-            .p_1()
+            .with_variant(TabVariant::Underline)
+            // Each tab stacks the name over the database, so the bar takes the
+            // one size whose frame has room for both lines.
+            .with_size(Size::Large)
             .selected_index(self.active)
             .on_click(
                 cx.listener(|this, index: &usize, window, cx| {
@@ -694,11 +773,11 @@ impl Workspace {
                 let middle_click = workspace.clone();
 
                 Tab::new()
-                    .label(tab.label(cx))
-                    .px_3()
-                    // The engine icon and, for a tagged connection, the tag
-                    // chip ride in the prefix; `.icon()` renders icon-only.
-                    .when_some(tab.prefix(cx), |this, prefix| this.prefix(prefix))
+                    .aria_label(tab.aria_label(cx))
+                    .px_2()
+                    // The engine icon and both lines are drawn by `content`, so
+                    // the tab carries no label of its own.
+                    .child(tab.content(cx))
                     // Middle-click closes, the way it does in a browser.
                     .on_mouse_down(MouseButton::Middle, move |_, window, cx| {
                         if let Some(workspace) = middle_click.upgrade() {
@@ -971,6 +1050,15 @@ impl Workspace {
         self.tabs
             .iter()
             .map(|tab| tab.title(cx).to_string())
+            .collect()
+    }
+
+    /// What each tab announces: its name, tag and database. The tab draws them
+    /// itself, so this is the only text a test can read the bar back as.
+    pub(crate) fn tab_labels_for_test(&self, cx: &App) -> Vec<String> {
+        self.tabs
+            .iter()
+            .map(|tab| tab.aria_label(cx).to_string())
             .collect()
     }
 
