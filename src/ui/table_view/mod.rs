@@ -316,6 +316,14 @@ impl TableView {
         // the key is read again rather than carried over.
         self.row_key = None;
         self.foreign_keys = None;
+        // Anything the old database was asked about is about a table that is no
+        // longer here: a held action, a write waiting on an answer, and the
+        // footing they left behind all name the old table's rows.
+        self.pending = None;
+        self.confirming = None;
+        self.notice = None;
+        self.error = None;
+        self.reveal = None;
         self.load_row_key(cx);
         self.load_foreign_keys(cx);
     }
