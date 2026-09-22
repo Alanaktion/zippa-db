@@ -31,6 +31,11 @@ jobs:
             ~/.cargo/git/db/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - run: ./script/linux
+      - run: cargo fmt --all -- --check
+      - run: >
+          RUSTC_WRAPPER=sccache
+          RUSTFLAGS="-C link-arg=-fuse-ld=lld"
+          cargo clippy --all-targets -- -D warnings
       - run: >
           RUSTC_WRAPPER=sccache
           RUSTFLAGS="-C link-arg=-fuse-ld=lld"
