@@ -217,7 +217,7 @@ fn data_page() -> SettingPage {
                         settings::update(cx, |settings| settings.coerce_null_literal = value)
                     },
                 )
-                .default_value(false),
+                .default_value(true),
             )
             .description("With this off, NULL typed into a cell is stored as the text; the Set Null command stores SQL NULL either way."),
         ),
