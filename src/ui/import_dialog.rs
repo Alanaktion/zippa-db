@@ -174,18 +174,15 @@ impl ImportView {
         self.state = State::Done;
 
         match result {
-            Ok(Ok(summary)) => {
-                self.summary = Some(summary);
-                // The schema and any open table are now stale.
-                cx.emit(ImportEvent::Finished);
-            }
+            Ok(Ok(summary)) => self.summary = Some(summary),
             Ok(Err(error)) => self.failure = Some(format!("{error:#}")),
             // The sender is dropped when the run is given up on.
-            Err(_) => {
-                self.failure = Some("Cancelled".to_string());
-                cx.emit(ImportEvent::Finished);
-            }
+            Err(_) => self.failure = Some("Cancelled".to_string()),
         }
+        // Whatever the outcome, statements may already have been applied — a
+        // stopped run keeps what ran, and so does a cancelled one — so the
+        // schema and any open table are stale either way.
+        cx.emit(ImportEvent::Finished);
         cx.notify();
     }
 
