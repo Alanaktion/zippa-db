@@ -383,6 +383,9 @@ impl Connection {
     /// `ANALYZE` is only allowed for a statement that reads: it runs what it
     /// explains, and a write would then happen. The app gates the button as
     /// well, so this refusal is the backstop behind it.
+    ///
+    /// SQLite has no `EXPLAIN ANALYZE`, so a request for one there is refused
+    /// rather than answered with the plain plan.
     pub async fn explain(&self, sql: &str, analyze: bool) -> Result<Explained> {
         let statement = sql.trim().trim_end_matches(';').trim();
         // One statement is what a plan describes; a script has no single plan
@@ -453,6 +456,18 @@ impl Connection {
                 Ok(Explained::Rows(result))
             }
             Engine::Sqlite => {
+                // SQLite's planner can describe a plan but never reports how
+                // long a step really took — there is no `EXPLAIN ANALYZE`.
+                // Answering a request for actual times with the plain plan
+                // would be claiming timings the server never measured, so it
+                // is refused instead. The analyze button is disabled for
+                // SQLite; this is the backstop behind it.
+                if runs {
+                    anyhow::bail!(
+                        "SQLite has no EXPLAIN ANALYZE, so actual times are not available. \
+                         Use Explain to see the query plan."
+                    );
+                }
                 let sql = if already {
                     statement.to_string()
                 } else {

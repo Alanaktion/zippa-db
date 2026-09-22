@@ -12,7 +12,7 @@ use gpui_kit::{Context, Entity, EventEmitter, Window, actions, div};
 
 use gpui_kit::assets::IconName as AssetIcon;
 
-use crate::db::statement;
+use crate::db::{Engine, statement};
 use crate::settings;
 use crate::ui::session::{OpenFile, SaveFile};
 
@@ -36,6 +36,9 @@ pub enum QueryEditorEvent {
 pub struct QueryEditor {
     state: Entity<EditorState>,
     running: bool,
+    /// The engine this buffer runs against, so the analyze button can say when
+    /// the server has no `EXPLAIN ANALYZE`.
+    engine: Engine,
 }
 
 impl EventEmitter<QueryEditorEvent> for QueryEditor {}
@@ -43,7 +46,12 @@ impl EventEmitter<QueryEditorEvent> for QueryEditor {}
 impl QueryEditor {
     /// Open an editor that already holds `sql`, as when a table is opened from
     /// the sidebar.
-    pub fn with_text(sql: impl Into<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn with_text(
+        sql: impl Into<String>,
+        engine: Engine,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let sql = sql.into();
         let state = cx.new(|cx| {
             EditorState::new(window, cx)
@@ -55,6 +63,7 @@ impl QueryEditor {
         Self {
             state,
             running: false,
+            engine,
         }
     }
 
@@ -108,7 +117,14 @@ impl QueryEditor {
     /// gate without reading button state out of the window.
     #[cfg(test)]
     pub(crate) fn analyze_disabled_for_test(&self, cx: &gpui_kit::App) -> bool {
-        self.running || self.statement_writes(cx)
+        self.running || self.statement_writes(cx) || !self.analyze_supported()
+    }
+
+    /// Whether this engine can report actual times. SQLite's planner cannot, so
+    /// its analyze button is disabled rather than showing the plain plan under
+    /// a button that promises timings.
+    pub(crate) fn analyze_supported(&self) -> bool {
+        !matches!(self.engine, Engine::Sqlite)
     }
 
     pub fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
@@ -215,6 +231,7 @@ impl QueryEditor {
 impl Render for QueryEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let writes = self.statement_writes(cx);
+        let can_analyze = self.analyze_supported();
 
         v_flex()
             .key_context("QueryEditor")
@@ -294,7 +311,9 @@ impl Render for QueryEditor {
                                     .icon(AssetIcon::Gauge)
                                     .accessibility_label("Explain the statement and run it")
                                     .tooltip_with_action(
-                                        if writes {
+                                        if !can_analyze {
+                                            "SQLite has no EXPLAIN ANALYZE; actual times are not available"
+                                        } else if writes {
                                             "Analyze runs the query; this statement changes data"
                                         } else {
                                             "Explain the statement and run it for actual times"
@@ -302,7 +321,7 @@ impl Render for QueryEditor {
                                         &ExplainAnalyze,
                                         Some("QueryEditor"),
                                     )
-                                    .disabled(self.running || writes)
+                                    .disabled(self.running || writes || !can_analyze)
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.emit_explain(true, cx)
                                     })),

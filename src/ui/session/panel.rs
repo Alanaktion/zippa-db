@@ -91,7 +91,7 @@ impl SessionPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let editor = cx.new(|cx| QueryEditor::with_text(sql.clone(), window, cx));
+        let editor = cx.new(|cx| QueryEditor::with_text(sql.clone(), engine, window, cx));
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
 

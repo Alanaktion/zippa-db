@@ -799,11 +799,30 @@ async fn explain_refuses_to_analyze_a_write() {
         );
     }
 
-    // A read is what `ANALYZE` is for.
-    let explained = connection
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn explain_refuses_to_analyze_a_read_on_sqlite() {
+    let database = TempDatabase::new().await;
+    let connection = open_with(&database, SafetyMode::default()).await;
+
+    // SQLite's planner reports no timings, so rather than answer a request for
+    // actual times with the plain plan, it says it cannot.
+    let error = connection
         .explain("select * from items", true)
         .await
-        .expect("analyzing a select should be allowed");
+        .expect_err("SQLite has no EXPLAIN ANALYZE");
+    assert!(
+        format!("{error:#}").contains("EXPLAIN ANALYZE"),
+        "the refusal should name the missing form: {error:#}"
+    );
+
+    // The plain plan is still there under the other button.
+    let explained = connection
+        .explain("select * from items", false)
+        .await
+        .expect("a plain explain should still be allowed");
     assert!(matches!(explained, super::plan::Explained::Plan(_)));
 
     connection.close().await;

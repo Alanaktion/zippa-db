@@ -174,7 +174,7 @@ Most of these are also in the menu bar — File, Edit, Query, Table and View —
 | Run the selection, or the statement the caret is in | `Cmd`/`Ctrl` + `Enter` |
 | Run every statement in the buffer | `Cmd`/`Ctrl` + `Shift` + `Enter` |
 | Show the statement's execution plan without running it | `Cmd`/`Ctrl` + `E` |
-| Show the plan and run the statement for actual times | `Cmd`/`Ctrl` + `Shift` + `E` |
+| Show the plan and run the statement for actual times (Postgres and MySQL; SQLite has no `EXPLAIN ANALYZE`) | `Cmd`/`Ctrl` + `Shift` + `E` |
 | Give up on a running query | `Cmd`/`Ctrl` + `.` |
 | New connection (or another connection tab) | `Cmd`/`Ctrl` + `N` |
 | Close the active connection | `Cmd`/`Ctrl` + `Shift` + `W` |

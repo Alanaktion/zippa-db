@@ -83,7 +83,37 @@ fn explaining_a_select_shows_a_plan_and_its_warning(cx: &mut TestAppContext) {
 fn the_analyze_button_is_off_for_a_write(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
 
-    prepare_editor(cx, handle, "delete from items where id = 1", 0);
+    // The gate is on the statement itself, so a write is refused whatever the
+    // engine can do.
+    let writes = |cx: &mut TestAppContext, sql: &str| {
+        prepare_editor(cx, handle, sql, 0);
+        handle
+            .update(cx, |session, _, cx| {
+                session
+                    .active_editor_for_test(cx)
+                    .map(|editor| editor.read(cx).statement_writes(cx))
+                    .unwrap_or(false)
+            })
+            .unwrap()
+    };
+
+    assert!(
+        writes(cx, "delete from items where id = 1"),
+        "analyzing a write should be disabled"
+    );
+    assert!(
+        !writes(cx, "select * from items"),
+        "analyzing a read is what the button is for"
+    );
+}
+
+#[gpui_kit::test]
+fn the_analyze_button_is_off_on_sqlite(cx: &mut TestAppContext) {
+    // SQLite's planner cannot report actual times, so its analyze button is off
+    // even for a read rather than showing the plain plan under it.
+    let (_database, handle) = session_with_objects(cx);
+
+    prepare_editor(cx, handle, "select * from items", 0);
     let disabled = handle
         .update(cx, |session, _, cx| {
             session
@@ -92,18 +122,10 @@ fn the_analyze_button_is_off_for_a_write(cx: &mut TestAppContext) {
                 .unwrap_or(false)
         })
         .unwrap();
-    assert!(disabled, "analyzing a write should be disabled");
-
-    prepare_editor(cx, handle, "select * from items", 0);
-    let disabled = handle
-        .update(cx, |session, _, cx| {
-            session
-                .active_editor_for_test(cx)
-                .map(|editor| editor.read(cx).analyze_disabled_for_test(cx))
-                .unwrap_or(true)
-        })
-        .unwrap();
-    assert!(!disabled, "analyzing a read is what the button is for");
+    assert!(
+        disabled,
+        "SQLite has no EXPLAIN ANALYZE, so analyze should be off"
+    );
 }
 
 #[gpui_kit::test]
@@ -212,9 +234,16 @@ fn analyze_asks_before_running_on_a_careful_connection(cx: &mut TestAppContext) 
 
     click_workspace(cx, &handle, "ok");
 
+    // Confirming sends the request on to the connection, which refuses it:
+    // SQLite has no EXPLAIN ANALYZE to report actual times with.
+    let status = session.read_with(cx, |session, cx| session.active_status_for_test(cx));
     assert!(
-        session.read_with(cx, |session, cx| session.active_plan_showing_for_test(cx)),
-        "confirming should read the plan"
+        status.starts_with("Error: ") && status.contains("EXPLAIN ANALYZE"),
+        "SQLite's refusal should be reported: {status}"
+    );
+    assert!(
+        !session.read_with(cx, |session, cx| session.active_plan_showing_for_test(cx)),
+        "a refused analyze shows no plan"
     );
 }
 
