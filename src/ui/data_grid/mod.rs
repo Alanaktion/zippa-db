@@ -701,6 +701,23 @@ impl DataGrid {
         (edited, delegate.drafts.len(), delegate.deletions.len())
     }
 
+    /// Whether there is work a close would lose: staged edits, rows being built
+    /// by hand, rows marked for deletion, or a cell editor still open on a value
+    /// that was changed but not yet folded in.
+    pub fn has_unsaved_edits(&self, cx: &App) -> bool {
+        if self.pending(cx) > 0 {
+            return true;
+        }
+
+        let delegate = self.table.read(cx).delegate();
+        let Some((row_ix, col_ix)) = delegate.editing else {
+            return false;
+        };
+        let text = delegate.editor.read(cx).value().to_string();
+        let value = staged_value(text, Settings::global(cx).coerce_null_literal);
+        delegate.cell(row_ix, col_ix) != &value
+    }
+
     /// The menu a right click anywhere in the grid opens.
     ///
     /// Built when the menu opens rather than now, so it is about the row the

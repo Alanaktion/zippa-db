@@ -536,6 +536,12 @@ impl TableView {
         self.reload(cx);
     }
 
+    /// Whether the grid holds edits that were never written, so a close should
+    /// ask before throwing them away.
+    pub(crate) fn has_staged_edits(&self, cx: &App) -> bool {
+        self.grid.read(cx).has_unsaved_edits(cx)
+    }
+
     /// Select `column` in the grid once the page is there.
     ///
     /// A schema search opens the table and asks straight away; the page is

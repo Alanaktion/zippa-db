@@ -247,6 +247,59 @@ fn typing_into_a_tab_marks_it_dirty(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn staging_an_edit_marks_a_table_tab_dirty(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    let table_tab = |cx: &mut TestAppContext| {
+        handle
+            .update(cx, |session, _, cx| {
+                session
+                    .tab_titles(cx)
+                    .iter()
+                    .position(|title| title == "items")
+                    .expect("the items table should have a tab")
+            })
+            .unwrap()
+    };
+
+    let index = table_tab(cx);
+    handle
+        .update(cx, |session, _, cx| {
+            assert!(
+                !session.tab_is_dirty_for_test(index, cx),
+                "a freshly opened table has nothing staged"
+            );
+        })
+        .unwrap();
+
+    // Typing into a cell is work a close would lose, so the tab counts as
+    // unsaved even before the edit is applied.
+    stage_cell(cx, &view, 0, 1, "renamed");
+    cx.run_until_parked();
+    handle
+        .update(cx, |session, _, cx| {
+            assert!(
+                session.tab_is_dirty_for_test(index, cx),
+                "a staged edit is unsaved work"
+            );
+        })
+        .unwrap();
+
+    // Applying the edit writes it, so the tab is clean again.
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+    handle
+        .update(cx, |session, _, cx| {
+            assert!(
+                !session.tab_is_dirty_for_test(index, cx),
+                "a written edit is no longer unsaved"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
 fn closing_a_dirty_tab_asks_first(cx: &mut TestAppContext) {
     let (_database, handle, session) = workspace_session(cx);
 

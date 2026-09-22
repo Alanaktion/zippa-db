@@ -241,14 +241,14 @@ impl SessionPanel {
     }
 
     /// Whether a query tab's buffer has changed since it was opened or last
-    /// saved. A table tab has no buffer, so it is never dirty; a structure
-    /// tab is dirty when it has unapplied column edits.
+    /// saved. A table tab counts the edits staged in its grid; a structure tab
+    /// its unapplied column edits.
     pub(crate) fn is_dirty(&self, cx: &App) -> bool {
         match &self.content {
             TabContent::Query {
                 editor, baseline, ..
             } => &editor.read(cx).sql(cx) != baseline,
-            TabContent::Table { .. } => false,
+            TabContent::Table { view } => view.read(cx).has_staged_edits(cx),
             TabContent::Schema { view } => view.read(cx).is_dirty(cx),
         }
     }
