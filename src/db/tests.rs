@@ -416,6 +416,89 @@ async fn execute_reports_no_rows_for_a_missing_key() {
     connection.close().await;
 }
 
+#[tokio::test]
+async fn a_script_runs_every_statement_in_one_transaction() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let results = connection
+        .run_script(
+            "INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
+             SELECT name FROM items WHERE id = 3;",
+        )
+        .await
+        .expect("the script failed");
+    assert_eq!(results.len(), 2, "one result per statement");
+    assert_eq!(results[1].rows, [[Some("gamma".to_string())]]);
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_failing_statement_rolls_the_whole_script_back() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let error = connection
+        .run_script(
+            "INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
+             INSERT INTO not_a_table VALUES (1);",
+        )
+        .await
+        .expect_err("the second statement should fail");
+    assert!(
+        format!("{error:#}").contains("statement 2"),
+        "the error should name which statement failed: {error:#}"
+    );
+
+    let result = connection
+        .run_query("SELECT COUNT(*) FROM items")
+        .await
+        .expect("the query failed");
+    assert_eq!(
+        result.rows,
+        [[Some("2".to_string())]],
+        "the insert before the failure should have been rolled back too"
+    );
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_failing_schema_statement_rolls_the_whole_change_back() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let error = connection
+        .execute_script(&[
+            "ALTER TABLE items ADD COLUMN note TEXT".to_string(),
+            "ALTER TABLE not_a_table ADD COLUMN note TEXT".to_string(),
+        ])
+        .await
+        .expect_err("the second statement should fail");
+    assert!(
+        format!("{error:#}").contains("statement 2"),
+        "the error should name which statement failed: {error:#}"
+    );
+
+    let result = connection
+        .run_query("SELECT name FROM pragma_table_info('items') WHERE name = 'note'")
+        .await
+        .expect("the query failed");
+    assert!(
+        result.rows.is_empty(),
+        "the column added before the failure should have been rolled back too"
+    );
+
+    connection.close().await;
+}
+
 #[test]
 fn a_connection_saved_before_safety_modes_reads_back_as_staged() {
     // The field is written by every save now, but files from before it

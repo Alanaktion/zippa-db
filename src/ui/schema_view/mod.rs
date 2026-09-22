@@ -927,19 +927,10 @@ impl SchemaView {
         cx.notify();
 
         let connection = self.connection.clone();
-        let total = change.statements().len();
         let task = runtime::spawn(async move {
             match change {
-                // Plain statements run one at a time, same as
-                // `Connection::run_script`: a statement that fails leaves the
-                // ones before it applied.
                 Change::Statements(statements) => {
-                    for (position, statement) in statements.iter().enumerate() {
-                        connection
-                            .execute(statement, Vec::new())
-                            .await
-                            .with_context(|| format!("statement {} of {total}", position + 1))?;
-                    }
+                    connection.execute_script(&statements).await?;
                 }
                 // A rebuild is all or nothing: one connection, one
                 // transaction, foreign keys checked before it commits.

@@ -13,8 +13,8 @@ use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use sqlx::Either;
 use sqlx::{
-    AssertSqlSafe, Column, Database, Encode, Executor, IntoArguments, Row, SqlSafeStr, Type,
-    TypeInfo,
+    AssertSqlSafe, Column, Database, Encode, Executor, IntoArguments, Row, SqlSafeStr, Transaction,
+    Type, TypeInfo,
 };
 
 use super::catalog::{Catalog, CatalogEntry, CatalogKind, MAX_ENTRIES};
@@ -482,19 +482,31 @@ impl Connection {
     /// Run every statement in `sql`, in order.
     ///
     /// Each one's rows come back on their own, so a script that selects twice
-    /// answers with two results. A statement that fails stops the run, and the
-    /// ones before it have already happened: there is no transaction around
-    /// this yet.
+    /// answers with two results. On Postgres and SQLite the whole script runs
+    /// in one transaction, so a statement that fails leaves nothing behind —
+    /// it is rolled back rather than left half-applied. MySQL commits DDL
+    /// implicitly (the same limit `import::run` documents for a dump's
+    /// rollback policy), so a wrapping transaction would not cover a script
+    /// there either: a script still runs one statement at a time, and a
+    /// failure leaves what ran before it applied.
     pub async fn run_script(&self, sql: &str) -> Result<Vec<QueryResult>> {
-        let mut results = Vec::new();
-        for (position, statement) in statement::split(sql).into_iter().enumerate() {
-            let result = self
-                .run_query(&statement.text)
-                .await
-                .with_context(|| format!("statement {}", position + 1))?;
-            results.push(result);
+        let statements = statement::split(sql);
+        for statement in &statements {
+            self.refuse_write(&statement.text)?;
         }
-        Ok(results)
+        match &self.pool {
+            Pool::Postgres(pool) => {
+                run_script_transactional(pool, &statements, postgres::cell, postgres::rows_affected)
+                    .await
+            }
+            Pool::Sqlite(pool) => {
+                run_script_transactional(pool, &statements, sqlite::cell, sqlite::rows_affected)
+                    .await
+            }
+            Pool::MySql(pool) => {
+                run_script_untransacted(pool, &statements, mysql::cell, mysql::rows_affected).await
+            }
+        }
     }
 
     /// Run a SQL dump against this connection.
@@ -600,6 +612,33 @@ impl Connection {
         }
     }
 
+    /// Run every statement in `statements`, in order — the plain-`ALTER
+    /// TABLE` half of a schema edit (`schema_view::Change::Statements`).
+    ///
+    /// Postgres and SQLite run DDL transactionally, so the whole set runs in
+    /// one transaction: a statement that fails leaves nothing applied rather
+    /// than a rename half-done and a retype missing. MySQL commits DDL
+    /// implicitly — the same limit `Connection::run_script` and
+    /// `import::run`'s rollback policy document — so it still runs one
+    /// statement at a time, and a failure there leaves what ran before it.
+    pub async fn execute_script(&self, statements: &[String]) -> Result<()> {
+        if self.config.safety.is_read_only() {
+            anyhow::bail!("this connection is read-only");
+        }
+        match &self.pool {
+            Pool::Postgres(pool) => execute_script_transactional(pool, statements).await,
+            Pool::Sqlite(pool) => execute_script_transactional(pool, statements).await,
+            Pool::MySql(_) => {
+                for (position, statement) in statements.iter().enumerate() {
+                    self.execute(statement, Vec::new()).await.with_context(|| {
+                        format!("statement {} of {}", position + 1, statements.len())
+                    })?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Rebuild a SQLite table as one atomic change.
     ///
     /// The caller has already generated the body of the procedure (create the
@@ -628,6 +667,129 @@ impl Connection {
             Pool::Sqlite(pool) => pool.close().await,
         }
     }
+}
+
+/// Run `statements` one at a time on their own connection, with no
+/// transaction: each one commits (or fails) on its own, the way MySQL's
+/// implicit DDL commit forces every write there to behave anyway.
+async fn run_script_untransacted<DB, F>(
+    pool: &sqlx::Pool<DB>,
+    statements: &[statement::Statement],
+    cell: F,
+    rows_affected: fn(&DB::QueryResult) -> u64,
+) -> Result<Vec<QueryResult>>
+where
+    DB: Database,
+    for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> Option<String>: Encode<'q, DB>,
+    String: Type<DB>,
+    F: Fn(&DB::Row, usize) -> Cell,
+{
+    let mut results = Vec::new();
+    for (position, statement) in statements.iter().enumerate() {
+        let result = fetch_all(pool, &statement.text, Vec::new(), &cell, rows_affected)
+            .await
+            .with_context(|| format!("statement {}", position + 1))?;
+        results.push(result);
+    }
+    Ok(results)
+}
+
+/// Run `statements` inside one transaction, rolling it back rather than
+/// committing anything if one of them fails.
+async fn run_script_transactional<DB, F>(
+    pool: &sqlx::Pool<DB>,
+    statements: &[statement::Statement],
+    cell: F,
+    rows_affected: fn(&DB::QueryResult) -> u64,
+) -> Result<Vec<QueryResult>>
+where
+    DB: Database,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    F: Fn(&DB::Row, usize) -> Cell,
+{
+    let mut tx = pool
+        .begin()
+        .await
+        .context("could not start the script's transaction")?;
+
+    let mut results = Vec::new();
+    for (position, statement) in statements.iter().enumerate() {
+        match fetch_in_transaction(&mut tx, &statement.text, &cell, rows_affected).await {
+            Ok(result) => results.push(result),
+            Err(error) => {
+                // Best-effort: a connection that cannot even roll back is
+                // dropped, which aborts the transaction on its own.
+                tx.rollback().await.ok();
+                return Err(error.context(format!("statement {}", position + 1)));
+            }
+        }
+    }
+
+    tx.commit().await.context("could not commit the script")?;
+    Ok(results)
+}
+
+/// Run one statement inside `tx` and turn its rows into a [`QueryResult`].
+///
+/// Sibling to [`fetch_all`], reached through `Deref`/`DerefMut` rather than
+/// `Executor` directly: sqlx's blanket `Executor` impls for `&mut
+/// Transaction` are disabled upstream (a compiler-overflow workaround noted
+/// in its own source), so this reaches the connection the same way
+/// `import::Session::execute` and `sqlite::rebuild` already do.
+async fn fetch_in_transaction<DB, F>(
+    tx: &mut Transaction<'_, DB>,
+    sql: &str,
+    cell: F,
+    rows_affected: fn(&DB::QueryResult) -> u64,
+) -> Result<QueryResult>
+where
+    DB: Database,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    F: Fn(&DB::Row, usize) -> Cell,
+{
+    let statement = AssertSqlSafe(sql.to_string()).into_sql_str();
+    let started = Instant::now();
+    let query = sqlx::query(statement.clone());
+
+    #[allow(deprecated)]
+    let mut results = query.fetch_many(&mut **tx);
+    let mut rows = Vec::new();
+    let mut affected: Option<u64> = None;
+    while let Some(result) = results.next().await {
+        match result? {
+            Either::Left(done) => {
+                *affected.get_or_insert(0) += rows_affected(&done);
+            }
+            Either::Right(row) => rows.push(row),
+        }
+    }
+    drop(results);
+    let elapsed = started.elapsed();
+
+    let (columns, column_types): (Vec<String>, Vec<String>) = match rows.first() {
+        Some(row) => describe_columns(row.columns()),
+        None => Executor::describe(&mut **tx, statement)
+            .await
+            .map(|described| describe_columns(described.columns()))
+            .unwrap_or_default(),
+    };
+
+    let rows = rows
+        .iter()
+        .map(|row| (0..columns.len()).map(|index| cell(row, index)).collect())
+        .collect();
+
+    Ok(QueryResult {
+        columns,
+        column_types,
+        rows,
+        elapsed,
+        affected,
+    })
 }
 
 /// Run `sql` and turn every value into a display string with `cell`.
@@ -742,4 +904,37 @@ where
 
     let result = query.execute(pool).await?;
     Ok(rows_affected(&result))
+}
+
+/// Run `statements` inside one transaction, rolling it back rather than
+/// committing anything if one of them fails.
+///
+/// Sibling to [`run_script_transactional`]: this one discards each
+/// statement's own row count, since a schema edit's caller only needs to
+/// know whether the whole thing went through.
+async fn execute_script_transactional<DB>(
+    pool: &sqlx::Pool<DB>,
+    statements: &[String],
+) -> Result<()>
+where
+    DB: Database,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+{
+    let mut tx = pool
+        .begin()
+        .await
+        .context("could not start the change's transaction")?;
+
+    for (position, statement) in statements.iter().enumerate() {
+        let sql = AssertSqlSafe(statement.clone()).into_sql_str();
+        if let Err(error) = sqlx::query(sql).execute(&mut *tx).await {
+            tx.rollback().await.ok();
+            return Err(anyhow::Error::from(error))
+                .with_context(|| format!("statement {} of {}", position + 1, statements.len()));
+        }
+    }
+
+    tx.commit().await.context("could not commit the change")?;
+    Ok(())
 }
