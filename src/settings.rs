@@ -12,7 +12,7 @@ use std::sync::{LazyLock, OnceLock};
 use anyhow::{Context as _, Result};
 use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
-use gpui_kit::{App, Global, SharedString, Window, WindowAppearance};
+use gpui_kit::{App, AppContext as _, Global, SharedString, Window, WindowAppearance};
 use serde::{Deserialize, Serialize};
 
 use crate::db::store;
@@ -172,9 +172,15 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
         return;
     }
 
-    if let Err(error) = save(&settings) {
-        eprintln!("could not save the settings: {error:#}");
-    }
+    // The file is small, but it is still disk I/O on every change; the write
+    // goes to the background so toggling a switch never waits on it.
+    let to_save = settings.clone();
+    cx.background_spawn(async move {
+        if let Err(error) = save(&to_save) {
+            eprintln!("could not save the settings: {error:#}");
+        }
+    })
+    .detach();
     cx.set_global(settings);
 
     apply(None, cx);
