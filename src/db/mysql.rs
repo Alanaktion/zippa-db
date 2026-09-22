@@ -17,10 +17,18 @@ pub(crate) const DATABASES_SQL: &str = "SELECT schema_name FROM information_sche
 pub(crate) const OBJECTS_SQL: &str = "SELECT table_schema, table_name, table_type \
      FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name";
 
-/// Stored functions and procedures in the current database. MySQL has no
-/// sequences, and reports no argument list in this view.
-pub(crate) const ROUTINES_SQL: &str = "SELECT routine_schema, routine_name, routine_type, NULL \
-     FROM information_schema.routines WHERE routine_schema = DATABASE() ORDER BY routine_name";
+/// Stored functions and procedures in the current database, with the parameter
+/// types that tell one signature from another. MySQL has no sequences. A
+/// function's return value is a row in `parameters` at position 0, so the
+/// subquery counts from 1 and a routine of no arguments comes back NULL.
+pub(crate) const ROUTINES_SQL: &str = "SELECT r.routine_schema, r.routine_name, r.routine_type, \
+     (SELECT GROUP_CONCAT(p.dtd_identifier ORDER BY p.ordinal_position SEPARATOR ', ') \
+      FROM information_schema.parameters p \
+      WHERE p.specific_schema = r.routine_schema \
+        AND p.specific_name = r.specific_name \
+        AND p.ordinal_position > 0) \
+     FROM information_schema.routines r \
+     WHERE r.routine_schema = DATABASE() ORDER BY r.routine_name";
 
 /// Every column in the current database, for the catalog search: owning
 /// database, owning table, whether that object is a view, column name, and the

@@ -236,14 +236,12 @@ impl Connection {
                             Engine::Postgres => schema != "public",
                             Engine::MySql | Engine::Sqlite => false,
                         });
-                // Postgres gives an empty list for a function of no arguments;
-                // the parentheses still tell it apart from a sequence.
+                // Both engines give an empty list for a routine of no
+                // arguments (Postgres directly, MySQL as a NULL); the
+                // parentheses still tell it apart from a sequence.
                 let arguments = match kind {
                     StoredKind::Sequence => None,
-                    _ if self.config.engine == Engine::Postgres => {
-                        Some(row.get(3).cloned().flatten().unwrap_or_default())
-                    }
-                    _ => None,
+                    _ => Some(row.get(3).cloned().flatten().unwrap_or_default()),
                 };
 
                 Some(StoredObject {

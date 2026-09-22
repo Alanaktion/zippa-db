@@ -992,3 +992,104 @@ async fn a_rebuild_leaves_the_data_and_the_schema_behind() {
 
     connection.close().await;
 }
+
+/// A live MySQL server, for the metadata paths SQLite cannot exercise.
+///
+/// Ignored by default because it needs a server. Start one and run it:
+///
+/// ```text
+/// docker run --rm -d -p 3307:3306 --name zippa-mysql \
+///   -e MYSQL_ROOT_PASSWORD=secret -e MYSQL_DATABASE=app mysql:8.4
+/// cargo test -- --ignored live_mysql
+/// ```
+///
+/// `ZIPPA_TEST_MYSQL_URL` (default `mysql://root:secret@127.0.0.1:3307/app`)
+/// points the test at another server.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_routines_carry_their_argument_types() {
+    let (connection, pool) = live_mysql().await;
+
+    // `CREATE FUNCTION` is refused by the prepared-statement protocol, so the
+    // fixture goes through the pool's text protocol instead.
+    //
+    // One of each shape `information_schema.parameters` spells: a function with
+    // an argument, a function with none, and a procedure with two.
+    for sql in [
+        "DROP FUNCTION IF EXISTS zippa_add_one",
+        "DROP FUNCTION IF EXISTS zippa_no_args",
+        "DROP PROCEDURE IF EXISTS zippa_do_thing",
+        "CREATE FUNCTION zippa_add_one(x INT) RETURNS INT DETERMINISTIC RETURN x + 1",
+        "CREATE FUNCTION zippa_no_args() RETURNS INT DETERMINISTIC RETURN 42",
+        "CREATE PROCEDURE zippa_do_thing(IN p_id INT, OUT p_name VARCHAR(50)) \
+         SELECT p_id INTO p_name",
+    ] {
+        pool.execute(AssertSqlSafe(sql.to_string()))
+            .await
+            .unwrap_or_else(|error| panic!("{sql}: {error}"));
+    }
+
+    let routines = connection
+        .stored_objects()
+        .await
+        .expect("could not read the routines");
+    let label = |name: &str| {
+        routines
+            .iter()
+            .find(|routine| routine.name == name)
+            .map(|routine| routine.label())
+    };
+
+    assert_eq!(
+        label("zippa_add_one").as_deref(),
+        Some("zippa_add_one(int)")
+    );
+    assert_eq!(label("zippa_no_args").as_deref(), Some("zippa_no_args()"));
+    assert_eq!(
+        label("zippa_do_thing").as_deref(),
+        Some("zippa_do_thing(int, varchar(50))"),
+        "a procedure's parameter types should tell it from another signature"
+    );
+
+    connection.close().await;
+    pool.close().await;
+}
+
+/// Open the MySQL server a live test runs against, and a pool onto the same
+/// database for fixtures that need the text protocol.
+async fn live_mysql() -> (Connection, sqlx::MySqlPool) {
+    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
+
+    let url = env::var("ZIPPA_TEST_MYSQL_URL")
+        .unwrap_or_else(|_| "mysql://root:secret@127.0.0.1:3307/app".to_string());
+    let rest = url.strip_prefix("mysql://").expect("a mysql:// URL");
+    let (credentials, rest) = rest.split_once('@').expect("user:pass@host:port/db");
+    let (username, password) = credentials.split_once(':').expect("user:pass");
+    let (authority, database) = rest.split_once('/').expect("host:port/db");
+    let (host, port) = authority.split_once(':').expect("host:port");
+    let port: u16 = port.parse().expect("a port");
+
+    let options = MySqlConnectOptions::new()
+        .host(host)
+        .port(port)
+        .username(username)
+        .password(password)
+        .database(database);
+    let pool = MySqlPoolOptions::new()
+        .connect_with(options)
+        .await
+        .expect("could not open the live MySQL server");
+
+    let config = ConnectionConfig {
+        host: host.to_string(),
+        port,
+        username: username.to_string(),
+        database: database.to_string(),
+        ..ConnectionConfig::new(Engine::MySql)
+    };
+    let connection = Connection::open(config, Some(password.to_string()))
+        .await
+        .expect("could not open the live MySQL connection");
+
+    (connection, pool)
+}

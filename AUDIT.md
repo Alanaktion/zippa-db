@@ -71,9 +71,9 @@ The sidebar's Disconnect button emits `SessionEvent::Disconnected` (`src/ui/sess
 
 The SQLite arm of `Connection::explain` never reads its `analyze` parameter (`src/db/connection.rs:455-460`) and `plan::sqlite` hardcodes `analyzed: false` (`src/db/plan.rs:411`). The button is enabled for reads (`src/ui/query_editor.rs:302`) and its tooltip promises "actual times" (`src/ui/query_editor.rs:293-301`, repeated at `README.md:174`). The user gets the same output as `Cmd+E` with no message. MySQL has the analogous case but at least falls back visibly to a classic table and a status line.
 
-### [M] MySQL routines carry no argument list, so overloads are indistinguishable
+### [M] MySQL routines carry no argument list, so overloads are indistinguishable — fixed
 
-`mysql.rs` selects a literal `NULL` for the arguments column (`src/db/mysql.rs:20-21`) and `Connection::stored_objects` only fills `arguments` for Postgres (`src/db/connection.rs:241-247`), so `StoredObject::label` and the catalog's `detail` drop the signature (`src/db/connection.rs:77-97`, `src/db/catalog.rs:139-149`). `information_schema.parameters` is available and unused.
+Fixed: `mysql::ROUTINES_SQL` now reads `information_schema.parameters` (counting from ordinal position 1, so a function's return-value row is left out), and `Connection::stored_objects` fills `arguments` for MySQL as it already did for Postgres. `StoredObject::label` and the catalog's `detail` therefore carry the signature. Verified against a live MySQL 8.4 server by `db::tests::live_mysql_routines_carry_their_argument_types` (ignored by default; see its doc comment for the container and how to run it). As audited: `mysql.rs` selected a literal `NULL` for the arguments column (`src/db/mysql.rs:20-21`) and `Connection::stored_objects` only filled `arguments` for Postgres (`src/db/connection.rs:241-247`), so `StoredObject::label` and the catalog's `detail` dropped the signature (`src/db/connection.rs:77-97`, `src/db/catalog.rs:139-149`). `information_schema.parameters` is available and unused.
 
 ### [M] `run_script` has no transaction — documented, but a real correctness gap
 
@@ -249,7 +249,7 @@ Small in number and mostly guarded, but they are panics in paths that process us
 - **Disconnect, and closing a table tab, are never tested with unsaved/buffered work** (`src/ui/tests/workspace.rs:192-211`).
 - **Column dragging, the row-limit entry/stepper, and a grid keybinding inside a query tab** have no tests (`src/ui/table_view/mod.rs:1131-1152`, `:246-252`; `src/ui/tests/rows.rs:593` calls `copy_as` directly).
 - **MySQL is only tested for imports and metadata through code paths that cannot reach them** — every test in `src/db/tests.rs:653-868` opens a SQLite `TempDatabase`, and the MySQL rollback→stop fallback and session-variable restore (`src/db/import/mod.rs:242-265`, `:353-356`) are MySQL-only.
-- **No test runs against a live Postgres or MySQL**, so the engine-divergence findings in §2/§3 (timestamp labelling, MySQL column restating, unsupported-type stand-ins, empty `IN` lists) are unverified end to end.
+- **No test runs against a live Postgres or MySQL**, so the engine-divergence findings in §2/§3 (timestamp labelling, MySQL column restating, unsupported-type stand-ins, empty `IN` lists) are unverified end to end. Partly addressed: `db::tests::live_mysql_routines_carry_their_argument_types` is an ignored test that runs against a live MySQL server (its doc comment names the container); the other engine-divergence findings are still unverified.
 
 ## 7. CI
 
