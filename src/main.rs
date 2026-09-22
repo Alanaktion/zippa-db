@@ -16,6 +16,7 @@ use gpui_kit::{
 };
 
 use crate::app::Workspace;
+use crate::ui::EngineLogos;
 
 // The default component bundle carries only the 101 icons the components
 // themselves use, so every wider-Lucide icon the app names has to be listed
@@ -43,13 +44,17 @@ impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         match ExtraIcons.load(path)? {
             Some(bytes) => Ok(Some(bytes)),
-            None => gpui_kit::assets::Assets.load(path),
+            None => match EngineLogos.load(path)? {
+                Some(bytes) => Ok(Some(bytes)),
+                None => gpui_kit::assets::Assets.load(path),
+            },
         }
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut paths = gpui_kit::assets::Assets.list(path)?;
         paths.extend(ExtraIcons.list(path)?);
+        paths.extend(EngineLogos.list(path)?);
         Ok(paths)
     }
 }
@@ -112,13 +117,17 @@ mod tests {
     #[test]
     fn every_icon_the_app_names_beyond_the_default_bundle_is_embedded() {
         // `Assets` carries only the 101 component icons, so an icon outside
-        // that set that is not named in `icon_assets!` silently draws nothing.
+        // that set that is not named in `icon_assets!` — or, for the engine
+        // brand marks, in `EngineLogos` — silently draws nothing.
         for path in [
             "icons/table.svg",
             "icons/route.svg",
             "icons/gauge.svg",
             "icons/braces.svg",
             "icons/chevrons-down-up.svg",
+            "icons/engines/postgres.svg",
+            "icons/engines/mysql.svg",
+            "icons/engines/sqlite.svg",
         ] {
             let loaded = AppAssets
                 .load(path)

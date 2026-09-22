@@ -63,20 +63,17 @@ impl TabContent {
         }
     }
 
-    /// The icon a tab leads with, telling a connection to a server from one to
-    /// a file at a glance.
+    /// The mark a tab leads with: the engine's own logo for a connection, so
+    /// the target is told at a glance.
     ///
     /// The manager is not a connection and is not on a database, so it is not
     /// an engine that decides its icon — but it takes the slot all the same, so
     /// every tab's name starts at one spine.
-    fn icon(&self, cx: &App) -> IconName {
+    fn icon(&self, cx: &App) -> Icon {
         match self {
-            Self::Connect(_) => IconName::Plus,
+            Self::Connect(_) => Icon::new(IconName::Plus),
             Self::Session(session) => {
-                match session.read(cx).connection().config.engine.is_file_based() {
-                    true => IconName::File,
-                    false => IconName::Globe,
-                }
+                crate::ui::engine_icon(session.read(cx).connection().config.engine)
             }
         }
     }
@@ -155,7 +152,7 @@ impl TabContent {
     /// connection nor on a database, so it is its icon and its name alone.
     fn content(&self, cx: &App) -> AnyElement {
         let icon = {
-            let icon = Icon::new(self.icon(cx));
+            let icon = self.icon(cx);
             match self.icon_color(cx) {
                 Some(color) => icon.text_color(color),
                 None => icon,

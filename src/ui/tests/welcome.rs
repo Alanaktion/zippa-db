@@ -312,3 +312,44 @@ fn tag_colors_contrast_in_every_bundled_theme(cx: &mut TestAppContext) {
         }
     });
 }
+
+#[gpui_kit::test]
+fn engine_marks_read_in_every_bundled_theme(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::component::init(cx);
+        crate::settings::load_builtin_themes(cx);
+    });
+
+    cx.update(|cx| {
+        let themes = ThemeRegistry::global(cx)
+            .themes()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for config in themes {
+            let mode = config.mode;
+            {
+                let theme = Theme::global_mut(cx);
+                theme.mode = mode;
+                theme.apply_config(&config);
+            }
+            let theme = Theme::global(cx);
+
+            // The official colours are picked for light surfaces; a dark theme
+            // is allowed to move one in lightness, but never below the floor
+            // for a mark that is only a shape.
+            for engine in Engine::ALL {
+                let mark = crate::ui::engine_color(engine, cx);
+                let ratio = crate::ui::contrast(mark, theme.background);
+                assert!(
+                    ratio >= 3.0,
+                    "{}'s mark on {} reads at {:.2}:1, below 3:1",
+                    engine.label(),
+                    theme.theme_name(),
+                    ratio
+                );
+            }
+        }
+    });
+}

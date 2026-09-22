@@ -16,7 +16,7 @@ use gpui_kit::{App, Context, SharedString, div, px};
 use uuid::Uuid;
 
 use crate::db::ConnectionConfig;
-use crate::ui::engine_color;
+use crate::ui::{engine_color, engine_icon};
 
 use super::Welcome;
 
@@ -115,12 +115,13 @@ fn card_body(config: &ConnectionConfig, connecting: bool, cx: &App) -> impl Into
                     h_flex()
                         .items_center()
                         .gap_1()
+                        // The engine's logo in its own colour; the label beside
+                        // it names the engine, so the mark is never the only cue.
                         .child(
-                            div()
+                            engine_icon(config.engine)
                                 .flex_none()
-                                .size_2()
-                                .rounded_full()
-                                .bg(engine_color(config.engine, cx)),
+                                .size_3p5()
+                                .text_color(engine_color(config.engine, cx)),
                         )
                         .child(
                             div()

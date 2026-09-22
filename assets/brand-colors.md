@@ -34,17 +34,8 @@ Error Coral: oklch(0.577 0.215 27.325)
 
 ## Engine colors
 
-### MySQL
-Warm Amber
-Dark: oklch(0.784 0.106 75.428)
-Light: oklch(0.666 0.157 58.318)
+Official engine colors:
 
-### PostgreSQL
-Cobalt Slate
-Dark: oklch(0.719 0.132 264.202)
-Light: oklch(0.546 0.215 262.881)
-
-### SQLite
-Pale Cyan
-Dark: oklch(0.82 0.105 235.715)
-Light: oklch(0.588 0.139 241.966)
+MySQL: #4479A1
+SQLite: #003B57
+PostgreSQL: #4169E1

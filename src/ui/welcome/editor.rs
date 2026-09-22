@@ -273,6 +273,10 @@ impl ConnectionEditor {
         h_flex().gap_2().children(Engine::ALL.map(|engine| {
             let button = Button::new(SharedString::from(format!("engine-{}", engine.label())))
                 .label(engine.label())
+                // The logo travels with the label so the engine is picked by
+                // sight as well as by reading; the button's own variant colours
+                // it, light on the selected one.
+                .icon(crate::ui::engine_icon(engine))
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.set_engine(engine, window, cx)),
                 );

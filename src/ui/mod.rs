@@ -4,6 +4,7 @@
 //! own state and notifies independently of the rest of the window.
 
 pub mod data_grid;
+pub mod engine;
 pub mod filter_bar;
 pub mod import_dialog;
 pub mod plan_view;
@@ -28,7 +29,9 @@ use gpui_kit::component::{ActiveTheme, Root, Theme, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Hsla, SharedString, Window, div, rgb};
 
-use crate::db::{Engine, TagColor};
+use crate::db::TagColor;
+
+pub use engine::{EngineLogos, engine_color, engine_icon};
 
 /// Surface `message` as a toast, alongside whatever inline text already names
 /// the error — a failure that lands while attention is elsewhere still gets
@@ -48,23 +51,6 @@ pub fn notify_error(window: &mut Window, cx: &mut App, message: impl Into<Shared
 pub fn notify_info(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
     if window.root::<Root>().flatten().is_some() {
         window.push_notification(Notification::info(message.into()), cx);
-    }
-}
-
-/// The accent an engine badge is tinted with, from `assets/colors.md`.
-///
-/// Purely decorative — every place this is used also carries the engine's
-/// name in text, so colour is never the only way to tell one connection from
-/// another.
-pub fn engine_color(engine: Engine, cx: &App) -> Hsla {
-    let dark = cx.theme().mode.is_dark();
-    match (engine, dark) {
-        (Engine::MySql, true) => rgb(0xE0AF68).into(),
-        (Engine::MySql, false) => rgb(0xD97706).into(),
-        (Engine::Postgres, true) => rgb(0x7AA2F7).into(),
-        (Engine::Postgres, false) => rgb(0x2563EB).into(),
-        (Engine::Sqlite, true) => rgb(0x7DCFFF).into(),
-        (Engine::Sqlite, false) => rgb(0x0284C7).into(),
     }
 }
 
