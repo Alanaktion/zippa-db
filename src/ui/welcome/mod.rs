@@ -167,7 +167,20 @@ impl Welcome {
             }
             EditorEvent::Connect { config, password } => {
                 self.close_editor(window, cx);
-                self.connect(config.clone(), password.clone(), window, cx);
+                // An untouched box reports no password; a saved connection then
+                // connects with whatever the keychain holds, the way a card
+                // click does. A file database has no password to look up, and a
+                // connection that was never saved has nothing stored.
+                let password = match password {
+                    Some(password) => Some(password.clone()),
+                    None if !config.engine.is_file_based()
+                        && self.connections.iter().any(|saved| saved.id == config.id) =>
+                    {
+                        store::password(&config.id).ok().flatten()
+                    }
+                    None => None,
+                };
+                self.connect(config.clone(), password, window, cx);
             }
             EditorEvent::Dismissed => self.close_editor(window, cx),
         }
@@ -199,7 +212,14 @@ impl Welcome {
             .iter()
             .position(|saved| saved.id == config.id)
         {
-            Some(index) => self.connections[index] = config.clone(),
+            Some(index) => {
+                // Editing a connection is not connecting to it, so its "last
+                // connected" stamp survives the edit: the card keeps its place
+                // in most-recent-first order and its "Connected … ago" line.
+                let mut updated = config.clone();
+                updated.last_connected = self.connections[index].last_connected;
+                self.connections[index] = updated;
+            }
             None => self.connections.push(config.clone()),
         }
 

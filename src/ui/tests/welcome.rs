@@ -219,6 +219,57 @@ fn editing_a_connection_leaves_its_stored_password_alone(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+fn editing_a_connection_keeps_its_last_connected_stamp(cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+
+    let handle = workspace(cx);
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("the active tab should be showing the connection manager");
+
+    let when = "2026-01-02T03:04:05Z"
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .expect("a timestamp");
+    let config = ConnectionConfig {
+        name: "Prod DB".into(),
+        last_connected: Some(when),
+        ..ConnectionConfig::new(Engine::Postgres)
+    };
+    let id = config.id;
+    welcome.update(cx, |welcome, cx| {
+        welcome.set_connections_for_test(vec![config], cx)
+    });
+
+    // The editor builds its config fresh from the form, so it carries no stamp;
+    // saving must not let that wipe the stored one and drop the card out of
+    // most-recent-first order.
+    let mut edited = ConnectionConfig::new(Engine::Postgres);
+    edited.id = id;
+    edited.name = "Prod DB (edited)".into();
+    assert!(edited.last_connected.is_none());
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.save_for_test(edited, None, window, cx)
+        });
+    })
+    .unwrap();
+
+    let saved = welcome.read_with(cx, |welcome, _| welcome.connections_for_test().to_vec());
+    let saved = saved
+        .iter()
+        .find(|saved| saved.id == id)
+        .expect("the edited connection should be saved");
+    assert_eq!(saved.name, "Prod DB (edited)");
+    assert_eq!(
+        saved.last_connected,
+        Some(when),
+        "editing a connection is not connecting to it, so the stamp survives"
+    );
+}
+
+#[gpui_kit::test]
 fn tag_colors_contrast_in_every_bundled_theme(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::component::init(cx);
