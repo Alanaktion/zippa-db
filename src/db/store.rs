@@ -58,13 +58,27 @@ pub fn load() -> Result<Vec<ConnectionConfig>> {
 }
 
 /// Replace the saved connections with `connections`.
+///
+/// Written beside the real file and renamed into place, so a kill part-way
+/// through the write cannot leave a truncated file that `load` would then
+/// refuse to parse — the whole connection list would be lost.
 pub fn save(connections: &[ConnectionConfig]) -> Result<()> {
     let dir = config_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
 
     let path = dir.join(FILE_NAME);
     let contents = serde_json::to_string_pretty(connections)?;
-    fs::write(&path, contents).with_context(|| format!("could not write {}", path.display()))?;
+    let temporary = dir.join(format!("{FILE_NAME}.tmp"));
+    fs::write(&temporary, &contents)
+        .with_context(|| format!("could not write {}", temporary.display()))?;
+
+    if let Err(error) = fs::rename(&temporary, &path) {
+        // Windows will not replace an existing file with a rename, so fall back
+        // to writing in place rather than leaving the connections unsaved.
+        fs::write(&path, &contents)
+            .with_context(|| format!("could not write {}: {error:#}", path.display()))?;
+        let _ = fs::remove_file(&temporary);
+    }
     Ok(())
 }
 
