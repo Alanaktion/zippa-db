@@ -553,8 +553,20 @@ fn mysql_node(line: &str) -> Option<PlanNode> {
         return None;
     }
 
-    let cost_text = cost_at.map(|at| &body[at..]).unwrap_or("");
-    let actual_text = actual_at.map(|at| &body[at..]).unwrap_or("");
+    // Each group is read only up to where the next one starts, so a group that
+    // omits `rows=` cannot pick up the other group's value. Either can be
+    // missing, and the cost group normally comes first.
+    let group = |at: Option<usize>, next: Option<usize>| -> &str {
+        match at {
+            Some(at) => {
+                let end = next.filter(|next| *next > at).unwrap_or(body.len());
+                &body[at..end]
+            }
+            None => "",
+        }
+    };
+    let cost_text = group(cost_at, actual_at);
+    let actual_text = group(actual_at, cost_at);
 
     Some(PlanNode {
         label,
@@ -891,6 +903,17 @@ mod tests {
                 .any(|(_, warning)| warning.contains("Full table scan")),
             "a table scan should warn"
         );
+    }
+
+    #[test]
+    fn mysql_actual_rows_are_not_read_as_the_estimate() {
+        // The estimate group may omit `rows=`, which must not let the actual
+        // group's value stand in for it.
+        let text =
+            "-> Filter: (items.id > 1)  (cost=0.35)  (actual time=0.05..0.05 rows=7 loops=1)\n";
+        let plan = mysql(text, true).expect("the fixture is a tree");
+        assert_eq!(plan.root.estimated_rows, None, "there is no estimate");
+        assert_eq!(plan.root.actual_rows, Some(7.0));
     }
 
     #[test]
