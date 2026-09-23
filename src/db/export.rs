@@ -7,7 +7,8 @@
 //!
 //! A cell the driver could not read back (`query::is_placeholder`) is a
 //! description of a value rather than the value itself, so every format writes
-//! `NULL` there and [`Rendered::skipped`] says how many did so.
+//! it the way it writes a `NULL` — the word in JSON and SQL, an empty field in
+//! TSV, CSV, and Markdown — and [`Rendered::skipped`] says how many did so.
 
 use super::config::Engine;
 use super::query::{self, Cell};

@@ -1,4 +1,5 @@
-//! The structure tab: read-only indexes and foreign keys, editable columns.
+//! The structure tab: editing columns, indexes, and foreign keys, and the
+//! statements (or SQLite rebuild) each change generates.
 
 use super::*;
 use crate::db::{ReferentialAction, SafetyMode};

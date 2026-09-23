@@ -1,68 +1,71 @@
 # TODO
 
-## 1. Connection & Security
+The feature backlog: what is not built yet, roughly ordered by value for effort
+within each section. What already ships is described in [README.md](README.md)
+and [CHANGELOG.md](CHANGELOG.md). Design
+notes for the larger open items live in [`.agents/plans/`](.agents/plans/);
+known defects and risks in the shipped code are tracked in
+[AUDIT.md](AUDIT.md).
 
-### Authentication & Security
+## 1. Connections & security
 
-* [x] Native username/password authentication (passwords stored in the OS keychain)
-* [ ] SSH Tunneling (Password and Private Key / Agent support)
-* [ ] SSL/TLS connection modes (`disable`, `prefer`, `require`, `verify-full`)
+* SSH tunneling (password and private key / agent)
+* SSL/TLS connection modes (`disable`, `prefer`, `require`, `verify-full`)
+* Paste a connection URL (`postgres://user@host/db`) to fill the form; read `DATABASE_URL`, `~/.pgpass`, `~/.my.cnf`
+* Connection health: detect a dropped connection, offer "Reconnect" rather than a raw driver error, keepalive
+* Optional statement timeout per connection
 
-### Connection Management
+## 2. Data grid & table view
 
-* [x] Multi-environment tagging & color-coding (one tag + colour per connection; Red header for `Production`, Green for `Local`)
-* [x] Workspace state persistence (reopen previous tabs on startup)
+* "Referenced by": the rows in other tables that point at this one, and composite foreign keys ([plan](.agents/plans/fk-referenced-by.md))
+* Quick search across every column of a table
+* Date/time picker for timestamp cells
+* Undo/redo for staged grid edits
+* Bulk edit: "Set column to…" on the picked rows
+* Multi-column sorting
+* Column stats: count, distinct, null %, min/max, top values
+* Reorder columns by dragging a header (turned off today: the grid addresses cells by the result's column order)
 
-## 2. Tabular Data Grid (Data Browser)
+## 3. SQL editor
 
-### Filtering, Sorting & Pagination
+* Auto-complete for tables, columns, keywords, and schemas from live introspection
+* Engine-specific highlighting (today one SQL grammar serves all three)
+* Format SQL ([plan](.agents/plans/format-sql.md))
+* A pinned connection per query tab, so `BEGIN`/`COMMIT`, `SET`, and temp tables persist between runs ([plan](.agents/plans/pinned-connections-transactions.md))
+* Messages tab: Postgres `NOTICE`, MySQL warnings
+* Query parameters (`:name`, `$1`) prompted for and bound
+* A row-limit guard on unbounded `SELECT`s, with a "Fetched first N rows" banner
+* Middle-mouse drag for a column (multi-line) selection, like Zed
+* Find and replace, multi-cursor, comment toggle (check what `gpui-kit`'s editor already offers)
 
-* [ ] Quick search bar (global string matching across columns)
+## 4. Schema browser & editor
 
-### Specialized Cell Renderers
+* Tree navigation: databases > schemas > tables / views
+* Read-only DDL text, triggers, and check constraints in the structure tab ([plan](.agents/plans/structure-ddl-view.md))
+* Search the text of view, routine, and trigger definitions
+* Free-text column types in the structure tab (today a fixed per-engine list)
+* View and routine definition editor
 
-* [ ] Date/Time picker for timestamp fields
+## 5. Import, export & productivity
 
-## 3. SQL Query Editor
+* Stream a large export instead of reading the whole table into memory first
+* Import CSV into an existing table ([plan](.agents/plans/csv-import.md))
+* Backup via `pg_dump` / `mysqldump`
+* Local query history, searchable by date, database, or text ([plan](.agents/plans/query-history.md))
+* Reusable SQL snippets ([plan](.agents/plans/sql-snippets.md))
+* Customizable keyboard shortcuts
+* Server activity view (`pg_stat_activity`, `SHOW PROCESSLIST`) with cancel/kill
+* "Copy diagnostics" in the Help menu: version, OS, recent errors
 
-### Text Editing
+## 6. Platform & release
 
-* [ ] Syntax highlighting tailored per database engine dialect
-* [ ] Auto-complete (tables, columns, SQL keywords, schemas) powered by live introspection
+* macOS and Windows builds in CI
+* Signed macOS and Windows builds, and an update check
+* Full audit against a screen reader on each platform
+* Dialog transitions that can be turned off (needs upstream support in `gpui-kit`)
 
-### Result Sets & Output Diagnostics
+## Not planned for now
 
-* [x] Result status shows rows affected/returned and elapsed time; error handling; console shows query history via result bar for multiple statements (syntax highlighting and detailed warnings not yet included)
-* [x] Query plan viewer: `EXPLAIN` / `EXPLAIN ANALYZE` as a readable tree with cost, rows, timing, and warnings, alongside the result grid
-
-## 4. Database Schema Browser & Modeler
-
-### Structure & Object Explorer
-
-* [ ] Left sidebar navigation tree: Databases > Schemas > Tables / Views (today a flat object list with one folder per routine kind)
-* [x] Search the whole schema — tables, views, columns, indexes, routines and triggers — and open what a result belongs to
-* [ ] Search the text of view, routine and trigger definitions, showing the matching line
-
-### View & Routine Management
-
-* [ ] Stored procedure and function editor with argument syntax checking
-* [ ] View definition viewer and editor
-
-## 5. Utility & Productivity Features
-
-### Import & Export Tools
-
-* [x] Export selected rows or entire tables to `CSV`, `JSON`, and SQL `INSERT` statements
-* [ ] Stream a large export instead of reading the whole table into memory first
-* [x] Import SQL dumps (streamed, gzip/bzip2/zstd, with a progress bar and a choice of what a failed statement does)
-* [ ] Import CSV data into existing table
-* [ ] Database backup dump (`pg_dump` / `mysqldump` integration)
-
-### Query History & Snippets
-
-* [ ] Local execution history log (searchable by date, database, or query string)
-* [ ] Reusable SQL code snippets library
-
-## 6. Accessibility
-
-* [ ] Full audit against a screen reader on each platform
+* ER diagram generation — costly, and rarely used day to day.
+* Cloud sync of connections or snippets — the config directory is plain JSON and can be synced by other means.
+* A plugin system, non-SQL databases, and AI query generation — each is a large design decision.

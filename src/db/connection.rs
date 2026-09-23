@@ -75,10 +75,7 @@ impl StoredObject {
     /// Name as shown in the sidebar: schema-qualified when the schema adds
     /// something, with the argument types of a routine after it.
     pub fn label(&self) -> String {
-        let name = match &self.schema {
-            Some(schema) => format!("{schema}.{}", self.name),
-            None => self.name.clone(),
-        };
+        let name = qualified(self.schema.as_deref(), &self.name);
         match &self.arguments {
             Some(arguments) => format!("{name}({arguments})"),
             None => name,
@@ -90,10 +87,15 @@ impl DatabaseObject {
     /// Name as shown in the sidebar, qualified only when the schema adds
     /// something the user cannot already see.
     pub fn label(&self) -> String {
-        match &self.schema {
-            Some(schema) => format!("{schema}.{}", self.name),
-            None => self.name.clone(),
-        }
+        qualified(self.schema.as_deref(), &self.name)
+    }
+}
+
+/// `schema.name`, or the bare name when there is no schema to show.
+fn qualified(schema: Option<&str>, name: &str) -> String {
+    match schema {
+        Some(schema) => format!("{schema}.{name}"),
+        None => name.to_string(),
     }
 }
 
@@ -202,17 +204,7 @@ impl Connection {
                     _ => ObjectKind::Table,
                 };
 
-                // Only qualify a name when the schema adds something: MySQL's
-                // schema is always the current database, and Postgres tables
-                // usually sit in `public`.
-                let schema =
-                    row.first()
-                        .cloned()
-                        .flatten()
-                        .filter(|schema| match self.config.engine {
-                            Engine::Postgres => schema != "public",
-                            Engine::MySql | Engine::Sqlite => false,
-                        });
+                let schema = self.shown_schema(row.first().cloned().flatten());
 
                 Some(DatabaseObject { schema, name, kind })
             })
@@ -239,14 +231,7 @@ impl Connection {
                     kind if kind.eq_ignore_ascii_case("SEQUENCE") => StoredKind::Sequence,
                     _ => StoredKind::Function,
                 };
-                let schema =
-                    row.first()
-                        .cloned()
-                        .flatten()
-                        .filter(|schema| match self.config.engine {
-                            Engine::Postgres => schema != "public",
-                            Engine::MySql | Engine::Sqlite => false,
-                        });
+                let schema = self.shown_schema(row.first().cloned().flatten());
                 // Both engines give an empty list for a routine of no
                 // arguments (Postgres directly, MySQL as a NULL); the
                 // parentheses still tell it apart from a sequence.
@@ -297,23 +282,46 @@ impl Connection {
         let indexes = self.run_query(indexes).await?;
         let triggers = self.run_query(triggers).await?;
 
-        let mut entries: Vec<CatalogEntry> = Vec::new();
+        // Entries past the cap are counted but never built, so a huge schema
+        // costs its rows once rather than twice.
+        let total = objects.len()
+            + stored.len()
+            + columns.rows.len()
+            + indexes.rows.len()
+            + triggers.rows.len();
+        let mut entries: Vec<CatalogEntry> = Vec::with_capacity(total.min(MAX_ENTRIES));
         entries.extend(objects.into_iter().map(CatalogEntry::object));
         entries.extend(stored.into_iter().map(CatalogEntry::routine));
-        for (rows, kind) in [
+        let members = [
             (&columns.rows, CatalogKind::Column),
             (&indexes.rows, CatalogKind::Index),
             (&triggers.rows, CatalogKind::Trigger),
-        ] {
-            for row in rows {
-                let (owner, name, detail) = self.catalog_row(row);
-                entries.push(CatalogEntry::member(kind, owner, name, detail));
+        ]
+        .into_iter()
+        .flat_map(|(rows, kind)| rows.iter().map(move |row| (kind, row)));
+        for (kind, row) in members {
+            if entries.len() >= MAX_ENTRIES {
+                break;
             }
+            let (owner, name, detail) = self.catalog_row(row);
+            entries.push(CatalogEntry::member(kind, owner, name, detail));
         }
 
-        let total = entries.len();
         entries.truncate(MAX_ENTRIES);
         Ok(Catalog { entries, total })
+    }
+
+    /// The schema a name is qualified with, or `None` when it adds nothing the
+    /// user cannot already see: MySQL's schema is always the current database,
+    /// SQLite has one, and Postgres tables usually sit in `public`.
+    ///
+    /// Every listing goes through this, so the sidebar, the catalog, and a
+    /// restored tab all name one table with the same `DatabaseObject`.
+    fn shown_schema(&self, schema: Option<String>) -> Option<String> {
+        match self.config.engine {
+            Engine::Postgres => schema.filter(|schema| schema != "public"),
+            Engine::MySql | Engine::Sqlite => None,
+        }
     }
 
     /// One catalog row: `(schema, owning table, its kind, entry name, detail)`,
@@ -324,14 +332,10 @@ impl Connection {
                 .and_then(|cell| cell.clone())
                 .unwrap_or_default()
         };
-        // Only qualify a name when the schema adds something, so a catalog
-        // entry's owner is the same `DatabaseObject` the sidebar's `objects`
-        // would hand back and an already-open tab is found again.
-        let schema = text(0);
-        let schema = match self.config.engine {
-            Engine::Postgres => Some(schema).filter(|schema| schema != "public"),
-            Engine::MySql | Engine::Sqlite => None,
-        };
+        // The same rule as `objects`, so a catalog entry's owner is the same
+        // `DatabaseObject` the sidebar hands back and an already-open tab is
+        // found again.
+        let schema = self.shown_schema(Some(text(0)));
         let kind = match text(2) {
             kind if kind.eq_ignore_ascii_case("VIEW") => ObjectKind::View,
             _ => ObjectKind::Table,

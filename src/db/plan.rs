@@ -344,8 +344,9 @@ fn json_text(value: &Value) -> String {
     }
 }
 
-/// Build SQLite's `EXPLAIN QUERY PLAN` tree from its `(id, parent, detail)`
-/// rows. Never fails: output that does not have that shape comes back as raw.
+/// Build SQLite's `EXPLAIN QUERY PLAN` tree from its
+/// `(id, parent, notused, detail)` rows. Never fails: output that does not have
+/// that shape comes back as raw.
 pub fn sqlite(result: &QueryResult) -> Plan {
     let raw = raw_rows(result);
 
@@ -502,8 +503,8 @@ pub fn mysql(text: &str, analyze: bool) -> Option<Plan> {
         },
     };
     annotate_mysql(&mut root);
-    // `EXPLAIN ANALYZE` is the only form that reports actual times, so whether
-    // the tree has them is a truer answer than the flag the caller passed.
+    // `EXPLAIN ANALYZE` is the only form that reports actual times, so a tree
+    // that has them was analyzed even when the caller did not ask for it.
     let analyzed = analyze || has_timing(&root);
 
     Some(Plan {

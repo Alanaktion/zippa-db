@@ -193,7 +193,11 @@ impl Render for ValueView {
                             .ghost()
                             .small()
                             .label("Close")
-                            .tooltip("Leave the value as it was")
+                            .tooltip_with_action(
+                                "Leave the value as it was",
+                                &CloseValue,
+                                Some("ValueDialog"),
+                            )
                             .on_click(cx.listener(|this, _, _window, cx| this.close(cx))),
                     )
                     .when(editable, |this| {
@@ -202,7 +206,11 @@ impl Render for ValueView {
                                 .primary()
                                 .small()
                                 .label("Save")
-                                .tooltip("Stage this value in the grid")
+                                .tooltip_with_action(
+                                    "Stage this value in the grid",
+                                    &SaveValue,
+                                    Some("ValueDialog"),
+                                )
                                 .on_click(cx.listener(|this, _, _window, cx| this.save(cx))),
                         )
                     }),

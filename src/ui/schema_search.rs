@@ -25,13 +25,14 @@ use crate::db::{Catalog, CatalogEntry, CatalogKind, Query};
 
 use super::session::Session;
 
-/// The order groups are listed in, matching [`CatalogKind::group`].
-const HEADINGS: [&str; 5] = [
-    "Tables & Views",
-    "Columns",
-    "Indexes",
-    "Routines",
-    "Triggers",
+/// The order groups are listed in. Headings come from [`CatalogKind::group`],
+/// so a group is never dropped because its label drifted from this list.
+const GROUPS: [CatalogKind; 5] = [
+    CatalogKind::Table,
+    CatalogKind::Column,
+    CatalogKind::Index,
+    CatalogKind::Routine,
+    CatalogKind::Trigger,
 ];
 
 pub struct SchemaSearchView {
@@ -144,13 +145,13 @@ impl Render for SchemaSearchView {
                 query.kinds.push(*kind);
             }
         }
-        let hits = catalog::search(&catalog.entries, &query);
+        let (hits, matched) = catalog::search(&catalog.entries, &query);
 
         // One Command group per heading, with a parallel list of the entries
         // each row stands for, so confirming a path finds its entry.
         let mut groups: Vec<CommandGroup> = Vec::new();
         let mut targets: Vec<Vec<CatalogEntry>> = Vec::new();
-        for heading in HEADINGS {
+        for heading in GROUPS.map(CatalogKind::group) {
             let mut group = CommandGroup::new().label(heading);
             let mut section = Vec::new();
             for hit in &hits {
@@ -175,7 +176,7 @@ impl Render for SchemaSearchView {
             (message, danger, cx.theme().muted_foreground)
         };
         let empty_color = if danger { cx.theme().danger } else { muted };
-        let (notice, notice_danger) = notice(&catalog, hits.len(), error.as_deref());
+        let (notice, notice_danger) = notice(&catalog, matched, error.as_deref());
         let notice_color = if notice_danger {
             cx.theme().danger
         } else {
@@ -327,7 +328,7 @@ fn notice(catalog: &Catalog, matches: usize, error: Option<&str>) -> (String, bo
         1 => "1 match".to_string(),
         count => format!("{count} matches"),
     });
-    if matches == MAX_HITS {
+    if matches > MAX_HITS {
         notes.push(format!("showing the first {MAX_HITS}"));
     }
     if let Some(total) = catalog.truncated() {

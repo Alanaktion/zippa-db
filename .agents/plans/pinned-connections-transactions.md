@@ -1,7 +1,7 @@
 # Pinned connection per query tab, with transactions
 
 ## Context
-`Connection::run_query`/`run_script` (`src/db/connection.rs`) run every statement through the sqlx pool, so consecutive statements in one editor tab can land on any of `POOL_SIZE = 5` connections. Consequences today: `BEGIN` in one statement and `COMMIT` in the next are on different connections, `SET search_path`/`USE`/temp tables do not persist, and `run_script`'s doc comment already notes there is "no transaction around this yet". `sql-import.md` hit the same limit and plans its own one-off held connection; this plan makes that a shared building block.
+`Connection::run_query`/`run_script` (`src/db/connection.rs`) run every statement through the sqlx pool, so consecutive statements in one editor tab can land on any of `POOL_SIZE = 5` connections. Consequences today: `BEGIN` in one statement and `COMMIT` in the next are on different connections, `SET search_path`/`USE`/temp tables do not persist between runs. (`run_script` now wraps one script in a transaction on Postgres and SQLite, so this is about *separate* runs in one tab.) The dump import already holds its own one-off connection (`Connection::import_dump`); this plan makes that a shared building block.
 
 Decisions (from user): each query tab gets its own dedicated connection for its lifetime (psql-like session), and explicit `BEGIN`/`COMMIT`/`ROLLBACK` typed in the editor works. A manual-commit toggle and auto-savepoints are follow-ups.
 
@@ -53,7 +53,7 @@ SQLite: file-based, a pinned connection with an open write transaction holds the
 - new: `src/db/pinned.rs`, `src/ui/tests/transactions.rs`
 - edit: `src/db/{connection,statement,sqlite,postgres,mysql,mod}.rs`, `src/ui/session/{mod,tab,panel}.rs`, `src/ui/query_editor.rs`, `src/app.rs` (quit/close guards), `TODO.md`, `CLAUDE.md` ("Running SQL": editor runs on a per-tab pinned connection; pool for generated SQL)
 - reuse: `runtime::spawn` + abort handle, `Connection::refuse_write`, `TempDatabase` fixture, `Status`/`notify_error`.
-- `sql-import.md` should adopt `PinnedConnection` instead of its own held-connection code; update that plan when this lands.
+- `Connection::import_dump` should adopt `PinnedConnection` instead of its own held-connection code.
 
 ## Testing
 - `db` tests (SQLite temp file): `BEGIN; INSERT; ROLLBACK` across separate `run_query` calls on one pin leaves no row; the same on the pool path (documenting why it is needed) does not; `PRAGMA foreign_keys=ON` persists across calls on a pin; temp table persists; script runs on one connection; `ReadOnly` refuses a write on a pin; `BEGIN`/`ROLLBACK` allowed on `ReadOnly`.

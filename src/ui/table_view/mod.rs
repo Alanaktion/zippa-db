@@ -1,43 +1,37 @@
 //! A table opened from the sidebar: the grid, paged, with no editor.
 //!
-//! TODO.md section 2 ("Configurable row limit & offset pagination"), the
-//! sorting half of "Multi-column sorting", and the buffer model for inline
-//! edits: the grid stages what is typed into it and this view turns a row's
-//! staged cells into an `UPDATE`, on leaving the row or on demand.
+//! Paging, a row limit, single-column sorting, the filter bar, and the buffer
+//! model for inline edits: the grid stages what is typed into it and this view
+//! turns the staged cells, new rows, and deletions into `UPDATE`/`INSERT`/
+//! `DELETE`, on leaving the row or on demand. The statements live in [`sql`],
+//! exports in [`export`], and the status line in [`footer`].
 
 use std::sync::Arc;
 
-use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{
-    InputEvent, InputState, NumberInput, NumberInputEvent, StepAction,
-};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::input::{InputEvent, InputState, NumberInputEvent, StepAction};
 use gpui_kit::component::table::ColumnSort;
-use gpui_kit::component::{
-    ActiveTheme, Disableable, IconName, ResizableState, Sizable, h_flex, h_resizable,
-    resizable_panel, v_flex,
-};
+use gpui_kit::component::{ResizableState, h_resizable, resizable_panel, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, Window, actions, div, px,
 };
 
 use std::collections::HashSet;
-use std::path::Path;
 
-use crate::db::export::{self, Format};
-use crate::db::query::{Cell, QueryResult};
+use crate::db::query::Cell;
 use crate::db::{Connection, DatabaseObject, ForeignKeyDef, ObjectKind, RowKey, runtime};
 use crate::settings::{self, Settings};
 use crate::ui::data_grid::{
-    Copied, DataGrid, ExportRequested, GridEdit, GridNavigate, Scope, SortRequested, Sorting,
-    StagedRow,
+    Copied, DataGrid, ExportRequested, GridEdit, GridNavigate, SortRequested, Sorting, StagedRow,
 };
 use crate::ui::filter_bar::{FilterBar, FilterSpec, FiltersChanged, Operator};
-use crate::ui::sql_file;
 
+mod export;
+mod footer;
 mod row_panel;
 mod sql;
+#[cfg(test)]
+mod test_support;
 
 pub(crate) use row_panel::RowPanel;
 use row_panel::RowPanelEvent;
@@ -87,21 +81,6 @@ fn applied_summary(edited: usize, inserted: usize, deleted: usize) -> String {
         return "Nothing to write".to_string();
     }
     format!("Wrote {summary}")
-}
-
-/// What the footer says after an export: where it went, and — when the driver
-/// had only a description of some values — how many were written as `NULL`.
-fn export_notice(rows: usize, path: &Path, skipped: usize) -> String {
-    let unit = if rows == 1 { "row" } else { "rows" };
-    let mut notice = format!("Exported {rows} {unit} to {}", path.display());
-    match skipped {
-        0 => {}
-        1 => notice.push_str(" (1 value could not be read back and was written as NULL)"),
-        skipped => notice.push_str(&format!(
-            " ({skipped} values could not be read back and were written as NULL)"
-        )),
-    }
-    notice
 }
 
 /// A write built and waiting for the user to say yes, on a connection that
@@ -806,133 +785,6 @@ impl TableView {
         .detach();
     }
 
-    /// Export the whole table, in `format`.
-    ///
-    /// The filters and the sort are honoured; the page limit is not, since an
-    /// export is every row the view is showing, not just the page in hand.
-    pub(crate) fn export(&mut self, format: Format, cx: &mut Context<Self>) {
-        // The statement is built now — that costs nothing — but the table is
-        // only read once a file has been chosen, so a cancelled dialog does not
-        // cost a full-table read.
-        let (sql, params) = self.select_sql(false, cx);
-        let table = self.object.name.clone();
-        let connection = self.connection.clone();
-        // A table addressed by its engine row id has that id asked for by name
-        // (`select rowid, *`), so it has to come back out; a table with a
-        // primary key selects only its own columns and needs nothing dropped.
-        let by_row_id = matches!(self.row_key, Some(RowKey::RowId(_)));
-
-        let query = async move {
-            match runtime::spawn(async move { connection.run_query_with(&sql, params).await }).await
-            {
-                Ok(Ok(mut result)) => {
-                    if by_row_id {
-                        sql::take_row_id(&mut result);
-                    }
-                    Ok(result)
-                }
-                Ok(Err(error)) => Err(format!("{error:#}")),
-                Err(_) => Err("exporting the table was cancelled".to_string()),
-            }
-        };
-
-        self.export_result(format, table, query, cx);
-    }
-
-    /// Export the rows picked out in the grid, in `format`.
-    ///
-    /// Cells come through the grid, so a staged edit is exported as it stands.
-    pub(crate) fn export_picked(&mut self, format: Format, cx: &mut Context<Self>) {
-        let snapshot = self.grid.read(cx).snapshot(Scope::Picked, cx);
-        if snapshot.rows.is_empty() {
-            return;
-        }
-
-        let table = self.object.name.clone();
-        let result = QueryResult {
-            columns: snapshot.columns,
-            column_types: snapshot.types,
-            rows: snapshot.rows,
-            ..QueryResult::default()
-        };
-        let query = async move { Ok(result) };
-        self.export_result(format, table, query, cx);
-    }
-
-    /// Ask where to put an export, then run `query`, lay the rows out, and
-    /// write them there.
-    fn export_result(
-        &mut self,
-        format: Format,
-        table: String,
-        query: impl Future<Output = Result<QueryResult, String>> + 'static,
-        cx: &mut Context<Self>,
-    ) {
-        let engine = self.connection.config.engine;
-        let prompt = sql_file::prompt_for_save(None, &table, format.extension(), cx);
-
-        cx.spawn(async move |this, cx| {
-            let path = match prompt.await {
-                Ok(Some(path)) => path,
-                Ok(None) => return,
-                Err(error) => {
-                    let message = format!("{error:#}");
-                    this.update_in(cx, |this, window, cx| this.fail_export(message, window, cx))
-                        .ok();
-                    return;
-                }
-            };
-
-            let result = match query.await {
-                Ok(result) => result,
-                Err(message) => {
-                    this.update_in(cx, |this, window, cx| this.fail_export(message, window, cx))
-                        .ok();
-                    return;
-                }
-            };
-
-            let rendered = export::render(
-                format,
-                engine,
-                &table,
-                &result.columns,
-                &result.column_types,
-                &result.rows,
-            );
-            let rows = result.row_count();
-            let export::Rendered { text, skipped } = rendered;
-
-            let written = cx
-                .background_spawn(sql_file::write(path.clone(), text))
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                match written {
-                    Ok(()) => {
-                        this.error = None;
-                        this.notice = Some(export_notice(rows, &path, skipped));
-                    }
-                    Err(error) => {
-                        let message = format!("{error:#}");
-                        this.error = Some(message.clone());
-                        crate::ui::notify_error(window, cx, format!("Error: {message}"));
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Put an export failure where the status line and the toasts can see it.
-    fn fail_export(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.error = Some(message.clone());
-        self.notice = None;
-        crate::ui::notify_error(window, cx, format!("Error: {message}"));
-        cx.notify();
-    }
-
     /// Mark the rows the grid has picked out for deletion.
     fn delete_rows(&mut self, cx: &mut Context<Self>) {
         if self.committing || !self.is_editable() {
@@ -944,7 +796,7 @@ impl TableView {
 
     /// Take the deletion mark off the rows the grid has picked out.
     fn restore_rows(&mut self, cx: &mut Context<Self>) {
-        if self.committing {
+        if self.committing || !self.is_editable() {
             return;
         }
         self.grid.update(cx, |grid, cx| grid.restore_selected(cx));
@@ -1210,291 +1062,6 @@ impl TableView {
         self.page = page;
         self.reload(cx);
     }
-
-    /// The changes waiting for an answer, above the footer.
-    ///
-    /// The statements themselves are not shown: the rows on screen already
-    /// say what will happen to them, in the colours they are drawn in.
-    fn render_confirm(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let question = self
-            .confirming
-            .as_ref()
-            .map(|write| write.question.clone())
-            .unwrap_or_default();
-
-        h_flex()
-            .w_full()
-            .flex_none()
-            .px_3()
-            .py_2()
-            .gap_2()
-            .justify_between()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().warning)
-                    .child(format!("Apply {question}?")),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("cancel-write")
-                            .ghost()
-                            .xsmall()
-                            .label("Cancel")
-                            .tooltip("Leave the changes as they are")
-                            .on_click(cx.listener(|this, _, _window, cx| this.cancel_write(cx))),
-                    )
-                    .child(
-                        Button::new("confirm-write")
-                            .primary()
-                            .xsmall()
-                            .label("Apply")
-                            .tooltip("Write the changes to the server")
-                            .on_click(cx.listener(|this, _, _window, cx| this.confirm_write(cx))),
-                    ),
-            )
-    }
-
-    fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let first_row = self.page * self.limit;
-        let range = if self.loaded_rows == 0 {
-            "No rows".to_string()
-        } else {
-            format!("Rows {}–{}", first_row + 1, first_row + self.loaded_rows)
-        };
-
-        let (edited, inserted, deleted) = self.grid.read(cx).pending_counts(cx);
-        let staged = edited + inserted + deleted;
-        let changed = match staged {
-            0 => None,
-            _ => Some(change_summary(edited, inserted, deleted)),
-        };
-
-        // An error says so in words: the colour it is drawn in is the only
-        // other thing telling it apart from the row count beside it.
-        let message = match (&self.error, self.loading, self.committing) {
-            (Some(error), _, _) => (format!("Error: {error}"), cx.theme().danger),
-            (None, _, true) => ("Writing…".to_string(), cx.theme().muted_foreground),
-            (None, true, _) => ("Loading…".to_string(), cx.theme().muted_foreground),
-            // The question comes first: it is the one thing here waiting on
-            // an answer.
-            (None, false, _) => match (&self.pending, &changed, &self.notice) {
-                (Some(action), _, _) => (
-                    format!(
-                        "{} discards {}",
-                        action.label(),
-                        change_summary(edited, inserted, deleted)
-                    ),
-                    cx.theme().danger,
-                ),
-                (None, Some(changed), _) => (changed.clone(), cx.theme().warning),
-                (None, None, Some(notice)) => (notice.clone(), cx.theme().muted_foreground),
-                (None, None, None) => (range, cx.theme().muted_foreground),
-            },
-        };
-
-        h_flex()
-            .w_full()
-            .flex_none()
-            .px_3()
-            .py_1()
-            .gap_3()
-            .justify_between()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().status_bar)
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Button::new("previous-page")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::ChevronLeft)
-                            .accessibility_label("Previous page")
-                            .tooltip("Previous page")
-                            .disabled(!self.has_previous() || self.loading)
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.go(this.page.saturating_sub(1), cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("next-page")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::ChevronRight)
-                            .accessibility_label("Next page")
-                            .tooltip("Next page")
-                            .disabled(!self.has_next() || self.loading)
-                            .on_click(
-                                cx.listener(|this, _, _window, cx| this.go(this.page + 1, cx)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Limit"),
-                    )
-                    .child(
-                        div()
-                            .w(px(88.))
-                            .child(NumberInput::new(&self.limit_input).xsmall()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(message.1)
-                            .child(message.0.clone()),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .when_some(self.read_only_reason(), |this, reason| {
-                        this.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!("Read-only: {reason}")),
-                        )
-                    })
-                    .when_some(self.pending.clone(), |this, _| {
-                        this.child(
-                            Button::new("keep-edits")
-                                .ghost()
-                                .xsmall()
-                                .label("Keep editing")
-                                .tooltip("Leave the page as it is")
-                                .on_click(cx.listener(|this, _, _window, cx| this.keep_edits(cx))),
-                        )
-                        .child(
-                            Button::new("discard-and-continue")
-                                .danger()
-                                .xsmall()
-                                .label("Discard")
-                                .tooltip("Throw the edits away and carry on")
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.discard_and_continue(cx)
-                                })),
-                        )
-                    })
-                    .when(
-                        self.is_editable() && self.pending.is_none() && self.confirming.is_none(),
-                        |this| {
-                            this.child(
-                                Button::new("insert-row")
-                                    .ghost()
-                                    .xsmall()
-                                    .label("New row")
-                                    .tooltip_with_action(
-                                        "Add a row to fill in",
-                                        &InsertRow,
-                                        Some("TableView > DataTable"),
-                                    )
-                                    .disabled(self.committing)
-                                    .on_click(
-                                        cx.listener(|this, _, _window, cx| this.insert_row(cx)),
-                                    ),
-                            )
-                        },
-                    )
-                    // Hidden while a write is waiting to be confirmed: the
-                    // confirm banner above already asks about the same
-                    // changes, so showing both looks like clicking Apply did
-                    // nothing.
-                    .when(
-                        staged > 0 && self.pending.is_none() && self.confirming.is_none(),
-                        |this| {
-                            this.child(
-                                Button::new("discard-edits")
-                                    .ghost()
-                                    .xsmall()
-                                    .label("Discard")
-                                    .tooltip_with_action(
-                                        "Throw away the staged edits",
-                                        &DiscardEdits,
-                                        Some("TableView"),
-                                    )
-                                    .disabled(self.committing)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.on_discard_edits(&DiscardEdits, window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("apply-edits")
-                                    .primary()
-                                    .xsmall()
-                                    .label("Apply")
-                                    .tooltip_with_action(
-                                        "Write the staged edits",
-                                        &ApplyEdits,
-                                        Some("TableView"),
-                                    )
-                                    .disabled(self.committing)
-                                    .on_click(cx.listener(|this, _, _window, cx| this.commit(cx))),
-                            )
-                        },
-                    )
-                    .child({
-                        let view = cx.entity().downgrade();
-                        Button::new("export-table")
-                            .ghost()
-                            .xsmall()
-                            .label("Export")
-                            .dropdown_caret(true)
-                            .tooltip("Write the whole table to a file")
-                            .disabled(self.loading || self.committing)
-                            .dropdown_menu(move |mut menu, _window, _cx| {
-                                for format in Format::FILE {
-                                    let view = view.clone();
-                                    menu =
-                                        menu.item(
-                                            PopupMenuItem::new(format!(
-                                                "Export as {}…",
-                                                format.label()
-                                            ))
-                                            .on_click(move |_, _window, cx| {
-                                                if let Some(view) = view.upgrade() {
-                                                    view.update(cx, |view, cx| {
-                                                        view.export(format, cx)
-                                                    });
-                                                }
-                                            }),
-                                        );
-                                }
-                                menu
-                            })
-                    })
-                    .child(
-                        Button::new("view-structure")
-                            .ghost()
-                            .xsmall()
-                            .label("View structure")
-                            .on_click(cx.listener(|this, _, _window, cx| this.view_structure(cx))),
-                    )
-                    .child(
-                        Button::new("toggle-row-panel")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::PanelRightOpen)
-                            .accessibility_label("Toggle row detail panel")
-                            .tooltip_with_action(
-                                "Show the focused row as fields",
-                                &ToggleRowPanel,
-                                Some("TableView"),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.on_toggle_row_panel(&ToggleRowPanel, window, cx)
-                            })),
-                    ),
-            )
-    }
 }
 
 impl Focusable for TableView {
@@ -1548,86 +1115,5 @@ impl Render for TableView {
                 this.child(self.render_confirm(cx))
             })
             .child(self.render_footer(cx))
-    }
-}
-
-#[cfg(test)]
-impl TableView {
-    pub(crate) fn page_for_test(&self) -> usize {
-        self.page
-    }
-
-    pub(crate) fn limit_for_test(&self) -> usize {
-        self.limit
-    }
-
-    pub(crate) fn go_for_test(&mut self, page: usize, cx: &mut Context<Self>) {
-        self.go(page, cx);
-    }
-
-    pub(crate) fn sort_for_test(&mut self, column: &str, sort: ColumnSort, cx: &mut Context<Self>) {
-        let sort = match sort {
-            ColumnSort::Default => None,
-            sort => Some((column.to_string(), sort)),
-        };
-        self.apply_sort(sort, cx);
-    }
-
-    pub(crate) fn pending_for_test(&self) -> bool {
-        self.pending.is_some()
-    }
-
-    /// The statements waiting to be confirmed, as the panel shows them.
-    pub(crate) fn confirming_for_test(&self) -> Option<String> {
-        self.confirming.as_ref().map(|write| write.question.clone())
-    }
-
-    pub(crate) fn row_key_for_test(&self) -> Option<RowKey> {
-        self.row_key.clone()
-    }
-
-    pub(crate) fn is_editable_for_test(&self) -> bool {
-        self.is_editable()
-    }
-
-    pub(crate) fn error_for_test(&self) -> Option<String> {
-        self.error.clone()
-    }
-
-    pub(crate) fn notice_for_test(&self) -> Option<String> {
-        self.notice.clone()
-    }
-
-    pub(crate) fn filters_for_test(&self) -> Entity<FilterBar> {
-        self.filters.clone()
-    }
-
-    pub(crate) fn row_panel_for_test(&self) -> Entity<RowPanel> {
-        self.row_panel.clone()
-    }
-
-    pub(crate) fn toggle_row_panel_for_test(&mut self, cx: &mut Context<Self>) {
-        self.row_panel_visible = !self.row_panel_visible;
-        cx.notify();
-    }
-
-    pub(crate) fn row_panel_visible_for_test(&self) -> bool {
-        self.row_panel_visible
-    }
-
-    pub(crate) fn grid_for_test(&self) -> Entity<DataGrid> {
-        self.grid.clone()
-    }
-
-    pub(crate) fn set_loaded_rows_for_test(&mut self, rows: usize) {
-        self.loaded_rows = rows;
-    }
-
-    pub(crate) fn loaded_rows_for_test(&self) -> usize {
-        self.loaded_rows
-    }
-
-    pub(crate) fn can_page_for_test(&self) -> (bool, bool) {
-        (self.has_previous(), self.has_next())
     }
 }
