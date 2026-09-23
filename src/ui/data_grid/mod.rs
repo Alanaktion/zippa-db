@@ -1,39 +1,40 @@
 //! Result grid.
 //!
-//! TODO.md section 2. The table virtualizes rows and columns, and cells can be
-//! typed into when the owner allows it: edits are staged in an overlay over the
-//! result and handed back for the owner to write. Foreign key jumps and
-//! specialized cell renderers come later.
+//! The table virtualizes rows and columns, and cells can be typed into when
+//! the owner allows it: edits are staged in an overlay over the result and
+//! handed back for the owner to write. Specialized cell renderers (a date
+//! picker, say) are still ahead (TODO.md section 2).
 //!
-//! The work is split three ways: [`layout`] sizes the columns, [`format`] lays
-//! one value out for reading, and [`delegate`] holds the result together with
-//! everything staged on top of it. What is left here is the view — the events
-//! it emits, and the commands its owner drives it with.
+//! The work is split by concern: [`layout`] sizes the columns, [`format`] lays
+//! one value out for reading, [`delegate`] holds the result together with
+//! everything staged on top of it, and [`clipboard`] decides what a copy takes.
+//! What is left here is the view — the events it emits, and the commands its
+//! owner drives it with.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu};
-#[cfg(test)]
-use gpui_kit::component::table::TableDelegate;
 use gpui_kit::component::table::{ColumnSort, DataTable, TableEvent, TableState};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseUpEvent,
-    Window, actions, div,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseUpEvent, Window, actions, div,
 };
 
 use crate::db::Engine;
-use crate::db::export::{self, Format};
+use crate::db::export::Format;
 use crate::db::query::{self, Cell, QueryResult};
 use crate::settings::{self, Settings};
 use crate::ui::value_dialog::{self, ValueRequest};
 
+mod clipboard;
 mod delegate;
 mod format;
 mod layout;
+#[cfg(test)]
+mod test_support;
 
 use delegate::ResultDelegate;
 use layout::measure_columns;
@@ -340,6 +341,10 @@ impl DataGrid {
             // reappears at the other edge loses the user's place in a result
             // that is thousands of rows long.
             .loop_selection(false)
+            // A dragged header would reorder only the table's own column
+            // list: every cell, edit, copy, and write here is addressed by the
+            // result's column index, so the grid keeps the result's order.
+            .col_movable(false)
         });
 
         // The grid's font is a setting, so it can change under a grid that is
@@ -680,13 +685,8 @@ impl DataGrid {
 
     /// How many rows are waiting to be written: edited ones and new ones.
     pub fn pending(&self, cx: &App) -> usize {
-        let delegate = self.table.read(cx).delegate();
-        let edited = self
-            .staged(cx)
-            .into_iter()
-            .filter(|staged| !delegate.deletions.contains(&staged.row))
-            .count();
-        edited + delegate.drafts.len() + delegate.deletions.len()
+        let (edited, inserted, deleted) = self.pending_counts(cx);
+        edited + inserted + deleted
     }
 
     /// The changes waiting to be written, counted the way they are shown:
@@ -759,201 +759,6 @@ impl DataGrid {
 
     fn on_view_cell(&mut self, _: &ViewCell, _window: &mut Window, cx: &mut Context<Self>) {
         self.view_selected(cx);
-    }
-
-    fn on_copy_value(&mut self, _: &CopyValue, _window: &mut Window, cx: &mut Context<Self>) {
-        self.copy_selection(cx);
-    }
-
-    fn on_copy_with_headers(
-        &mut self,
-        _: &CopyWithHeaders,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.copy_as(CopyAs::Rows(Format::Tsv), cx);
-    }
-
-    /// Put what is selected on the clipboard.
-    ///
-    /// Rows picked out win over the selected cell: once a row is checked, a
-    /// row is what the user is working with. Rows go out as one line each,
-    /// columns separated by tabs, which is what a spreadsheet reads back as
-    /// cells. A `NULL` copies as nothing, the way an empty cell does.
-    pub fn copy_selection(&mut self, cx: &mut Context<Self>) {
-        self.copy(None, cx);
-    }
-
-    /// Copy one cell, or whatever is selected when no cell is named — which is
-    /// how the row menu copies the cell the click landed on rather than the
-    /// one the selection happens to be on.
-    fn copy(&mut self, cell: Option<(usize, usize)>, cx: &mut Context<Self>) {
-        self.commit_editor(cx);
-
-        if let Some((row_ix, col_ix)) = cell {
-            let text = self
-                .table
-                .read(cx)
-                .delegate()
-                .cell(row_ix, col_ix)
-                .clone()
-                .unwrap_or_default();
-            self.put_on_clipboard(text, "Copied value".to_string(), cx);
-            return;
-        }
-
-        if !self.table.read(cx).delegate().rows_selected.is_empty() {
-            let mut snapshot = self.snapshot(Scope::Picked, cx);
-            let total = snapshot.rows.len();
-            if total > MAX_COPY_ROWS {
-                snapshot.rows.truncate(MAX_COPY_ROWS);
-            }
-            let rows = snapshot.rows.len();
-            let text = snapshot
-                .rows
-                .iter()
-                .map(|row| {
-                    row.iter()
-                        .map(|cell| cell.clone().unwrap_or_default())
-                        .collect::<Vec<String>>()
-                        .join("\t")
-                })
-                .collect::<Vec<String>>()
-                .join("\n");
-            let (text, capped_bytes) = cap_bytes(text);
-            let message = if rows < total {
-                format!("Copied first {rows} of {total} rows")
-            } else if capped_bytes {
-                format!("Copied the first {} MB", MAX_COPY_BYTES / (1024 * 1024))
-            } else {
-                format!("Copied {}", count_of(rows, "row", "rows"))
-            };
-            self.put_on_clipboard(text, message, cx);
-            return;
-        }
-
-        let Some((row_ix, col_ix)) = self.selected_cell(cx) else {
-            return;
-        };
-        let text = self
-            .table
-            .read(cx)
-            .delegate()
-            .cell(row_ix, col_ix)
-            .clone()
-            .unwrap_or_default();
-        self.put_on_clipboard(text, "Copied value".to_string(), cx);
-    }
-
-    /// Copy what a `Copy as` menu item asked for, in the shape it named.
-    pub fn copy_as(&mut self, what: CopyAs, cx: &mut Context<Self>) {
-        self.commit_editor(cx);
-
-        match what {
-            CopyAs::Rows(format) => {
-                let snapshot = self.snapshot(self.row_scope(cx), cx);
-                self.copy_snapshot(format, snapshot, cx);
-            }
-            CopyAs::ColumnValues(column) => {
-                let snapshot = self.snapshot(Scope::Column(column), cx);
-                let cells = column_cells(&snapshot);
-                let rendered = export::values(&cells);
-                let message = with_skipped(
-                    format!("Copied {}", count_of(cells.len(), "value", "values")),
-                    rendered.skipped,
-                );
-                self.put_on_clipboard(rendered.text, message, cx);
-            }
-            CopyAs::ColumnInList(column) => {
-                let snapshot = self.snapshot(Scope::Column(column), cx);
-                let cells = column_cells(&snapshot);
-                let type_name = snapshot.types.first().cloned().unwrap_or_default();
-                let rendered = export::in_list(self.engine(cx), &type_name, &cells);
-                let copied = cells
-                    .iter()
-                    .filter(|cell| cell.is_some() && !query::is_placeholder(cell))
-                    .count();
-                let message = if copied == 0 {
-                    "No values to copy".to_string()
-                } else {
-                    with_skipped(
-                        format!(
-                            "Copied {} as an IN list",
-                            count_of(copied, "value", "values")
-                        ),
-                        rendered.skipped,
-                    )
-                };
-                self.put_on_clipboard(rendered.text, message, cx);
-            }
-        }
-    }
-
-    /// Lay a snapshot out in `format` and copy it, capping a result too large
-    /// to put on the clipboard whole.
-    fn copy_snapshot(&mut self, format: Format, mut snapshot: Snapshot, cx: &mut Context<Self>) {
-        let total = snapshot.rows.len();
-        if total > MAX_COPY_ROWS {
-            snapshot.rows.truncate(MAX_COPY_ROWS);
-        }
-        let rows = snapshot.rows.len();
-
-        let engine = self.engine(cx);
-        let table = self.table_name(cx).unwrap_or_default();
-        let rendered = export::render(
-            format,
-            engine,
-            &table,
-            &snapshot.columns,
-            &snapshot.types,
-            &snapshot.rows,
-        );
-        let (text, capped_bytes) = cap_bytes(rendered.text);
-
-        let message = if rows < total {
-            format!("Copied first {rows} of {total} rows as {}", format.label())
-        } else if capped_bytes {
-            format!(
-                "Copied the first {} MB as {}",
-                MAX_COPY_BYTES / (1024 * 1024),
-                format.label()
-            )
-        } else {
-            format!(
-                "Copied {} as {}",
-                count_of(rows, "row", "rows"),
-                format.label()
-            )
-        };
-
-        self.put_on_clipboard(text, with_skipped(message, rendered.skipped), cx);
-    }
-
-    /// Put `text` on the clipboard and tell the owner what it was.
-    fn put_on_clipboard(&mut self, text: String, message: String, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-        cx.emit(Copied { message });
-    }
-
-    /// The rows a copy acts on: the picked ones when any are picked, every row
-    /// shown otherwise.
-    fn row_scope(&self, cx: &App) -> Scope {
-        if self.table.read(cx).delegate().rows_selected.is_empty() {
-            Scope::All
-        } else {
-            Scope::Picked
-        }
-    }
-
-    /// The engine a copy quotes its values for.
-    fn engine(&self, cx: &App) -> Engine {
-        self.table.read(cx).delegate().engine
-    }
-
-    /// The table a SQL copy writes an `INSERT` against, if the owner named
-    /// one.
-    fn table_name(&self, cx: &App) -> Option<String> {
-        self.table.read(cx).delegate().table.clone()
     }
 
     fn on_select_all_rows(
@@ -1225,80 +1030,6 @@ impl DataGrid {
         )
     }
 
-    /// The rows a [`Scope`] names, with the columns and driver types they were
-    /// read under and every cell as it stands.
-    ///
-    /// This is the one place that decides what a copy or an export acts on:
-    /// cells come through the delegate's own `cell`, so a staged edit goes out
-    /// as it stands, and a row being built by hand is a row like any other.
-    pub fn snapshot(&self, scope: Scope, cx: &App) -> Snapshot {
-        let delegate = self.table.read(cx).delegate();
-
-        let row_ixs: Vec<usize> = match scope {
-            Scope::All => (0..delegate.rows()).collect(),
-            Scope::Picked => {
-                let mut rows: Vec<usize> = delegate.rows_selected.iter().copied().collect();
-                rows.sort_unstable();
-                rows
-            }
-            // A column is copied whole: the picked rows when any are picked,
-            // and every row otherwise.
-            Scope::Column(_) => {
-                let mut rows: Vec<usize> = if delegate.rows_selected.is_empty() {
-                    (0..delegate.rows()).collect()
-                } else {
-                    delegate.rows_selected.iter().copied().collect()
-                };
-                rows.sort_unstable();
-                rows
-            }
-        };
-
-        let (columns, types): (Vec<String>, Vec<String>) = match scope {
-            Scope::Column(column) => (
-                delegate
-                    .result
-                    .columns
-                    .get(column)
-                    .cloned()
-                    .into_iter()
-                    .collect(),
-                delegate
-                    .result
-                    .column_types
-                    .get(column)
-                    .cloned()
-                    .into_iter()
-                    .collect(),
-            ),
-            _ => (
-                delegate.result.columns.clone(),
-                delegate.result.column_types.clone(),
-            ),
-        };
-
-        let rows = row_ixs
-            .iter()
-            .map(|row_ix| {
-                (0..columns.len())
-                    .map(|index| {
-                        let col_ix = match scope {
-                            Scope::Column(column) => column,
-                            _ => index,
-                        };
-                        delegate.cell(*row_ix, col_ix).clone()
-                    })
-                    .collect()
-            })
-            .collect();
-
-        Snapshot {
-            columns,
-            types,
-            rows,
-        }
-    }
-
     /// Whether this cell can be typed into.
     pub fn is_field_editable(&self, row_ix: usize, col_ix: usize, cx: &App) -> bool {
         self.table.read(cx).delegate().is_editable(row_ix, col_ix)
@@ -1501,240 +1232,6 @@ impl DataGrid {
     fn is_empty(&self, cx: &App) -> bool {
         self.table.read(cx).delegate().result.columns.is_empty()
     }
-
-    /// Put the keyboard focus on the grid, the way clicking a cell does.
-    #[cfg(test)]
-    pub(crate) fn focus_for_test(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_table(window, cx);
-    }
-
-    /// Whether the keyboard is on the grid itself rather than a cell editor.
-    #[cfg(test)]
-    pub(crate) fn is_focused_for_test(&self, window: &Window, cx: &App) -> bool {
-        self.table.read(cx).focus_handle(cx).is_focused(window)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn editing_for_test(&self, cx: &App) -> Option<(usize, usize)> {
-        self.table.read(cx).delegate().editing
-    }
-
-    #[cfg(test)]
-    pub(crate) fn editable_for_test(&self, cx: &App) -> bool {
-        self.table.read(cx).delegate().editable
-    }
-
-    /// Open the cell editor the way double-clicking a cell does.
-    #[cfg(test)]
-    pub(crate) fn begin_edit_for_test(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.begin_edit(row_ix, col_ix, window, cx);
-    }
-
-    /// Put `value` in the open editor, the way typing into it does.
-    #[cfg(test)]
-    pub(crate) fn set_editor_value_for_test(
-        &mut self,
-        value: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.editor.update(cx, |editor, cx| {
-            editor.set_value(value.to_string(), window, cx)
-        });
-    }
-
-    /// Copy one cell, the way "Copy value" in the row menu does.
-    #[cfg(test)]
-    pub(crate) fn copy_cell_for_test(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        cx: &mut Context<Self>,
-    ) {
-        self.copy(Some((row_ix, col_ix)), cx);
-    }
-
-    /// The value a cell shows, staged edit included.
-    #[cfg(test)]
-    pub(crate) fn cell_for_test(&self, row_ix: usize, col_ix: usize, cx: &App) -> Cell {
-        self.table.read(cx).delegate().cell(row_ix, col_ix).clone()
-    }
-
-    /// Ask to follow a cell's foreign key, the way "Go to referenced row" in
-    /// its menu does.
-    #[cfg(test)]
-    pub(crate) fn navigate_for_test(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        cx: &mut Context<Self>,
-    ) {
-        cx.emit(GridNavigate {
-            row: row_ix,
-            col: col_ix,
-        });
-    }
-
-    /// Whether the row menu would offer a foreign key jump on this column.
-    #[cfg(test)]
-    pub(crate) fn is_foreign_key_for_test(&self, col_ix: usize, cx: &App) -> bool {
-        self.table
-            .read(cx)
-            .delegate()
-            .foreign_keys
-            .contains(&col_ix)
-    }
-
-    /// Drop a row being built, the way its menu item does.
-    #[cfg(test)]
-    pub(crate) fn discard_draft_for_test(&mut self, row_ix: usize, cx: &mut Context<Self>) {
-        self.table.update(cx, |table, cx| {
-            let Some(draft) = table.delegate().draft(row_ix) else {
-                return;
-            };
-            table.delegate_mut().discard_draft(draft);
-            table.refresh(cx);
-        });
-        cx.emit(GridEdit::Staged);
-    }
-
-    /// How many rows the grid is showing, drafts included.
-    #[cfg(test)]
-    pub(crate) fn row_count_for_test(&self, cx: &App) -> usize {
-        let delegate = self.table.read(cx).delegate();
-        delegate.order.len() + delegate.drafts.len()
-    }
-
-    /// The rows a sweep has picked out, in display order.
-    #[cfg(test)]
-    pub(crate) fn rows_selected_for_test(&self, cx: &App) -> Vec<usize> {
-        let mut rows: Vec<usize> = self
-            .table
-            .read(cx)
-            .delegate()
-            .rows_selected
-            .iter()
-            .copied()
-            .collect();
-        rows.sort_unstable();
-        rows
-    }
-
-    /// Select a cell the way clicking one does.
-    #[cfg(test)]
-    pub(crate) fn select_cell_for_test(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        cx: &mut Context<Self>,
-    ) {
-        let col_ix = ResultDelegate::shown_column(col_ix);
-        self.table
-            .update(cx, |table, cx| table.set_selected_cell(row_ix, col_ix, cx));
-    }
-
-    /// The row currently highlighted, and the cell the selection sits on.
-    #[cfg(test)]
-    pub(crate) fn selection_for_test(&self, cx: &App) -> (Option<usize>, Option<(usize, usize)>) {
-        (
-            self.table.read(cx).delegate().focused_row,
-            self.selected_cell(cx),
-        )
-    }
-
-    /// Sort by a column the way clicking its header does.
-    #[cfg(test)]
-    pub(crate) fn sort_for_test(
-        &mut self,
-        col_ix: usize,
-        sort: ColumnSort,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let col_ix = ResultDelegate::shown_column(col_ix);
-        self.table.update(cx, |table, cx| {
-            table.delegate_mut().perform_sort(col_ix, sort, window, cx)
-        });
-    }
-
-    /// The column the header is marked as sorted by.
-    #[cfg(test)]
-    pub(crate) fn sorted_for_test(&self, cx: &App) -> Option<(String, ColumnSort)> {
-        self.table.read(cx).delegate().sorted_by.clone()
-    }
-
-    /// One column of every row, in display order.
-    #[cfg(test)]
-    pub(crate) fn column_values_for_test(&self, col_ix: usize, cx: &App) -> Vec<Option<String>> {
-        let delegate = self.table.read(cx).delegate();
-        (0..delegate.order.len())
-            .map(|row_ix| delegate.cell(row_ix, col_ix).clone())
-            .collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn column_widths_for_test(&self, cx: &App) -> Vec<gpui_kit::Pixels> {
-        self.table.read(cx).delegate().widths.clone()
-    }
-}
-
-/// The most rows one copy puts on the clipboard. The payload is built on the
-/// UI thread, so a result past this is copied a page at a time and the notice
-/// says which part went.
-const MAX_COPY_ROWS: usize = 100_000;
-
-/// The most text one copy puts on the clipboard, for a result that is few rows
-/// but each a very large value.
-const MAX_COPY_BYTES: usize = 50 * 1024 * 1024;
-
-/// The single column of a [`Scope::Column`] snapshot, as cells.
-fn column_cells(snapshot: &Snapshot) -> Vec<Cell> {
-    snapshot
-        .rows
-        .iter()
-        .map(|row| row.first().cloned().unwrap_or(None))
-        .collect()
-}
-
-/// `1 row` / `3 rows`, for a notice.
-fn count_of(count: usize, one: &str, many: &str) -> String {
-    if count == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{count} {many}")
-    }
-}
-
-/// Add how many cells could not be read back, when any could not.
-fn with_skipped(mut message: String, skipped: usize) -> String {
-    if skipped > 0 {
-        message.push_str(&format!(
-            " ({} not read back, copied as NULL)",
-            count_of(skipped, "value", "values")
-        ));
-    }
-    message
-}
-
-/// Keep a payload under [`MAX_COPY_BYTES`], on a character boundary. A
-/// structured format cut this way is no longer valid, which is why the notice
-/// says so rather than pretending the copy is whole.
-fn cap_bytes(mut text: String) -> (String, bool) {
-    if text.len() <= MAX_COPY_BYTES {
-        return (text, false);
-    }
-    let mut end = MAX_COPY_BYTES;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text.truncate(end);
-    (text, true)
 }
 
 /// The value a typed string stages: `NULL` in any capitalisation means SQL

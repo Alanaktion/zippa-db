@@ -1,8 +1,9 @@
 //! SQL query editor pane.
 //!
-//! TODO.md section 3. Today: a code editor with SQL highlighting that hands the
-//! statement text to the session. Completion, multi-tab, and cancellation come
-//! later.
+//! A code editor with SQL highlighting that hands the statement under the
+//! caret, the selection, or the whole buffer to the session, which runs it and
+//! can cancel it. Completion from live introspection is still ahead (TODO.md
+//! section 3).
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, EditorState};

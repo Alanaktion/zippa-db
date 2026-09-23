@@ -16,8 +16,8 @@ use regex::{Regex, RegexBuilder};
 
 use super::connection::{DatabaseObject, ObjectKind, StoredKind, StoredObject};
 
-/// The most entries a catalog keeps. A database past this is truncated rather
-/// than held whole; the session reports the number the server had.
+/// The most entries a catalog keeps. Entries past this are counted but never
+/// built, so the session can report the number the server had.
 pub const MAX_ENTRIES: usize = 200_000;
 
 /// The most results one search hands back.
@@ -221,7 +221,7 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// The number hidden by the cap, when there is one.
+    /// The number of entries the server had, when the cap left some out.
     pub fn truncated(&self) -> Option<usize> {
         (self.total > self.entries.len()).then_some(self.total)
     }
@@ -288,7 +288,7 @@ impl Query {
 
     /// Whether the box holds nothing at all.
     #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.text.is_empty()
             && self.kinds.is_empty()
             && self.table.is_none()
@@ -309,7 +309,10 @@ pub struct Hit {
 /// boundary, a name substring, and last a match in the owner or detail line.
 /// Ties break towards tables and views, then by owning object and name, so the
 /// order is stable however the entries arrived.
-pub fn search(entries: &[CatalogEntry], query: &Query) -> Vec<Hit> {
+///
+/// Also returns how many entries matched before [`MAX_HITS`] cut the list, so
+/// the caller can tell "exactly 500" from "500 of more".
+pub fn search(entries: &[CatalogEntry], query: &Query) -> (Vec<Hit>, usize) {
     let needle = Needle::new(&query.text);
     let table = query.table.as_deref().map(Needle::new);
     let type_name = query.type_name.as_deref().map(Needle::new);
@@ -348,8 +351,9 @@ pub fn search(entries: &[CatalogEntry], query: &Query) -> Vec<Hit> {
             .then_with(|| left.name.cmp(&right.name))
             .then_with(|| a.index.cmp(&b.index))
     });
+    let matched = hits.len();
     hits.truncate(MAX_HITS);
-    hits
+    (hits, matched)
 }
 
 /// How well one entry answers the free text, or `None` when it does not.
@@ -414,8 +418,8 @@ impl Needle {
         match case_insensitive(text).or_else(|| case_insensitive(&regex::escape(text))) {
             Some(pattern) => Needle::Pattern(pattern),
             // The escaped form always parses, so this is unreachable in
-            // practice; treating it as "match nothing" keeps the function
-            // total.
+            // practice; falling back to "match anything" keeps the function
+            // total without hiding every entry.
             None => Needle::Any,
         }
     }
@@ -512,6 +516,7 @@ mod tests {
 
     fn labels(entries: &[CatalogEntry], query: &str) -> Vec<String> {
         search(entries, &Query::parse(query))
+            .0
             .into_iter()
             .map(|hit| entries[hit.index].label())
             .collect()
@@ -527,7 +532,7 @@ mod tests {
     fn a_table_outranks_a_column_on_the_same_score() {
         let entries = vec![column("users", "email", "text"), table("email")];
         assert_eq!(labels(&entries, "email"), ["email", "email"]);
-        let hits = search(&entries, &Query::parse("email"));
+        let hits = search(&entries, &Query::parse("email")).0;
         // The table is listed first even though both are exact matches.
         assert_eq!(entries[hits[0].index].kind, CatalogKind::Table);
     }
@@ -538,7 +543,7 @@ mod tests {
             column("orders", "total", "numeric"),
             column("orders", "amount", "total"),
         ];
-        let hits = search(&entries, &Query::parse("total"));
+        let hits = search(&entries, &Query::parse("total")).0;
         assert_eq!(entries[hits[0].index].name, "total");
     }
 
@@ -585,7 +590,7 @@ mod tests {
     #[test]
     fn an_empty_query_keeps_everything() {
         let entries = fixture();
-        assert_eq!(search(&entries, &Query::parse("")).len(), entries.len());
+        assert_eq!(search(&entries, &Query::parse("")).0.len(), entries.len());
     }
 
     #[test]
@@ -603,8 +608,13 @@ mod tests {
         let entries: Vec<CatalogEntry> = (0..MAX_HITS + 10)
             .map(|index| table(&format!("t{index}")))
             .collect();
-        let hits = search(&entries, &Query::parse(""));
+        let (hits, matched) = search(&entries, &Query::parse(""));
         assert_eq!(hits.len(), MAX_HITS);
+        assert_eq!(matched, MAX_HITS + 10, "the count is taken before the cap");
+
+        let exactly: Vec<CatalogEntry> = entries[..MAX_HITS].to_vec();
+        let (hits, matched) = search(&exactly, &Query::parse(""));
+        assert_eq!((hits.len(), matched), (MAX_HITS, MAX_HITS));
 
         let catalog = Catalog {
             entries: entries.clone(),

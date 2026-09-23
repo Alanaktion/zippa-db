@@ -415,6 +415,11 @@ impl ImportView {
                             .ghost()
                             .small()
                             .label("Close")
+                            .tooltip_with_action(
+                                "Close the import dialog",
+                                &CloseImport,
+                                Some("ImportDialog"),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
                     )
                     .child(
@@ -525,6 +530,11 @@ impl ImportView {
                             .primary()
                             .small()
                             .label("Close")
+                            .tooltip_with_action(
+                                "Close the import dialog",
+                                &CloseImport,
+                                Some("ImportDialog"),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
                     ),
             )

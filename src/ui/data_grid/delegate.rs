@@ -29,7 +29,7 @@ use super::layout::MIN_COLUMN_WIDTH;
 
 use super::{
     ChangeReporter, CopyAs, CopyAsReporter, CopyReporter, CopyValue, CopyWithHeaders,
-    ExportReporter, NavReporter, SortReporter, Sorting, ViewReporter,
+    ExportReporter, NavReporter, SortReporter, Sorting, ViewCell, ViewReporter,
 };
 
 pub(super) struct ResultDelegate {
@@ -100,7 +100,8 @@ pub(super) struct ResultDelegate {
     pub(super) editor: Entity<InputState>,
 }
 
-/// Stands in for a cell a short row does not have.
+/// Stands in for a cell a row does not have: past the end of a short row, or
+/// a column nobody typed into on a draft.
 static MISSING: Cell = None;
 
 /// The cell at `row_ix`/`col_ix`, or `NULL` where the row is short.
@@ -386,6 +387,12 @@ impl TableDelegate for ResultDelegate {
             // saying this cell is not what the server has, and a tint is not
             // something everyone can see.
             cell.bg(cx.theme().success.opacity(0.2)).underline()
+        } else if self.is_staged(row_ix, col_ix) {
+            // A value typed into a new row keeps the row's blue rather than
+            // turning green, but it is underlined like any other staged value:
+            // with the word "default" in the cells nobody typed into, every
+            // cell of a new row says what it is without its colour.
+            cell.underline()
         } else {
             cell
         };
@@ -453,9 +460,6 @@ impl TableDelegate for ResultDelegate {
     }
 }
 
-/// Stands in for a cell whose row the result does not have.
-static ABSENT: Cell = None;
-
 impl ResultDelegate {
     /// Index into the result's rows of the row shown at `row_ix`.
     ///
@@ -474,7 +478,7 @@ impl ResultDelegate {
     /// The value as it came from the server.
     pub(super) fn baseline(&self, row_ix: usize, col_ix: usize) -> &Cell {
         let Some(row_ix) = self.source(row_ix) else {
-            return &ABSENT;
+            return &MISSING;
         };
         cell_at(&self.result.rows, row_ix, col_ix)
     }
@@ -482,7 +486,7 @@ impl ResultDelegate {
     /// The value as it stands, staged edit included.
     pub(super) fn cell(&self, row_ix: usize, col_ix: usize) -> &Cell {
         if let Some(draft) = self.draft(row_ix) {
-            return self.drafts[draft].get(&col_ix).unwrap_or(&ABSENT);
+            return self.drafts[draft].get(&col_ix).unwrap_or(&MISSING);
         }
 
         match self
@@ -531,6 +535,7 @@ impl ResultDelegate {
                 let report = self.report_view.clone();
                 let menu = menu.item(
                     PopupMenuItem::new("View value")
+                        .action(Box::new(ViewCell))
                         .on_click(move |_, _window, cx| report(row, col, cx)),
                 );
 

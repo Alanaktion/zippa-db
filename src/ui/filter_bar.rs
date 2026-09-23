@@ -370,7 +370,8 @@ impl FilterBar {
                     Select::new(&row.column)
                         .id(("filter-column", index))
                         .xsmall()
-                        .placeholder("column"),
+                        .placeholder("column")
+                        .accessibility_label("Filter column"),
                 ),
             )
             .child(
@@ -378,17 +379,20 @@ impl FilterBar {
                     Select::new(&row.operator)
                         .id(("filter-operator", index))
                         .xsmall()
-                        .placeholder("is"),
+                        .placeholder("is")
+                        .accessibility_label("Filter operator"),
                 ),
             )
             // `IS NULL` has nothing to compare against, so the box for it goes
             // away rather than sitting there doing nothing.
             .when(operator.needs_value(), |this| {
                 this.child(
-                    div()
-                        .flex_1()
-                        .min_w(px(120.))
-                        .child(Input::new(&row.value).id(("filter-value", index)).xsmall()),
+                    div().flex_1().min_w(px(120.)).child(
+                        Input::new(&row.value)
+                            .id(("filter-value", index))
+                            .aria_label("Filter value")
+                            .xsmall(),
+                    ),
                 )
             })
             .child(

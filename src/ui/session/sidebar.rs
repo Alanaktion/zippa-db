@@ -303,7 +303,6 @@ impl Session {
                     .small()
                     .w_full()
                     .label("Search schema…")
-                    .accessibility_label("Search tables, columns, indexes, routines and triggers")
                     .tooltip_with_action(
                         "Search the database's schema",
                         &SearchSchema,
@@ -320,7 +319,6 @@ impl Session {
                     .small()
                     .w_full()
                     .label("Import SQL dump…")
-                    .accessibility_label("Import a SQL dump into this connection")
                     .tooltip_with_action(
                         "Import a SQL dump into this connection",
                         &ImportSqlDump,
