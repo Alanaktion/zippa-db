@@ -1,7 +1,7 @@
 # CSV import into a table
 
 ## Context
-TODO.md's "Import & Export Tools" section has export but no way to load tabular data. Users with a CSV/TSV file and an existing table have to write `INSERT`s by hand or convert to a dump. Goal: import a delimited file into one specific table, with a UI to map file columns to table columns, a preview, safety checks, error handling, and progress. Complements [sql-import.md](sql-import.md), which covers whole-dump restore; the two share the runner shape (dedicated connection, progress channel, error policy) and should share code where noted.
+TODO.md's "Import & Export Tools" section has export but no way to load tabular data. Users with a CSV/TSV file and an existing table have to write `INSERT`s by hand or convert to a dump. Goal: import a delimited file into one specific table, with a UI to map file columns to table columns, a preview, safety checks, error handling, and progress. Complements the SQL dump import (`src/db/import/`), which covers whole-dump restore; the two share the runner shape (dedicated connection, progress channel, error policy) and should share code where noted.
 
 ## Design
 

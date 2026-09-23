@@ -1,20 +1,61 @@
 # ⚡ Zippa DB
 
-> A blazing-fast, lightweight, cross-platform database management tool built with **Rust** and **GPUI**.
+> A fast, lightweight, cross-platform database client built with **Rust** and **GPUI**.
 
-Zippa DB combines the raw performance of Zed's GPU-accelerated interface engine with the reliability of async Rust. Designed to compete with tools like TablePlus, Zippa DB aims for sub-millisecond tab switching, virtualized streaming for massive datasets, and native support for PostgreSQL, MySQL, and SQLite.
+Zippa DB pairs Zed's GPU-accelerated UI framework with async Rust database
+drivers to browse, query, and edit **PostgreSQL**, **MySQL**, and **SQLite**
+from one native window.
 
-> **Status:** early. You can save connections, connect to PostgreSQL, MySQL, or SQLite, switch databases, browse tables and views in the sidebar, open them in tabs, run queries, read the results, search the schema for a column, index, routine, or trigger, and import a SQL dump. Everything else in [TODO.md](TODO.md) is still ahead.
+> **Status:** 0.1 — usable day to day, still young. The list below is what
+> ships; [TODO.md](TODO.md) is what is still ahead, and [AUDIT.md](AUDIT.md)
+> lists the known gaps in what ships.
 
 ---
 
-## 🌟 Planned Features
+## 🌟 Features
 
-* **GPU-Accelerated Data Grid:** Instant rendering and smooth scrolling over millions of rows with minimal memory usage.
-* **Inline Editing with Staging:** Edit table cells in-memory, review your staged SQL `UPDATE` queries, and commit changes atomically.
-* **Engine-Aware SQL Editor:** Query editor with auto-completion, multi-statement execution, and inline syntax highlighting.
-* **Native Drivers:** Built on top of `SQLx` with connection pooling, SSH tunneling, and SSL/TLS support.
-* **Cross-Platform:** Native look and feel across macOS, Linux, and Windows.
+* **Connections** — a searchable launcher of saved connections, most recent
+  first. Passwords live in the OS keychain, never on disk. Each connection
+  can carry a tag and colour (say, red `Production`) that follows it into its
+  tab and across the top of its session.
+* **Safety modes** — per connection: *read-only* (enforced by the server and
+  by a client-side check on your SQL), *confirm writes*, *staged* (the
+  default: edits wait until you apply them), or *auto-apply*.
+* **Tabs and docking** — several connections open at once, each with its own
+  sidebar and a dock of query, table, and structure tabs that split and
+  reorder by dragging. The window's connections, tabs, and query buffers are
+  restored on the next launch.
+* **SQL editor** — SQL highlighting; run the statement under the caret, the
+  selection, or the whole buffer (a script runs in one transaction on
+  Postgres and SQLite); one result tab per statement; cancel a running query;
+  open and save `.sql` files.
+* **Query plans** — `EXPLAIN` and `EXPLAIN ANALYZE` as a readable tree with
+  costs, rows, timing, and warnings.
+* **Table view** — paging, a row limit, click-to-sort, a filter bar
+  (including `IN` with a subquery), a row panel showing the focused row as
+  fields, and a jump from a foreign key to the row it references.
+* **Staged editing** — type into cells, add rows, and mark rows for deletion;
+  every pending change is marked in the grid (tint *and* underline or
+  strike-through) and written together as `UPDATE`/`INSERT`/`DELETE`.
+* **Structure tab** — edit a table's columns, indexes, and foreign keys and
+  preview the generated `ALTER TABLE` statements (or, on SQLite, the table
+  rebuild) before they run.
+* **Schema search** — find any table, view, column, index, routine, or
+  trigger (`Cmd+Shift+O`), and a quick switcher over tabs, objects,
+  databases, and commands (`Cmd+K`).
+* **Import & export** — export a table or the picked rows to CSV, TSV, JSON,
+  Markdown, or SQL `INSERT`; copy rows or a column in the same formats, as
+  plain values, or as an `IN` list; import a SQL dump (plain, gzip, bzip2, or
+  zstd) with a progress bar and a stop / roll back / continue error policy.
+* **Settings** — theme (22 bundled sets, plus your own) and light/dark,
+  editor and grid fonts, page size, striped rows, always-on scrollbars, and
+  whether typing `NULL` means SQL `NULL`.
+* **Keyboard first** — every command has a shortcut, shown in its tooltip and
+  in the menu bar, and a searchable list of them all (`Ctrl+/`).
+
+Result sets are read into memory whole and the grid virtualizes only the
+drawing, so a very large `SELECT` costs memory in proportion to its size; the
+table view pages instead.
 
 ---
 
@@ -23,7 +64,7 @@ Zippa DB combines the raw performance of Zed's GPU-accelerated interface engine 
 | Layer | Technology |
 | --- | --- |
 | **UI Framework** | [GPUI](https://www.gpui.rs/) (GPU-accelerated desktop framework) |
-| **Components** | [GPUI Kit](https://gpui-kit.com) (table, code editor, theming) |
+| **Components** | [GPUI Kit](https://gpui-kit.com) (table, code editor, dock, theming) |
 | **Database Engine** | [SQLx](https://github.com/launchbadge/sqlx) (Async SQL for Rust) |
 | **Async Runtime** | [Tokio](https://tokio.rs/), on a dedicated thread pool beside the UI |
 | **Secrets** | OS keychain via [keyring](https://github.com/open-source-cooperative/keyring-rs) |
@@ -34,72 +75,86 @@ Zippa DB combines the raw performance of Zed's GPU-accelerated interface engine 
 
 ```
 src/
-├── main.rs           # Entry point: opens the GPUI window
-├── app.rs            # Root view: one tab per open connection
-├── keymap.rs         # Key bindings (platform-aware via `secondary`)
-├── menu.rs           # OS menu bar, from the same actions the keymap binds
-├── db/
-│   ├── mod.rs        # Module map and re-exports
-│   ├── config.rs     # Engine, SafetyMode, ConnectionConfig
-│   ├── connection.rs # The live pool, and the shared read/write paths
-│   ├── catalog.rs    # The whole schema once per session, for schema search
-│   ├── sql.rs        # Quoting and bind placeholders for generated SQL
-│   ├── statement.rs  # Splitting and classifying the user's own SQL
-│   ├── postgres.rs   # Per-engine pool setup and value formatting
+├── main.rs              # Entry point: opens the GPUI window
+├── app.rs               # Root view: one tab per open connection
+├── workspace_state.rs   # workspace.json: open connections and their tabs
+├── keymap.rs            # Key bindings (platform-aware via `secondary`)
+├── menu.rs              # OS menu bar, from the same actions the keymap binds
+├── settings.rs          # Settings global, settings.json, themes
+├── db/                  # Database access — no UI
+│   ├── config.rs        # Engine, SafetyMode, ConnectionConfig
+│   ├── connection.rs    # The live pool, and the shared read/write paths
+│   ├── postgres.rs      # Per-engine pool setup, SQL, and value decoding
 │   ├── mysql.rs
 │   ├── sqlite.rs
-│   ├── query.rs      # QueryResult
-│   ├── export.rs     # Laying a result out as CSV, JSON, or SQL INSERT
-│   ├── runtime.rs    # Tokio runtime bridging sqlx futures back to GPUI
-│   └── store.rs      # connections.json + OS keychain
-├── settings.rs       # Settings global, settings.json, theme/appearance
+│   ├── catalog.rs       # The whole schema once per session, for search
+│   ├── schema.rs        # One table's columns, indexes, and foreign keys
+│   ├── sql.rs           # Quoting and bind placeholders for generated SQL
+│   ├── statement.rs     # Splitting and classifying the user's own SQL
+│   ├── plan.rs          # Reading EXPLAIN output into a tree
+│   ├── query.rs         # QueryResult and cells
+│   ├── export.rs        # CSV, TSV, JSON, Markdown, SQL INSERT
+│   ├── import/          # SQL dump import: runner, reader, splitter
+│   ├── runtime.rs       # Tokio runtime bridging sqlx futures back to GPUI
+│   └── store.rs         # connections.json + OS keychain
 └── ui/
-    ├── welcome/        # Connection manager (launcher + editor dialog)
-    │   ├── mod.rs      # The launcher: searchable cards, most-recent first
-    │   ├── card.rs     # One connection card
-    │   └── editor.rs   # The new/edit connection dialog
-    ├── session/        # Open connection: query tabs, editor, grid
-    │   ├── mod.rs      # The view: tabs, running, files, panes
-    │   ├── tab.rs      # What a tab holds and how its last run went
-    │   └── sidebar.rs  # Object list and the filter over it
-    ├── query_editor.rs # SQL editor (Cmd+Enter to run)
-    ├── quick_switcher.rs # Fuzzy switcher over tabs, objects, and commands (Cmd+K)
-    ├── schema_search.rs # Search columns, indexes, routines, triggers (Cmd+Shift+O)
-    ├── sql_file.rs     # Native open/save dialogs for .sql files
-    ├── settings_window.rs # Settings window (Cmd+,)
-    ├── value_dialog.rs # One cell's value, in full (Cmd+Shift+V)
-    ├── filter_bar.rs   # The filter lines above a table view
-    ├── table_view/     # Table opened from the sidebar
-    │   ├── mod.rs      # The view: paging, sorting, applying edits
-    │   └── sql.rs      # The statements it generates
-    └── data_grid/      # Virtualized result grid
-        ├── mod.rs      # The view and the commands its owner drives it with
-        ├── delegate.rs # The result, plus everything staged on top of it
-        ├── format.rs   # Laying one value out for reading
-        └── layout.rs   # Sizing the columns
+    ├── welcome/         # Connection manager: launcher, card, editor dialog
+    ├── session/         # An open connection
+    │   ├── mod.rs       # The view: sidebar + dock, and the event hub
+    │   ├── panel.rs     # One dock tab (query, table, or structure)
+    │   ├── tab.rs       # What a tab holds and how its last run went
+    │   ├── tabs.rs      # Opening, closing, and switching tabs
+    │   ├── running.rs   # Running SQL and EXPLAIN, confirming, cancelling
+    │   ├── files.rs     # .sql files and the import dialog
+    │   ├── metadata.rs  # Databases, objects, the catalog, switching database
+    │   ├── state.rs     # Snapshot and restore for workspace.json
+    │   └── sidebar.rs   # Object list and the filter over it
+    ├── data_grid/       # Virtualized result grid
+    │   ├── mod.rs       # The view and the commands its owner drives it with
+    │   ├── delegate.rs  # The result, plus everything staged on top of it
+    │   ├── clipboard.rs # Copy, Copy as, and snapshots
+    │   ├── format.rs    # Laying one value out for reading
+    │   └── layout.rs    # Sizing the columns
+    ├── table_view/      # A table opened from the sidebar
+    │   ├── mod.rs       # The view: paging, sorting, applying edits
+    │   ├── sql.rs       # The statements it generates
+    │   ├── export.rs    # Export to a file
+    │   ├── footer.rs    # The status line and its buttons
+    │   └── row_panel.rs # The focused row as fields
+    ├── schema_view/     # The structure tab
+    │   ├── mod.rs       # The form, diffed against what was loaded
+    │   ├── columns.rs, indexes.rs, foreign_keys.rs, layout.rs
+    │   ├── sql.rs       # ALTER TABLE for Postgres and MySQL
+    │   └── rebuild.rs   # SQLite's copy-and-swap rebuild
+    ├── query_editor.rs  # SQL editor
+    ├── plan_view.rs     # EXPLAIN tree
+    ├── filter_bar.rs    # The filter lines above a table view
+    ├── value_dialog.rs  # One cell's value, in full
+    ├── import_dialog.rs # SQL dump import
+    ├── quick_switcher.rs, schema_search.rs, shortcuts_dialog.rs
+    ├── settings_window.rs, sql_file.rs
+    └── tests/           # UI tests, one file per area
 ```
 
-Connections are stored in `connections.json` under your OS config directory
-(`~/Library/Application Support/zippa-db` on macOS). Passwords are never written
-there — they go to the OS credential store, keyed by connection id.
+[AGENTS.md](AGENTS.md) explains how the pieces fit together.
 
-Connections open in tabs along the top of the window: the `+` opens the
-connection manager in a new one, connecting turns that tab into the session, and
-disconnecting turns it back. Each connection keeps its own sidebar, query tabs,
-and results, so switching between them picks up where you left off.
+### Where things are stored
 
-The window is remembered across restarts: `workspace.json` records which
-connections were open, each one's tabs — query buffers as typed, and the tables
-and structure views that were open — and which tab was in front, so the next
-launch reconnects and restores them. Query text is stored there in plaintext,
-like the connection metadata, so treat it accordingly if a buffer holds pasted
-literals. A buffer is written at checkpoints (opening, closing, running, saving)
-and on a normal quit, so text typed right before a crash may be lost.
+Everything lives in the OS config directory (`~/Library/Application
+Support/zippa-db` on macOS, `~/.config/zippa-db` on Linux, `%APPDATA%\zippa-db`
+on Windows):
 
-Settings live beside it in `settings.json` and are written as you change them.
-Drop theme files into a `themes/` directory next to it — each one a
-`{"themes": [ … ]}` set in the component library's format — and they show up in
-the theme pickers.
+* `connections.json` — connection metadata. Passwords are never written here;
+  they go to the OS credential store, keyed by connection id.
+* `workspace.json` — which connections were open, each one's tabs (query
+  buffers as typed, and the tables and structure views that were open), and
+  which tab was in front. Query text is stored in plaintext, so treat it
+  accordingly if a buffer holds pasted secrets. It is written at checkpoints
+  (opening, closing, running, saving) and on a normal quit, so text typed
+  right before a crash may be lost.
+* `settings.json` — written as you change settings.
+* `themes/` — drop theme files here, each a `{"themes": [ … ]}` set in the
+  component library's format, and they show up in the theme pickers.
 
 ---
 
@@ -107,10 +162,10 @@ the theme pickers.
 
 ### Prerequisites
 
-* [Rust](https://www.rust-lang.org/) 1.85+ (this crate uses edition 2024)
+* [Rust](https://www.rust-lang.org/) 1.95 or newer (latest stable is what CI uses)
 * OS dependencies:
   * **macOS:** Xcode (not just the Command Line Tools) with the Metal toolchain installed — GPUI compiles Metal shaders at build time. If `xcrun --find metal` fails, run `xcodebuild -downloadComponent MetalToolchain`.
-  * **Linux:** `libxkbcommon`, plus Wayland or X11 dev libraries (`sudo apt install libxkbcommon-dev libwayland-dev`)
+  * **Linux:** run `./script/linux`, which installs the build dependencies for most distributions (on Debian/Ubuntu the essentials are `libxkbcommon-x11-dev`, `libwayland-dev`, `libfontconfig-dev`, `libssl-dev`, and `lld`).
   * **Windows:** Vulkan / Direct3D 12 drivers
 
 ### Building
@@ -132,11 +187,18 @@ On macOS, if your active developer directory still points at the Command Line To
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer cargo run
 ```
 
-### Tests
+### Checks
+
+CI runs the same three commands on every push:
 
 ```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+A few tests run against a live MySQL or Postgres server and are `#[ignore]`d
+by default; each one's doc comment says which container it expects.
 
 ---
 
@@ -208,37 +270,7 @@ Most of these are also in the menu bar — File, Edit, Query, Table and View —
 | Settings | `Cmd`/`Ctrl` + `,` (or the gear in the toolbar) |
 | Close the settings window | `Cmd`/`Ctrl` + `W`, `Alt` + `F4`, or `Escape` |
 | Keyboard shortcut list | `Ctrl` + `/` (or Help menu) |
-
----
-
-## 🗺 Roadmap
-
-* [x] Initial GPUI window and layout setup
-* [x] Connection manager & driver abstractions (`PostgreSQL`, `MySQL`, `SQLite`)
-* [x] Launcher-first welcome screen: searchable connection cards, a new/edit dialog, and one tag + colour per connection that follows it into the tab and session
-* [x] Result grid: virtualized, dense, monospaced, auto-sized columns
-* [x] Resizable panes, database switcher, and table/view list in the sidebar
-* [x] Connection tabs: several databases open at once, each with its own session
-* [x] Query tabs, each with its own editor and result set
-* [x] Regex filter over the sidebar's table list
-* [x] Dedicated table view: paging, row limit, click-to-sort columns, and a filter bar (including `IN` with a subquery)
-* [ ] Data grid pagination, row limits, and specialized cell renderers
-* [x] Staged cell editing in a table tab, with a per-connection safety mode: read-only, confirm every write, apply by hand, or write when the selection leaves the row
-* [x] Drag across rows to select them, delete them from the row's menu, and fill in new rows in the grid itself — edited cells, new rows, and rows marked for deletion are coloured in the grid and written together when applied
-* [x] Export a whole table or the rows picked out of it to CSV, JSON, or SQL `INSERT`, honouring the current filter and sort
-* [x] Import a SQL dump from a file — streamed, compressed (gzip, bzip2, zstd), with a progress bar and a stop / roll back / continue error policy
-* [x] Copy rows or a column from the grid as TSV, CSV, JSON, a Markdown table, SQL `INSERT`, plain values, or a SQL `IN` list
-* [x] SQL editor with SQL syntax highlighting: `Cmd+Enter` runs the statement the caret is in, `Cmd+Shift+Enter` the whole buffer, `Cmd+.` gives up on a run
-* [x] Query plan viewer: `Cmd+E` shows a statement's plan as a tree with costs, rows, timing, and warnings, and `Cmd+Shift+E` runs it for actual times
-* [x] Schema search: find a column, index, routine, or trigger anywhere in the database and open what it belongs to
-* [x] Open and save `.sql` files through the native file dialogs
-* [x] Settings window: page size, editor and grid fonts, striped rows, always-on scrollbars, theme, light/dark
-* [x] Query cancellation and multi-statement scripts, with a result tab per statement
-* [ ] Auto-completion from live introspection
-* [ ] SSH tunneling & SSL configuration interface
-* [ ] Schema inspector & visual DDL builder
-
-Full feature breakdown lives in [TODO.md](TODO.md).
+| Connect from the connection editor / close it | `Cmd`/`Ctrl` + `Enter` / `Escape` |
 
 ---
 
