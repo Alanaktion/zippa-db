@@ -244,11 +244,20 @@ impl TableView {
             .page_size
             .clamp(1, settings::MAX_PAGE_SIZE);
 
-        let limit_input = cx.new(|cx| InputState::new(window, cx)
-            .default_value(limit.to_string())
-            .step_by(|v, _, _cx| if v < 50. { 1. } else if v < 1000. { 10. } else { 100. })
-            .min(1.)
-        );
+        let limit_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(limit.to_string())
+                .step_by(|v, _, _cx| {
+                    if v < 50. {
+                        1.
+                    } else if v < 1000. {
+                        10.
+                    } else {
+                        100.
+                    }
+                })
+                .min(1.)
+        });
         cx.subscribe_in(&limit_input, window, Self::on_limit_event)
             .detach();
         // Left unset on the state itself (see `on_limit_step`): with `min`,
@@ -1467,9 +1476,7 @@ impl TableView {
                             .ghost()
                             .xsmall()
                             .label("View structure")
-                            .on_click(
-                                cx.listener(|this, _, _window, cx| this.view_structure(cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, _window, cx| this.view_structure(cx))),
                     )
                     .child(
                         Button::new("toggle-row-panel")
