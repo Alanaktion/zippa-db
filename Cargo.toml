@@ -7,7 +7,22 @@ rust-version = "1.95"
 description = "A fast, lightweight, cross-platform database client for PostgreSQL, MySQL, and SQLite."
 license = "MIT"
 repository = "https://github.com/Alanaktion/zippa-db"
-publish = false
+homepage = "https://github.com/Alanaktion/zippa-db"
+readme = "README.md"
+keywords = ["database", "postgres", "mysql", "sqlite", "gpui"]
+categories = ["database", "gui"]
+# What the published crate carries: the sources, the build script, the theme
+# files it embeds, the icons `cargo packager` reads, and the docs crates.io
+# shows. Development notes (`.agents/`, `AUDIT.md`, CI config) stay in git.
+include = [
+    "/src/**/*.rs",
+    "/build.rs",
+    "/assets/themes/*.json",
+    "/assets/icons/**/*",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+]
 
 [dependencies]
 anyhow = "1"
