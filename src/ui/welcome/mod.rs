@@ -240,6 +240,54 @@ impl Welcome {
         cx.notify();
     }
 
+    /// Connect to a saved connection the way a card click does, asking first
+    /// when it is the footgun a tag exists to flag: production, set to
+    /// auto-apply. The editor already warns about this combination while it
+    /// is being set up, but that warning is easy to click past and easy to
+    /// forget by the time the card is clicked days later — this is the last
+    /// chance to catch it before a write goes out unasked. Every other
+    /// connection connects straight away, as it always has.
+    pub(crate) fn connect_saved_with_confirmation(
+        &mut self,
+        config: ConnectionConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !config.is_risky_auto_apply() {
+            self.connect_saved(config, window, cx);
+            return;
+        }
+
+        let name = config.display_name();
+        let welcome = cx.entity().downgrade();
+
+        window.open_alert_dialog(cx, move |alert, _window, _cx| {
+            let welcome = welcome.clone();
+            let config = config.clone();
+            alert
+                .title(format!("Connect to {name}?"))
+                .description(
+                    "This connection is tagged production and set to auto-apply: edits are \
+                     written the moment you leave a row, with no confirmation.",
+                )
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Connect")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    if let Some(welcome) = welcome.upgrade() {
+                        welcome.update(cx, |this, cx| {
+                            this.connect_saved(config.clone(), window, cx)
+                        });
+                    }
+                    true
+                })
+        });
+    }
+
     /// Connect to a saved connection, looking its password up on demand.
     fn connect_saved(
         &mut self,

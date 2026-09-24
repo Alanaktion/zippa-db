@@ -86,12 +86,17 @@ else in the app). Worth sequencing after the others:
 
 ## Smaller ideas worth keeping around
 
-* **A safety nudge tied to the connection's own tag.** `ConnectionConfig`
-  already carries a `tag`/`TagColor` (e.g. red "Production") and a
-  `SafetyMode`. A connection tagged as a production-looking color that's set
-  to `AutoApply` is exactly the footgun the tag color exists to warn about —
-  a one-line banner or a confirmation-on-connect costs little and reuses
-  data the app already persists.
+* ~~A safety nudge tied to the connection's own tag.~~ Shipped: the editor
+  already warned inline when a production-tagged connection was set to
+  `AutoApply`; a card click on one now also asks for confirmation before
+  connecting (`ConnectionConfig::is_risky_auto_apply`/`is_risky_auto_apply`
+  in `db/config.rs`, `Welcome::connect_saved_with_confirmation`). The rule
+  is shared by both — a tag whose text contains "prod" — so the editor's
+  banner and the launcher's dialog never disagree. The automatic restore on
+  launch is deliberately left alone (it goes through `Welcome::open` and
+  `connect_saved` directly, bypassing the new gate), since asking about
+  every restored production tab on every launch would be its own kind of
+  footgun.
 * **A tree view for JSON/JSONB values.** `value_dialog`/`format_value`
   already lays JSON out over multiple lines with `serde_json`; a collapsible
   tree (keys foldable, values still editable as text) would help far more

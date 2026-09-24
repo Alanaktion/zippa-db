@@ -71,7 +71,7 @@ pub(super) fn render_card(
                             tag_text(&tag)
                         ))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.connect_saved(connect.clone(), window, cx)
+                            this.connect_saved_with_confirmation(connect.clone(), window, cx)
                         }))
                         .child(card_body(config, connecting, cx)),
                 )

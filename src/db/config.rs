@@ -232,6 +232,21 @@ impl ConnectionConfig {
         }
         format!("{}:{}/{}", self.host, self.port, self.database)
     }
+
+    /// Whether this connection is the footgun a tag exists to flag: one that
+    /// reads as production and writes without asking. Shared by the
+    /// connection editor's inline warning and the launcher's confirm-before-
+    /// connect, so both draw the same line.
+    pub fn is_risky_auto_apply(&self) -> bool {
+        is_risky_auto_apply(self.tag.as_deref().unwrap_or(""), self.safety)
+    }
+}
+
+/// The rule [`ConnectionConfig::is_risky_auto_apply`] applies, taken as plain
+/// values so the connection editor can ask it about a tag still being typed
+/// — before there is a whole `ConnectionConfig` to ask.
+pub fn is_risky_auto_apply(tag: &str, safety: SafetyMode) -> bool {
+    safety.auto_applies() && tag.to_lowercase().contains("prod")
 }
 
 impl Default for ConnectionConfig {
@@ -246,4 +261,33 @@ pub(crate) fn file_name(path: &str) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_production_tag_with_auto_apply_is_risky() {
+        assert!(is_risky_auto_apply("Production", SafetyMode::AutoApply));
+        // Case-insensitive, and matches a tag that merely contains the word.
+        assert!(is_risky_auto_apply("prod-east", SafetyMode::AutoApply));
+    }
+
+    #[test]
+    fn a_production_tag_is_not_risky_under_a_safer_mode() {
+        for safety in [
+            SafetyMode::ReadOnly,
+            SafetyMode::ConfirmWrites,
+            SafetyMode::Staged,
+        ] {
+            assert!(!is_risky_auto_apply("Production", safety));
+        }
+    }
+
+    #[test]
+    fn auto_apply_is_not_risky_without_a_production_tag() {
+        assert!(!is_risky_auto_apply("", SafetyMode::AutoApply));
+        assert!(!is_risky_auto_apply("Staging", SafetyMode::AutoApply));
+    }
 }

@@ -44,7 +44,7 @@ pub(crate) mod tests;
 
 pub use catalog::{Catalog, CatalogEntry, CatalogKind, Query};
 pub(crate) use config::file_name;
-pub use config::{ConnectionConfig, Engine, SafetyMode, TagColor};
+pub use config::{ConnectionConfig, Engine, SafetyMode, TagColor, is_risky_auto_apply};
 pub(crate) use connection::POOL_SIZE;
 pub use connection::{
     Connection, DatabaseObject, ObjectKind, QueryDigest, RowKey, StoredKind, StoredObject,

@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Window, actions, div};
 use uuid::Uuid;
 
-use crate::db::{ConnectionConfig, Engine, SafetyMode, TagColor};
+use crate::db::{ConnectionConfig, Engine, SafetyMode, TagColor, is_risky_auto_apply};
 
 actions!(zippa_db, [EditorClose, EditorConnect]);
 
@@ -368,7 +368,7 @@ impl ConnectionEditor {
     /// Pick how careful this connection is about writes.
     fn render_safety(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tag = self.tag.read(cx).value().trim().to_string();
-        let hint = is_production_like(&tag) && self.safety.auto_applies();
+        let hint = is_risky_auto_apply(&tag, self.safety);
 
         v_flex()
             .gap_1()
@@ -512,11 +512,4 @@ fn field(label: &str, input: &Entity<InputState>, cx: &App) -> impl IntoElement 
                 .child(label.to_string()),
         )
         .child(Input::new(input))
-}
-
-/// Whether a tag reads as "production" — the case where an auto-applying write
-/// mode is worth a second look.
-fn is_production_like(tag: &str) -> bool {
-    let tag = tag.to_lowercase();
-    tag.contains("prod")
 }

@@ -20,7 +20,9 @@ from one native window.
   tab and across the top of its session.
 * **Safety modes** — per connection: *read-only* (enforced by the server and
   by a client-side check on your SQL), *confirm writes*, *staged* (the
-  default: edits wait until you apply them), or *auto-apply*.
+  default: edits wait until you apply them), or *auto-apply*. A connection
+  tagged "production" and set to auto-apply is warned about in the editor
+  and asks for confirmation before connecting.
 * **Tabs and docking** — several connections open at once, each with its own
   sidebar and a dock of query, table, and structure tabs that split and
   reorder by dragging. The window's connections, tabs, and query buffers are

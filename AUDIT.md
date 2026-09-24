@@ -35,9 +35,9 @@ There are no "unfinished feature" placeholders in the usual sense: no `todo!()`/
 
 `postgres.rs` handles `MACADDR` but not `MACADDR8`, and none of sqlx 0.9's geometric/hstore/lrange types (`PgPoint`, `PgBox`, `PgCircle`, `PgHstore`, ranges, …). Those fall to the `_ => value!(String)` arm, fail, and render as `<POINT>`-style stand-ins (`src/db/postgres.rs`, `cell`) — which export as NULL and cannot be edited.
 
-### [M] Import pre-flight heuristics
+### [L] Import pre-flight heuristics
 
-The "destructive statement" count treats a `DELETE` as destructive only when the uppercased text contains `" WHERE "` (`src/db/import/mod.rs`, the pre-flight scan), so `DELETE FROM t WHERE(id>0)` under-counts; the scan only sees the first 64 KiB of the dump.
+The "destructive statement" count only sees the first 64 KiB of the dump (`src/db/import/mod.rs`, `HEAD`), so a `DROP`/`TRUNCATE`/unbounded `DELETE` further in is missed. (The `WHERE`-detection gap this used to also list — `" WHERE "` as a literal substring missing a boundary-punctuated clause like `WHERE(id>0)` — is fixed: `destructive_count` now checks for `WHERE` as a standalone word via `contains_word`.)
 
 ### [M] Export reads the whole table and the whole rendering into memory
 
