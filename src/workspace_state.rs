@@ -78,6 +78,9 @@ pub enum PanelState {
     Schema {
         object: DatabaseObject,
     },
+    /// The console tab. Carries nothing of its own — the log it shows lives
+    /// on the connection, not on disk — so restoring one just reopens it.
+    Console,
     /// A panel kind a newer build wrote. It is skipped rather than failing the
     /// whole file, so a newer version's workspace still opens in an older one.
     #[serde(other)]

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use gpui_kit::Entity;
 
 use crate::db::query::QueryResult;
+use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::plan_view::PlanView;
 use crate::ui::query_editor::QueryEditor;
@@ -79,5 +80,8 @@ pub(crate) enum TabContent {
     },
     Schema {
         view: Entity<SchemaView>,
+    },
+    Console {
+        view: Entity<ConsoleView>,
     },
 }

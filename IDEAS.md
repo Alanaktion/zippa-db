@@ -28,31 +28,7 @@ value dialog to stage a binary value, parallel to the existing text box.
   the same "driver type sqlx can decode but the app can't show" gap, just
   for the type that shows up most in a typical app schema.
 
-## 2. A console of every query the app runs
-
-A pane (dock tab, or a drawer under the query editor) that streams every
-statement actually sent to the server this session — not just the ones typed
-into a query tab, but the catalog load, `TableView`'s paging/sort/filter
-SQL, the sidebar's object list query, `EXPLAIN` wrapping, staged edits going
-out as `UPDATE`/`INSERT`/`DELETE` — each tagged with where it came from
-(User vs. an internal source) and how long it took.
-
-This is different from the already-planned local query history
-([TODO.md §5](TODO.md), [`.agents/plans/query-history.md`](.agents/plans/query-history.md)):
-that's a persisted, searchable record of statements *you* ran, kept across
-sessions. This is a live, ephemeral "what is the app doing right now" view —
-closer to a browser's network panel than a history search. It's the fastest
-way to answer "why did clicking that row issue three queries" or "what does
-Refresh actually cost against a large schema," and it turns the client's own
-behavior from something the user has to trust into something they can watch.
-
-Needs a seam somewhere around `Connection::run_query`/`run_query_with`/
-`execute`/`execute_script` in `src/db/connection.rs` — every one of today's
-call sites already goes through those four entry points, so a tap there
-(an mpsc sender into a bounded ring buffer, `runtime::spawn`-friendly) would
-cover the whole app without threading a logger through each caller.
-
-## 3. Server admin & performance tools
+## 2. Server admin & performance tools
 
 TODO.md already has one line for this ("Server activity view (`pg_stat_activity`,
 `SHOW PROCESSLIST`) with cancel/kill") — worth growing into a small admin
@@ -75,7 +51,7 @@ All three are read-mostly against system catalogs, so they fit the existing
 safety-mode machinery with little new risk — the only writes are the two
 kill actions, which `ConfirmWrites` already knows how to gate.
 
-## 4. Chart integration for results and performance data
+## 3. Chart integration for results and performance data
 
 `gpui-kit` already ships chart components (`chart::{AreaChart, BarChart,
 LineChart, PieChart, RadarChart}`, plus `plot::Plot` with `#[derive(IntoPlot)]`)
@@ -97,9 +73,9 @@ reuse work already planned:
   developer eyeballing a time series or a group-by count without exporting
   to something else first.
 * **Admin dashboards** — a natural home for the process-count/slow-query data
-  from idea 3 once it exists.
+  from idea 2 once it exists.
 
-## 5. Database user & permission management
+## 4. Database user & permission management
 
 `CREATE ROLE`/`CREATE USER`, `GRANT`/`REVOKE`, and a read-only view of who
 can do what — useful for a web developer setting up a per-service account or

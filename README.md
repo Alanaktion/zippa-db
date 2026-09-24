@@ -31,6 +31,8 @@ from one native window.
   open and save `.sql` files.
 * **Query plans** — `EXPLAIN` and `EXPLAIN ANALYZE` as a readable tree with
   costs, rows, timing, and warnings.
+* **Console** — every statement the connection has sent, the app's own reads
+  and writes included, tagged apart from what a query tab actually ran.
 * **Table view** — paging, a row limit, click-to-sort, a filter bar
   (including `IN` with a subquery), a row panel showing the focused row as
   fields, and a jump from a foreign key to the row it references. A binary
@@ -95,6 +97,7 @@ src/
 │   ├── statement.rs     # Splitting and classifying the user's own SQL
 │   ├── plan.rs          # Reading EXPLAIN output into a tree
 │   ├── query.rs         # QueryResult and cells
+│   ├── query_log.rs     # Every statement a connection has sent, for the console
 │   ├── export.rs        # CSV, TSV, JSON, Markdown, SQL INSERT
 │   ├── import/          # SQL dump import: runner, reader, splitter
 │   ├── runtime.rs       # Tokio runtime bridging sqlx futures back to GPUI
@@ -132,6 +135,7 @@ src/
     ├── plan_view.rs     # EXPLAIN tree
     ├── filter_bar.rs    # The filter lines above a table view
     ├── value_dialog.rs  # One cell's value, in full
+    ├── console.rs       # Every statement this connection has sent
     ├── import_dialog.rs # SQL dump import
     ├── quick_switcher.rs, schema_search.rs, shortcuts_dialog.rs
     ├── settings_window.rs, sql_file.rs
@@ -247,6 +251,7 @@ Most of these are also in the menu bar — File, Edit, Query, Table and View —
 | Close the active tab | `Cmd`/`Ctrl` + `W` |
 | Next / previous tab | `Ctrl` + `Tab` / `Ctrl` + `Shift` + `Tab` (or `Ctrl` + `PageDown` / `PageUp`) |
 | Refresh the schema and the open table | `Cmd`/`Ctrl` + `R` |
+| Open the console of every statement sent | `Cmd`/`Ctrl` + `` ` `` |
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
 | Search the schema for a column, index, routine, or trigger | `Cmd`/`Ctrl` + `Shift` + `O` |
 | Open the quick switcher over tabs, objects, databases and actions | `Cmd`/`Ctrl` + `K` |

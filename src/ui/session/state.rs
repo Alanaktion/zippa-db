@@ -63,6 +63,10 @@ impl Session {
                     self.open_object(&object, ObjectViewMode::Schema, window, cx);
                     restored += 1;
                 }
+                PanelState::Console => {
+                    self.open_console(window, cx);
+                    restored += 1;
+                }
                 // Written by a newer build; leave it out rather than guess.
                 PanelState::Unknown => {}
             }

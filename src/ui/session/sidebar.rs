@@ -19,7 +19,7 @@ use crate::db::{DatabaseObject, ObjectKind, StoredKind, StoredObject};
 use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
-use super::{ImportSqlDump, SearchSchema, Session, SessionEvent};
+use super::{ImportSqlDump, OpenConsole, SearchSchema, Session, SessionEvent};
 
 impl Session {
     pub(super) fn on_filter_event(
@@ -325,6 +325,19 @@ impl Session {
                         Some("Session"),
                     )
                     .on_click(cx.listener(|this, _, _window, cx| this.import_dump(cx))),
+            )
+            .child(
+                Button::new("open-console")
+                    .outline()
+                    .small()
+                    .w_full()
+                    .label("Console")
+                    .tooltip_with_action(
+                        "Every statement this connection has sent",
+                        &OpenConsole,
+                        Some("Session"),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.open_console(window, cx))),
             )
             .child(self.render_objects(cx))
             .child(

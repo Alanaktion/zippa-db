@@ -8,6 +8,8 @@
 //! * [`config`] — what the user saves about a connection, before it is opened.
 //! * [`connection`] — the live pool, and the shared read and write paths.
 //! * [`binary`] — sniffing and laying out the bytes behind a binary value.
+//! * [`query_log`] — the bounded record of every statement a connection has
+//!   sent, for the console pane.
 //! * [`catalog`] — the whole schema once per session, and the search over it.
 //! * [`schema`] — a table's own definition: columns, indexes, foreign keys.
 //! * [`sql`] — quoting and placing bind parameters in generated statements.
@@ -29,6 +31,7 @@ pub mod mysql;
 pub mod plan;
 pub mod postgres;
 pub mod query;
+pub mod query_log;
 pub mod runtime;
 pub mod schema;
 pub mod sql;
@@ -46,6 +49,7 @@ pub(crate) use connection::POOL_SIZE;
 pub use connection::{Connection, DatabaseObject, ObjectKind, RowKey, StoredKind, StoredObject};
 pub use import::{ImportProgress, ImportRequest, ImportSummary, OnError};
 pub use plan::{Explained, Plan, PlanNode};
+pub use query_log::{LoggedQuery, QueryOutcome, QuerySource};
 pub use schema::{
     ColumnDef, ForeignKeyDef, IndexDef, RebuildSource, ReferentialAction, TableSchema,
 };

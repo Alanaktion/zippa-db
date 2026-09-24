@@ -36,6 +36,7 @@ use crate::ui::filter_bar::Operator;
 use crate::ui::session::{CloseScope, Session};
 use crate::ui::welcome::Welcome;
 
+mod console;
 mod editing;
 mod explain;
 mod export;

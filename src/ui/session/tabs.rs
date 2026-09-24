@@ -12,6 +12,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, Window};
 
 use crate::db::DatabaseObject;
+use crate::ui::console::ConsoleView;
 use crate::ui::filter_bar::FilterSpec;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::table_view::{TableView, TableViewEvent};
@@ -106,6 +107,27 @@ impl Session {
             }
         };
 
+        self.install(panel, window, cx);
+    }
+
+    /// Open the console tab, or bring forward the one already open — there is
+    /// only ever one per session, the same as a table's data and structure
+    /// tabs are each one of a kind.
+    pub(crate) fn open_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).is_console())
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+
+        let key = self.next_key;
+        self.next_key += 1;
+        let view = cx.new(|cx| ConsoleView::new(self.connection.clone(), window, cx));
+        let panel = cx.new(|cx| SessionPanel::console(key, "Console", view, cx));
         self.install(panel, window, cx);
     }
 

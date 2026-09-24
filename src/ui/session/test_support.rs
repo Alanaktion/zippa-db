@@ -9,6 +9,7 @@ use gpui_kit::component::dock::DockArea;
 use gpui_kit::{App, Context, Entity, SharedString, Window};
 
 use crate::db::DatabaseObject;
+use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::import_dialog::ImportView;
 use crate::ui::plan_view::PlanView;
@@ -91,6 +92,19 @@ impl Session {
     #[cfg(test)]
     pub(crate) fn active_schema_view(&self, cx: &App) -> Option<Entity<SchemaView>> {
         self.active_panel_for_test()?.read(cx).schema_view()
+    }
+
+    /// The console view in the active tab, if this is the console tab.
+    #[cfg(test)]
+    pub(crate) fn active_console_view(&self, cx: &App) -> Option<Entity<ConsoleView>> {
+        self.active_panel_for_test()?.read(cx).console_view()
+    }
+
+    /// Open the console tab, or bring it forward, the way the sidebar's
+    /// button does.
+    #[cfg(test)]
+    pub(crate) fn open_console_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_console(window, cx);
     }
 
     /// Open `object`'s structure tab, the way the sidebar's row menu does.
