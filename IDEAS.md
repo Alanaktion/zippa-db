@@ -28,27 +28,21 @@ value dialog to stage a binary value, parallel to the existing text box.
   the same "driver type sqlx can decode but the app can't show" gap, just
   for the type that shows up most in a typical app schema.
 
-## 2. Server admin & performance tools (rest of it)
+## ~~2. Server admin & performance tools~~ — shipped
 
-The process list shipped (`ui/process_list.rs`, `Connection::processes`/
-`kill_process`): `pg_stat_activity` / `information_schema.processlist` shown
-in a `DataGrid` the same way the console shows the query log, pick rows and
-"End Selected" to `pg_terminate_backend`/`KILL` them, gated off entirely for
-SQLite (there's no server to ask). It always asks before ending a
-connection — there's no staged-edit concept for this the way `ConfirmWrites`
-has for a cell edit, so a confirmation dialog stands in regardless of safety
-mode.
-
-Server variables shipped too (`ui/server_variables.rs`,
-`Connection::server_variables`): `pg_settings` / `SHOW VARIABLES`, searchable
-by name with a client-side "changed only" toggle, same SQLite gate. One piece
-of the original idea is still open:
-
-* **Slow/frequent query digest** — `performance_schema.events_statements_summary_by_digest`
-  on MySQL, `pg_stat_statements` on Postgres when it's installed (detect and
-  say so plainly when it isn't, rather than erroring). Even a bare sortable
-  table of digest/calls/mean time answers "what's actually slow" without
-  leaving the app.
+All three pieces are done: the process list (`ui/process_list.rs`,
+`Connection::processes`/`kill_process`) shows `pg_stat_activity` /
+`information_schema.processlist` in a `DataGrid` the same way the console
+shows the query log, pick rows and "End Selected" to
+`pg_terminate_backend`/`KILL` them; server variables (`ui/server_variables.rs`,
+`Connection::server_variables`) lists `pg_settings` / `SHOW VARIABLES`,
+searchable by name with a client-side "changed only" toggle; the query digest
+(`ui/query_digest.rs`, `Connection::query_digest`) ranks
+`pg_stat_statements` / `performance_schema.events_statements_summary_by_digest`
+by mean time, checking first whether the instrumentation is installed/on and
+saying so plainly rather than erroring when it isn't. All three are gated off
+entirely for SQLite (there's no server to ask) and reuse `DataGrid` rather
+than building their own table.
 
 ## 3. Chart integration for results and performance data
 
@@ -71,8 +65,8 @@ reuse work already planned:
   chart, the way a spreadsheet's "quick chart" works. High value for a web
   developer eyeballing a time series or a group-by count without exporting
   to something else first.
-* **Admin dashboards** — a natural home for the process-count/slow-query data
-  from idea 2 once it exists.
+* **Admin dashboards** — a natural home for the process-count/query-digest
+  data idea 2 already shipped.
 
 ## 4. Database user & permission management
 

@@ -34,6 +34,21 @@ pub(crate) const VARIABLES_SQL: &str = "SELECT name, setting, unit, context, sho
      CASE WHEN setting IS DISTINCT FROM boot_val THEN 'yes' ELSE '' END AS changed \
      FROM pg_settings ORDER BY name";
 
+/// Whether `pg_stat_statements` is installed on this database — it is a
+/// contrib extension, not built in, and the digest has nothing to read
+/// without it.
+pub(crate) const DIGEST_AVAILABLE_SQL: &str =
+    "SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'";
+
+/// The digest itself, worst mean time first. `total_exec_time`/`mean_exec_time`
+/// are the column names from Postgres 13 on, when the `_exec_` infix was
+/// added to tell them apart from planning time; an older server has no
+/// digest view for this to fall back to.
+pub(crate) const DIGEST_SQL: &str = "SELECT query, calls, \
+     round(total_exec_time::numeric, 2) AS total_time_ms, \
+     round(mean_exec_time::numeric, 2) AS mean_time_ms, rows \
+     FROM pg_stat_statements ORDER BY mean_exec_time DESC LIMIT 200";
+
 /// Functions, procedures and sequences outside the system schemas and the
 /// extensions, with the argument types that tell overloads apart.
 pub(crate) const ROUTINES_SQL: &str = "SELECT n.nspname, p.proname, \

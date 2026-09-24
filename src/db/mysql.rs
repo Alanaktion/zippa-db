@@ -36,6 +36,20 @@ pub(crate) const VARIABLES_SQL: &str = "SELECT v.VARIABLE_NAME, v.VARIABLE_VALUE
      JOIN performance_schema.variables_info i ON v.VARIABLE_NAME = i.VARIABLE_NAME \
      ORDER BY v.VARIABLE_NAME";
 
+/// Whether `performance_schema` is on — it is a compile-time-default-on
+/// server variable that cannot be flipped at runtime, and the digest table
+/// it feeds is empty without it.
+pub(crate) const DIGEST_AVAILABLE_SQL: &str = "SHOW VARIABLES LIKE 'performance_schema'";
+
+/// The digest itself, worst average time first. `*_timer_wait` columns are
+/// picoseconds, so `/ 1000000000.0` gives milliseconds.
+pub(crate) const DIGEST_SQL: &str = "SELECT digest_text, count_star, \
+     round(sum_timer_wait / 1000000000.0, 2) AS total_time_ms, \
+     round(avg_timer_wait / 1000000000.0, 2) AS avg_time_ms, sum_rows_examined \
+     FROM performance_schema.events_statements_summary_by_digest \
+     WHERE digest_text IS NOT NULL \
+     ORDER BY avg_timer_wait DESC LIMIT 200";
+
 /// Stored functions and procedures in the current database, with the parameter
 /// types that tell one signature from another. MySQL has no sequences. A
 /// function's return value is a row in `parameters` at position 0, so the

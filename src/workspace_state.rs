@@ -88,6 +88,9 @@ pub enum PanelState {
     /// filter and the "changed only" toggle reset with a fresh read, the
     /// same as any other tab that reopens rather than restores state.
     Variables,
+    /// The query digest tab. Carries nothing of its own, the same as the
+    /// process list and server variables — it re-reads the server on open.
+    Digest,
     /// A panel kind a newer build wrote. It is skipped rather than failing the
     /// whole file, so a newer version's workspace still opens in an older one.
     #[serde(other)]

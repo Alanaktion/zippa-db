@@ -14,6 +14,7 @@ use crate::ui::data_grid::DataGrid;
 use crate::ui::import_dialog::ImportView;
 use crate::ui::plan_view::PlanView;
 use crate::ui::process_list::ProcessListView;
+use crate::ui::query_digest::QueryDigestView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::server_variables::ServerVariablesView;
@@ -148,6 +149,24 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         self.open_server_variables(window, cx);
+    }
+
+    /// The query digest view in the active tab, if this is the query digest
+    /// tab.
+    #[cfg(test)]
+    pub(crate) fn active_query_digest_view(&self, cx: &App) -> Option<Entity<QueryDigestView>> {
+        self.active_panel_for_test()?.read(cx).query_digest_view()
+    }
+
+    /// Open the query digest tab, or bring it forward, the way the sidebar's
+    /// button does.
+    #[cfg(test)]
+    pub(crate) fn open_query_digest_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_query_digest(window, cx);
     }
 
     /// Open `object`'s structure tab, the way the sidebar's row menu does.

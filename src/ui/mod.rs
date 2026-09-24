@@ -10,6 +10,7 @@ pub mod filter_bar;
 pub mod import_dialog;
 pub mod plan_view;
 pub mod process_list;
+pub mod query_digest;
 pub mod query_editor;
 pub mod quick_switcher;
 pub mod schema_search;

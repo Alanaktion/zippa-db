@@ -118,6 +118,15 @@ impl RowKey {
     }
 }
 
+/// The outcome of asking for the slow/frequent query digest: either engine's
+/// instrumentation is opt-in, so a missing extension or a server variable
+/// that is off is not an error — it is told to the caller in words instead.
+#[derive(Debug)]
+pub enum QueryDigest {
+    Available(QueryResult),
+    Unavailable(String),
+}
+
 /// A live connection to one database.
 #[derive(Debug)]
 pub struct Connection {
@@ -755,6 +764,51 @@ impl Connection {
             Engine::Sqlite => anyhow::bail!("SQLite has no server variables to list"),
         };
         self.run_query(sql).await
+    }
+
+    /// The slow/frequent query digest — `pg_stat_statements` on Postgres,
+    /// `performance_schema.events_statements_summary_by_digest` on MySQL —
+    /// ranked by mean time per call. Both are opt-in instrumentation rather
+    /// than something a server always has running, so this checks first and
+    /// answers [`QueryDigest::Unavailable`] with a plain reason instead of a
+    /// bare query error when it is off. SQLite is an embedded engine with no
+    /// query instrumentation to read this way.
+    pub async fn query_digest(&self) -> Result<QueryDigest> {
+        match self.config.engine {
+            Engine::Postgres => {
+                let available = self.run_query(postgres::DIGEST_AVAILABLE_SQL).await?;
+                if available.rows.is_empty() {
+                    return Ok(QueryDigest::Unavailable(
+                        "pg_stat_statements is not installed on this server. Enable it with \
+                         `CREATE EXTENSION pg_stat_statements;` after adding it to \
+                         shared_preload_libraries and restarting the server."
+                            .to_string(),
+                    ));
+                }
+                let result = self.run_query(postgres::DIGEST_SQL).await?;
+                Ok(QueryDigest::Available(result))
+            }
+            Engine::MySql => {
+                let available = self.run_query(mysql::DIGEST_AVAILABLE_SQL).await?;
+                let on = available
+                    .rows
+                    .first()
+                    .and_then(|row| row.get(1))
+                    .and_then(|cell| cell.as_deref())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("ON"));
+                if !on {
+                    return Ok(QueryDigest::Unavailable(
+                        "performance_schema is off on this server. It cannot be turned on \
+                         while the server is running — set performance_schema=ON in its \
+                         configuration and restart."
+                            .to_string(),
+                    ));
+                }
+                let result = self.run_query(mysql::DIGEST_SQL).await?;
+                Ok(QueryDigest::Available(result))
+            }
+            Engine::Sqlite => anyhow::bail!("SQLite has no query digest to show"),
+        }
     }
 
     /// Refuse a statement a read-only connection must not run.

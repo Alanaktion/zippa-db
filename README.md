@@ -38,6 +38,10 @@ from one native window.
 * **Server variables** — every runtime setting (Postgres and MySQL), searchable
   and filterable to just what has changed from its compiled default. SQLite
   has none.
+* **Query digest** — the slow and frequent statements the server has seen
+  (`pg_stat_statements` on Postgres, `performance_schema` on MySQL), ranked
+  by mean time. Says plainly when the instrumentation isn't installed or is
+  off, rather than erroring. SQLite has none.
 * **Table view** — paging, a row limit, click-to-sort, a filter bar
   (including `IN` with a subquery), a row panel showing the focused row as
   fields, and a jump from a foreign key to the row it references. A binary
@@ -143,6 +147,7 @@ src/
     ├── console.rs       # Every statement this connection has sent
     ├── process_list.rs  # Who is connected and what they're doing (Postgres/MySQL)
     ├── server_variables.rs # Runtime settings, searchable (Postgres/MySQL)
+    ├── query_digest.rs  # Slow/frequent statements, ranked (Postgres/MySQL)
     ├── import_dialog.rs # SQL dump import
     ├── quick_switcher.rs, schema_search.rs, shortcuts_dialog.rs
     ├── settings_window.rs, sql_file.rs
@@ -261,6 +266,7 @@ Most of these are also in the menu bar — File, Edit, Query, Table and View —
 | Open the console of every statement sent | `Cmd`/`Ctrl` + `` ` `` |
 | Open the process list (Postgres and MySQL) | `Cmd`/`Ctrl` + `Shift` + `P` |
 | Open the server variables (Postgres and MySQL) | `Cmd`/`Ctrl` + `Shift` + `V` |
+| Open the query digest (Postgres and MySQL) | `Cmd`/`Ctrl` + `Shift` + `D` |
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
 | Search the schema for a column, index, routine, or trigger | `Cmd`/`Ctrl` + `Shift` + `O` |
 | Open the quick switcher over tabs, objects, databases and actions | `Cmd`/`Ctrl` + `K` |

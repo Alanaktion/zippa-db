@@ -15,6 +15,7 @@ use crate::db::{DatabaseObject, Engine};
 use crate::ui::console::ConsoleView;
 use crate::ui::filter_bar::FilterSpec;
 use crate::ui::process_list::ProcessListView;
+use crate::ui::query_digest::QueryDigestView;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::table_view::{TableView, TableViewEvent};
@@ -180,6 +181,31 @@ impl Session {
         self.next_key += 1;
         let view = cx.new(|cx| ServerVariablesView::new(self.connection.clone(), window, cx));
         let panel = cx.new(|cx| SessionPanel::variables(key, "Variables", view, cx));
+        self.install(panel, window, cx);
+    }
+
+    /// Open the query digest tab, or bring forward the one already open.
+    /// SQLite has no query instrumentation to read this way, so this is
+    /// never called for one — see `Session::render_sidebar`.
+    pub(crate) fn open_query_digest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.connection.config.engine == Engine::Sqlite {
+            return;
+        }
+
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).is_query_digest())
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+
+        let key = self.next_key;
+        self.next_key += 1;
+        let view = cx.new(|cx| QueryDigestView::new(self.connection.clone(), window, cx));
+        let panel = cx.new(|cx| SessionPanel::digest(key, "Query Digest", view, cx));
         self.install(panel, window, cx);
     }
 

@@ -11,8 +11,8 @@ use uuid::Uuid;
 use super::query::Cell;
 use super::schema::ReferentialAction;
 use super::{
-    CatalogKind, Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, RowKey,
-    SafetyMode, TagColor, keyword_literal, quote_identifier, typed_placeholder,
+    CatalogKind, Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, QueryDigest,
+    RowKey, SafetyMode, TagColor, keyword_literal, quote_identifier, typed_placeholder,
 };
 
 pub(crate) struct TempDatabase {
@@ -176,6 +176,22 @@ async fn sqlite_has_no_server_variables() {
         .await
         .expect_err("SQLite has no server-side configuration to list");
     assert!(error.to_string().contains("no server variables"));
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn sqlite_has_no_query_digest() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let error = connection
+        .query_digest()
+        .await
+        .expect_err("SQLite has no query instrumentation to read");
+    assert!(error.to_string().contains("no query digest"));
 
     connection.close().await;
 }
@@ -1488,6 +1504,66 @@ async fn live_mysql_server_variables_lists_max_connections() {
         })
         .expect("max_connections should be in performance_schema.global_variables");
     assert!(row[1].is_some(), "max_connections should have a value");
+
+    connection.close().await;
+}
+
+/// `query_digest` is opt-in instrumentation on both engines, so a fresh test
+/// server may or may not have it installed/on; this checks the call never
+/// errors and, whichever branch it takes, that the branch itself is shaped
+/// right — `pg_stat_statements`' own columns when available, a reason naming
+/// the extension when not.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_query_digest_reports_availability() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+
+    // Give the digest something to have counted, if the extension happens
+    // to be installed and tracking this session.
+    let _ = connection.run_query("SELECT 1").await;
+
+    match connection
+        .query_digest()
+        .await
+        .expect("query_digest should not error, extension or not")
+    {
+        QueryDigest::Available(result) => {
+            assert!(
+                result.columns.contains(&"query".to_string()),
+                "the digest should carry pg_stat_statements' own columns"
+            );
+        }
+        QueryDigest::Unavailable(reason) => {
+            assert!(reason.contains("pg_stat_statements"));
+        }
+    }
+
+    connection.close().await;
+}
+
+/// The same, for MySQL's `performance_schema.events_statements_summary_by_digest`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_query_digest_reports_availability() {
+    let (connection, _pool) = live_mysql().await;
+
+    let _ = connection.run_query("SELECT 1").await;
+
+    match connection
+        .query_digest()
+        .await
+        .expect("query_digest should not error, performance_schema on or off")
+    {
+        QueryDigest::Available(result) => {
+            assert!(
+                result.columns.contains(&"digest_text".to_string()),
+                "the digest should carry events_statements_summary_by_digest's own columns"
+            );
+        }
+        QueryDigest::Unavailable(reason) => {
+            assert!(reason.contains("performance_schema"));
+        }
+    }
 
     connection.close().await;
 }

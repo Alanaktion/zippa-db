@@ -20,8 +20,8 @@ use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
 use super::{
-    ImportSqlDump, OpenConsole, OpenProcessList, OpenServerVariables, SearchSchema, Session,
-    SessionEvent,
+    ImportSqlDump, OpenConsole, OpenProcessList, OpenQueryDigest, OpenServerVariables,
+    SearchSchema, Session, SessionEvent,
 };
 
 impl Session {
@@ -374,6 +374,23 @@ impl Session {
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_server_variables(window, cx)
                         })),
+                )
+            })
+            .when(self.connection.config.engine != Engine::Sqlite, |this| {
+                this.child(
+                    Button::new("open-query-digest")
+                        .outline()
+                        .small()
+                        .w_full()
+                        .label("Query Digest")
+                        .tooltip_with_action(
+                            "Slow and frequent statements, ranked by mean time",
+                            &OpenQueryDigest,
+                            Some("Session"),
+                        )
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_query_digest(window, cx)),
+                        ),
                 )
             })
             .child(self.render_objects(cx))

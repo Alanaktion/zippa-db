@@ -9,6 +9,7 @@ use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::plan_view::PlanView;
 use crate::ui::process_list::ProcessListView;
+use crate::ui::query_digest::QueryDigestView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::server_variables::ServerVariablesView;
@@ -91,5 +92,8 @@ pub(crate) enum TabContent {
     },
     Variables {
         view: Entity<ServerVariablesView>,
+    },
+    Digest {
+        view: Entity<QueryDigestView>,
     },
 }

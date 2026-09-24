@@ -57,6 +57,7 @@ const GROUPS: &[Group] = &[
             ("Open the console of every statement sent", &["secondary-`"]),
             ("Open the process list", &["secondary-shift-p"]),
             ("Open the server variables", &["secondary-shift-v"]),
+            ("Open the query digest", &["secondary-shift-d"]),
         ],
     },
     Group {
