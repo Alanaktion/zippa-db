@@ -96,7 +96,8 @@ impl TabContent {
             Self::Connect(_) => None,
             Self::Session(session) => {
                 let config = &session.read(cx).connection().config;
-                config.tag.as_ref().map(|tag| (tag.clone(), config.color))
+                let text = crate::ui::tag_text(config.tag.as_deref(), config.color)?;
+                Some((text, config.color))
             }
         }
     }
@@ -167,9 +168,10 @@ impl TabContent {
                     .items_center()
                     .min_w_0()
                     .child(div().min_w_0().truncate().child(self.title(cx)).text_sm())
-                    .when_some(self.tag(cx), |this, (tag, color)| {
-                        this.child(crate::ui::tag_chip(&tag, color, cx))
-                    });
+                    .children(
+                        self.tag(cx)
+                            .and_then(|(tag, color)| crate::ui::tag_chip(Some(&tag), color, cx)),
+                    );
 
                 // The database is secondary to the name, so it sits muted and
                 // a step smaller underneath it.
@@ -400,7 +402,7 @@ impl Workspace {
     }
 
     /// Replace a session's tab with a fresh connection manager, the way the
-    /// sidebar's Disconnect button does. The caller has already decided any
+    /// Disconnect action does. The caller has already decided any
     /// unsaved work in the session's tabs does not matter.
     fn disconnect(
         &mut self,
@@ -865,6 +867,30 @@ impl Workspace {
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let session = self.active_session();
         let connected = session.is_some();
+        let badge = session.as_ref().and_then(|session| {
+            let config = &session.read(cx).connection().config;
+            let chip = crate::ui::tag_chip(config.tag.as_deref(), config.color, cx)?;
+            let read_only = config.safety.is_read_only();
+            Some(
+                h_flex()
+                    .id("connection-tag")
+                    .flex_none()
+                    .items_center()
+                    .gap_1()
+                    .child(chip)
+                    .when(read_only, |this| {
+                        this.child(
+                            h_flex()
+                                .items_center()
+                                .gap_0p5()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(Icon::new(gpui_kit::assets::IconName::Lock).size_3())
+                                .child("Read only"),
+                        )
+                    }),
+            )
+        });
 
         TitleBar::new()
             .w_full()
@@ -900,12 +926,18 @@ impl Workspace {
                             )
                     }),
             )
+            // The connection's environment, centred on the bar. Both sides
+            // share the leftover width equally, so it stays in the middle
+            // whatever the name or the buttons need.
+            .children(badge)
             .child(
                 h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .justify_end()
                     .items_center()
                     .gap_1()
                     .px_1()
-                    .flex_none()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     // Every button here is icon-only, so each one carries the
                     // name a screen reader announces: without it there is

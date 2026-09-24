@@ -55,6 +55,12 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   told by colour alone; the value dialog, the import dialog, and the row
   menu's "View value" show their shortcuts; the filter bar's controls have
   names; the sidebar buttons' accessible names match their visible labels.
+- The session sidebar is split into two top tabs: **Schema** (the object list,
+  with the filter, schema search, and SQL dump import on one line) and
+  **Management** (the console, process list, server variables, and query digest
+  as icon rows; SQLite gets the console and a maintenance tab of integrity
+  checks, optimize, analyze, vacuum, and WAL checkpoint). Disconnect leaves
+  the sidebar, with the File menu and `Cmd`/`Ctrl`+`D` carrying it instead.
 - Declared the minimum Rust version (1.95) and package metadata in
   `Cargo.toml`.
 - Brought `README.md`, `AGENTS.md`/`CLAUDE.md`, `TODO.md` (which now absorbs

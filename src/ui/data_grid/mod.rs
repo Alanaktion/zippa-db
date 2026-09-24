@@ -662,11 +662,11 @@ impl DataGrid {
 
     /// Start a row the user fills in by hand, below the ones on screen.
     pub fn add_draft(&mut self, cx: &mut Context<Self>) {
+        if !self.table.read(cx).delegate().editable {
+            return;
+        }
         self.commit_editor(cx);
         self.table.update(cx, |table, cx| {
-            if !table.delegate().editable {
-                return;
-            }
             table.delegate_mut().drafts.push(HashMap::new());
             table.refresh(cx);
         });

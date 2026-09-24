@@ -165,6 +165,10 @@ pub struct TableView {
     /// How a row of this table can be addressed by a write; `None` until the
     /// server has been asked.
     row_key: Option<RowKey>,
+    /// Which read of `row_key` is the current one. A database switch starts a
+    /// second read while the first may still be in flight; whichever lands
+    /// last must not overwrite the answer for the table now on screen.
+    row_key_read: u64,
     /// Column names and driver type names of the page in the grid, kept so a
     /// write can quote its columns and cast its parameters.
     columns: Vec<String>,
@@ -268,6 +272,7 @@ impl TableView {
             loading: false,
             error: None,
             row_key: None,
+            row_key_read: 0,
             columns: Vec::new(),
             column_types: Vec::new(),
             foreign_keys: None,
@@ -324,6 +329,7 @@ impl TableView {
         // A table of the same name in another database is another table, so
         // the key is read again rather than carried over.
         self.row_key = None;
+        self.sync_editable(cx);
         self.foreign_keys = None;
         // Anything the old database was asked about is about a table that is no
         // longer here: a held action, a write waiting on an answer, and the
@@ -343,6 +349,8 @@ impl TableView {
     /// the table's own definition does.
     fn load_row_key(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
+        self.row_key_read += 1;
+        let read = self.row_key_read;
         cx.notify();
 
         let connection = self.connection.clone();
@@ -352,6 +360,11 @@ impl TableView {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
+                // Answering for a connection this view has since left: the
+                // newer read owns `row_key` and the reload.
+                if this.row_key_read != read {
+                    return;
+                }
                 // A table whose key could not be read is shown, just not
                 // written to; the reason sits in the footer.
                 this.row_key = Some(match result {
@@ -359,9 +372,7 @@ impl TableView {
                     Ok(Err(_)) | Err(_) => RowKey::Unavailable("the primary key could not be read"),
                 });
 
-                let editable = this.is_editable();
-                this.grid
-                    .update(cx, |grid, cx| grid.set_editable(editable, cx));
+                this.sync_editable(cx);
                 this.reload(cx);
             })
             .ok();
@@ -415,6 +426,15 @@ impl TableView {
 
         self.grid
             .update(cx, |grid, cx| grid.set_foreign_keys(fk_columns, cx));
+    }
+
+    /// Hand the grid this view's answer to [`Self::is_editable`]. The footer
+    /// asks the view and the grid asks itself, so every change to what the
+    /// view decides on has to end here or the two disagree.
+    fn sync_editable(&mut self, cx: &mut Context<Self>) {
+        let editable = self.is_editable();
+        self.grid
+            .update(cx, |grid, cx| grid.set_editable(editable, cx));
     }
 
     /// Whether rows of this table can be written back.

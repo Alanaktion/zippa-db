@@ -57,6 +57,7 @@ pub use schema::{
 };
 pub use sql::quote_identifier;
 pub(crate) use sql::{keyword_literal, placeholder, quote_literal, text_type, typed_placeholder};
+pub use sqlite::Maintenance;
 
 /// Decode a column into a display string, or `None` when the decode fails.
 macro_rules! decode {

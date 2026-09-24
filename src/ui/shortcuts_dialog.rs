@@ -41,6 +41,7 @@ const GROUPS: &[Group] = &[
         rows: &[
             ("New connection (or another tab)", &["secondary-n"]),
             ("Close the active connection", &["secondary-shift-w"]),
+            ("Disconnect the active connection", &["secondary-d"]),
             ("Next connection", &["secondary-shift-]"]),
             ("Previous connection", &["secondary-shift-["]),
             ("Connect from the connection editor", &["secondary-enter"]),
@@ -58,6 +59,7 @@ const GROUPS: &[Group] = &[
             ("Open the process list", &["secondary-shift-p"]),
             ("Open the server variables", &["secondary-shift-v"]),
             ("Open the query digest", &["secondary-shift-d"]),
+            ("Open SQLite maintenance", &["secondary-shift-m"]),
         ],
     },
     Group {
@@ -91,7 +93,7 @@ const GROUPS: &[Group] = &[
                 "Show the plan and run the statement for actual times",
                 &["secondary-shift-e"],
             ),
-            ("Give up on a running query", &["secondary-."]),
+            ("Stop a running query", &["secondary-."]),
         ],
     },
     Group {
@@ -118,7 +120,7 @@ const GROUPS: &[Group] = &[
             ("Discard staged changes", &["secondary-z"]),
             ("Toggle the row panel", &["secondary-\\"]),
             ("Save the value dialog", &["secondary-enter"]),
-            ("Give up on a cell edit or dialog", &["escape"]),
+            ("Cancel a cell edit or dismiss a dialog", &["escape"]),
         ],
     },
 ];

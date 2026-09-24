@@ -22,9 +22,9 @@ use crate::ui::data_grid::{
 };
 use crate::ui::query_editor::{Explain, ExplainAnalyze, RunQuery, RunScript};
 use crate::ui::session::{
-    CancelQuery, CloseTab, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile, OpenProcessList,
-    OpenQueryDigest, OpenServerVariables, PreviousTab, QuickSwitcher, Refresh, SaveFile,
-    SaveFileAs, SearchSchema,
+    CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
+    OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, PreviousTab,
+    QuickSwitcher, Refresh, SaveFile, SaveFileAs, SearchSchema,
 };
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -83,6 +83,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Close Tab", CloseTab),
             MenuItem::action("Close Connection", CloseConnection),
+            MenuItem::action("Disconnect", Disconnect),
         ]),
         // The text boxes' own clipboard and undo, with the native selectors
         // macOS expects them to carry. They answer wherever an input has the
@@ -132,6 +133,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Processes", OpenProcessList),
             MenuItem::action("Server Variables", OpenServerVariables),
             MenuItem::action("Query Digest", OpenQueryDigest),
+            MenuItem::action("Maintenance", OpenMaintenance),
             MenuItem::separator(),
             MenuItem::action("Next Tab", NextTab),
             MenuItem::action("Previous Tab", PreviousTab),
@@ -189,6 +191,7 @@ mod tests {
             ("Import SQL Dump", TypeId::of::<ImportSqlDump>()),
             ("Close Tab", TypeId::of::<CloseTab>()),
             ("Close Connection", TypeId::of::<CloseConnection>()),
+            ("Disconnect", TypeId::of::<Disconnect>()),
             ("Run Query", TypeId::of::<RunQuery>()),
             ("Run Script", TypeId::of::<RunScript>()),
             ("Explain", TypeId::of::<Explain>()),
@@ -213,6 +216,7 @@ mod tests {
             ("Processes", TypeId::of::<OpenProcessList>()),
             ("Server Variables", TypeId::of::<OpenServerVariables>()),
             ("Query Digest", TypeId::of::<OpenQueryDigest>()),
+            ("Maintenance", TypeId::of::<OpenMaintenance>()),
             ("Next Tab", TypeId::of::<NextTab>()),
             ("Previous Tab", TypeId::of::<PreviousTab>()),
             ("Next Connection", TypeId::of::<NextConnection>()),

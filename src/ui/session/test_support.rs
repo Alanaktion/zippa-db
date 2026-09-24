@@ -18,6 +18,7 @@ use crate::ui::query_digest::QueryDigestView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::server_variables::ServerVariablesView;
+use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::TableView;
 
 use super::Session;
@@ -169,6 +170,27 @@ impl Session {
         self.open_query_digest(window, cx);
     }
 
+    /// The maintenance view in the active tab, if this is the maintenance
+    /// tab.
+    #[cfg(test)]
+    pub(crate) fn active_maintenance_view(
+        &self,
+        cx: &App,
+    ) -> Option<Entity<SqliteMaintenanceView>> {
+        self.active_panel_for_test()?.read(cx).maintenance_view()
+    }
+
+    /// Open the maintenance tab, or bring it forward, the way the sidebar's
+    /// button does.
+    #[cfg(test)]
+    pub(crate) fn open_maintenance_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_maintenance(window, cx);
+    }
+
     /// Open `object`'s structure tab, the way the sidebar's row menu does.
     #[cfg(test)]
     pub(crate) fn open_schema_for_test(
@@ -224,6 +246,18 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         self.activate_tab(index, window, cx);
+    }
+
+    /// Put the session in the sidebar's Management tab, the way clicking its
+    /// top tab does.
+    #[cfg(test)]
+    pub(crate) fn show_sidebar_tab_for_test(&mut self, management: bool, cx: &mut Context<Self>) {
+        self.sidebar_tab = if management {
+            super::sidebar::SidebarTab::Management
+        } else {
+            super::sidebar::SidebarTab::Schema
+        };
+        cx.notify();
     }
 
     /// Set the filter text the way typing in the box does.

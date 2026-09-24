@@ -206,6 +206,7 @@ impl FilterBar {
     ) -> FilterRow {
         let column = cx.new(|cx| {
             SelectState::new(column_items, Some(IndexPath::new(column_index)), window, cx)
+                .searchable(true)
         });
 
         let operators: Vec<SharedString> = Operator::ALL
@@ -421,12 +422,11 @@ impl Render for FilterBar {
         v_flex()
             .w_full()
             .flex_none()
-            .px_3()
+            .px_2()
             .py_1()
             .gap_1()
             .border_b_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().status_bar)
             .children(rows)
             .child(
                 h_flex()

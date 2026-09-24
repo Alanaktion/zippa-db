@@ -91,6 +91,9 @@ pub enum PanelState {
     /// The query digest tab. Carries nothing of its own, the same as the
     /// process list and server variables — it re-reads the server on open.
     Digest,
+    /// The SQLite maintenance tab. Carries nothing of its own — what its
+    /// buttons last reported is not worth restoring, so it reopens empty.
+    Maintenance,
     /// A panel kind a newer build wrote. It is skipped rather than failing the
     /// whole file, so a newer version's workspace still opens in an older one.
     #[serde(other)]

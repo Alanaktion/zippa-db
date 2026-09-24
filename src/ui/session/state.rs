@@ -94,6 +94,14 @@ impl Session {
                         restored += 1;
                     }
                 }
+                PanelState::Maintenance => {
+                    // A no-op unless this is a SQLite connection.
+                    let before = self.panels.len();
+                    self.open_maintenance(window, cx);
+                    if self.panels.len() > before {
+                        restored += 1;
+                    }
+                }
                 // Written by a newer build; leave it out rather than guess.
                 PanelState::Unknown => {}
             }

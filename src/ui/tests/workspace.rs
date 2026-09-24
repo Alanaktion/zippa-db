@@ -246,8 +246,7 @@ fn disconnecting_returns_the_tab_to_the_manager(cx: &mut TestAppContext) {
     click(cx, &handle, "new-connection");
     let _second = connect(cx, &handle);
 
-    click(cx, &handle, "disconnect");
-    cx.run_until_parked();
+    press_workspace(cx, &handle, "secondary-d");
 
     assert_eq!(
         titles(cx, &handle),
@@ -278,7 +277,7 @@ fn disconnecting_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
         })
         .unwrap();
 
-    click(cx, &handle, "disconnect");
+    press_workspace(cx, &handle, "secondary-d");
     assert_eq!(
         titles(cx, &handle),
         [first.config().display_name()],
@@ -290,8 +289,16 @@ fn disconnecting_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
     assert_eq!(titles(cx, &handle), [first.config().display_name()]);
     cx.run_until_parked();
 
+    // The keystroke goes to whatever holds the focus, so put it back in the
+    // session rather than depending on where the closed dialog leaves it.
+    handle
+        .update(cx, |_, window, cx| {
+            session.update(cx, |session, cx| session.focus(window, cx));
+        })
+        .unwrap();
+
     // Saying yes disconnects it, keeping the tab for the next connection.
-    click(cx, &handle, "disconnect");
+    press_workspace(cx, &handle, "secondary-d");
     click(cx, &handle, "ok");
     cx.run_until_parked();
     assert_eq!(

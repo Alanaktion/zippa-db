@@ -20,6 +20,7 @@ pub mod session;
 pub mod settings_window;
 pub mod shortcuts_dialog;
 pub mod sql_file;
+pub mod sqlite_maintenance;
 pub mod table_view;
 mod text_filter;
 pub mod value_dialog;
@@ -58,11 +59,27 @@ pub fn notify_info(window: &mut Window, cx: &mut App, message: impl Into<SharedS
     }
 }
 
-/// A small pill carrying a connection's tag: its text always on its colour.
+/// The text a tag chip carries: the tag, or the colour's own name when only a
+/// colour was chosen, so the colour is never the only cue.
+pub fn tag_text(tag: Option<&str>, color: Option<TagColor>) -> Option<String> {
+    match tag {
+        Some(tag) if !tag.is_empty() => Some(tag.to_string()),
+        _ => color.map(|color| color.label().to_string()),
+    }
+}
+
+/// A small pill carrying a connection's tag and colour: its text always on its
+/// colour. Either one alone is enough to show it; a connection with neither
+/// has no chip.
 ///
-/// The tag text is the cue; the colour only reinforces it, so an untagged or
-/// colourless tag still reads through the text or a neutral fill.
-pub fn tag_chip(tag: &str, color: Option<TagColor>, cx: &App) -> impl IntoElement {
+/// The tag text is the cue; the colour only reinforces it, so a colourless tag
+/// still reads through the text and a neutral fill.
+pub fn tag_chip(
+    tag: Option<&str>,
+    color: Option<TagColor>,
+    cx: &App,
+) -> Option<impl IntoElement + use<>> {
+    let text = tag_text(tag, color)?;
     let bg = color
         .map(|color| color.hsla(cx))
         .unwrap_or_else(|| cx.theme().muted);
@@ -70,15 +87,17 @@ pub fn tag_chip(tag: &str, color: Option<TagColor>, cx: &App) -> impl IntoElemen
         .map(|color| color.on_color(cx))
         .unwrap_or_else(|| cx.theme().muted_foreground);
 
-    div()
-        .flex_none()
-        .rounded_full()
-        .px_2()
-        .py_0p5()
-        .text_xs()
-        .bg(bg)
-        .text_color(fg)
-        .child(tag.to_string())
+    Some(
+        div()
+            .flex_none()
+            .rounded_full()
+            .px_2()
+            .py_0p5()
+            .text_xs()
+            .bg(bg)
+            .text_color(fg)
+            .child(text),
+    )
 }
 
 /// Resolve a [`TagColor`] to the colour it is drawn with.

@@ -13,6 +13,7 @@ use crate::ui::query_digest::QueryDigestView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::server_variables::ServerVariablesView;
+use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::TableView;
 
 /// Whether a sidebar object is opened as its rows or its own definition.
@@ -95,5 +96,8 @@ pub(crate) enum TabContent {
     },
     Digest {
         view: Entity<QueryDigestView>,
+    },
+    Maintenance {
+        view: Entity<SqliteMaintenanceView>,
     },
 }

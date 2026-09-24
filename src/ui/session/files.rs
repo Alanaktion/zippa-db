@@ -139,7 +139,7 @@ impl Session {
         }
     }
 
-    /// Give up on an import in flight, the way [`Self::cancel_query`] gives up
+    /// Stop an import in flight, the way [`Self::cancel_query`] gives up
     /// on a query.
     pub(crate) fn cancel_import(&mut self, cx: &mut Context<Self>) {
         if let Some(view) = self.import.clone() {

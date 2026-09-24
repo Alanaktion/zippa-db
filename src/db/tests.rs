@@ -197,6 +197,55 @@ async fn sqlite_has_no_query_digest() {
 }
 
 #[tokio::test]
+async fn sqlite_maintenance_runs_each_task() {
+    use super::Maintenance;
+
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let check = connection
+        .run_maintenance(Maintenance::IntegrityCheck)
+        .await
+        .expect("integrity check should run");
+    assert_eq!(check.rows, vec![vec![Some("ok".to_string())]]);
+
+    for task in Maintenance::ALL {
+        connection
+            .run_maintenance(task)
+            .await
+            .unwrap_or_else(|error| panic!("{task:?} failed: {error:#}"));
+    }
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn read_only_sqlite_refuses_the_maintenance_that_writes() {
+    use super::Maintenance;
+
+    let database = TempDatabase::new().await;
+    let mut config = database.config();
+    config.safety = SafetyMode::ReadOnly;
+    let connection = Connection::open(config, None)
+        .await
+        .expect("could not open the test database");
+
+    for task in Maintenance::ALL {
+        let outcome = connection.run_maintenance(task).await;
+        if task.writes() {
+            let error = outcome.expect_err("a write should be refused");
+            assert!(error.to_string().contains("read-only"), "{task:?}");
+        } else {
+            outcome.unwrap_or_else(|error| panic!("{task:?} is a read: {error:#}"));
+        }
+    }
+
+    connection.close().await;
+}
+
+#[tokio::test]
 async fn reports_errors_from_the_server() {
     let database = TempDatabase::new().await;
     let connection = Connection::open(database.config(), None)

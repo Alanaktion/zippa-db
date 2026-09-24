@@ -247,3 +247,121 @@ pub(crate) fn cell(row: &SqliteRow, index: usize) -> Cell {
 pub(crate) fn raw_bytes(row: &SqliteRow, index: usize) -> Option<Vec<u8>> {
     row.try_get::<Option<Vec<u8>>, _>(index).ok().flatten()
 }
+
+/// A housekeeping command the SQLite maintenance tab offers: each is one
+/// statement, run as it stands, whose rows (if any) are the answer.
+///
+/// This is a closed list rather than free text so the tab can describe each
+/// one and dim the ones that write on a read-only connection; a pragma
+/// editor that takes arbitrary names is the longer-term shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Maintenance {
+    IntegrityCheck,
+    QuickCheck,
+    ForeignKeyCheck,
+    Optimize,
+    Analyze,
+    Vacuum,
+    WalCheckpoint,
+}
+
+impl Maintenance {
+    pub const ALL: [Maintenance; 7] = [
+        Maintenance::IntegrityCheck,
+        Maintenance::QuickCheck,
+        Maintenance::ForeignKeyCheck,
+        Maintenance::Optimize,
+        Maintenance::Analyze,
+        Maintenance::Vacuum,
+        Maintenance::WalCheckpoint,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Maintenance::IntegrityCheck => "Integrity Check",
+            Maintenance::QuickCheck => "Quick Check",
+            Maintenance::ForeignKeyCheck => "Foreign Key Check",
+            Maintenance::Optimize => "Optimize",
+            Maintenance::Analyze => "Analyze",
+            Maintenance::Vacuum => "Vacuum",
+            Maintenance::WalCheckpoint => "WAL Checkpoint",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Maintenance::IntegrityCheck => {
+                "Read the whole file and report corruption; `ok` means none found"
+            }
+            Maintenance::QuickCheck => {
+                "Like the integrity check, but skips verifying index contents"
+            }
+            Maintenance::ForeignKeyCheck => "List rows whose foreign key points at nothing",
+            Maintenance::Optimize => "Refresh query-planner statistics where they have gone stale",
+            Maintenance::Analyze => "Rebuild query-planner statistics for every table",
+            Maintenance::Vacuum => {
+                "Rewrite the file to reclaim free pages; needs free disk space about the size of the database"
+            }
+            Maintenance::WalCheckpoint => {
+                "Move the write-ahead log into the database file and empty it"
+            }
+        }
+    }
+
+    pub fn sql(self) -> &'static str {
+        match self {
+            Maintenance::IntegrityCheck => "PRAGMA integrity_check",
+            Maintenance::QuickCheck => "PRAGMA quick_check",
+            Maintenance::ForeignKeyCheck => "PRAGMA foreign_key_check",
+            Maintenance::Optimize => "PRAGMA optimize",
+            Maintenance::Analyze => "ANALYZE",
+            Maintenance::Vacuum => "VACUUM",
+            Maintenance::WalCheckpoint => "PRAGMA wal_checkpoint(TRUNCATE)",
+        }
+    }
+
+    /// Whether the command changes the file. The read-only checks still run
+    /// on a read-only connection; the rest are dimmed there. `PRAGMA
+    /// optimize` reads as a plain pragma to the statement classifier, so this
+    /// is the list that says otherwise.
+    pub fn writes(self) -> bool {
+        match self {
+            Maintenance::IntegrityCheck
+            | Maintenance::QuickCheck
+            | Maintenance::ForeignKeyCheck => false,
+            Maintenance::Optimize
+            | Maintenance::Analyze
+            | Maintenance::Vacuum
+            | Maintenance::WalCheckpoint => true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod maintenance_tests {
+    use super::Maintenance;
+
+    #[test]
+    fn every_task_has_one_statement() {
+        for task in Maintenance::ALL {
+            assert!(!task.sql().contains(';'), "{task:?}");
+            assert!(!task.label().is_empty() && !task.description().is_empty());
+        }
+    }
+
+    #[test]
+    fn only_the_checks_are_reads() {
+        let reads: Vec<_> = Maintenance::ALL
+            .into_iter()
+            .filter(|task| !task.writes())
+            .collect();
+        assert_eq!(
+            reads,
+            [
+                Maintenance::IntegrityCheck,
+                Maintenance::QuickCheck,
+                Maintenance::ForeignKeyCheck
+            ]
+        );
+    }
+}

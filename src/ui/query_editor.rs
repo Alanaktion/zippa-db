@@ -246,8 +246,8 @@ impl Render for QueryEditor {
             .child(
                 h_flex()
                     .w_full()
-                    .px_3()
-                    .py_2()
+                    .px_2()
+                    .py_1()
                     .gap_2()
                     .justify_between()
                     .child(
@@ -364,13 +364,13 @@ impl Render for QueryEditor {
                     ),
             )
             .child(
-                div().flex_1().px_1().pb_1().child(
-                    Editor::new(&self.state)
-                        .h_full()
-                        .appearance(false)
-                        // Refines over the editor's own monospace default.
-                        .font_family(settings::editor_font(cx)),
-                ),
+                Editor::new(&self.state)
+                    .h_full()
+                    .appearance(false)
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    // Refines over the editor's own monospace default.
+                    .font_family(settings::editor_font(cx)),
             )
     }
 }

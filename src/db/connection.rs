@@ -811,6 +811,26 @@ impl Connection {
         }
     }
 
+    /// Run one of SQLite's housekeeping commands and hand back what it
+    /// reported — `ok` for an integrity check that found nothing, the
+    /// offending rows otherwise, and no rows at all for `VACUUM`.
+    ///
+    /// A read-only connection refuses the ones that write, including `PRAGMA
+    /// optimize`, which the statement classifier would let through as a
+    /// plain pragma.
+    pub async fn run_maintenance(&self, task: sqlite::Maintenance) -> Result<QueryResult> {
+        if self.config.engine != Engine::Sqlite {
+            anyhow::bail!("maintenance commands are only offered for SQLite");
+        }
+        if task.writes() && self.config.safety.is_read_only() {
+            anyhow::bail!(
+                "this connection is read-only, so {} was not run",
+                task.label()
+            );
+        }
+        self.run_query(task.sql()).await
+    }
+
     /// Refuse a statement a read-only connection must not run.
     ///
     /// The server is told to refuse writes as well when the pool is opened;

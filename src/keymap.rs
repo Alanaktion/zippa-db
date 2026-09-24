@@ -13,9 +13,9 @@ use crate::ui::data_grid::{
 use crate::ui::import_dialog::CloseImport;
 use crate::ui::query_editor::{Explain, ExplainAnalyze, RunQuery, RunScript};
 use crate::ui::session::{
-    CancelQuery, CloseTab, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile, OpenProcessList,
-    OpenQueryDigest, OpenServerVariables, PreviousTab, QuickSwitcher, Refresh, SaveFile,
-    SaveFileAs, SearchSchema,
+    CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
+    OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, PreviousTab,
+    QuickSwitcher, Refresh, SaveFile, SaveFileAs, SearchSchema,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -90,7 +90,7 @@ pub fn bind(cx: &mut App) {
             Some("QueryEditor > Input"),
         ),
         KeyBinding::new("secondary-shift-e", ExplainAnalyze, Some("QueryEditor")),
-        // Give up on a query that is taking too long.
+        // Stop a query that is taking too long.
         KeyBinding::new("secondary-.", CancelQuery, Some("Session")),
         // Import a SQL dump into the connection. The table view binds the same
         // key for "add a row", which wins while its grid has focus.
@@ -104,6 +104,10 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-enter", RunQuery, Some("QueryEditor")),
         KeyBinding::new("secondary-t", NewTab, Some("Session")),
         KeyBinding::new("secondary-w", CloseTab, Some("Session")),
+        // Leave the connection without dropping the tab: the workspace swaps a
+        // fresh manager into it, so another connection can be opened from where
+        // this one was. Closing the tab outright is the key above.
+        KeyBinding::new("secondary-d", Disconnect, Some("Session")),
         // Reloads the schema, and the active table's rows; never re-runs a
         // query tab's buffer, so it is safe even if that buffer is a write.
         KeyBinding::new("secondary-r", Refresh, Some("Session")),
@@ -121,6 +125,8 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-shift-v", OpenServerVariables, Some("Session")),
         // The slow/frequent query digest.
         KeyBinding::new("secondary-shift-d", OpenQueryDigest, Some("Session")),
+        // SQLite's housekeeping: integrity checks, optimize, vacuum.
+        KeyBinding::new("secondary-shift-m", OpenMaintenance, Some("Session")),
         // Ctrl+Tab is the tab-switching key on every OS, browsers and macOS
         // apps included; Cmd+Shift+] is taken by the connections above.
         // Neither is an editor key, so the session sees them from anywhere.

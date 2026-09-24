@@ -25,10 +25,7 @@ impl TableView {
             .unwrap_or_default();
 
         h_flex()
-            .w_full()
-            .flex_none()
-            .px_3()
-            .py_2()
+            .p_2()
             .gap_2()
             .justify_between()
             .border_t_1()
@@ -112,7 +109,7 @@ impl TableView {
             .bg(cx.theme().status_bar)
             .child(
                 h_flex()
-                    .gap_1()
+                    .gap_2()
                     .child(
                         Button::new("previous-page")
                             .ghost()

@@ -311,7 +311,7 @@ impl Session {
         .detach();
     }
 
-    /// Give up on the run in the active tab.
+    /// Stop the run in the active tab.
     pub(super) fn cancel_query(
         &mut self,
         _: &CancelQuery,

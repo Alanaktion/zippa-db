@@ -44,6 +44,10 @@ from one native window.
   (`pg_stat_statements` on Postgres, `performance_schema` on MySQL), ranked
   by mean time. Says plainly when the instrumentation isn't installed or is
   off, rather than erroring. SQLite has none.
+* **SQLite maintenance** — integrity, quick, and foreign-key checks, `PRAGMA
+  optimize`, `ANALYZE`, `VACUUM`, and a WAL checkpoint, each a button that
+  shows what it reported. The writing ones are dimmed on a read-only
+  connection and ask first on a confirm-writes one. SQLite only.
 * **Table view** — paging, a row limit, click-to-sort, a filter bar
   (including `IN` with a subquery), a row panel showing the focused row as
   fields, and a jump from a foreign key to the row it references. A binary
@@ -124,7 +128,7 @@ src/
     │   ├── files.rs     # .sql files and the import dialog
     │   ├── metadata.rs  # Databases, objects, the catalog, switching database
     │   ├── state.rs     # Snapshot and restore for workspace.json
-    │   └── sidebar.rs   # Object list and the filter over it
+    │   └── sidebar.rs   # The sidebar: Schema and Management tabs
     ├── data_grid/       # Virtualized result grid
     │   ├── mod.rs       # The view and the commands its owner drives it with
     │   ├── delegate.rs  # The result, plus everything staged on top of it
@@ -150,6 +154,7 @@ src/
     ├── process_list.rs  # Who is connected and what they're doing (Postgres/MySQL)
     ├── server_variables.rs # Runtime settings, searchable (Postgres/MySQL)
     ├── query_digest.rs  # Slow/frequent statements, ranked (Postgres/MySQL)
+    ├── sqlite_maintenance.rs # Integrity checks, optimize, vacuum (SQLite)
     ├── import_dialog.rs # SQL dump import
     ├── quick_switcher.rs, schema_search.rs, shortcuts_dialog.rs
     ├── settings_window.rs, sql_file.rs
@@ -261,9 +266,10 @@ Most of these are also in the menu bar — File, Edit, Query, Table and View —
 | Run every statement in the buffer | `Cmd`/`Ctrl` + `Shift` + `Enter` |
 | Show the statement's execution plan without running it | `Cmd`/`Ctrl` + `E` |
 | Show the plan and run the statement for actual times (Postgres and MySQL; SQLite has no `EXPLAIN ANALYZE`) | `Cmd`/`Ctrl` + `Shift` + `E` |
-| Give up on a running query | `Cmd`/`Ctrl` + `.` |
+| Stop a running query | `Cmd`/`Ctrl` + `.` |
 | New connection (or another connection tab; on the connection manager it opens the editor dialog) | `Cmd`/`Ctrl` + `N` |
 | Close the active connection | `Cmd`/`Ctrl` + `Shift` + `W` |
+| Disconnect the active connection (keeps its tab) | `Cmd`/`Ctrl` + `D` |
 | Next / previous connection | `Cmd`/`Ctrl` + `Shift` + `]` / `[` |
 | New query tab | `Cmd`/`Ctrl` + `T` |
 | Close the active tab | `Cmd`/`Ctrl` + `W` |
@@ -273,6 +279,7 @@ Most of these are also in the menu bar — File, Edit, Query, Table and View —
 | Open the process list (Postgres and MySQL) | `Cmd`/`Ctrl` + `Shift` + `P` |
 | Open the server variables (Postgres and MySQL) | `Cmd`/`Ctrl` + `Shift` + `V` |
 | Open the query digest (Postgres and MySQL) | `Cmd`/`Ctrl` + `Shift` + `D` |
+| Open SQLite maintenance (SQLite) | `Cmd`/`Ctrl` + `Shift` + `M` |
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
 | Search the schema for a column, index, routine, or trigger | `Cmd`/`Ctrl` + `Shift` + `O` |
 | Open the quick switcher over tabs, objects, databases and actions | `Cmd`/`Ctrl` + `K` |

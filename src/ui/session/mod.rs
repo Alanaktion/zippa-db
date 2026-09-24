@@ -3,16 +3,13 @@
 
 use std::sync::Arc;
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::dock::{
     DockArea, DockLayout, DockPlacement, DockSkin, InsertTarget, NodeId, PanelId, PanelStyle,
     TabGroup, panel_handle,
 };
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::tree::TreeState;
-use gpui_kit::component::{
-    ActiveTheme, Icon, ResizableState, h_flex, h_resizable, resizable_panel,
-};
+use gpui_kit::component::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Context, Entity, EventEmitter, Focusable, SharedString, WeakEntity, Window, actions, div,
@@ -37,6 +34,7 @@ mod test_support;
 
 pub(crate) use panel::CloseScope;
 use panel::{SessionPanel, SessionPanelEvent};
+use sidebar::SidebarTab;
 use tab::{ObjectViewMode, Status};
 
 /// Starting pane sizes; the user drags from here.
@@ -55,12 +53,14 @@ actions!(
         Refresh,
         CancelQuery,
         QuickSwitcher,
+        Disconnect,
         ImportSqlDump,
         SearchSchema,
         OpenConsole,
         OpenProcessList,
         OpenServerVariables,
         OpenQueryDigest,
+        OpenMaintenance,
     ]
 );
 
@@ -68,8 +68,8 @@ pub enum SessionEvent {
     /// Something about the session's tabs or its connection changed in a way
     /// the workspace's saved state should record.
     Changed,
-    /// The user closed the session; the workspace returns to the connection
-    /// manager and drains the pool.
+    /// The user left the session; the workspace puts the connection manager
+    /// back in its tab and drains the pool.
     Disconnected,
 }
 
@@ -94,6 +94,9 @@ pub struct Session {
     filter: Entity<InputState>,
     /// Compiled form of the filter; `None` means "show everything".
     matcher: Option<Regex>,
+    /// Which of the sidebar's two tabs — the object list or the server tools —
+    /// is showing.
+    sidebar_tab: SidebarTab,
     /// The sidebar's object list; its selection follows the active tab's
     /// table, cleared for a query tab.
     objects_tree: Entity<TreeState>,
@@ -149,6 +152,7 @@ impl Session {
             stored: Vec::new(),
             filter,
             matcher: None,
+            sidebar_tab: SidebarTab::Schema,
             objects_tree: cx.new(|cx| TreeState::new(cx)),
             metadata_error: None,
             catalog: Arc::new(Catalog::default()),
@@ -402,6 +406,24 @@ impl Session {
         self.open_query_digest(window, cx);
     }
 
+    fn on_open_maintenance(
+        &mut self,
+        _: &OpenMaintenance,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_maintenance(window, cx);
+    }
+
+    /// Leave the connection; the workspace puts a fresh manager in this tab.
+    ///
+    /// Closing the tab would drop the connection and every tab in it, so this
+    /// keeps the tab and its place in the bar for the next connection. The
+    /// workspace asks first when a tab holds unsaved work.
+    fn on_disconnect(&mut self, _: &Disconnect, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(SessionEvent::Disconnected);
+    }
+
     /// Open what a schema search result is about.
     ///
     /// A table or view opens its rows; a column opens its table's rows with
@@ -491,45 +513,6 @@ impl Session {
             }
         }
     }
-
-    /// A slim, full-width strip in the connection's tag colour, shown under
-    /// the toolbar for the whole session. The tag text is always present, and
-    /// a lock icon plus "Read only" joins it when the safety mode is
-    /// [`SafetyMode::ReadOnly`]; untagged connections show no strip.
-    fn render_tag_strip(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let tag = self.connection.config.tag.as_deref()?;
-        let color = self.connection.config.color;
-        let bg = color
-            .map(|color| color.hsla(cx))
-            .unwrap_or_else(|| cx.theme().muted);
-        let fg = color
-            .map(|color| color.on_color(cx))
-            .unwrap_or_else(|| cx.theme().muted_foreground);
-        let read_only = self.connection.config.safety.is_read_only();
-
-        Some(
-            h_flex()
-                .id("session-tag")
-                .w_full()
-                .flex_none()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .py_1()
-                .bg(bg)
-                .text_color(fg)
-                .child(div().text_sm().truncate().child(tag.to_string()))
-                .when(read_only, |this| {
-                    this.child(
-                        h_flex()
-                            .items_center()
-                            .gap_1()
-                            .child(Icon::new(IconName::Lock).size_3().text_color(fg))
-                            .child(div().text_xs().child("Read only")),
-                    )
-                }),
-        )
-    }
 }
 
 impl Render for Session {
@@ -553,7 +536,8 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_open_process_list))
             .on_action(cx.listener(Self::on_open_server_variables))
             .on_action(cx.listener(Self::on_open_query_digest))
-            .when_some(self.render_tag_strip(cx), |this, strip| this.child(strip))
+            .on_action(cx.listener(Self::on_open_maintenance))
+            .on_action(cx.listener(Self::on_disconnect))
             .child(
                 h_resizable("session-columns")
                     .with_state(&self.columns)

@@ -213,7 +213,7 @@ impl ImportView {
         cx.notify();
     }
 
-    /// Give up on the run in flight, the way `Cmd`/`Ctrl`+`.` does.
+    /// Stop the run in flight, the way `Cmd`/`Ctrl`+`.` does.
     pub(crate) fn cancel(&mut self, _cx: &mut Context<Self>) {
         if let Some(abort) = self.abort.take() {
             abort.abort();

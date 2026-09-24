@@ -35,6 +35,7 @@ use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
 use crate::ui::schema_view::SchemaView;
 use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::sql_file;
+use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::TableView;
 use crate::workspace_state::PanelState;
 
@@ -255,6 +256,24 @@ impl SessionPanel {
         }
     }
 
+    /// The SQLite maintenance tab over an already-built
+    /// [`SqliteMaintenanceView`]: one per session, like the other tools.
+    pub(crate) fn maintenance(
+        key: usize,
+        title: impl Into<SharedString>,
+        view: Entity<SqliteMaintenanceView>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            key,
+            title: title.into(),
+            content: TabContent::Maintenance { view },
+            focus: cx.focus_handle(),
+            group: None,
+            panes: cx.new(|_| ResizableState::default()),
+        }
+    }
+
     fn on_editor_event(
         &mut self,
         _: &Entity<QueryEditor>,
@@ -316,6 +335,10 @@ impl SessionPanel {
         matches!(self.content, TabContent::Digest { .. })
     }
 
+    pub(crate) fn is_maintenance(&self) -> bool {
+        matches!(self.content, TabContent::Maintenance { .. })
+    }
+
     /// The icon that tells this tab's kind apart at a glance.
     ///
     /// A table's data tab and its structure tab carry the same name, so the
@@ -330,6 +353,7 @@ impl SessionPanel {
             TabContent::Processes { .. } => IconName::Activity,
             TabContent::Variables { .. } => IconName::SlidersHorizontal,
             TabContent::Digest { .. } => IconName::Gauge,
+            TabContent::Maintenance { .. } => IconName::Wrench,
         }
     }
 
@@ -347,6 +371,7 @@ impl SessionPanel {
             TabContent::Processes { .. } => "process list",
             TabContent::Variables { .. } => "server variables",
             TabContent::Digest { .. } => "query digest",
+            TabContent::Maintenance { .. } => "database maintenance",
         }
     }
 
@@ -404,7 +429,8 @@ impl SessionPanel {
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => None,
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => None,
         }
     }
 
@@ -417,7 +443,8 @@ impl SessionPanel {
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => None,
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => None,
         }
     }
 
@@ -440,6 +467,7 @@ impl SessionPanel {
             TabContent::Processes { .. } => PanelState::Processes,
             TabContent::Variables { .. } => PanelState::Variables,
             TabContent::Digest { .. } => PanelState::Digest,
+            TabContent::Maintenance { .. } => PanelState::Maintenance,
         }
     }
 
@@ -456,7 +484,8 @@ impl SessionPanel {
             TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => false,
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => false,
         }
     }
 
@@ -468,7 +497,8 @@ impl SessionPanel {
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => None,
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => None,
         }
     }
 
@@ -481,7 +511,8 @@ impl SessionPanel {
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => None,
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => None,
         }
     }
 
@@ -494,7 +525,8 @@ impl SessionPanel {
             | TabContent::Schema { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => None,
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => None,
         }
     }
 
@@ -507,7 +539,8 @@ impl SessionPanel {
             | TabContent::Schema { .. }
             | TabContent::Console { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => None,
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => None,
         }
     }
 
@@ -520,7 +553,8 @@ impl SessionPanel {
             | TabContent::Schema { .. }
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
-            | TabContent::Digest { .. } => None,
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => None,
         }
     }
 
@@ -533,7 +567,22 @@ impl SessionPanel {
             | TabContent::Schema { .. }
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
-            | TabContent::Variables { .. } => None,
+            | TabContent::Variables { .. }
+            | TabContent::Maintenance { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn maintenance_view(&self) -> Option<Entity<SqliteMaintenanceView>> {
+        match &self.content {
+            TabContent::Maintenance { view } => Some(view.clone()),
+            TabContent::Query { .. }
+            | TabContent::Table { .. }
+            | TabContent::Schema { .. }
+            | TabContent::Console { .. }
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. }
+            | TabContent::Digest { .. } => None,
         }
     }
 
@@ -545,7 +594,8 @@ impl SessionPanel {
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => None,
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => None,
         }
     }
 
@@ -558,7 +608,8 @@ impl SessionPanel {
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => None,
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => None,
         }
     }
 
@@ -659,7 +710,8 @@ impl SessionPanel {
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => String::new(),
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => String::new(),
         }
     }
 
@@ -686,7 +738,8 @@ impl SessionPanel {
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => (0, 0),
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. } => (0, 0),
         }
     }
 
@@ -810,7 +863,7 @@ impl SessionPanel {
         }
     }
 
-    /// Give up on the run in flight, if there is one. Answers whether there
+    /// Stop the run in flight, if there is one. Answers whether there
     /// was something to cancel.
     pub(crate) fn cancel_running(&mut self, cx: &mut Context<Self>) -> bool {
         let TabContent::Query {
@@ -838,7 +891,7 @@ impl SessionPanel {
         true
     }
 
-    /// Give up on the run in flight without touching the editor or status —
+    /// Stop the run in flight without touching the editor or status —
     /// the panel is on its way out of the dock either way.
     fn abort_running(&mut self) {
         if let TabContent::Query { running, .. } = &mut self.content
@@ -889,6 +942,10 @@ impl SessionPanel {
                 let view = view.clone();
                 view.update(cx, |view, cx| view.set_connection(connection, cx));
             }
+            TabContent::Maintenance { view } => {
+                let view = view.clone();
+                view.update(cx, |view, cx| view.set_connection(connection, cx));
+            }
         }
     }
 
@@ -918,7 +975,10 @@ impl SessionPanel {
                 let view = view.clone();
                 view.update(cx, |view, cx| view.refresh(cx));
             }
-            TabContent::Query { .. } | TabContent::Schema { .. } => {}
+            // Nothing to re-read: it only shows what its buttons ran.
+            TabContent::Query { .. }
+            | TabContent::Schema { .. }
+            | TabContent::Maintenance { .. } => {}
         }
     }
 
@@ -1082,6 +1142,7 @@ impl Focusable for SessionPanel {
             TabContent::Processes { view } => view.read(cx).focus_handle(cx),
             TabContent::Variables { view } => view.read(cx).focus_handle(cx),
             TabContent::Digest { view } => view.read(cx).focus_handle(cx),
+            TabContent::Maintenance { view } => view.read(cx).focus_handle(cx),
         }
     }
 }
@@ -1292,6 +1353,7 @@ impl Render for SessionPanel {
             TabContent::Processes { view } => view.clone().into_any_element(),
             TabContent::Variables { view } => view.clone().into_any_element(),
             TabContent::Digest { view } => view.clone().into_any_element(),
+            TabContent::Maintenance { view } => view.clone().into_any_element(),
         };
 
         div()

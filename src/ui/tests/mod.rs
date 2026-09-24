@@ -59,6 +59,7 @@ mod schema_search;
 mod server_variables;
 mod session;
 mod sorting;
+mod sqlite_maintenance;
 mod value_dialog;
 mod welcome;
 mod workspace;

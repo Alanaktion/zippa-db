@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, SharedString, div, px};
 use uuid::Uuid;
 
-use crate::db::ConnectionConfig;
+use crate::db::{ConnectionConfig, TagColor};
 use crate::ui::{engine_color, engine_icon};
 
 use super::Welcome;
@@ -68,7 +68,7 @@ pub(super) fn render_card(
                             "{}, {}, {}",
                             name,
                             engine.label(),
-                            tag_text(&tag)
+                            tag_text(&tag, config.color)
                         ))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.connect_saved_with_confirmation(connect.clone(), window, cx)
@@ -130,9 +130,7 @@ fn card_body(config: &ConnectionConfig, connecting: bool, cx: &App) -> impl Into
                                 .child(config.engine.label()),
                         ),
                 )
-                .when_some(config.tag.as_ref(), |this, tag| {
-                    this.child(crate::ui::tag_chip(tag, config.color, cx))
-                })
+                .children(crate::ui::tag_chip(config.tag.as_deref(), config.color, cx))
                 .when_some(config.last_connected, |this, when| {
                     this.child(
                         div()
@@ -200,8 +198,8 @@ pub(super) fn subtitle(config: &ConnectionConfig) -> String {
 }
 
 /// What the accessibility label says about the tag, or "Untagged".
-fn tag_text(tag: &Option<String>) -> String {
-    tag.clone().unwrap_or_else(|| "Untagged".to_string())
+fn tag_text(tag: &Option<String>, color: Option<TagColor>) -> String {
+    crate::ui::tag_text(tag.as_deref(), color).unwrap_or_else(|| "Untagged".to_string())
 }
 
 /// Keep both ends of a long path so the file name still reads.

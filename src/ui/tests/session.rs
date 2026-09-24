@@ -141,6 +141,69 @@ fn the_sidebar_highlights_the_table_the_active_tab_shows(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+fn the_sidebar_switches_to_the_management_tools(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    handle
+        .update(cx, |session, _, cx| {
+            session.show_sidebar_tab_for_test(true, cx)
+        })
+        .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        assert!(
+            window.find("open-console").visible(),
+            "the console tool is missing from the Management tab"
+        );
+        assert!(
+            window.try_find("object-items").is_none(),
+            "the object list belongs on the Schema tab, not the Management one"
+        );
+        // A file-backed connection has no server to ask, so its tools are not
+        // listed.
+        assert!(
+            window.try_find("open-process-list").is_none(),
+            "SQLite should not offer the server tools"
+        );
+    })
+    .unwrap();
+
+    handle
+        .update(cx, |session, _, cx| {
+            session.show_sidebar_tab_for_test(false, cx)
+        })
+        .unwrap();
+
+    // Back on the Schema tab, the search and import buttons share the filter's
+    // line rather than taking rows of their own.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        assert!(
+            window.try_find("open-console").is_none(),
+            "the server tools belong on the Management tab"
+        );
+        let filter = window.find("object-filter").bounds();
+        for id in ["search-schema", "import-dump"] {
+            let button = window.find(id);
+            assert!(button.visible(), "{id} is missing from the Schema tab");
+            // The button's center sits within the filter's own band, so the two
+            // share a line rather than one taking a row of its own.
+            let center = button.bounds().center().y;
+            assert!(
+                center >= filter.top() && center <= filter.bottom(),
+                "{id} is not on the filter's line: {:?} vs {:?}",
+                button.bounds(),
+                filter
+            );
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn each_tab_keeps_its_own_result(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
 
