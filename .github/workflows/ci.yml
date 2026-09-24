@@ -2,41 +2,85 @@ name: Cargo Build & Test
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+# A newer push to the same branch or PR makes the running one moot.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
+  # Cargo.toml optimizes the dev profile so `cargo run` is usable. CI only runs
+  # headless tests, so build everything unoptimized instead (the per-package
+  # override for dependencies is passed with `--config` below).
+  CARGO_PROFILE_DEV_OPT_LEVEL: 0
+  CARGO_PROFILE_TEST_OPT_LEVEL: 0
+  # Without this, sccache falls back to an empty local disk cache.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+  RUSTFLAGS: -C link-arg=-fuse-ld=lld
 
 jobs:
-  build_and_test:
-    name: Rust project - latest
+  fmt:
+    name: Format
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        toolchain:
-          - stable
     steps:
       - uses: actions/checkout@v6
-      - run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      # rustfmt needs no system libraries, no sccache, and no dependency build.
+      - run: cargo fmt --all -- --check
+        env:
+          RUSTC_WRAPPER: ""
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: actions/cache@v6
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - run: ./script/linux
-      - run: cargo fmt --all -- --check
       - run: >
-          RUSTC_WRAPPER=sccache
-          RUSTFLAGS="-C link-arg=-fuse-ld=lld"
-          cargo clippy --all-targets -- -D warnings
+          cargo clippy --all-targets
+          --config 'profile.dev.package."*".opt-level=0'
+          -- -D warnings
+      - run: sccache --show-stats
+        if: always()
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - run: ./script/linux
       - run: >
-          RUSTC_WRAPPER=sccache
-          RUSTFLAGS="-C link-arg=-fuse-ld=lld"
           cargo test --verbose
+          --config 'profile.dev.package."*".opt-level=0'
+          --config 'profile.test.package."*".opt-level=0'
+      - run: sccache --show-stats
+        if: always()
