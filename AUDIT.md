@@ -108,12 +108,12 @@ The keychain read, the `connections.json`/settings/dump-pre-flight writes, and t
 
 ### Durability and races
 
-- **`record_connected` is a read-modify-write with no locking** (`src/db/store.rs`), so it can overwrite a concurrent save from the connection editor and lose a newly added connection. (It now runs in the background, but the race remains.)
 - **A checkpoint can interleave with the quit-time flush.** Both write the same `workspace.json.tmp` then rename (`Workspace::save_state`/`flush_state` in `src/app.rs`, `src/workspace_state.rs`); a checkpoint spawned just before quit can write the older snapshot between the flush's write and its rename. ⚠︎ Inferred; the save is a no-op under `#[cfg(test)]`.
 - **`save_state`/`flush_state` record the snapshot as saved before it is written** (`src/app.rs`), so a failed write is never retried. Failure is only an `eprintln!`.
-- **Plaintext query buffers are written with default permissions.** `workspace_state::save` uses `fs::write` with no mode; the buffers are the user's own SQL, which `README.md` acknowledges may hold pasted secrets. Nothing in the crate calls `set_permissions`/`PermissionsExt`.
 - **Ignored `Result`s** (all deliberate-looking, listed for completeness): `let _ = tx.send(...)` (`src/db/runtime.rs`), import `ROLLBACK`/`SET FOREIGN_KEY_CHECKS=1`/`SET UNIQUE_CHECKS=1` `.ok()` and `sender.send(...)` (`src/db/import/mod.rs`), SQLite `rollback()`/`PRAGMA foreign_keys = ON` `.ok()` (`src/db/sqlite.rs`), and `update_in(...).ok()` throughout the UI, which hides "the entity is gone" errors.
-- **Errors that reach only stderr.** A failed settings write (`src/settings.rs`), a failed `record_connected` (`src/ui/welcome/mod.rs`), and a failed workspace save (`src/app.rs`) all leave the UI claiming success.
+- **Errors that reach only stderr.** A failed settings write (`src/settings.rs`) and a failed workspace save (`src/app.rs`) both leave the UI claiming success. (`record_connected`'s failure used to be a third: it now goes through the launcher's own `store_in_background`, the same path `save`/`delete_confirmed` use, which surfaces a failure as a toast — see "Durability" below and the Persistence split section of `AGENTS.md`.)
+
+**Fixed since the audit revision** (kept here so the fix and its motivation stay attached to the finding): `record_connected` was a read-modify-write against the file with no locking, so it could overwrite a concurrent save from the connection editor and lose a newly added connection; `mark_connected` now updates the launcher's own in-memory list and writes it through the same `store::save`/`store_in_background` path every other mutation uses, so there is exactly one writer and no second disk read to race. Every JSON file the app writes (`connections.json`, `workspace.json`, `settings.json`) was written with the platform's default permissions — worth noting since a query buffer can hold a pasted secret and `connections.json` carries a database's host and username — and now goes through `store::write_restricted`, which opens with mode `0o600` on Unix from the first byte.
 
 ### Panics in non-test code
 
@@ -163,7 +163,7 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 1. **Postgres `cell` arms** (§1) — geometric/hstore/range/`MACADDR8` values currently stand in as unreadable and uneditable.
 2. **Copy-path consistency** (§2) — make `Cmd+C` treat a stand-in the way `Copy as` does, and apply the byte cap to every copy.
 3. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations.
-4. **Durability** (§4) — the `record_connected` race and the checkpoint/flush interleaving on `workspace.json`.
+4. **Durability** (§4) — the checkpoint/flush interleaving on `workspace.json` (the `record_connected` race is fixed).
 5. **CI on macOS and Windows** (§6).
 
 ## 8. What this audit did and did not cover

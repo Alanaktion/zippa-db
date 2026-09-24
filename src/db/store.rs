@@ -8,7 +8,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
 use uuid::Uuid;
 
 use super::ConnectionConfig;
@@ -57,6 +56,35 @@ pub fn load() -> Result<Vec<ConnectionConfig>> {
     Ok(connections)
 }
 
+/// Write `contents` to `path`, restricted to the owner where the platform
+/// supports it. These files can hold a pasted secret — a password typed into
+/// a query buffer (`workspace.json`), or a database's host and username on a
+/// shared machine whose other users have no business reading them
+/// (`connections.json`, `settings.json`) — so the file is created with
+/// restricted permissions from the first byte rather than tightened
+/// afterward, which would leave a window where a default-permissions file is
+/// briefly readable by everyone. Unix only: Windows has no equivalent this
+/// simple, and its ACL model is out of scope here.
+pub(crate) fn write_restricted(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(contents.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)
+    }
+}
+
 /// Replace the saved connections with `connections`.
 ///
 /// Written beside the real file and renamed into place, so a kill part-way
@@ -69,30 +97,17 @@ pub fn save(connections: &[ConnectionConfig]) -> Result<()> {
     let path = dir.join(FILE_NAME);
     let contents = serde_json::to_string_pretty(connections)?;
     let temporary = dir.join(format!("{FILE_NAME}.tmp"));
-    fs::write(&temporary, &contents)
+    write_restricted(&temporary, &contents)
         .with_context(|| format!("could not write {}", temporary.display()))?;
 
     if let Err(error) = fs::rename(&temporary, &path) {
         // Windows will not replace an existing file with a rename, so fall back
         // to writing in place rather than leaving the connections unsaved.
-        fs::write(&path, &contents)
+        write_restricted(&path, &contents)
             .with_context(|| format!("could not write {}: {error:#}", path.display()))?;
         let _ = fs::remove_file(&temporary);
     }
     Ok(())
-}
-
-/// Mark a connection as the most recently opened one and save it.
-///
-/// Called on a successful connect so the welcome screen can list connections
-/// most-recent-first. A connection that is not saved yet is left alone.
-pub fn record_connected(id: &Uuid) -> Result<()> {
-    let mut connections = load()?;
-    let Some(config) = connections.iter_mut().find(|config| &config.id == id) else {
-        return Ok(());
-    };
-    config.last_connected = Some(Utc::now());
-    save(&connections)
 }
 
 #[cfg(not(test))]
@@ -146,5 +161,66 @@ pub fn delete_password(id: &Uuid) -> Result<()> {
     {
         let _ = id;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("zippa-db-store-test-{}", Uuid::new_v4()));
+            fs::create_dir_all(&path).expect("could not create the scratch directory");
+            Self(path)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `connections.json` can carry a database's host, port, and username —
+    /// a shared machine's other users have no business reading that, even
+    /// though the password itself lives in the OS credential store.
+    #[test]
+    #[cfg(unix)]
+    fn saved_connections_are_restricted_to_the_owner() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = ScratchDir::new();
+        set_config_dir_for_test(dir.0.clone());
+
+        save(&[]).expect("could not save the connections");
+
+        let mode = fs::metadata(dir.0.join(FILE_NAME))
+            .expect("the file should exist")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "the file should be owner-only");
+    }
+
+    /// The Windows fallback path (`save`'s in-place write when `rename`
+    /// fails) goes through the same `write_restricted`, so it gets the same
+    /// permissions rather than the platform default.
+    #[test]
+    #[cfg(unix)]
+    fn write_restricted_creates_an_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = ScratchDir::new();
+        let path = dir.0.join("owner-only.json");
+
+        write_restricted(&path, "{}").expect("could not write the file");
+
+        let mode = fs::metadata(&path)
+            .expect("the file should exist")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "the file should be owner-only");
     }
 }

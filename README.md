@@ -172,6 +172,10 @@ on Windows):
   accordingly if a buffer holds pasted secrets. It is written at checkpoints
   (opening, closing, running, saving) and on a normal quit, so text typed
   right before a crash may be lost.
+
+`connections.json`, `workspace.json`, and `settings.json` are all written
+owner-only (`0600`) on Unix, since the first two can hold a database's host
+and username or a pasted secret in a query buffer.
 * `settings.json` — written as you change settings.
 * `themes/` — drop theme files here, each a `{"themes": [ … ]}` set in the
   component library's format, and they show up in the theme pickers.

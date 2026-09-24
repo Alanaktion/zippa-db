@@ -125,13 +125,13 @@ pub fn save(state: &WorkspaceState) -> Result<()> {
 
     let contents = serde_json::to_string_pretty(state)?;
     let temporary = dir.join(format!("{FILE_NAME}.tmp"));
-    fs::write(&temporary, &contents)
+    store::write_restricted(&temporary, &contents)
         .with_context(|| format!("could not write {}", temporary.display()))?;
 
     if let Err(error) = fs::rename(&temporary, &path) {
         // Windows will not replace an existing file with a rename, so fall back
         // to writing in place rather than leaving the workspace unsaved.
-        fs::write(&path, &contents)
+        store::write_restricted(&path, &contents)
             .with_context(|| format!("could not write {}: {error:#}", path.display()))?;
         let _ = fs::remove_file(&temporary);
     }

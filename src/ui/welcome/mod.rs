@@ -388,15 +388,15 @@ impl Welcome {
             config.last_connected = Some(Utc::now());
         }
 
-        // The store rewrites the whole file to change one timestamp; it goes to
-        // the background rather than holding up the connection it just opened.
-        let id = *id;
-        cx.background_spawn(async move {
-            if let Err(error) = store::record_connected(&id) {
-                eprintln!("could not record the connection: {error:#}");
-            }
-        })
-        .detach();
+        // Writes the launcher's own in-memory list, the same path every other
+        // mutation goes through (`save`, `delete_confirmed`), rather than a
+        // separate load-mutate-save against the file: a second read of the
+        // file here could race a concurrent save from the editor — e.g. a
+        // newly added connection whose own write has not landed yet — and
+        // overwrite it with a copy that never had the edit. `store_in_background`
+        // also surfaces a failed write as a toast rather than only `eprintln!`.
+        let connections = self.connections.clone();
+        store_in_background(move || store::save(&connections), cx);
     }
 
     /// Open the editor pre-filled from the saved connection.
