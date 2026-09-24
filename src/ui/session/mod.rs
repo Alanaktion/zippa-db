@@ -59,6 +59,7 @@ actions!(
         SearchSchema,
         OpenConsole,
         OpenProcessList,
+        OpenServerVariables,
     ]
 );
 
@@ -382,6 +383,15 @@ impl Session {
         self.open_process_list(window, cx);
     }
 
+    fn on_open_server_variables(
+        &mut self,
+        _: &OpenServerVariables,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_server_variables(window, cx);
+    }
+
     /// Open what a schema search result is about.
     ///
     /// A table or view opens its rows; a column opens its table's rows with
@@ -531,6 +541,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_search_schema))
             .on_action(cx.listener(Self::on_open_console))
             .on_action(cx.listener(Self::on_open_process_list))
+            .on_action(cx.listener(Self::on_open_server_variables))
             .when_some(self.render_tag_strip(cx), |this, strip| this.child(strip))
             .child(
                 h_resizable("session-columns")

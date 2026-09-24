@@ -14,7 +14,7 @@ use crate::ui::import_dialog::CloseImport;
 use crate::ui::query_editor::{Explain, ExplainAnalyze, RunQuery, RunScript};
 use crate::ui::session::{
     CancelQuery, CloseTab, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile, OpenProcessList,
-    PreviousTab, QuickSwitcher, Refresh, SaveFile, SaveFileAs, SearchSchema,
+    OpenServerVariables, PreviousTab, QuickSwitcher, Refresh, SaveFile, SaveFileAs, SearchSchema,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -113,6 +113,11 @@ pub fn bind(cx: &mut App) {
         // The process list: who is connected to the server and what they're
         // running, with a way to end one.
         KeyBinding::new("secondary-shift-p", OpenProcessList, Some("Session")),
+        // The server's own configuration. Shares its key with viewing a
+        // cell's value, the way Import shares its key with adding a row:
+        // the more specific context — a grid with the focus — wins there,
+        // and this is what answers it everywhere else.
+        KeyBinding::new("secondary-shift-v", OpenServerVariables, Some("Session")),
         // Ctrl+Tab is the tab-switching key on every OS, browsers and macOS
         // apps included; Cmd+Shift+] is taken by the connections above.
         // Neither is an editor key, so the session sees them from anywhere.

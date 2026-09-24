@@ -26,6 +26,16 @@ pub(crate) const PROCESSES_SQL: &str = "SELECT id, user, host, db, command, time
      WHERE id <> CONNECTION_ID() \
      ORDER BY time DESC";
 
+/// Every server variable, with the "Changed" column the last one for
+/// `ui::server_variables` to find by position — `yes` unless
+/// `performance_schema.variables_info` says the running value is still the
+/// one compiled in.
+pub(crate) const VARIABLES_SQL: &str = "SELECT v.VARIABLE_NAME, v.VARIABLE_VALUE, i.VARIABLE_SOURCE, \
+     CASE WHEN i.VARIABLE_SOURCE = 'COMPILED' THEN '' ELSE 'yes' END AS changed \
+     FROM performance_schema.global_variables v \
+     JOIN performance_schema.variables_info i ON v.VARIABLE_NAME = i.VARIABLE_NAME \
+     ORDER BY v.VARIABLE_NAME";
+
 /// Stored functions and procedures in the current database, with the parameter
 /// types that tell one signature from another. MySQL has no sequences. A
 /// function's return value is a row in `parameters` at position 0, so the

@@ -16,6 +16,7 @@ use crate::ui::console::ConsoleView;
 use crate::ui::filter_bar::FilterSpec;
 use crate::ui::process_list::ProcessListView;
 use crate::ui::schema_view::SchemaView;
+use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::table_view::{TableView, TableViewEvent};
 
 use super::{
@@ -154,6 +155,31 @@ impl Session {
         self.next_key += 1;
         let view = cx.new(|cx| ProcessListView::new(self.connection.clone(), window, cx));
         let panel = cx.new(|cx| SessionPanel::processes(key, "Processes", view, cx));
+        self.install(panel, window, cx);
+    }
+
+    /// Open the server variables tab, or bring forward the one already open.
+    /// SQLite has no server-side configuration to show, so this is never
+    /// called for one — see `Session::render_sidebar`.
+    pub(crate) fn open_server_variables(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.connection.config.engine == Engine::Sqlite {
+            return;
+        }
+
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).is_server_variables())
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+
+        let key = self.next_key;
+        self.next_key += 1;
+        let view = cx.new(|cx| ServerVariablesView::new(self.connection.clone(), window, cx));
+        let panel = cx.new(|cx| SessionPanel::variables(key, "Variables", view, cx));
         self.install(panel, window, cx);
     }
 

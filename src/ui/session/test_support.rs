@@ -16,6 +16,7 @@ use crate::ui::plan_view::PlanView;
 use crate::ui::process_list::ProcessListView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
+use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::table_view::TableView;
 
 use super::Session;
@@ -124,6 +125,29 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         self.open_process_list(window, cx);
+    }
+
+    /// The server variables view in the active tab, if this is the server
+    /// variables tab.
+    #[cfg(test)]
+    pub(crate) fn active_server_variables_view(
+        &self,
+        cx: &App,
+    ) -> Option<Entity<ServerVariablesView>> {
+        self.active_panel_for_test()?
+            .read(cx)
+            .server_variables_view()
+    }
+
+    /// Open the server variables tab, or bring it forward, the way the
+    /// sidebar's button does.
+    #[cfg(test)]
+    pub(crate) fn open_server_variables_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_server_variables(window, cx);
     }
 
     /// Open `object`'s structure tab, the way the sidebar's row menu does.

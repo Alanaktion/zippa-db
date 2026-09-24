@@ -32,6 +32,7 @@ use crate::ui::plan_view::PlanView;
 use crate::ui::process_list::ProcessListView;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
 use crate::ui::schema_view::SchemaView;
+use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::sql_file;
 use crate::ui::table_view::TableView;
 use crate::workspace_state::PanelState;
@@ -216,6 +217,24 @@ impl SessionPanel {
         }
     }
 
+    /// The server variables tab over an already-built [`ServerVariablesView`]:
+    /// one per session, the same as the console and the process list.
+    pub(crate) fn variables(
+        key: usize,
+        title: impl Into<SharedString>,
+        view: Entity<ServerVariablesView>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            key,
+            title: title.into(),
+            content: TabContent::Variables { view },
+            focus: cx.focus_handle(),
+            group: None,
+            panes: cx.new(|_| ResizableState::default()),
+        }
+    }
+
     fn on_editor_event(
         &mut self,
         _: &Entity<QueryEditor>,
@@ -269,6 +288,10 @@ impl SessionPanel {
         matches!(self.content, TabContent::Processes { .. })
     }
 
+    pub(crate) fn is_server_variables(&self) -> bool {
+        matches!(self.content, TabContent::Variables { .. })
+    }
+
     /// The icon that tells this tab's kind apart at a glance.
     ///
     /// A table's data tab and its structure tab carry the same name, so the
@@ -281,6 +304,7 @@ impl SessionPanel {
             TabContent::Schema { .. } => IconName::ListTree,
             TabContent::Console { .. } => IconName::ScrollText,
             TabContent::Processes { .. } => IconName::Activity,
+            TabContent::Variables { .. } => IconName::SlidersHorizontal,
         }
     }
 
@@ -296,6 +320,7 @@ impl SessionPanel {
             TabContent::Schema { .. } => "table structure",
             TabContent::Console { .. } => "console",
             TabContent::Processes { .. } => "process list",
+            TabContent::Variables { .. } => "server variables",
         }
     }
 
@@ -351,7 +376,8 @@ impl SessionPanel {
             TabContent::Schema { view } => Some(view.read(cx).object().clone()),
             TabContent::Query { .. }
             | TabContent::Console { .. }
-            | TabContent::Processes { .. } => None,
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. } => None,
         }
     }
 
@@ -362,7 +388,8 @@ impl SessionPanel {
             TabContent::Schema { .. } => Some(ObjectViewMode::Schema),
             TabContent::Query { .. }
             | TabContent::Console { .. }
-            | TabContent::Processes { .. } => None,
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. } => None,
         }
     }
 
@@ -383,6 +410,7 @@ impl SessionPanel {
             },
             TabContent::Console { .. } => PanelState::Console,
             TabContent::Processes { .. } => PanelState::Processes,
+            TabContent::Variables { .. } => PanelState::Variables,
         }
     }
 
@@ -396,7 +424,9 @@ impl SessionPanel {
             } => &editor.read(cx).sql(cx) != baseline,
             TabContent::Table { view } => view.read(cx).has_staged_edits(cx),
             TabContent::Schema { view } => view.read(cx).is_dirty(cx),
-            TabContent::Console { .. } | TabContent::Processes { .. } => false,
+            TabContent::Console { .. }
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. } => false,
         }
     }
 
@@ -406,7 +436,8 @@ impl SessionPanel {
             TabContent::Query { .. }
             | TabContent::Schema { .. }
             | TabContent::Console { .. }
-            | TabContent::Processes { .. } => None,
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. } => None,
         }
     }
 
@@ -417,7 +448,8 @@ impl SessionPanel {
             TabContent::Query { .. }
             | TabContent::Table { .. }
             | TabContent::Console { .. }
-            | TabContent::Processes { .. } => None,
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. } => None,
         }
     }
 
@@ -428,7 +460,8 @@ impl SessionPanel {
             TabContent::Query { .. }
             | TabContent::Table { .. }
             | TabContent::Schema { .. }
-            | TabContent::Processes { .. } => None,
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. } => None,
         }
     }
 
@@ -439,7 +472,20 @@ impl SessionPanel {
             TabContent::Query { .. }
             | TabContent::Table { .. }
             | TabContent::Schema { .. }
-            | TabContent::Console { .. } => None,
+            | TabContent::Console { .. }
+            | TabContent::Variables { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn server_variables_view(&self) -> Option<Entity<ServerVariablesView>> {
+        match &self.content {
+            TabContent::Variables { view } => Some(view.clone()),
+            TabContent::Query { .. }
+            | TabContent::Table { .. }
+            | TabContent::Schema { .. }
+            | TabContent::Console { .. }
+            | TabContent::Processes { .. } => None,
         }
     }
 
@@ -449,7 +495,8 @@ impl SessionPanel {
             TabContent::Table { .. }
             | TabContent::Schema { .. }
             | TabContent::Console { .. }
-            | TabContent::Processes { .. } => None,
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. } => None,
         }
     }
 
@@ -460,7 +507,8 @@ impl SessionPanel {
             TabContent::Table { .. }
             | TabContent::Schema { .. }
             | TabContent::Console { .. }
-            | TabContent::Processes { .. } => None,
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. } => None,
         }
     }
 
@@ -559,7 +607,8 @@ impl SessionPanel {
             TabContent::Table { .. }
             | TabContent::Schema { .. }
             | TabContent::Console { .. }
-            | TabContent::Processes { .. } => String::new(),
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. } => String::new(),
         }
     }
 
@@ -584,7 +633,8 @@ impl SessionPanel {
             TabContent::Table { .. }
             | TabContent::Schema { .. }
             | TabContent::Console { .. }
-            | TabContent::Processes { .. } => (0, 0),
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. } => (0, 0),
         }
     }
 
@@ -779,12 +829,16 @@ impl SessionPanel {
                 let view = view.clone();
                 view.update(cx, |view, cx| view.set_connection(connection, cx));
             }
+            TabContent::Variables { view } => {
+                let view = view.clone();
+                view.update(cx, |view, cx| view.set_connection(connection, cx));
+            }
         }
     }
 
-    /// Reread a table tab's rows, a console tab's log, or a process list.
-    /// A query tab's buffer is the user's own SQL and is left alone; a
-    /// structure tab has nothing to refresh this way.
+    /// Reread a table tab's rows, a console tab's log, a process list, or the
+    /// server variables. A query tab's buffer is the user's own SQL and is
+    /// left alone; a structure tab has nothing to refresh this way.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         match &self.content {
             TabContent::Table { view } => {
@@ -796,6 +850,10 @@ impl SessionPanel {
                 view.update(cx, |view, cx| view.refresh(cx));
             }
             TabContent::Processes { view } => {
+                let view = view.clone();
+                view.update(cx, |view, cx| view.refresh(cx));
+            }
+            TabContent::Variables { view } => {
                 let view = view.clone();
                 view.update(cx, |view, cx| view.refresh(cx));
             }
@@ -961,6 +1019,7 @@ impl Focusable for SessionPanel {
             // reason a table panel answers with its grid.
             TabContent::Console { view } => view.read(cx).focus_handle(cx),
             TabContent::Processes { view } => view.read(cx).focus_handle(cx),
+            TabContent::Variables { view } => view.read(cx).focus_handle(cx),
         }
     }
 }
@@ -1169,6 +1228,7 @@ impl Render for SessionPanel {
             TabContent::Schema { view } => view.clone().into_any_element(),
             TabContent::Console { view } => view.clone().into_any_element(),
             TabContent::Processes { view } => view.clone().into_any_element(),
+            TabContent::Variables { view } => view.clone().into_any_element(),
         };
 
         div()

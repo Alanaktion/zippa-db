@@ -56,6 +56,7 @@ const GROUPS: &[Group] = &[
             ("Refresh the schema and the open table", &["secondary-r"]),
             ("Open the console of every statement sent", &["secondary-`"]),
             ("Open the process list", &["secondary-shift-p"]),
+            ("Open the server variables", &["secondary-shift-v"]),
         ],
     },
     Group {

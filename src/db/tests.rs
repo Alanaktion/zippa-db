@@ -165,6 +165,22 @@ async fn sqlite_has_no_process_list() {
 }
 
 #[tokio::test]
+async fn sqlite_has_no_server_variables() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let error = connection
+        .server_variables()
+        .await
+        .expect_err("SQLite has no server-side configuration to list");
+    assert!(error.to_string().contains("no server variables"));
+
+    connection.close().await;
+}
+
+#[tokio::test]
 async fn reports_errors_from_the_server() {
     let database = TempDatabase::new().await;
     let connection = Connection::open(database.config(), None)
@@ -1428,6 +1444,52 @@ async fn live_mysql_processes_lists_and_kills_another_connection() {
     );
 
     watcher.close().await;
+}
+
+/// `server_variables` reads `pg_settings`, with `max_connections` (a
+/// `postmaster`-context setting every server has) standing in for "the list
+/// actually came back shaped the way `VARIABLES_SQL` assumes."
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_server_variables_lists_max_connections() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+
+    let variables = connection
+        .server_variables()
+        .await
+        .expect("could not read the server variables");
+    let row = variables
+        .rows
+        .iter()
+        .find(|row| row[0].as_deref() == Some("max_connections"))
+        .expect("max_connections should be in pg_settings");
+    assert!(row[1].is_some(), "max_connections should have a value");
+
+    connection.close().await;
+}
+
+/// The same, for MySQL's `performance_schema.global_variables`/`variables_info`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_server_variables_lists_max_connections() {
+    let (connection, _pool) = live_mysql().await;
+
+    let variables = connection
+        .server_variables()
+        .await
+        .expect("could not read the server variables");
+    let row = variables
+        .rows
+        .iter()
+        .find(|row| {
+            row[0]
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case("max_connections"))
+        })
+        .expect("max_connections should be in performance_schema.global_variables");
+    assert!(row[1].is_some(), "max_connections should have a value");
+
+    connection.close().await;
 }
 
 /// Open a Postgres connection for a live test, against the database named by

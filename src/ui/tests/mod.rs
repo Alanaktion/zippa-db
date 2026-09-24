@@ -55,6 +55,7 @@ mod running;
 mod safety;
 mod schema;
 mod schema_search;
+mod server_variables;
 mod session;
 mod sorting;
 mod value_dialog;

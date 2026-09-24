@@ -11,6 +11,7 @@ use crate::ui::plan_view::PlanView;
 use crate::ui::process_list::ProcessListView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
+use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::table_view::TableView;
 
 /// Whether a sidebar object is opened as its rows or its own definition.
@@ -87,5 +88,8 @@ pub(crate) enum TabContent {
     },
     Processes {
         view: Entity<ProcessListView>,
+    },
+    Variables {
+        view: Entity<ServerVariablesView>,
     },
 }

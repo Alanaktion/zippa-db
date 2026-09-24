@@ -14,6 +14,7 @@ pub mod query_editor;
 pub mod quick_switcher;
 pub mod schema_search;
 pub mod schema_view;
+pub mod server_variables;
 pub mod session;
 pub mod settings_window;
 pub mod shortcuts_dialog;

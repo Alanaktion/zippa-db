@@ -27,6 +27,13 @@ pub(crate) const PROCESSES_SQL: &str = "SELECT pid, usename, datname, client_add
      WHERE pid <> pg_backend_pid() AND datname IS NOT NULL \
      ORDER BY query_start";
 
+/// Every server setting, with the "Changed" column the last one for
+/// `ui::server_variables` to find by position — `yes` when the running value
+/// no longer matches the compiled-in default (`boot_val`), blank otherwise.
+pub(crate) const VARIABLES_SQL: &str = "SELECT name, setting, unit, context, short_desc, \
+     CASE WHEN setting IS DISTINCT FROM boot_val THEN 'yes' ELSE '' END AS changed \
+     FROM pg_settings ORDER BY name";
+
 /// Functions, procedures and sequences outside the system schemas and the
 /// extensions, with the argument types that tell overloads apart.
 pub(crate) const ROUTINES_SQL: &str = "SELECT n.nspname, p.proname, \

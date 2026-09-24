@@ -19,7 +19,10 @@ use crate::db::{DatabaseObject, Engine, ObjectKind, StoredKind, StoredObject};
 use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
-use super::{ImportSqlDump, OpenConsole, OpenProcessList, SearchSchema, Session, SessionEvent};
+use super::{
+    ImportSqlDump, OpenConsole, OpenProcessList, OpenServerVariables, SearchSchema, Session,
+    SessionEvent,
+};
 
 impl Session {
     pub(super) fn on_filter_event(
@@ -354,6 +357,23 @@ impl Session {
                         .on_click(
                             cx.listener(|this, _, window, cx| this.open_process_list(window, cx)),
                         ),
+                )
+            })
+            .when(self.connection.config.engine != Engine::Sqlite, |this| {
+                this.child(
+                    Button::new("open-server-variables")
+                        .outline()
+                        .small()
+                        .w_full()
+                        .label("Variables")
+                        .tooltip_with_action(
+                            "The server's own configuration",
+                            &OpenServerVariables,
+                            Some("Session"),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_server_variables(window, cx)
+                        })),
                 )
             })
             .child(self.render_objects(cx))

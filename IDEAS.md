@@ -37,13 +37,13 @@ in a `DataGrid` the same way the console shows the query log, pick rows and
 SQLite (there's no server to ask). It always asks before ending a
 connection — there's no staged-edit concept for this the way `ConfirmWrites`
 has for a cell edit, so a confirmation dialog stands in regardless of safety
-mode. Two pieces of the original idea are still open, and share a shape (poll
-a system view, render it as a sortable read-only table):
+mode.
 
-* **Server variables** — `SHOW VARIABLES` / `pg_settings`, searchable, with a
-  "changed from default" filter. Small to build, and exactly what gets
-  reached for when a staging box behaves differently from a laptop —
-  `max_connections`, `wait_timeout`, `statement_timeout`, `work_mem`.
+Server variables shipped too (`ui/server_variables.rs`,
+`Connection::server_variables`): `pg_settings` / `SHOW VARIABLES`, searchable
+by name with a client-side "changed only" toggle, same SQLite gate. One piece
+of the original idea is still open:
+
 * **Slow/frequent query digest** — `performance_schema.events_statements_summary_by_digest`
   on MySQL, `pg_stat_statements` on Postgres when it's installed (detect and
   say so plainly when it isn't, rather than erroring). Even a bare sortable

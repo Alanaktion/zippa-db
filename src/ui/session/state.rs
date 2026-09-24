@@ -76,6 +76,15 @@ impl Session {
                         restored += 1;
                     }
                 }
+                PanelState::Variables => {
+                    // Also a no-op for SQLite, which has no server-side
+                    // configuration to show.
+                    let before = self.panels.len();
+                    self.open_server_variables(window, cx);
+                    if self.panels.len() > before {
+                        restored += 1;
+                    }
+                }
                 // Written by a newer build; leave it out rather than guess.
                 PanelState::Unknown => {}
             }

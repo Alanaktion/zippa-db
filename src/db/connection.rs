@@ -744,6 +744,19 @@ impl Connection {
         Ok(())
     }
 
+    /// Every server configuration setting (`pg_settings` / `SHOW VARIABLES`),
+    /// with a `changed` column flagging one that no longer matches its
+    /// compiled-in default. SQLite is an embedded engine with no server-side
+    /// configuration to read this way.
+    pub async fn server_variables(&self) -> Result<QueryResult> {
+        let sql = match self.config.engine {
+            Engine::Postgres => postgres::VARIABLES_SQL,
+            Engine::MySql => mysql::VARIABLES_SQL,
+            Engine::Sqlite => anyhow::bail!("SQLite has no server variables to list"),
+        };
+        self.run_query(sql).await
+    }
+
     /// Refuse a statement a read-only connection must not run.
     ///
     /// The server is told to refuse writes as well when the pool is opened;
