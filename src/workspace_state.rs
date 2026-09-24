@@ -81,6 +81,9 @@ pub enum PanelState {
     /// The console tab. Carries nothing of its own — the log it shows lives
     /// on the connection, not on disk — so restoring one just reopens it.
     Console,
+    /// The process list tab. Carries nothing of its own, the same as the
+    /// console — restoring one just reopens it and it reads the server fresh.
+    Processes,
     /// A panel kind a newer build wrote. It is skipped rather than failing the
     /// whole file, so a newer version's workspace still opens in an older one.
     #[serde(other)]

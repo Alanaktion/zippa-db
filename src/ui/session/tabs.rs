@@ -11,9 +11,10 @@ use gpui_kit::component::dock::PanelId;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, Window};
 
-use crate::db::DatabaseObject;
+use crate::db::{DatabaseObject, Engine};
 use crate::ui::console::ConsoleView;
 use crate::ui::filter_bar::FilterSpec;
+use crate::ui::process_list::ProcessListView;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::table_view::{TableView, TableViewEvent};
 
@@ -128,6 +129,31 @@ impl Session {
         self.next_key += 1;
         let view = cx.new(|cx| ConsoleView::new(self.connection.clone(), window, cx));
         let panel = cx.new(|cx| SessionPanel::console(key, "Console", view, cx));
+        self.install(panel, window, cx);
+    }
+
+    /// Open the process list tab, or bring forward the one already open.
+    /// SQLite has no server to ask, so this is never called for one — see
+    /// `Session::render_sidebar`, which does not offer the button there.
+    pub(crate) fn open_process_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.connection.config.engine == Engine::Sqlite {
+            return;
+        }
+
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).is_process_list())
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+
+        let key = self.next_key;
+        self.next_key += 1;
+        let view = cx.new(|cx| ProcessListView::new(self.connection.clone(), window, cx));
+        let panel = cx.new(|cx| SessionPanel::processes(key, "Processes", view, cx));
         self.install(panel, window, cx);
     }
 

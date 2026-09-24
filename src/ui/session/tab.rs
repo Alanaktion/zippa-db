@@ -8,6 +8,7 @@ use crate::db::query::QueryResult;
 use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::plan_view::PlanView;
+use crate::ui::process_list::ProcessListView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::table_view::TableView;
@@ -83,5 +84,8 @@ pub(crate) enum TabContent {
     },
     Console {
         view: Entity<ConsoleView>,
+    },
+    Processes {
+        view: Entity<ProcessListView>,
     },
 }

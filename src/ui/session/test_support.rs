@@ -13,6 +13,7 @@ use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::import_dialog::ImportView;
 use crate::ui::plan_view::PlanView;
+use crate::ui::process_list::ProcessListView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::table_view::TableView;
@@ -105,6 +106,24 @@ impl Session {
     #[cfg(test)]
     pub(crate) fn open_console_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_console(window, cx);
+    }
+
+    /// The process list view in the active tab, if this is the process list
+    /// tab.
+    #[cfg(test)]
+    pub(crate) fn active_process_list_view(&self, cx: &App) -> Option<Entity<ProcessListView>> {
+        self.active_panel_for_test()?.read(cx).process_list_view()
+    }
+
+    /// Open the process list tab, or bring it forward, the way the sidebar's
+    /// button does.
+    #[cfg(test)]
+    pub(crate) fn open_process_list_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_process_list(window, cx);
     }
 
     /// Open `object`'s structure tab, the way the sidebar's row menu does.

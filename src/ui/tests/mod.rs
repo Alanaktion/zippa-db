@@ -47,6 +47,7 @@ mod layout;
 mod navigation;
 mod paging;
 mod preferences;
+mod process_list;
 mod quick_switcher;
 mod row_panel;
 mod rows;

@@ -17,6 +17,15 @@ pub(crate) const DATABASES_SQL: &str = "SELECT schema_name FROM information_sche
 pub(crate) const OBJECTS_SQL: &str = "SELECT table_schema, table_name, table_type \
      FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name";
 
+/// Every other connection to the server, longest-running first — this
+/// connection's own is left out. `info` (the running statement, if any) is
+/// truncated by the server unless `performance_schema` carries the full text,
+/// which this does not read.
+pub(crate) const PROCESSES_SQL: &str = "SELECT id, user, host, db, command, time, state, info \
+     FROM information_schema.processlist \
+     WHERE id <> CONNECTION_ID() \
+     ORDER BY time DESC";
+
 /// Stored functions and procedures in the current database, with the parameter
 /// types that tell one signature from another. MySQL has no sequences. A
 /// function's return value is a row in `parameters` at position 0, so the

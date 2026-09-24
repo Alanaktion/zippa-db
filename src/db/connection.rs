@@ -23,7 +23,7 @@ use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary}
 use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
-use super::{mysql, postgres, sqlite, statement};
+use super::{mysql, postgres, sqlite, statement, typed_placeholder};
 
 /// Connections opened per saved connection.
 pub(crate) const POOL_SIZE: u32 = 5;
@@ -711,6 +711,37 @@ impl Connection {
             // MySQL has no row identifier to fall back on.
             Engine::MySql => RowKey::Unavailable("a table without a primary key cannot be edited"),
         })
+    }
+
+    /// Every other connection to the server and what it is doing right now
+    /// (`pg_stat_activity` / `information_schema.processlist`), for the
+    /// process list. SQLite has no server to ask.
+    pub async fn processes(&self) -> Result<QueryResult> {
+        let sql = match self.config.engine {
+            Engine::Postgres => postgres::PROCESSES_SQL,
+            Engine::MySql => mysql::PROCESSES_SQL,
+            Engine::Sqlite => anyhow::bail!("SQLite has no server processes to list"),
+        };
+        self.run_query(sql).await
+    }
+
+    /// End a server process by the id [`Self::processes`] showed for it.
+    pub async fn kill_process(&self, id: &str) -> Result<()> {
+        if self.config.safety.is_read_only() {
+            anyhow::bail!("this connection is read-only");
+        }
+        let sql = match self.config.engine {
+            // `pg_terminate_backend` takes the backend's pid; the row's own
+            // id column is exactly that.
+            Engine::Postgres => format!(
+                "select pg_terminate_backend({})",
+                typed_placeholder(Engine::Postgres, 1, "INT4")
+            ),
+            Engine::MySql => "KILL ?".to_string(),
+            Engine::Sqlite => anyhow::bail!("SQLite has no server processes to end"),
+        };
+        self.execute(&sql, vec![Some(id.to_string())]).await?;
+        Ok(())
     }
 
     /// Refuse a statement a read-only connection must not run.

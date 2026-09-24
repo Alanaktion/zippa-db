@@ -28,15 +28,18 @@ value dialog to stage a binary value, parallel to the existing text box.
   the same "driver type sqlx can decode but the app can't show" gap, just
   for the type that shows up most in a typical app schema.
 
-## 2. Server admin & performance tools
+## 2. Server admin & performance tools (rest of it)
 
-TODO.md already has one line for this ("Server activity view (`pg_stat_activity`,
-`SHOW PROCESSLIST`) with cancel/kill") — worth growing into a small admin
-area, since the three pieces share a shape (poll a system view/catalog,
-render it as a sortable read-only table, offer one or two actions):
+The process list shipped (`ui/process_list.rs`, `Connection::processes`/
+`kill_process`): `pg_stat_activity` / `information_schema.processlist` shown
+in a `DataGrid` the same way the console shows the query log, pick rows and
+"End Selected" to `pg_terminate_backend`/`KILL` them, gated off entirely for
+SQLite (there's no server to ask). It always asks before ending a
+connection — there's no staged-edit concept for this the way `ConfirmWrites`
+has for a cell edit, so a confirmation dialog stands in regardless of safety
+mode. Two pieces of the original idea are still open, and share a shape (poll
+a system view, render it as a sortable read-only table):
 
-* **Process list** — `pg_stat_activity` / `SHOW PROCESSLIST`, with cancel and
-  kill (`pg_cancel_backend`/`pg_terminate_backend`, `KILL`).
 * **Server variables** — `SHOW VARIABLES` / `pg_settings`, searchable, with a
   "changed from default" filter. Small to build, and exactly what gets
   reached for when a staging box behaves differently from a laptop —
@@ -46,10 +49,6 @@ render it as a sortable read-only table, offer one or two actions):
   say so plainly when it isn't, rather than erroring). Even a bare sortable
   table of digest/calls/mean time answers "what's actually slow" without
   leaving the app.
-
-All three are read-mostly against system catalogs, so they fit the existing
-safety-mode machinery with little new risk — the only writes are the two
-kill actions, which `ConfirmWrites` already knows how to gate.
 
 ## 3. Chart integration for results and performance data
 

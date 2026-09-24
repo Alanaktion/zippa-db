@@ -18,6 +18,15 @@ pub(crate) const OBJECTS_SQL: &str = "SELECT table_schema, table_name, table_typ
      WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
      ORDER BY table_schema, table_name";
 
+/// Every other backend connected to this database, oldest activity first —
+/// the process list's own connection is left out, and so is a background
+/// worker, which has no `datname` of its own.
+pub(crate) const PROCESSES_SQL: &str = "SELECT pid, usename, datname, client_addr, state, \
+     now() - query_start AS duration, query \
+     FROM pg_stat_activity \
+     WHERE pid <> pg_backend_pid() AND datname IS NOT NULL \
+     ORDER BY query_start";
+
 /// Functions, procedures and sequences outside the system schemas and the
 /// extensions, with the argument types that tell overloads apart.
 pub(crate) const ROUTINES_SQL: &str = "SELECT n.nspname, p.proname, \

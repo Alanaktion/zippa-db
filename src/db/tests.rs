@@ -143,6 +143,28 @@ async fn fetch_binary_reads_the_real_bytes_a_query_only_describes() {
 }
 
 #[tokio::test]
+async fn sqlite_has_no_process_list() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let error = connection
+        .processes()
+        .await
+        .expect_err("SQLite has no server to list processes for");
+    assert!(error.to_string().contains("no server processes"));
+
+    let error = connection
+        .kill_process("1")
+        .await
+        .expect_err("SQLite has no server process to end");
+    assert!(error.to_string().contains("no server processes"));
+
+    connection.close().await;
+}
+
+#[tokio::test]
 async fn reports_errors_from_the_server() {
     let database = TempDatabase::new().await;
     let connection = Connection::open(database.config(), None)
@@ -1321,6 +1343,91 @@ async fn live_postgres_money_scales_by_the_servers_locale_not_always_by_100() {
         "a zero-digit locale's value should not be shown divided by 100"
     );
     yen.close().await;
+}
+
+/// `processes` reads every other connection's activity and `kill_process` can
+/// end one of them — the live half of the process list, since SQLite (the
+/// only engine the rest of this file exercises) has no server activity to
+/// read.
+///
+/// Ignored by default because it needs a server; see
+/// `live_postgres_money_scales_by_the_servers_locale_not_always_by_100` for
+/// how to start one. `cargo test -- --ignored live_postgres_processes`.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_processes_lists_and_kills_another_connection() {
+    let watcher = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    let victim = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+
+    let sleeper = tokio::spawn(async move { victim.run_query("SELECT pg_sleep(30)").await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let processes = watcher
+        .processes()
+        .await
+        .expect("could not read the process list");
+    let row = processes
+        .rows
+        .iter()
+        .find(|row| {
+            row.get(6)
+                .and_then(|cell| cell.as_deref())
+                .is_some_and(|query| query.contains("pg_sleep"))
+        })
+        .expect("the sleeping connection should be in the process list");
+    let pid = row[0].clone().expect("a pid");
+
+    watcher
+        .kill_process(&pid)
+        .await
+        .expect("could not end the sleeping connection");
+
+    let result = sleeper.await.expect("the task itself should not panic");
+    assert!(
+        result.is_err(),
+        "the killed connection's query should have been interrupted"
+    );
+
+    watcher.close().await;
+}
+
+/// The same, for MySQL's `information_schema.processlist` and `KILL`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_processes_lists_and_kills_another_connection() {
+    let (watcher, _watcher_pool) = live_mysql().await;
+    let (victim, _victim_pool) = live_mysql().await;
+
+    let sleeper = tokio::spawn(async move { victim.run_query("SELECT sleep(30)").await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let processes = watcher
+        .processes()
+        .await
+        .expect("could not read the process list");
+    let row = processes
+        .rows
+        .iter()
+        .find(|row| {
+            row.get(7)
+                .and_then(|cell| cell.as_deref())
+                .is_some_and(|info| info.contains("sleep"))
+        })
+        .expect("the sleeping connection should be in the process list");
+    let id = row[0].clone().expect("an id");
+
+    watcher
+        .kill_process(&id)
+        .await
+        .expect("could not end the sleeping connection");
+
+    let result = sleeper.await.expect("the task itself should not panic");
+    assert!(
+        result.is_err(),
+        "the killed connection's query should have been interrupted"
+    );
+
+    watcher.close().await;
 }
 
 /// Open a Postgres connection for a live test, against the database named by

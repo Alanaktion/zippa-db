@@ -55,7 +55,6 @@ known defects and risks in the shipped code are tracked in
 * Local query history, searchable by date, database, or text ([plan](.agents/plans/query-history.md))
 * Reusable SQL snippets ([plan](.agents/plans/sql-snippets.md))
 * Customizable keyboard shortcuts
-* Server activity view (`pg_stat_activity`, `SHOW PROCESSLIST`) with cancel/kill
 * "Copy diagnostics" in the Help menu: version, OS, recent errors
 
 ## 6. Platform & release

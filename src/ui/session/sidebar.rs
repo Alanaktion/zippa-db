@@ -15,11 +15,11 @@ use gpui_kit::prelude::*;
 use gpui_kit::{ClipboardItem, Context, Entity, SharedString, Window, div};
 use regex::Regex;
 
-use crate::db::{DatabaseObject, ObjectKind, StoredKind, StoredObject};
+use crate::db::{DatabaseObject, Engine, ObjectKind, StoredKind, StoredObject};
 use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
-use super::{ImportSqlDump, OpenConsole, SearchSchema, Session, SessionEvent};
+use super::{ImportSqlDump, OpenConsole, OpenProcessList, SearchSchema, Session, SessionEvent};
 
 impl Session {
     pub(super) fn on_filter_event(
@@ -339,6 +339,23 @@ impl Session {
                     )
                     .on_click(cx.listener(|this, _, window, cx| this.open_console(window, cx))),
             )
+            .when(self.connection.config.engine != Engine::Sqlite, |this| {
+                this.child(
+                    Button::new("open-process-list")
+                        .outline()
+                        .small()
+                        .w_full()
+                        .label("Processes")
+                        .tooltip_with_action(
+                            "Who is connected and what they're doing right now",
+                            &OpenProcessList,
+                            Some("Session"),
+                        )
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_process_list(window, cx)),
+                        ),
+                )
+            })
             .child(self.render_objects(cx))
             .child(
                 Button::new("disconnect")
