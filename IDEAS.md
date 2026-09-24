@@ -8,21 +8,15 @@ on. Ranked by impact for that reader. An idea that gets picked up moves to
 TODO.md (with a design note in `.agents/plans/` if it's large); this file is
 where it waits before that.
 
-## 1. Binary viewer/editor
+## 1. Binary editor (write half)
 
-Today a `BLOB`/`bytea` cell is never actually read: `postgres.rs`/`mysql.rs`/
-`sqlite.rs` describe it as `<N bytes>` and `query::is_placeholder` marks that
-stand-in unwritable, so `data_grid::needs_a_window` opens the value dialog
-only to show the same description back (`src/ui/data_grid/format.rs`). For a
-web developer this is exactly the column that matters most day to day —
-avatar images, uploaded documents, generated PDFs, serialized payloads — and
-right now it's a dead end.
+The read half shipped: a binary cell's value dialog now re-reads the real
+bytes for a row a table view can address, sniffs common image formats
+(PNG/JPEG/GIF/WebP/BMP) and shows a preview, or a hex dump otherwise
+(`src/db/binary.rs`, `Connection::fetch_binary`, `value_dialog::open_binary`).
+What's left is writing a new value back — a "Load from file…" action in the
+value dialog to stage a binary value, parallel to the existing text box.
 
-* Read the bytes for real behind a size guard, sniff common magic numbers
-  (PNG/JPEG/GIF/WebP/PDF), and render an inline preview in `value_dialog`
-  when one matches; fall back to a hex/ASCII split view otherwise.
-* A "Load from file…" action in the value dialog to stage a new binary value,
-  parallel to the existing text box.
 * The hard part: `Connection::typed_placeholder` binds every parameter as
   text (`AGENTS.md` § "Values are text, both ways") — there's no path today
   to bind raw bytes back. Needs either a base64/hex round-trip through the

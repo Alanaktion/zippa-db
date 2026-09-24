@@ -309,6 +309,12 @@ pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
     value.or_else(|| query::unsupported(&type_name))
 }
 
+/// The raw bytes of one column, for a binary value preview asking for the
+/// bytes `cell` only ever summarizes.
+pub(crate) fn raw_bytes(row: &PgRow, index: usize) -> Option<Vec<u8>> {
+    row.try_get::<Vec<u8>, _>(index).ok()
+}
+
 /// `{a,b,NULL}`, quoting the elements that need it.
 fn array_literal(elements: impl Iterator<Item = Option<String>>) -> String {
     let mut out = String::from("{");

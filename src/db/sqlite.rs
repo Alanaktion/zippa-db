@@ -240,3 +240,9 @@ pub(crate) fn cell(row: &SqliteRow, index: usize) -> Cell {
 
     value.or_else(|| query::unsupported(&type_name))
 }
+
+/// The raw bytes of one column, for a binary value preview asking for the
+/// bytes `cell` only ever summarizes.
+pub(crate) fn raw_bytes(row: &SqliteRow, index: usize) -> Option<Vec<u8>> {
+    row.try_get::<Vec<u8>, _>(index).ok()
+}

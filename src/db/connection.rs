@@ -393,6 +393,24 @@ impl Connection {
         }
     }
 
+    /// The raw bytes behind one binary cell, read fresh for a value preview.
+    ///
+    /// `fetch`/`cell` turn every `BYTEA`/`BLOB` into a `<N bytes>` summary and
+    /// let the bytes go, so a preview asks for the one cell again here rather
+    /// than carrying the bytes through the grid's whole result. `sql` is
+    /// expected to select exactly the one column of the one row being
+    /// previewed; `None` covers both "no such row" and "the value is NULL".
+    pub async fn fetch_binary(&self, sql: &str, params: Vec<Cell>) -> Result<Option<Vec<u8>>> {
+        self.refuse_write(sql)?;
+        match &self.pool {
+            Pool::Postgres(pool) => {
+                fetch_binary_column(pool, sql, params, postgres::raw_bytes).await
+            }
+            Pool::MySql(pool) => fetch_binary_column(pool, sql, params, mysql::raw_bytes).await,
+            Pool::Sqlite(pool) => fetch_binary_column(pool, sql, params, sqlite::raw_bytes).await,
+        }
+    }
+
     /// Read the plan for one statement.
     ///
     /// `sql` is the statement the caller picked — the selection, or the one the
@@ -889,6 +907,31 @@ where
         elapsed,
         affected,
     })
+}
+
+/// Run `sql` and read the first row's first column as raw bytes, bypassing
+/// the text `cell` mapping [`fetch_all`] uses for everything else.
+async fn fetch_binary_column<DB>(
+    pool: &sqlx::Pool<DB>,
+    sql: &str,
+    params: Vec<Cell>,
+    raw_bytes: fn(&DB::Row, usize) -> Option<Vec<u8>>,
+) -> Result<Option<Vec<u8>>>
+where
+    DB: Database,
+    for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> Option<String>: Encode<'q, DB>,
+    String: Type<DB>,
+{
+    let statement = AssertSqlSafe(sql.to_string()).into_sql_str();
+    let mut query = sqlx::query(statement);
+    for param in params {
+        query = query.bind(param);
+    }
+
+    let row = query.fetch_optional(pool).await?;
+    Ok(row.and_then(|row| raw_bytes(&row, 0)))
 }
 
 /// Split a driver's columns into their names and their type names.

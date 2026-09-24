@@ -33,7 +33,9 @@ from one native window.
   costs, rows, timing, and warnings.
 * **Table view** — paging, a row limit, click-to-sort, a filter bar
   (including `IN` with a subquery), a row panel showing the focused row as
-  fields, and a jump from a foreign key to the row it references.
+  fields, and a jump from a foreign key to the row it references. A binary
+  cell's value dialog re-reads the real bytes and shows an image preview or a
+  hex dump, rather than just the `<N bytes>` the grid shows.
 * **Staged editing** — type into cells, add rows, and mark rows for deletion;
   every pending change is marked in the grid (tint *and* underline or
   strike-through) and written together as `UPDATE`/`INSERT`/`DELETE`.

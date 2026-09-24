@@ -25,6 +25,7 @@ known defects and risks in the shipped code are tracked in
 * Multi-column sorting
 * Column stats: count, distinct, null %, min/max, top values
 * Reorder columns by dragging a header (turned off today: the grid addresses cells by the result's column order)
+* Write a binary value from a file in the value dialog (the preview — image or hex — already reads the real bytes; see IDEAS.md)
 
 ## 3. SQL editor
 

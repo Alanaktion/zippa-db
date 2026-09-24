@@ -316,6 +316,42 @@ impl TableView {
         ))
     }
 
+    /// The statement to re-read one binary cell's raw bytes, for the value
+    /// dialog's preview — addressed by the row's own key rather than its
+    /// position on the page, the same as a write.
+    pub(super) fn binary_select(
+        &self,
+        row: usize,
+        column: &str,
+        cx: &gpui_kit::App,
+    ) -> Option<(String, Vec<Cell>)> {
+        let engine = self.connection.config.engine;
+        let key = self.key_for(row, cx)?;
+
+        let mut params: Vec<Cell> = Vec::with_capacity(key.len());
+        let conditions: Vec<String> = key
+            .into_iter()
+            .enumerate()
+            .map(|(index, (left, type_name, value))| {
+                params.push(value);
+                format!(
+                    "{left} = {}",
+                    typed_placeholder(engine, index + 1, &type_name)
+                )
+            })
+            .collect();
+
+        Some((
+            format!(
+                "select {} from {} where {}",
+                quote_identifier(column, engine),
+                self.target(),
+                conditions.join(" and ")
+            ),
+            params,
+        ))
+    }
+
     /// The `DELETE` for one row marked for deletion, and its values.
     pub(super) fn delete_statement(
         &self,

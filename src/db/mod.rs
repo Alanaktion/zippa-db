@@ -7,6 +7,7 @@
 //!
 //! * [`config`] — what the user saves about a connection, before it is opened.
 //! * [`connection`] — the live pool, and the shared read and write paths.
+//! * [`binary`] — sniffing and laying out the bytes behind a binary value.
 //! * [`catalog`] — the whole schema once per session, and the search over it.
 //! * [`schema`] — a table's own definition: columns, indexes, foreign keys.
 //! * [`sql`] — quoting and placing bind parameters in generated statements.
@@ -18,6 +19,7 @@
 //! * [`runtime`] — the Tokio runtime every database call is submitted to.
 //! * [`store`] — connection metadata on disk, passwords in the OS keychain.
 
+pub mod binary;
 pub mod catalog;
 pub mod config;
 pub mod connection;

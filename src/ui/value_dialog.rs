@@ -20,20 +20,33 @@
 //! `CloseValue`/`SaveValue` below are what answer those keys instead.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, EventEmitter, Global, SharedString, Window, actions, div};
+use gpui_kit::{
+    App, Context, Entity, EventEmitter, Global, Image, ImageFormat, SharedString, Window, actions,
+    div, img,
+};
 
+use crate::db::binary::{self, ImageKind};
 use crate::settings;
 
 actions!(zippa_db, [CloseValue, SaveValue]);
 
 /// What the dialog does with the text when the user saves it.
 pub type Save = Rc<dyn Fn(String, &mut App)>;
+
+/// What replaces the text box when there is something better to draw than a
+/// string. The only case today is a binary value that decoded as an image —
+/// see [`open_binary`].
+#[derive(Clone)]
+pub enum Preview {
+    Image(Arc<Image>),
+}
 
 /// A value waiting for a dialog to be built for it.
 #[derive(Clone)]
@@ -45,6 +58,8 @@ pub struct ValueRequest {
     /// `None` for a value that cannot be written back — a query result, a
     /// read-only connection, a value the driver only described.
     pub save: Option<Save>,
+    /// Shown instead of the text box, when there is one.
+    pub preview: Option<Preview>,
 }
 
 #[derive(Default)]
@@ -55,6 +70,47 @@ impl Global for Pending {}
 /// Ask for `request` to be shown.
 pub fn open(request: ValueRequest, cx: &mut App) {
     cx.set_global(Pending(Some(request)));
+}
+
+/// Show the real bytes behind a binary cell the grid could only describe: an
+/// image, when the bytes decode as one of the common formats, a hex dump
+/// otherwise. Replaces a dialog already open on the `<N bytes>` stand-in the
+/// same way any other `open` does.
+///
+/// Read-only for now — staging a new binary value from a file is not built
+/// yet (see IDEAS.md).
+pub fn open_binary(column: SharedString, bytes: Vec<u8>, cx: &mut App) {
+    let preview = binary::sniff_image(&bytes).map(|kind| {
+        Preview::Image(Arc::new(Image::from_bytes(
+            image_format(kind),
+            bytes.clone(),
+        )))
+    });
+    let text = match preview {
+        Some(_) => format!("{} bytes, shown above", bytes.len()),
+        None => binary::hex_dump(&bytes),
+    };
+
+    open(
+        ValueRequest {
+            column,
+            text,
+            note: Some("This value cannot be edited here.".into()),
+            save: None,
+            preview,
+        },
+        cx,
+    );
+}
+
+fn image_format(kind: ImageKind) -> ImageFormat {
+    match kind {
+        ImageKind::Png => ImageFormat::Png,
+        ImageKind::Jpeg => ImageFormat::Jpeg,
+        ImageKind::Gif => ImageFormat::Gif,
+        ImageKind::Webp => ImageFormat::Webp,
+        ImageKind::Bmp => ImageFormat::Bmp,
+    }
 }
 
 /// Take the value waiting to be shown, if there is one.
@@ -77,6 +133,7 @@ pub struct ValueView {
     note: Option<SharedString>,
     input: Entity<TextareaState>,
     save: Option<Save>,
+    preview: Option<Preview>,
 }
 
 impl EventEmitter<Dismissed> for ValueView {}
@@ -89,6 +146,7 @@ impl ValueView {
             note: request.note,
             input,
             save: request.save,
+            preview: request.preview,
         }
     }
 
@@ -175,13 +233,17 @@ impl Render for ValueView {
             )
             .child(
                 // The box fills the dialog, so it grows with the window the
-                // dialog sits in.
-                div().flex_1().min_h_0().child(
-                    Textarea::new(&self.input)
+                // dialog sits in; an image preview does the same in its place.
+                div().flex_1().min_h_0().child(match &self.preview {
+                    Some(Preview::Image(image)) => {
+                        img(image.clone()).size_full().into_any_element()
+                    }
+                    None => Textarea::new(&self.input)
                         .h_full()
                         .readonly(!editable)
-                        .font_family(settings::grid_font(cx)),
-                ),
+                        .font_family(settings::grid_font(cx))
+                        .into_any_element(),
+                }),
             )
             .child(
                 h_flex()
