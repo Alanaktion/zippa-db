@@ -310,9 +310,10 @@ pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
 }
 
 /// The raw bytes of one column, for a binary value preview asking for the
-/// bytes `cell` only ever summarizes.
+/// bytes `cell` only ever summarizes. `Vec<u8>` alone does not tell a NULL
+/// apart from an empty value, so the target is `Option<Vec<u8>>`.
 pub(crate) fn raw_bytes(row: &PgRow, index: usize) -> Option<Vec<u8>> {
-    row.try_get::<Vec<u8>, _>(index).ok()
+    row.try_get::<Option<Vec<u8>>, _>(index).ok().flatten()
 }
 
 /// `{a,b,NULL}`, quoting the elements that need it.
