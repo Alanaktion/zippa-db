@@ -13,8 +13,9 @@ use crate::ui::data_grid::{
 use crate::ui::import_dialog::CloseImport;
 use crate::ui::query_editor::{Explain, ExplainAnalyze, RunQuery, RunScript};
 use crate::ui::session::{
-    CancelQuery, CloseTab, ImportSqlDump, NewTab, NextTab, OpenFile, PreviousTab, QuickSwitcher,
-    Refresh, SaveFile, SaveFileAs, SearchSchema,
+    CancelQuery, CloseTab, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile, OpenProcessList,
+    OpenQueryDigest, OpenServerVariables, PreviousTab, QuickSwitcher, Refresh, SaveFile,
+    SaveFileAs, SearchSchema,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -106,6 +107,20 @@ pub fn bind(cx: &mut App) {
         // Reloads the schema, and the active table's rows; never re-runs a
         // query tab's buffer, so it is safe even if that buffer is a write.
         KeyBinding::new("secondary-r", Refresh, Some("Session")),
+        // The console of every statement sent, opened or brought forward.
+        // The backtick is the terminal/console toggle in several other
+        // editors, which is the habit this borrows.
+        KeyBinding::new("secondary-`", OpenConsole, Some("Session")),
+        // The process list: who is connected to the server and what they're
+        // running, with a way to end one.
+        KeyBinding::new("secondary-shift-p", OpenProcessList, Some("Session")),
+        // The server's own configuration. Shares its key with viewing a
+        // cell's value, the way Import shares its key with adding a row:
+        // the more specific context — a grid with the focus — wins there,
+        // and this is what answers it everywhere else.
+        KeyBinding::new("secondary-shift-v", OpenServerVariables, Some("Session")),
+        // The slow/frequent query digest.
+        KeyBinding::new("secondary-shift-d", OpenQueryDigest, Some("Session")),
         // Ctrl+Tab is the tab-switching key on every OS, browsers and macOS
         // apps included; Cmd+Shift+] is taken by the connections above.
         // Neither is an editor key, so the session sees them from anywhere.

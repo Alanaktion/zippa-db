@@ -63,6 +63,37 @@ impl Session {
                     self.open_object(&object, ObjectViewMode::Schema, window, cx);
                     restored += 1;
                 }
+                PanelState::Console => {
+                    self.open_console(window, cx);
+                    restored += 1;
+                }
+                PanelState::Processes => {
+                    // A no-op for a SQLite connection, which has no process
+                    // list to show; nothing should count as restored then.
+                    let before = self.panels.len();
+                    self.open_process_list(window, cx);
+                    if self.panels.len() > before {
+                        restored += 1;
+                    }
+                }
+                PanelState::Variables => {
+                    // Also a no-op for SQLite, which has no server-side
+                    // configuration to show.
+                    let before = self.panels.len();
+                    self.open_server_variables(window, cx);
+                    if self.panels.len() > before {
+                        restored += 1;
+                    }
+                }
+                PanelState::Digest => {
+                    // Also a no-op for SQLite, which has no query
+                    // instrumentation to read this way.
+                    let before = self.panels.len();
+                    self.open_query_digest(window, cx);
+                    if self.panels.len() > before {
+                        restored += 1;
+                    }
+                }
                 // Written by a newer build; leave it out rather than guess.
                 PanelState::Unknown => {}
             }

@@ -11,9 +11,13 @@ use gpui_kit::component::dock::PanelId;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, Window};
 
-use crate::db::DatabaseObject;
+use crate::db::{DatabaseObject, Engine};
+use crate::ui::console::ConsoleView;
 use crate::ui::filter_bar::FilterSpec;
+use crate::ui::process_list::ProcessListView;
+use crate::ui::query_digest::QueryDigestView;
 use crate::ui::schema_view::SchemaView;
+use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::table_view::{TableView, TableViewEvent};
 
 use super::{
@@ -106,6 +110,102 @@ impl Session {
             }
         };
 
+        self.install(panel, window, cx);
+    }
+
+    /// Open the console tab, or bring forward the one already open — there is
+    /// only ever one per session, the same as a table's data and structure
+    /// tabs are each one of a kind.
+    pub(crate) fn open_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).is_console())
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+
+        let key = self.next_key;
+        self.next_key += 1;
+        let view = cx.new(|cx| ConsoleView::new(self.connection.clone(), window, cx));
+        let panel = cx.new(|cx| SessionPanel::console(key, "Console", view, cx));
+        self.install(panel, window, cx);
+    }
+
+    /// Open the process list tab, or bring forward the one already open.
+    /// SQLite has no server to ask, so this is never called for one — see
+    /// `Session::render_sidebar`, which does not offer the button there.
+    pub(crate) fn open_process_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.connection.config.engine == Engine::Sqlite {
+            return;
+        }
+
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).is_process_list())
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+
+        let key = self.next_key;
+        self.next_key += 1;
+        let view = cx.new(|cx| ProcessListView::new(self.connection.clone(), window, cx));
+        let panel = cx.new(|cx| SessionPanel::processes(key, "Processes", view, cx));
+        self.install(panel, window, cx);
+    }
+
+    /// Open the server variables tab, or bring forward the one already open.
+    /// SQLite has no server-side configuration to show, so this is never
+    /// called for one — see `Session::render_sidebar`.
+    pub(crate) fn open_server_variables(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.connection.config.engine == Engine::Sqlite {
+            return;
+        }
+
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).is_server_variables())
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+
+        let key = self.next_key;
+        self.next_key += 1;
+        let view = cx.new(|cx| ServerVariablesView::new(self.connection.clone(), window, cx));
+        let panel = cx.new(|cx| SessionPanel::variables(key, "Variables", view, cx));
+        self.install(panel, window, cx);
+    }
+
+    /// Open the query digest tab, or bring forward the one already open.
+    /// SQLite has no query instrumentation to read this way, so this is
+    /// never called for one — see `Session::render_sidebar`.
+    pub(crate) fn open_query_digest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.connection.config.engine == Engine::Sqlite {
+            return;
+        }
+
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).is_query_digest())
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+
+        let key = self.next_key;
+        self.next_key += 1;
+        let view = cx.new(|cx| QueryDigestView::new(self.connection.clone(), window, cx));
+        let panel = cx.new(|cx| SessionPanel::digest(key, "Query Digest", view, cx));
         self.install(panel, window, cx);
     }
 

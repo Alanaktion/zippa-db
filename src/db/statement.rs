@@ -17,8 +17,15 @@ const READING: [&str; 8] = [
 ];
 
 /// Keywords that make a statement a write wherever they turn up in it, so a
-/// `WITH ... INSERT` or an `EXPLAIN ANALYZE DELETE` is not mistaken for a read.
-const WRITING: [&str; 4] = ["INSERT", "UPDATE", "DELETE", "MERGE"];
+/// `WITH ... INSERT` or an `EXPLAIN ANALYZE DELETE` is not mistaken for a
+/// read — and so is `INTO`, catching Postgres' `SELECT ... INTO new_table`
+/// (creates a table) and MySQL's `SELECT ... INTO OUTFILE`/`INTO DUMPFILE`
+/// (writes a file): both start with the reading keyword `SELECT` and would
+/// otherwise read as a plain read, which matters most for `ConfirmWrites` —
+/// unlike `ReadOnly`, it has no server-side backstop, so a statement this
+/// classifier misses as a write runs with no confirmation at all rather than
+/// merely with a less specific error message.
+const WRITING: [&str; 5] = ["INSERT", "UPDATE", "DELETE", "MERGE", "INTO"];
 
 /// One statement of a buffer, and where it sits in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -500,6 +507,24 @@ mod tests {
         );
         assert!(first_write("explain analyze delete from items").is_some());
         assert!(first_write("pragma journal_mode = wal").is_some());
+    }
+
+    /// `SELECT` starts both, so neither is a plain read: Postgres' `SELECT
+    /// ... INTO` creates a table, and MySQL's `SELECT ... INTO OUTFILE`/
+    /// `INTO DUMPFILE` writes a file — both change something despite the
+    /// reading keyword out front, which matters most for `ConfirmWrites`
+    /// (no server-side read-only session backs it up the way `ReadOnly` has).
+    #[test]
+    fn a_select_into_is_not_a_plain_read() {
+        assert_eq!(
+            first_write("select * into new_table from items").as_deref(),
+            Some("SELECT")
+        );
+        assert_eq!(
+            first_write("select * from items into outfile '/tmp/dump.csv'").as_deref(),
+            Some("SELECT")
+        );
+        assert!(first_write("SELECT id INTO DUMPFILE '/tmp/id' FROM items LIMIT 1").is_some());
     }
 
     #[test]

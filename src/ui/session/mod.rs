@@ -1,5 +1,5 @@
-//! An open connection: object sidebar, and a dock of query, table and
-//! structure panels, split and reordered by dragging their tabs.
+//! An open connection: object sidebar, and a dock of query, table,
+//! structure, and console panels, split and reordered by dragging their tabs.
 
 use std::sync::Arc;
 
@@ -57,6 +57,10 @@ actions!(
         QuickSwitcher,
         ImportSqlDump,
         SearchSchema,
+        OpenConsole,
+        OpenProcessList,
+        OpenServerVariables,
+        OpenQueryDigest,
     ]
 );
 
@@ -367,6 +371,37 @@ impl Session {
         crate::ui::schema_search::open(session, window, cx);
     }
 
+    fn on_open_console(&mut self, _: &OpenConsole, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_console(window, cx);
+    }
+
+    fn on_open_process_list(
+        &mut self,
+        _: &OpenProcessList,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_process_list(window, cx);
+    }
+
+    fn on_open_server_variables(
+        &mut self,
+        _: &OpenServerVariables,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_server_variables(window, cx);
+    }
+
+    fn on_open_query_digest(
+        &mut self,
+        _: &OpenQueryDigest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_query_digest(window, cx);
+    }
+
     /// Open what a schema search result is about.
     ///
     /// A table or view opens its rows; a column opens its table's rows with
@@ -514,6 +549,10 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_import_dump))
             .on_action(cx.listener(Self::on_quick_switcher))
             .on_action(cx.listener(Self::on_search_schema))
+            .on_action(cx.listener(Self::on_open_console))
+            .on_action(cx.listener(Self::on_open_process_list))
+            .on_action(cx.listener(Self::on_open_server_variables))
+            .on_action(cx.listener(Self::on_open_query_digest))
             .when_some(self.render_tag_strip(cx), |this, strip| this.child(strip))
             .child(
                 h_resizable("session-columns")

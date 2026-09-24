@@ -6,7 +6,7 @@
 //! lists databases and objects, decoding a row cell — lives in the sibling
 //! `postgres` / `mysql` / `sqlite` modules.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use futures::StreamExt as _;
@@ -22,7 +22,8 @@ use super::config::{ConnectionConfig, Engine};
 use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary};
 use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
-use super::{mysql, postgres, sqlite, statement};
+use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
+use super::{mysql, postgres, sqlite, statement, typed_placeholder};
 
 /// Connections opened per saved connection.
 pub(crate) const POOL_SIZE: u32 = 5;
@@ -117,6 +118,15 @@ impl RowKey {
     }
 }
 
+/// The outcome of asking for the slow/frequent query digest: either engine's
+/// instrumentation is opt-in, so a missing extension or a server variable
+/// that is off is not an error — it is told to the caller in words instead.
+#[derive(Debug)]
+pub enum QueryDigest {
+    Available(QueryResult),
+    Unavailable(String),
+}
+
 /// A live connection to one database.
 #[derive(Debug)]
 pub struct Connection {
@@ -131,6 +141,10 @@ pub struct Connection {
     /// which is not always two. Unused, left at the default, on the other
     /// engines.
     money_scale: i64,
+    /// Every statement sent through this connection's own pool, for the
+    /// console pane. `import_dump`/`rebuild_table` run on a dedicated
+    /// connection outside it and are not recorded here.
+    query_log: QueryLog,
 }
 
 impl Connection {
@@ -151,7 +165,14 @@ impl Connection {
             password: password.map(str::to_string),
             pool,
             money_scale,
+            query_log: QueryLog::default(),
         })
+    }
+
+    /// Every statement this connection has sent through its own pool, oldest
+    /// first, for a console pane to show.
+    pub fn query_log(&self) -> &QueryLog {
+        &self.query_log
     }
 
     /// The database this connection is bound to.
@@ -360,8 +381,44 @@ impl Connection {
     /// Used by the generated reads — a filtered table view, for one — so a
     /// value the user typed stays a value rather than becoming SQL.
     pub async fn run_query_with(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
+        self.run_query_tagged(sql, params, QuerySource::Internal)
+            .await
+    }
+
+    /// The same as [`Self::run_query`], logged as the statement a query tab's
+    /// editor itself sent — the one thing a console's "User" column means —
+    /// rather than as one of the app's own reads.
+    pub async fn run_query_as_user(&self, sql: &str) -> Result<QueryResult> {
+        self.run_query_tagged(sql, Vec::new(), QuerySource::User)
+            .await
+    }
+
+    async fn run_query_tagged(
+        &self,
+        sql: &str,
+        params: Vec<Cell>,
+        source: QuerySource,
+    ) -> Result<QueryResult> {
         self.refuse_write(sql)?;
-        self.fetch(sql, params).await
+        let started = Instant::now();
+        let result = self.fetch(sql, params).await;
+        let outcome = match &result {
+            Ok(result) => query_outcome(result),
+            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+        };
+        self.log(sql, source, started.elapsed(), outcome);
+        result
+    }
+
+    /// Add one statement to the query log, for the console.
+    fn log(&self, sql: &str, source: QuerySource, elapsed: Duration, outcome: QueryOutcome) {
+        self.query_log.record(LoggedQuery {
+            sql: sql.to_string(),
+            source,
+            outcome,
+            elapsed,
+            at: std::time::SystemTime::now(),
+        });
     }
 
     /// Send `sql` with no client-side classification.
@@ -393,6 +450,24 @@ impl Connection {
         }
     }
 
+    /// The raw bytes behind one binary cell, read fresh for a value preview.
+    ///
+    /// `fetch`/`cell` turn every `BYTEA`/`BLOB` into a `<N bytes>` summary and
+    /// let the bytes go, so a preview asks for the one cell again here rather
+    /// than carrying the bytes through the grid's whole result. `sql` is
+    /// expected to select exactly the one column of the one row being
+    /// previewed; `None` covers both "no such row" and "the value is NULL".
+    pub async fn fetch_binary(&self, sql: &str, params: Vec<Cell>) -> Result<Option<Vec<u8>>> {
+        self.refuse_write(sql)?;
+        match &self.pool {
+            Pool::Postgres(pool) => {
+                fetch_binary_column(pool, sql, params, postgres::raw_bytes).await
+            }
+            Pool::MySql(pool) => fetch_binary_column(pool, sql, params, mysql::raw_bytes).await,
+            Pool::Sqlite(pool) => fetch_binary_column(pool, sql, params, sqlite::raw_bytes).await,
+        }
+    }
+
     /// Read the plan for one statement.
     ///
     /// `sql` is the statement the caller picked — the selection, or the one the
@@ -408,6 +483,17 @@ impl Connection {
     /// SQLite has no `EXPLAIN ANALYZE`, so a request for one there is refused
     /// rather than answered with the plain plan.
     pub async fn explain(&self, sql: &str, analyze: bool) -> Result<Explained> {
+        let started = Instant::now();
+        let result = self.explain_inner(sql, analyze).await;
+        let outcome = match &result {
+            Ok(_) => QueryOutcome::Ran,
+            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+        };
+        self.log(sql, QuerySource::User, started.elapsed(), outcome);
+        result
+    }
+
+    async fn explain_inner(&self, sql: &str, analyze: bool) -> Result<Explained> {
         let statement = sql.trim().trim_end_matches(';').trim();
         // One statement is what a plan describes; a script has no single plan
         // to draw, and the caller's buffer may be a selection of many.
@@ -517,7 +603,8 @@ impl Connection {
         for statement in &statements {
             self.refuse_write(&statement.text)?;
         }
-        match &self.pool {
+        let started = Instant::now();
+        let result = match &self.pool {
             Pool::Postgres(pool) => {
                 let scale = self.money_scale;
                 run_script_transactional(
@@ -535,7 +622,31 @@ impl Connection {
             Pool::MySql(pool) => {
                 run_script_untransacted(pool, &statements, mysql::cell, mysql::rows_affected).await
             }
+        };
+
+        // Each statement's own elapsed time is known on success, so it gets
+        // its own log entry; a script that failed partway is logged as one
+        // entry for the whole buffer, since there is no per-statement result
+        // to point at.
+        match &result {
+            Ok(results) => {
+                for (statement, result) in statements.iter().zip(results) {
+                    self.log(
+                        &statement.text,
+                        QuerySource::User,
+                        result.elapsed,
+                        query_outcome(result),
+                    );
+                }
+            }
+            Err(error) => self.log(
+                sql,
+                QuerySource::User,
+                started.elapsed(),
+                QueryOutcome::Error(format!("{error:#}")),
+            ),
         }
+        result
     }
 
     /// Run a SQL dump against this connection.
@@ -611,6 +722,95 @@ impl Connection {
         })
     }
 
+    /// Every other connection to the server and what it is doing right now
+    /// (`pg_stat_activity` / `information_schema.processlist`), for the
+    /// process list. SQLite has no server to ask.
+    pub async fn processes(&self) -> Result<QueryResult> {
+        let sql = match self.config.engine {
+            Engine::Postgres => postgres::PROCESSES_SQL,
+            Engine::MySql => mysql::PROCESSES_SQL,
+            Engine::Sqlite => anyhow::bail!("SQLite has no server processes to list"),
+        };
+        self.run_query(sql).await
+    }
+
+    /// End a server process by the id [`Self::processes`] showed for it.
+    pub async fn kill_process(&self, id: &str) -> Result<()> {
+        if self.config.safety.is_read_only() {
+            anyhow::bail!("this connection is read-only");
+        }
+        let sql = match self.config.engine {
+            // `pg_terminate_backend` takes the backend's pid; the row's own
+            // id column is exactly that.
+            Engine::Postgres => format!(
+                "select pg_terminate_backend({})",
+                typed_placeholder(Engine::Postgres, 1, "INT4")
+            ),
+            Engine::MySql => "KILL ?".to_string(),
+            Engine::Sqlite => anyhow::bail!("SQLite has no server processes to end"),
+        };
+        self.execute(&sql, vec![Some(id.to_string())]).await?;
+        Ok(())
+    }
+
+    /// Every server configuration setting (`pg_settings` / `SHOW VARIABLES`),
+    /// with a `changed` column flagging one that no longer matches its
+    /// compiled-in default. SQLite is an embedded engine with no server-side
+    /// configuration to read this way.
+    pub async fn server_variables(&self) -> Result<QueryResult> {
+        let sql = match self.config.engine {
+            Engine::Postgres => postgres::VARIABLES_SQL,
+            Engine::MySql => mysql::VARIABLES_SQL,
+            Engine::Sqlite => anyhow::bail!("SQLite has no server variables to list"),
+        };
+        self.run_query(sql).await
+    }
+
+    /// The slow/frequent query digest — `pg_stat_statements` on Postgres,
+    /// `performance_schema.events_statements_summary_by_digest` on MySQL —
+    /// ranked by mean time per call. Both are opt-in instrumentation rather
+    /// than something a server always has running, so this checks first and
+    /// answers [`QueryDigest::Unavailable`] with a plain reason instead of a
+    /// bare query error when it is off. SQLite is an embedded engine with no
+    /// query instrumentation to read this way.
+    pub async fn query_digest(&self) -> Result<QueryDigest> {
+        match self.config.engine {
+            Engine::Postgres => {
+                let available = self.run_query(postgres::DIGEST_AVAILABLE_SQL).await?;
+                if available.rows.is_empty() {
+                    return Ok(QueryDigest::Unavailable(
+                        "pg_stat_statements is not installed on this server. Enable it with \
+                         `CREATE EXTENSION pg_stat_statements;` after adding it to \
+                         shared_preload_libraries and restarting the server."
+                            .to_string(),
+                    ));
+                }
+                let result = self.run_query(postgres::DIGEST_SQL).await?;
+                Ok(QueryDigest::Available(result))
+            }
+            Engine::MySql => {
+                let available = self.run_query(mysql::DIGEST_AVAILABLE_SQL).await?;
+                let on = available
+                    .rows
+                    .first()
+                    .and_then(|row| row.get(1))
+                    .and_then(|cell| cell.as_deref())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("ON"));
+                if !on {
+                    return Ok(QueryDigest::Unavailable(
+                        "performance_schema is off on this server. It cannot be turned on \
+                         while the server is running — set performance_schema=ON in its \
+                         configuration and restart."
+                            .to_string(),
+                    ));
+                }
+                let result = self.run_query(mysql::DIGEST_SQL).await?;
+                Ok(QueryDigest::Available(result))
+            }
+            Engine::Sqlite => anyhow::bail!("SQLite has no query digest to show"),
+        }
+    }
+
     /// Refuse a statement a read-only connection must not run.
     ///
     /// The server is told to refuse writes as well when the pool is opened;
@@ -634,11 +834,18 @@ impl Connection {
         if self.config.safety.is_read_only() {
             anyhow::bail!("this connection is read-only");
         }
-        match &self.pool {
+        let started = Instant::now();
+        let result = match &self.pool {
             Pool::Postgres(pool) => execute_with(pool, sql, params, postgres::rows_affected).await,
             Pool::MySql(pool) => execute_with(pool, sql, params, mysql::rows_affected).await,
             Pool::Sqlite(pool) => execute_with(pool, sql, params, sqlite::rows_affected).await,
-        }
+        };
+        let outcome = match &result {
+            Ok(affected) => QueryOutcome::Affected(*affected),
+            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+        };
+        self.log(sql, QuerySource::Internal, started.elapsed(), outcome);
+        result
     }
 
     /// Run every statement in `statements`, in order — the plain-`ALTER
@@ -655,8 +862,22 @@ impl Connection {
             anyhow::bail!("this connection is read-only");
         }
         match &self.pool {
-            Pool::Postgres(pool) => execute_script_transactional(pool, statements).await,
-            Pool::Sqlite(pool) => execute_script_transactional(pool, statements).await,
+            // MySQL runs one statement at a time through `execute`, which
+            // already logs each one; the transactional engines run as one
+            // unit with no per-statement result, so the batch is logged here
+            // instead.
+            Pool::Postgres(pool) => {
+                let started = Instant::now();
+                let result = execute_script_transactional(pool, statements).await;
+                self.log_script(statements, started.elapsed(), &result);
+                result
+            }
+            Pool::Sqlite(pool) => {
+                let started = Instant::now();
+                let result = execute_script_transactional(pool, statements).await;
+                self.log_script(statements, started.elapsed(), &result);
+                result
+            }
             Pool::MySql(_) => {
                 for (position, statement) in statements.iter().enumerate() {
                     self.execute(statement, Vec::new()).await.with_context(|| {
@@ -666,6 +887,21 @@ impl Connection {
                 Ok(())
             }
         }
+    }
+
+    /// Log a DDL batch that ran (or failed) as one unit, for engines whose
+    /// transaction leaves no per-statement result to log individually.
+    fn log_script(&self, statements: &[String], elapsed: Duration, result: &Result<()>) {
+        let outcome = match result {
+            Ok(()) => QueryOutcome::Ran,
+            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+        };
+        self.log(
+            &statements.join("; "),
+            QuerySource::Internal,
+            elapsed,
+            outcome,
+        );
     }
 
     /// Rebuild a SQLite table as one atomic change.
@@ -889,6 +1125,41 @@ where
         elapsed,
         affected,
     })
+}
+
+/// Run `sql` and read the first row's first column as raw bytes, bypassing
+/// the text `cell` mapping [`fetch_all`] uses for everything else.
+async fn fetch_binary_column<DB>(
+    pool: &sqlx::Pool<DB>,
+    sql: &str,
+    params: Vec<Cell>,
+    raw_bytes: fn(&DB::Row, usize) -> Option<Vec<u8>>,
+) -> Result<Option<Vec<u8>>>
+where
+    DB: Database,
+    for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> Option<String>: Encode<'q, DB>,
+    String: Type<DB>,
+{
+    let statement = AssertSqlSafe(sql.to_string()).into_sql_str();
+    let mut query = sqlx::query(statement);
+    for param in params {
+        query = query.bind(param);
+    }
+
+    let row = query.fetch_optional(pool).await?;
+    Ok(row.and_then(|row| raw_bytes(&row, 0)))
+}
+
+/// What a finished read did, for the query log — the same "rows, or rows
+/// affected" distinction [`QueryResult::summary`] draws for the status bar.
+fn query_outcome(result: &QueryResult) -> QueryOutcome {
+    if result.rows.is_empty() && result.affected.is_some() {
+        QueryOutcome::Affected(result.affected.unwrap_or_default())
+    } else {
+        QueryOutcome::Rows(result.row_count())
+    }
 }
 
 /// Split a driver's columns into their names and their type names.

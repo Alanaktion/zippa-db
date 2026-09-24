@@ -72,15 +72,52 @@ fn json_is_laid_out_and_a_query_result_cannot_be_edited(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
-fn a_value_that_was_never_read_says_so(cx: &mut TestAppContext) {
+fn a_binary_value_is_re_read_and_shown_as_a_hex_dump(cx: &mut TestAppContext) {
     let (_database, _handle, view) = table_view(cx);
     cx.run_until_parked();
 
-    // `payload` is a BLOB, so the grid only ever held a description of it.
+    // `payload` is a BLOB, so the grid only ever held a `<3 bytes>`
+    // description of it; the dialog opens with that stand-in, then a table
+    // view can still address row 1 by its key (`x'001122'`), so the real
+    // bytes are re-read and the dialog is replaced with them.
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.view_cell(0, 3, cx));
     cx.run_until_parked();
 
+    let request = pending_value(cx);
+    assert!(request.text.contains("00 11 22"), "{}", request.text);
+    assert!(request.save.is_none(), "the preview is read-only for now");
+}
+
+#[gpui_kit::test]
+fn a_query_result_cannot_re_read_its_binary_value(cx: &mut TestAppContext) {
+    use crate::db::query::blob;
+
+    let (_database, handle) = session_with_objects(cx);
+
+    handle
+        .update(cx, |session, _, cx| {
+            session.show_result_for_test(
+                QueryResult {
+                    columns: vec!["payload".into()],
+                    column_types: vec!["BLOB".into()],
+                    rows: vec![vec![blob(&[0x00, 0x11, 0x22])]],
+                    ..QueryResult::default()
+                },
+                cx,
+            );
+        })
+        .unwrap();
+
+    let grid = handle
+        .update(cx, |session, _, cx| session.active_grid(cx))
+        .unwrap()
+        .expect("a query tab has a grid");
+    grid.update(cx, |grid, cx| grid.view_cell(0, 0, cx));
+    cx.run_until_parked();
+
+    // A bare query result has no table to re-read the row from, so the
+    // dialog is left on the description the driver gave.
     let request = pending_value(cx);
     assert!(request.text.contains("not read back"));
     assert!(request.save.is_none(), "there is nothing to write back");

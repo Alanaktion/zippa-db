@@ -358,7 +358,8 @@ fn save(settings: &Settings) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
 
     let contents = serde_json::to_string_pretty(settings)?;
-    fs::write(&path, contents).with_context(|| format!("could not write {}", path.display()))
+    store::write_restricted(&path, &contents)
+        .with_context(|| format!("could not write {}", path.display()))
 }
 
 /// Under test the file is left alone: the settings the tests change are the

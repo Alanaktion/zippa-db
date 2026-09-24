@@ -20,7 +20,9 @@ from one native window.
   tab and across the top of its session.
 * **Safety modes** — per connection: *read-only* (enforced by the server and
   by a client-side check on your SQL), *confirm writes*, *staged* (the
-  default: edits wait until you apply them), or *auto-apply*.
+  default: edits wait until you apply them), or *auto-apply*. A connection
+  tagged "production" and set to auto-apply is warned about in the editor
+  and asks for confirmation before connecting.
 * **Tabs and docking** — several connections open at once, each with its own
   sidebar and a dock of query, table, and structure tabs that split and
   reorder by dragging. The window's connections, tabs, and query buffers are
@@ -31,9 +33,22 @@ from one native window.
   open and save `.sql` files.
 * **Query plans** — `EXPLAIN` and `EXPLAIN ANALYZE` as a readable tree with
   costs, rows, timing, and warnings.
+* **Console** — every statement the connection has sent, the app's own reads
+  and writes included, tagged apart from what a query tab actually ran.
+* **Process list** — who is connected to the server and what they're running
+  right now (Postgres and MySQL), pick rows and end them. SQLite has none.
+* **Server variables** — every runtime setting (Postgres and MySQL), searchable
+  and filterable to just what has changed from its compiled default. SQLite
+  has none.
+* **Query digest** — the slow and frequent statements the server has seen
+  (`pg_stat_statements` on Postgres, `performance_schema` on MySQL), ranked
+  by mean time. Says plainly when the instrumentation isn't installed or is
+  off, rather than erroring. SQLite has none.
 * **Table view** — paging, a row limit, click-to-sort, a filter bar
   (including `IN` with a subquery), a row panel showing the focused row as
-  fields, and a jump from a foreign key to the row it references.
+  fields, and a jump from a foreign key to the row it references. A binary
+  cell's value dialog re-reads the real bytes and shows an image preview or a
+  hex dump, rather than just the `<N bytes>` the grid shows.
 * **Staged editing** — type into cells, add rows, and mark rows for deletion;
   every pending change is marked in the grid (tint *and* underline or
   strike-through) and written together as `UPDATE`/`INSERT`/`DELETE`.
@@ -93,6 +108,7 @@ src/
 │   ├── statement.rs     # Splitting and classifying the user's own SQL
 │   ├── plan.rs          # Reading EXPLAIN output into a tree
 │   ├── query.rs         # QueryResult and cells
+│   ├── query_log.rs     # Every statement a connection has sent, for the console
 │   ├── export.rs        # CSV, TSV, JSON, Markdown, SQL INSERT
 │   ├── import/          # SQL dump import: runner, reader, splitter
 │   ├── runtime.rs       # Tokio runtime bridging sqlx futures back to GPUI
@@ -130,6 +146,10 @@ src/
     ├── plan_view.rs     # EXPLAIN tree
     ├── filter_bar.rs    # The filter lines above a table view
     ├── value_dialog.rs  # One cell's value, in full
+    ├── console.rs       # Every statement this connection has sent
+    ├── process_list.rs  # Who is connected and what they're doing (Postgres/MySQL)
+    ├── server_variables.rs # Runtime settings, searchable (Postgres/MySQL)
+    ├── query_digest.rs  # Slow/frequent statements, ranked (Postgres/MySQL)
     ├── import_dialog.rs # SQL dump import
     ├── quick_switcher.rs, schema_search.rs, shortcuts_dialog.rs
     ├── settings_window.rs, sql_file.rs
@@ -152,6 +172,10 @@ on Windows):
   accordingly if a buffer holds pasted secrets. It is written at checkpoints
   (opening, closing, running, saving) and on a normal quit, so text typed
   right before a crash may be lost.
+
+`connections.json`, `workspace.json`, and `settings.json` are all written
+owner-only (`0600`) on Unix, since the first two can hold a database's host
+and username or a pasted secret in a query buffer.
 * `settings.json` — written as you change settings.
 * `themes/` — drop theme files here, each a `{"themes": [ … ]}` set in the
   component library's format, and they show up in the theme pickers.
@@ -245,6 +269,10 @@ Most of these are also in the menu bar — File, Edit, Query, Table and View —
 | Close the active tab | `Cmd`/`Ctrl` + `W` |
 | Next / previous tab | `Ctrl` + `Tab` / `Ctrl` + `Shift` + `Tab` (or `Ctrl` + `PageDown` / `PageUp`) |
 | Refresh the schema and the open table | `Cmd`/`Ctrl` + `R` |
+| Open the console of every statement sent | `Cmd`/`Ctrl` + `` ` `` |
+| Open the process list (Postgres and MySQL) | `Cmd`/`Ctrl` + `Shift` + `P` |
+| Open the server variables (Postgres and MySQL) | `Cmd`/`Ctrl` + `Shift` + `V` |
+| Open the query digest (Postgres and MySQL) | `Cmd`/`Ctrl` + `Shift` + `D` |
 | Open a SQL file | `Cmd`/`Ctrl` + `O` |
 | Search the schema for a column, index, routine, or trigger | `Cmd`/`Ctrl` + `Shift` + `O` |
 | Open the quick switcher over tabs, objects, databases and actions | `Cmd`/`Ctrl` + `K` |

@@ -13,7 +13,8 @@ use gpui_kit::component::table::ColumnSort;
 use gpui_kit::component::{ResizableState, h_resizable, resizable_panel, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Window, actions, div, px,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Window, actions, div,
+    px,
 };
 
 use std::collections::HashSet;
@@ -22,9 +23,11 @@ use crate::db::query::Cell;
 use crate::db::{Connection, DatabaseObject, ForeignKeyDef, ObjectKind, RowKey, runtime};
 use crate::settings::{self, Settings};
 use crate::ui::data_grid::{
-    Copied, DataGrid, ExportRequested, GridEdit, GridNavigate, SortRequested, Sorting, StagedRow,
+    BinaryPreviewRequested, Copied, DataGrid, ExportRequested, GridEdit, GridNavigate,
+    SortRequested, Sorting, StagedRow,
 };
 use crate::ui::filter_bar::{FilterBar, FilterSpec, FiltersChanged, Operator};
+use crate::ui::value_dialog;
 
 mod export;
 mod footer;
@@ -204,6 +207,8 @@ impl TableView {
         cx.subscribe_in(&grid, window, Self::on_grid_export)
             .detach();
         cx.subscribe_in(&grid, window, Self::on_grid_copied)
+            .detach();
+        cx.subscribe_in(&grid, window, Self::on_binary_preview_requested)
             .detach();
         // The grid quotes copies for this connection's engine, and names this
         // table in a SQL `INSERT` copy; only this view knows either.
@@ -870,6 +875,34 @@ impl TableView {
     ) {
         self.notice = Some(event.message.clone());
         cx.notify();
+    }
+
+    /// The value dialog opened on a binary cell it could only describe; if
+    /// the row can still be addressed by its key, re-read the real bytes and
+    /// replace the dialog with a preview of them.
+    fn on_binary_preview_requested(
+        &mut self,
+        _: &Entity<DataGrid>,
+        event: &BinaryPreviewRequested,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((sql, params)) = self.binary_select(event.row, &event.column, cx) else {
+            return;
+        };
+
+        let column: SharedString = event.column.clone().into();
+        let connection = self.connection.clone();
+        let task = runtime::spawn(async move { connection.fetch_binary(&sql, params).await });
+
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(bytes))) = task.await else {
+                return;
+            };
+            this.update(cx, |_, cx| value_dialog::open_binary(column, bytes, cx))
+                .ok();
+        })
+        .detach();
     }
 
     /// A jump to a foreign key's referenced row was asked for from the row

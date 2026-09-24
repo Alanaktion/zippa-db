@@ -3,15 +3,19 @@
 //! Each submodule is a GPUI view (`Entity<T>` where `T: Render`) that owns its
 //! own state and notifies independently of the rest of the window.
 
+pub mod console;
 pub mod data_grid;
 pub mod engine;
 pub mod filter_bar;
 pub mod import_dialog;
 pub mod plan_view;
+pub mod process_list;
+pub mod query_digest;
 pub mod query_editor;
 pub mod quick_switcher;
 pub mod schema_search;
 pub mod schema_view;
+pub mod server_variables;
 pub mod session;
 pub mod settings_window;
 pub mod shortcuts_dialog;

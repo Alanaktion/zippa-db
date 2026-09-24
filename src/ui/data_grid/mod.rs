@@ -130,6 +130,16 @@ pub struct GridNavigate {
     pub col: usize,
 }
 
+/// A binary cell whose value the driver could only describe (`<N bytes>`) was
+/// asked to be viewed. The dialog has already opened on that stand-in; an
+/// owner that can re-read the row — a table view, never a bare query result —
+/// may answer with the real bytes and replace it. `row` is the result's own
+/// row index, the same as [`StagedRow::row`], not the display order.
+pub struct BinaryPreviewRequested {
+    pub row: usize,
+    pub column: String,
+}
+
 /// The picked rows were asked to be exported, in `format`.
 pub struct ExportRequested {
     pub format: Format,
@@ -201,6 +211,7 @@ impl Focusable for DataGrid {
 impl EventEmitter<SortRequested> for DataGrid {}
 impl EventEmitter<GridEdit> for DataGrid {}
 impl EventEmitter<GridNavigate> for DataGrid {}
+impl EventEmitter<BinaryPreviewRequested> for DataGrid {}
 impl EventEmitter<ExportRequested> for DataGrid {}
 impl EventEmitter<Copied> for DataGrid {}
 
@@ -857,6 +868,14 @@ impl DataGrid {
         // the display form, not the value itself.
         let text = format_value(&value, &type_name);
 
+        // Nothing was read back to show, but an owner that can address this
+        // row by its key may be able to fetch the real bytes and replace the
+        // dialog with a preview of them.
+        let binary_preview_row = (query::is_placeholder(&value)
+            && query::is_binary_type(&type_name))
+        .then(|| delegate.source(row_ix))
+        .flatten();
+
         // The stand-ins the driver hands back describe a value rather than
         // holding it, so there is nothing to edit and the window says why.
         let note = if query::is_placeholder(&value) {
@@ -890,13 +909,18 @@ impl DataGrid {
 
         value_dialog::open(
             ValueRequest {
-                column: column.into(),
+                column: column.clone().into(),
                 text,
                 note: note.map(Into::into),
                 save,
+                preview: None,
             },
             cx,
         );
+
+        if let Some(row) = binary_preview_row {
+            cx.emit(BinaryPreviewRequested { row, column });
+        }
     }
 
     /// Show the selected cell's value.

@@ -22,8 +22,9 @@ use crate::ui::data_grid::{
 };
 use crate::ui::query_editor::{Explain, ExplainAnalyze, RunQuery, RunScript};
 use crate::ui::session::{
-    CancelQuery, CloseTab, ImportSqlDump, NewTab, NextTab, OpenFile, PreviousTab, QuickSwitcher,
-    Refresh, SaveFile, SaveFileAs, SearchSchema,
+    CancelQuery, CloseTab, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile, OpenProcessList,
+    OpenQueryDigest, OpenServerVariables, PreviousTab, QuickSwitcher, Refresh, SaveFile,
+    SaveFileAs, SearchSchema,
 };
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -127,6 +128,10 @@ fn menus() -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Refresh", Refresh),
             MenuItem::action("Toggle Row Panel", ToggleRowPanel),
+            MenuItem::action("Console", OpenConsole),
+            MenuItem::action("Processes", OpenProcessList),
+            MenuItem::action("Server Variables", OpenServerVariables),
+            MenuItem::action("Query Digest", OpenQueryDigest),
             MenuItem::separator(),
             MenuItem::action("Next Tab", NextTab),
             MenuItem::action("Previous Tab", PreviousTab),
@@ -204,6 +209,10 @@ mod tests {
             ("Search Schema", TypeId::of::<SearchSchema>()),
             ("Refresh", TypeId::of::<Refresh>()),
             ("Toggle Row Panel", TypeId::of::<ToggleRowPanel>()),
+            ("Console", TypeId::of::<OpenConsole>()),
+            ("Processes", TypeId::of::<OpenProcessList>()),
+            ("Server Variables", TypeId::of::<OpenServerVariables>()),
+            ("Query Digest", TypeId::of::<OpenQueryDigest>()),
             ("Next Tab", TypeId::of::<NextTab>()),
             ("Previous Tab", TypeId::of::<PreviousTab>()),
             ("Next Connection", TypeId::of::<NextConnection>()),

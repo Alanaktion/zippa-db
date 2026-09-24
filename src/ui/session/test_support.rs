@@ -9,11 +9,15 @@ use gpui_kit::component::dock::DockArea;
 use gpui_kit::{App, Context, Entity, SharedString, Window};
 
 use crate::db::DatabaseObject;
+use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::import_dialog::ImportView;
 use crate::ui::plan_view::PlanView;
+use crate::ui::process_list::ProcessListView;
+use crate::ui::query_digest::QueryDigestView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
+use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::table_view::TableView;
 
 use super::Session;
@@ -91,6 +95,78 @@ impl Session {
     #[cfg(test)]
     pub(crate) fn active_schema_view(&self, cx: &App) -> Option<Entity<SchemaView>> {
         self.active_panel_for_test()?.read(cx).schema_view()
+    }
+
+    /// The console view in the active tab, if this is the console tab.
+    #[cfg(test)]
+    pub(crate) fn active_console_view(&self, cx: &App) -> Option<Entity<ConsoleView>> {
+        self.active_panel_for_test()?.read(cx).console_view()
+    }
+
+    /// Open the console tab, or bring it forward, the way the sidebar's
+    /// button does.
+    #[cfg(test)]
+    pub(crate) fn open_console_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_console(window, cx);
+    }
+
+    /// The process list view in the active tab, if this is the process list
+    /// tab.
+    #[cfg(test)]
+    pub(crate) fn active_process_list_view(&self, cx: &App) -> Option<Entity<ProcessListView>> {
+        self.active_panel_for_test()?.read(cx).process_list_view()
+    }
+
+    /// Open the process list tab, or bring it forward, the way the sidebar's
+    /// button does.
+    #[cfg(test)]
+    pub(crate) fn open_process_list_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_process_list(window, cx);
+    }
+
+    /// The server variables view in the active tab, if this is the server
+    /// variables tab.
+    #[cfg(test)]
+    pub(crate) fn active_server_variables_view(
+        &self,
+        cx: &App,
+    ) -> Option<Entity<ServerVariablesView>> {
+        self.active_panel_for_test()?
+            .read(cx)
+            .server_variables_view()
+    }
+
+    /// Open the server variables tab, or bring it forward, the way the
+    /// sidebar's button does.
+    #[cfg(test)]
+    pub(crate) fn open_server_variables_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_server_variables(window, cx);
+    }
+
+    /// The query digest view in the active tab, if this is the query digest
+    /// tab.
+    #[cfg(test)]
+    pub(crate) fn active_query_digest_view(&self, cx: &App) -> Option<Entity<QueryDigestView>> {
+        self.active_panel_for_test()?.read(cx).query_digest_view()
+    }
+
+    /// Open the query digest tab, or bring it forward, the way the sidebar's
+    /// button does.
+    #[cfg(test)]
+    pub(crate) fn open_query_digest_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_query_digest(window, cx);
     }
 
     /// Open `object`'s structure tab, the way the sidebar's row menu does.

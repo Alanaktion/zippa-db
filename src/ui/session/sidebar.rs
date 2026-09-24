@@ -15,11 +15,14 @@ use gpui_kit::prelude::*;
 use gpui_kit::{ClipboardItem, Context, Entity, SharedString, Window, div};
 use regex::Regex;
 
-use crate::db::{DatabaseObject, ObjectKind, StoredKind, StoredObject};
+use crate::db::{DatabaseObject, Engine, ObjectKind, StoredKind, StoredObject};
 use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
-use super::{ImportSqlDump, SearchSchema, Session, SessionEvent};
+use super::{
+    ImportSqlDump, OpenConsole, OpenProcessList, OpenQueryDigest, OpenServerVariables,
+    SearchSchema, Session, SessionEvent,
+};
 
 impl Session {
     pub(super) fn on_filter_event(
@@ -326,6 +329,70 @@ impl Session {
                     )
                     .on_click(cx.listener(|this, _, _window, cx| this.import_dump(cx))),
             )
+            .child(
+                Button::new("open-console")
+                    .outline()
+                    .small()
+                    .w_full()
+                    .label("Console")
+                    .tooltip_with_action(
+                        "Every statement this connection has sent",
+                        &OpenConsole,
+                        Some("Session"),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.open_console(window, cx))),
+            )
+            .when(self.connection.config.engine != Engine::Sqlite, |this| {
+                this.child(
+                    Button::new("open-process-list")
+                        .outline()
+                        .small()
+                        .w_full()
+                        .label("Processes")
+                        .tooltip_with_action(
+                            "Who is connected and what they're doing right now",
+                            &OpenProcessList,
+                            Some("Session"),
+                        )
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_process_list(window, cx)),
+                        ),
+                )
+            })
+            .when(self.connection.config.engine != Engine::Sqlite, |this| {
+                this.child(
+                    Button::new("open-server-variables")
+                        .outline()
+                        .small()
+                        .w_full()
+                        .label("Variables")
+                        .tooltip_with_action(
+                            "The server's own configuration",
+                            &OpenServerVariables,
+                            Some("Session"),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_server_variables(window, cx)
+                        })),
+                )
+            })
+            .when(self.connection.config.engine != Engine::Sqlite, |this| {
+                this.child(
+                    Button::new("open-query-digest")
+                        .outline()
+                        .small()
+                        .w_full()
+                        .label("Query Digest")
+                        .tooltip_with_action(
+                            "Slow and frequent statements, ranked by mean time",
+                            &OpenQueryDigest,
+                            Some("Session"),
+                        )
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_query_digest(window, cx)),
+                        ),
+                )
+            })
             .child(self.render_objects(cx))
             .child(
                 Button::new("disconnect")

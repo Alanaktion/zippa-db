@@ -25,6 +25,7 @@ known defects and risks in the shipped code are tracked in
 * Multi-column sorting
 * Column stats: count, distinct, null %, min/max, top values
 * Reorder columns by dragging a header (turned off today: the grid addresses cells by the result's column order)
+* Write a binary value from a file in the value dialog (the preview — image or hex — already reads the real bytes; see IDEAS.md)
 
 ## 3. SQL editor
 
@@ -54,7 +55,6 @@ known defects and risks in the shipped code are tracked in
 * Local query history, searchable by date, database, or text ([plan](.agents/plans/query-history.md))
 * Reusable SQL snippets ([plan](.agents/plans/sql-snippets.md))
 * Customizable keyboard shortcuts
-* Server activity view (`pg_stat_activity`, `SHOW PROCESSLIST`) with cancel/kill
 * "Copy diagnostics" in the Help menu: version, OS, recent errors
 
 ## 6. Platform & release

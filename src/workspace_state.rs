@@ -78,6 +78,19 @@ pub enum PanelState {
     Schema {
         object: DatabaseObject,
     },
+    /// The console tab. Carries nothing of its own — the log it shows lives
+    /// on the connection, not on disk — so restoring one just reopens it.
+    Console,
+    /// The process list tab. Carries nothing of its own, the same as the
+    /// console — restoring one just reopens it and it reads the server fresh.
+    Processes,
+    /// The server variables tab. Carries nothing of its own either — the
+    /// filter and the "changed only" toggle reset with a fresh read, the
+    /// same as any other tab that reopens rather than restores state.
+    Variables,
+    /// The query digest tab. Carries nothing of its own, the same as the
+    /// process list and server variables — it re-reads the server on open.
+    Digest,
     /// A panel kind a newer build wrote. It is skipped rather than failing the
     /// whole file, so a newer version's workspace still opens in an older one.
     #[serde(other)]
@@ -112,13 +125,13 @@ pub fn save(state: &WorkspaceState) -> Result<()> {
 
     let contents = serde_json::to_string_pretty(state)?;
     let temporary = dir.join(format!("{FILE_NAME}.tmp"));
-    fs::write(&temporary, &contents)
+    store::write_restricted(&temporary, &contents)
         .with_context(|| format!("could not write {}", temporary.display()))?;
 
     if let Err(error) = fs::rename(&temporary, &path) {
         // Windows will not replace an existing file with a rename, so fall back
         // to writing in place rather than leaving the workspace unsaved.
-        fs::write(&path, &contents)
+        store::write_restricted(&path, &contents)
             .with_context(|| format!("could not write {}: {error:#}", path.display()))?;
         let _ = fs::remove_file(&temporary);
     }

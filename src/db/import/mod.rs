@@ -584,11 +584,25 @@ fn destructive_count(head: &str) -> usize {
             let upper = statement.text.to_ascii_uppercase();
             match upper.split_whitespace().next().unwrap_or_default() {
                 "DROP" | "TRUNCATE" => true,
-                "DELETE" => !upper.contains(" WHERE "),
+                "DELETE" => !contains_word(&upper, "WHERE"),
                 _ => false,
             }
         })
         .count()
+}
+
+/// Whether `haystack` contains `needle` as a standalone word, not merely as a
+/// substring — so `DELETE FROM t WHERE(id>0)` and a `WHERE` set off by a
+/// newline both count as bounded, the way a plain `" WHERE "` search misses,
+/// while an identifier like `wherefore` that happens to start with the same
+/// letters does not falsely clear a real unbounded `DELETE`.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    haystack.match_indices(needle).any(|(start, _)| {
+        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+        let before = haystack[..start].chars().next_back();
+        let after = haystack[start + needle.len()..].chars().next();
+        !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char)
+    })
 }
 
 #[cfg(test)]
@@ -610,6 +624,22 @@ mod tests {
         let head =
             "DROP TABLE a;\nTRUNCATE b;\nDELETE FROM c WHERE id = 1;\nDELETE FROM d;\nSELECT 1;";
         assert_eq!(destructive_count(head), 3);
+    }
+
+    /// A `WHERE` set off by punctuation rather than a bare space either side
+    /// still bounds the `DELETE` — the bug a plain `" WHERE "` search missed.
+    #[test]
+    fn a_where_clause_with_no_space_before_it_still_bounds_the_delete() {
+        let head = "DELETE FROM c WHERE(id > 0);\nDELETE FROM d WHERE\nid = 1;";
+        assert_eq!(destructive_count(head), 0);
+    }
+
+    /// An identifier that merely starts with the same letters as the keyword
+    /// must not be mistaken for one, in either direction.
+    #[test]
+    fn an_identifier_starting_with_where_is_not_mistaken_for_the_keyword() {
+        let head = "DELETE FROM wherefore;";
+        assert_eq!(destructive_count(head), 1);
     }
 
     #[test]

@@ -18,6 +18,37 @@ pub(crate) const OBJECTS_SQL: &str = "SELECT table_schema, table_name, table_typ
      WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
      ORDER BY table_schema, table_name";
 
+/// Every other backend connected to this database, oldest activity first —
+/// the process list's own connection is left out, and so is a background
+/// worker, which has no `datname` of its own.
+pub(crate) const PROCESSES_SQL: &str = "SELECT pid, usename, datname, client_addr, state, \
+     now() - query_start AS duration, query \
+     FROM pg_stat_activity \
+     WHERE pid <> pg_backend_pid() AND datname IS NOT NULL \
+     ORDER BY query_start";
+
+/// Every server setting, with the "Changed" column the last one for
+/// `ui::server_variables` to find by position — `yes` when the running value
+/// no longer matches the compiled-in default (`boot_val`), blank otherwise.
+pub(crate) const VARIABLES_SQL: &str = "SELECT name, setting, unit, context, short_desc, \
+     CASE WHEN setting IS DISTINCT FROM boot_val THEN 'yes' ELSE '' END AS changed \
+     FROM pg_settings ORDER BY name";
+
+/// Whether `pg_stat_statements` is installed on this database — it is a
+/// contrib extension, not built in, and the digest has nothing to read
+/// without it.
+pub(crate) const DIGEST_AVAILABLE_SQL: &str =
+    "SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'";
+
+/// The digest itself, worst mean time first. `total_exec_time`/`mean_exec_time`
+/// are the column names from Postgres 13 on, when the `_exec_` infix was
+/// added to tell them apart from planning time; an older server has no
+/// digest view for this to fall back to.
+pub(crate) const DIGEST_SQL: &str = "SELECT query, calls, \
+     round(total_exec_time::numeric, 2) AS total_time_ms, \
+     round(mean_exec_time::numeric, 2) AS mean_time_ms, rows \
+     FROM pg_stat_statements ORDER BY mean_exec_time DESC LIMIT 200";
+
 /// Functions, procedures and sequences outside the system schemas and the
 /// extensions, with the argument types that tell overloads apart.
 pub(crate) const ROUTINES_SQL: &str = "SELECT n.nspname, p.proname, \
@@ -307,6 +338,13 @@ pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
     };
 
     value.or_else(|| query::unsupported(&type_name))
+}
+
+/// The raw bytes of one column, for a binary value preview asking for the
+/// bytes `cell` only ever summarizes. `Vec<u8>` alone does not tell a NULL
+/// apart from an empty value, so the target is `Option<Vec<u8>>`.
+pub(crate) fn raw_bytes(row: &PgRow, index: usize) -> Option<Vec<u8>> {
+    row.try_get::<Option<Vec<u8>>, _>(index).ok().flatten()
 }
 
 /// `{a,b,NULL}`, quoting the elements that need it.

@@ -17,6 +17,39 @@ pub(crate) const DATABASES_SQL: &str = "SELECT schema_name FROM information_sche
 pub(crate) const OBJECTS_SQL: &str = "SELECT table_schema, table_name, table_type \
      FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name";
 
+/// Every other connection to the server, longest-running first — this
+/// connection's own is left out. `info` (the running statement, if any) is
+/// truncated by the server unless `performance_schema` carries the full text,
+/// which this does not read.
+pub(crate) const PROCESSES_SQL: &str = "SELECT id, user, host, db, command, time, state, info \
+     FROM information_schema.processlist \
+     WHERE id <> CONNECTION_ID() \
+     ORDER BY time DESC";
+
+/// Every server variable, with the "Changed" column the last one for
+/// `ui::server_variables` to find by position — `yes` unless
+/// `performance_schema.variables_info` says the running value is still the
+/// one compiled in.
+pub(crate) const VARIABLES_SQL: &str = "SELECT v.VARIABLE_NAME, v.VARIABLE_VALUE, i.VARIABLE_SOURCE, \
+     CASE WHEN i.VARIABLE_SOURCE = 'COMPILED' THEN '' ELSE 'yes' END AS changed \
+     FROM performance_schema.global_variables v \
+     JOIN performance_schema.variables_info i ON v.VARIABLE_NAME = i.VARIABLE_NAME \
+     ORDER BY v.VARIABLE_NAME";
+
+/// Whether `performance_schema` is on — it is a compile-time-default-on
+/// server variable that cannot be flipped at runtime, and the digest table
+/// it feeds is empty without it.
+pub(crate) const DIGEST_AVAILABLE_SQL: &str = "SHOW VARIABLES LIKE 'performance_schema'";
+
+/// The digest itself, worst average time first. `*_timer_wait` columns are
+/// picoseconds, so `/ 1000000000.0` gives milliseconds.
+pub(crate) const DIGEST_SQL: &str = "SELECT digest_text, count_star, \
+     round(sum_timer_wait / 1000000000.0, 2) AS total_time_ms, \
+     round(avg_timer_wait / 1000000000.0, 2) AS avg_time_ms, sum_rows_examined \
+     FROM performance_schema.events_statements_summary_by_digest \
+     WHERE digest_text IS NOT NULL \
+     ORDER BY avg_timer_wait DESC LIMIT 200";
+
 /// Stored functions and procedures in the current database, with the parameter
 /// types that tell one signature from another. MySQL has no sequences. A
 /// function's return value is a row in `parameters` at position 0, so the
@@ -233,4 +266,11 @@ pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {
     };
 
     value.or_else(|| query::unsupported(&type_name))
+}
+
+/// The raw bytes of one column, for a binary value preview asking for the
+/// bytes `cell` only ever summarizes. `Vec<u8>` alone does not tell a NULL
+/// apart from an empty value, so the target is `Option<Vec<u8>>`.
+pub(crate) fn raw_bytes(row: &MySqlRow, index: usize) -> Option<Vec<u8>> {
+    row.try_get::<Option<Vec<u8>>, _>(index).ok().flatten()
 }

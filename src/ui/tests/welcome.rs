@@ -73,6 +73,57 @@ fn saving_a_connection_persists_its_tag_and_colour(cx: &mut TestAppContext) {
     }));
 }
 
+/// The footgun IDEAS.md's safety nudge exists to catch: a card for a
+/// production-tagged, auto-applying connection asks before connecting rather
+/// than opening straight away, the way an ordinary card does.
+#[gpui_kit::test]
+fn connecting_to_a_production_auto_apply_connection_asks_first(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let database = runtime::block_on(TempDatabase::new());
+    let config = ConnectionConfig {
+        tag: Some("Production".into()),
+        safety: SafetyMode::AutoApply,
+        ..database.config()
+    };
+    let id = config.id;
+
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("the active tab should be showing the connection manager");
+    welcome.update(cx, |welcome, cx| {
+        welcome.set_connections_for_test(vec![config], cx)
+    });
+
+    click_workspace(
+        cx,
+        &handle,
+        gpui_kit::SharedString::from(format!("connect-{id}")),
+    );
+
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "a production connection set to auto-apply should ask before connecting"
+    );
+    assert!(
+        handle
+            .update(cx, |workspace, _, _| workspace.active_session_for_test())
+            .unwrap()
+            .is_none(),
+        "connecting should wait for confirmation"
+    );
+
+    click_workspace(cx, &handle, "ok");
+
+    assert!(
+        handle
+            .update(cx, |workspace, _, _| workspace.active_session_for_test())
+            .unwrap()
+            .is_some(),
+        "confirming should connect"
+    );
+}
+
 #[gpui_kit::test]
 fn duplicating_a_connection_uses_a_new_id(cx: &mut TestAppContext) {
     let dir = ScratchDir::new();

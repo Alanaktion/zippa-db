@@ -146,7 +146,10 @@ impl Session {
             if script {
                 connection.run_script(&sql).await
             } else {
-                connection.run_query(&sql).await.map(|result| vec![result])
+                connection
+                    .run_query_as_user(&sql)
+                    .await
+                    .map(|result| vec![result])
             }
         });
         panel.update(cx, |panel, _| panel.set_running(task.abort_handle()));

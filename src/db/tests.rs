@@ -11,8 +11,8 @@ use uuid::Uuid;
 use super::query::Cell;
 use super::schema::ReferentialAction;
 use super::{
-    CatalogKind, Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, RowKey,
-    SafetyMode, TagColor, keyword_literal, quote_identifier, typed_placeholder,
+    CatalogKind, Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, QueryDigest,
+    RowKey, SafetyMode, TagColor, keyword_literal, quote_identifier, typed_placeholder,
 };
 
 pub(crate) struct TempDatabase {
@@ -91,6 +91,107 @@ async fn reads_columns_values_and_nulls() {
     assert_eq!(result.rows[1][1], None);
     assert_eq!(result.rows[1][2], None);
     assert_eq!(result.row_count(), 2);
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn fetch_binary_reads_the_real_bytes_a_query_only_describes() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    // `run_query` only ever hands back `<3 bytes>`; `fetch_binary` is the
+    // path that reads what those bytes actually are.
+    let described = connection
+        .run_query("SELECT payload FROM items WHERE id = 1")
+        .await
+        .expect("query failed");
+    assert_eq!(described.rows[0][0], Some("<3 bytes>".to_string()));
+
+    let bytes = connection
+        .fetch_binary(
+            "SELECT payload FROM items WHERE id = ?",
+            vec![Some("1".to_string())],
+        )
+        .await
+        .expect("fetch failed");
+    assert_eq!(bytes, Some(vec![0x00, 0x11, 0x22]));
+
+    // A NULL column and a row that matches nothing both come back empty
+    // rather than as an error.
+    let null = connection
+        .fetch_binary(
+            "SELECT payload FROM items WHERE id = ?",
+            vec![Some("2".to_string())],
+        )
+        .await
+        .expect("fetch failed");
+    assert_eq!(null, None);
+
+    let missing = connection
+        .fetch_binary(
+            "SELECT payload FROM items WHERE id = ?",
+            vec![Some("99".to_string())],
+        )
+        .await
+        .expect("fetch failed");
+    assert_eq!(missing, None);
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn sqlite_has_no_process_list() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let error = connection
+        .processes()
+        .await
+        .expect_err("SQLite has no server to list processes for");
+    assert!(error.to_string().contains("no server processes"));
+
+    let error = connection
+        .kill_process("1")
+        .await
+        .expect_err("SQLite has no server process to end");
+    assert!(error.to_string().contains("no server processes"));
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn sqlite_has_no_server_variables() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let error = connection
+        .server_variables()
+        .await
+        .expect_err("SQLite has no server-side configuration to list");
+    assert!(error.to_string().contains("no server variables"));
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn sqlite_has_no_query_digest() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let error = connection
+        .query_digest()
+        .await
+        .expect_err("SQLite has no query instrumentation to read");
+    assert!(error.to_string().contains("no query digest"));
 
     connection.close().await;
 }
@@ -1274,6 +1375,197 @@ async fn live_postgres_money_scales_by_the_servers_locale_not_always_by_100() {
         "a zero-digit locale's value should not be shown divided by 100"
     );
     yen.close().await;
+}
+
+/// `processes` reads every other connection's activity and `kill_process` can
+/// end one of them — the live half of the process list, since SQLite (the
+/// only engine the rest of this file exercises) has no server activity to
+/// read.
+///
+/// Ignored by default because it needs a server; see
+/// `live_postgres_money_scales_by_the_servers_locale_not_always_by_100` for
+/// how to start one. `cargo test -- --ignored live_postgres_processes`.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_processes_lists_and_kills_another_connection() {
+    let watcher = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    let victim = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+
+    let sleeper = tokio::spawn(async move { victim.run_query("SELECT pg_sleep(30)").await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let processes = watcher
+        .processes()
+        .await
+        .expect("could not read the process list");
+    let row = processes
+        .rows
+        .iter()
+        .find(|row| {
+            row.get(6)
+                .and_then(|cell| cell.as_deref())
+                .is_some_and(|query| query.contains("pg_sleep"))
+        })
+        .expect("the sleeping connection should be in the process list");
+    let pid = row[0].clone().expect("a pid");
+
+    watcher
+        .kill_process(&pid)
+        .await
+        .expect("could not end the sleeping connection");
+
+    let result = sleeper.await.expect("the task itself should not panic");
+    assert!(
+        result.is_err(),
+        "the killed connection's query should have been interrupted"
+    );
+
+    watcher.close().await;
+}
+
+/// The same, for MySQL's `information_schema.processlist` and `KILL`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_processes_lists_and_kills_another_connection() {
+    let (watcher, _watcher_pool) = live_mysql().await;
+    let (victim, _victim_pool) = live_mysql().await;
+
+    let sleeper = tokio::spawn(async move { victim.run_query("SELECT sleep(30)").await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let processes = watcher
+        .processes()
+        .await
+        .expect("could not read the process list");
+    let row = processes
+        .rows
+        .iter()
+        .find(|row| {
+            row.get(7)
+                .and_then(|cell| cell.as_deref())
+                .is_some_and(|info| info.contains("sleep"))
+        })
+        .expect("the sleeping connection should be in the process list");
+    let id = row[0].clone().expect("an id");
+
+    watcher
+        .kill_process(&id)
+        .await
+        .expect("could not end the sleeping connection");
+
+    let result = sleeper.await.expect("the task itself should not panic");
+    assert!(
+        result.is_err(),
+        "the killed connection's query should have been interrupted"
+    );
+
+    watcher.close().await;
+}
+
+/// `server_variables` reads `pg_settings`, with `max_connections` (a
+/// `postmaster`-context setting every server has) standing in for "the list
+/// actually came back shaped the way `VARIABLES_SQL` assumes."
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_server_variables_lists_max_connections() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+
+    let variables = connection
+        .server_variables()
+        .await
+        .expect("could not read the server variables");
+    let row = variables
+        .rows
+        .iter()
+        .find(|row| row[0].as_deref() == Some("max_connections"))
+        .expect("max_connections should be in pg_settings");
+    assert!(row[1].is_some(), "max_connections should have a value");
+
+    connection.close().await;
+}
+
+/// The same, for MySQL's `performance_schema.global_variables`/`variables_info`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_server_variables_lists_max_connections() {
+    let (connection, _pool) = live_mysql().await;
+
+    let variables = connection
+        .server_variables()
+        .await
+        .expect("could not read the server variables");
+    let row = variables
+        .rows
+        .iter()
+        .find(|row| {
+            row[0]
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case("max_connections"))
+        })
+        .expect("max_connections should be in performance_schema.global_variables");
+    assert!(row[1].is_some(), "max_connections should have a value");
+
+    connection.close().await;
+}
+
+/// `query_digest` is opt-in instrumentation on both engines, so a fresh test
+/// server may or may not have it installed/on; this checks the call never
+/// errors and, whichever branch it takes, that the branch itself is shaped
+/// right — `pg_stat_statements`' own columns when available, a reason naming
+/// the extension when not.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_query_digest_reports_availability() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+
+    // Give the digest something to have counted, if the extension happens
+    // to be installed and tracking this session.
+    let _ = connection.run_query("SELECT 1").await;
+
+    match connection
+        .query_digest()
+        .await
+        .expect("query_digest should not error, extension or not")
+    {
+        QueryDigest::Available(result) => {
+            assert!(
+                result.columns.contains(&"query".to_string()),
+                "the digest should carry pg_stat_statements' own columns"
+            );
+        }
+        QueryDigest::Unavailable(reason) => {
+            assert!(reason.contains("pg_stat_statements"));
+        }
+    }
+
+    connection.close().await;
+}
+
+/// The same, for MySQL's `performance_schema.events_statements_summary_by_digest`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_query_digest_reports_availability() {
+    let (connection, _pool) = live_mysql().await;
+
+    let _ = connection.run_query("SELECT 1").await;
+
+    match connection
+        .query_digest()
+        .await
+        .expect("query_digest should not error, performance_schema on or off")
+    {
+        QueryDigest::Available(result) => {
+            assert!(
+                result.columns.contains(&"digest_text".to_string()),
+                "the digest should carry events_statements_summary_by_digest's own columns"
+            );
+        }
+        QueryDigest::Unavailable(reason) => {
+            assert!(reason.contains("performance_schema"));
+        }
+    }
+
+    connection.close().await;
 }
 
 /// Open a Postgres connection for a live test, against the database named by
