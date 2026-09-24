@@ -1,0 +1,109 @@
+name: Release
+
+# Pushing a version tag (v0.1.0, v0.2.0-rc.1, ...) builds the installers with
+# cargo-packager (see [package.metadata.packager] in Cargo.toml) on each
+# platform and attaches them to a GitHub release for that tag.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check_version:
+    name: Check tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          crate=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "v${crate}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${crate}" >&2
+            exit 1
+          fi
+
+  package:
+    name: Package (${{ matrix.name }})
+    needs: check_version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: macOS aarch64
+            os: macos-latest
+            formats: dmg
+            files: "dist/*.dmg"
+          - name: Linux x86_64
+            os: ubuntu-latest
+            formats: appimage,deb
+            files: |
+              dist/*.AppImage
+              dist/*.deb
+          - name: Windows x86_64
+            os: windows-latest
+            formats: nsis
+            files: "dist/*.exe"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup update stable && rustup default stable
+
+      # GPUI compiles Metal shaders, which needs Xcode's Metal toolchain; newer
+      # Xcode releases ship it as a separate download.
+      - name: Metal toolchain
+        if: runner.os == 'macOS'
+        run: xcrun --find metal >/dev/null 2>&1 && xcrun metal --version || xcodebuild -downloadComponent MetalToolchain
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          ./script/linux
+          # The AppImage tooling itself needs FUSE (or extract-and-run).
+          sudo apt-get install -y libfuse2t64
+
+      - run: cargo install cargo-packager --locked
+
+      - name: Package
+        env:
+          # linuxdeploy runs inside CI without FUSE access, and its bundled
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          # `strip` chokes on newer toolchains' .relr.dyn sections.
+          NO_STRIP: "true"
+        run: cargo packager --release --formats ${{ matrix.formats }} --out-dir dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-${{ runner.os }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -l artifacts
+          prerelease=()
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "${GITHUB_REF_NAME}" artifacts/* \
+            --verify-tag \
+            --title "Zippa DB ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            "${prerelease[@]}"
