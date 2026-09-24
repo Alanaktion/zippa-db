@@ -194,7 +194,7 @@ and username or a pasted secret in a query buffer.
 * [Rust](https://www.rust-lang.org/) 1.95 or newer (latest stable is what CI uses)
 * OS dependencies:
   * **macOS:** Xcode (not just the Command Line Tools) with the Metal toolchain installed — GPUI compiles Metal shaders at build time. If `xcrun --find metal` fails, run `xcodebuild -downloadComponent MetalToolchain`.
-  * **Linux:** run `./script/linux`, which installs the build dependencies for most distributions (on Debian/Ubuntu the essentials are `libxkbcommon-x11-dev`, `libwayland-dev`, `libfontconfig-dev`, `libssl-dev`, and `lld`).
+  * **Linux:** run `./script/linux` (or `./script/linux test`, which adds `lld` for `cargo test`), which installs the build dependencies for most distributions. On Debian/Ubuntu that is `gcc`, `libfontconfig-dev`, `libssl-dev`, and `libxkbcommon-x11-dev`; Wayland, Vulkan, and D-Bus are only needed at run time.
   * **Windows:** Vulkan / Direct3D 12 drivers
 
 ### Building

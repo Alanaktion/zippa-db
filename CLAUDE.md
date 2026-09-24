@@ -18,7 +18,7 @@ cargo test -p zippa-db db::tests::   # module-scoped
 
 macOS build needs full Xcode (not just CLI tools) for the Metal toolchain — `xcrun --find metal` must succeed. If `xcode-select -p` points at CLI tools, either `sudo xcode-select -s /Applications/Xcode.app` or prefix commands with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
 
-CI (`.github/workflows/ci.yml`) runs `./script/linux`, then `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`; run the same three before pushing. `script/linux` installs the Linux build dependencies.
+CI (`.github/workflows/ci.yml`) runs `./script/linux`, then `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`; run the same three before pushing. `script/linux test` installs the Linux build dependencies plus `lld` (plain `script/linux` is the release-build set, which is what `release.yml` runs).
 
 ## Architecture
 

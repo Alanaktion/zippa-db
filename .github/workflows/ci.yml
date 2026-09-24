@@ -55,7 +55,7 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - run: ./script/linux
+      - run: ./script/linux test
       - run: >
           cargo clippy --all-targets
           --config 'profile.dev.package."*".opt-level=0'
@@ -77,7 +77,7 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - run: ./script/linux
+      - run: ./script/linux test
       - run: >
           cargo test --verbose
           --config 'profile.dev.package."*".opt-level=0'

@@ -1,7 +1,31 @@
 #!/usr/bin/env bash
-# This file is copied verbatim from Zed until we more clearly define Zippa deps
+# Installs the system packages Zippa DB needs on Linux, then rustup if there
+# is no Rust toolchain yet.
+#
+#   script/linux         what `cargo build --release` needs
+#   script/linux test    the same plus lld, which CI links with (RUSTFLAGS
+#                        `-C link-arg=-fuse-ld=lld`); it needs far less memory
+#                        than the default linker for the test binary
+#
+# The list is what the crate graph links against: a C compiler (zstd, sqlite,
+# and tree-sitter build their bundled C sources with `cc`), OpenSSL (sqlx's
+# native-tls), fontconfig and FreeType (font discovery, FreeType comes with
+# fontconfig), and xkbcommon plus xcb (keyboard input, xcb comes with
+# xkbcommon-x11). pkg-config arrives with those on Debian/Ubuntu and is listed
+# by name elsewhere. Wayland, Vulkan, and D-Bus are loaded at run time, so
+# they are needed to *run* the app but not to build it.
+#
+# Verified on Ubuntu 24.04 (a clean container: `cargo test` and
+# `cargo build --release` both pass with exactly the apt list below). The other
+# distributions' package names follow the same list but have not been run.
 
 set -xeuo pipefail
+
+mode="${1:-build}"
+case "$mode" in
+  build|test) ;;
+  *) echo "usage: script/linux [build|test]" >&2; exit 2 ;;
+esac
 
 # if root or if sudo/unavailable, define an empty variable
 if [ "$(id -u)" -eq 0 ]
@@ -13,7 +37,7 @@ function finalize {
   # after packages install (curl, etc), get the rust toolchain
   which rustup > /dev/null 2>&1 || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
   cat <<EOF
-Finished installing Linux dependencies with script/linux
+Finished installing Linux dependencies with script/linux ($mode)
 EOF
 }
 
@@ -21,67 +45,17 @@ EOF
 apt=$(command -v apt-get || true)
 if [[ -n $apt ]]; then
   deps=(
-    gcc
-    g++
-    libasound2-dev
-    libfontconfig-dev
-    libgit2-dev
-    libglib2.0-dev
-    libssl-dev
-    libva-dev
-    libvulkan1
-    libwayland-dev
-    libx11-xcb-dev
-    libxkbcommon-x11-dev
-    libzstd-dev
-    make
-    cmake
-    clang
-    lld
-    llvm
-    jq
-    git
+    ca-certificates
     curl
-    gettext-base
-    elfutils
-    libsqlite3-dev
-    musl-tools
-    musl-dev
-    build-essential
-    pipewire
-    xdg-desktop-portal
+    gcc
+    libfontconfig-dev
+    libssl-dev
+    libxkbcommon-x11-dev
   )
-  if (grep -qP 'PRETTY_NAME="(Debian|Raspbian).+13' /etc/os-release); then
-      # libstdc++-14-dev is in build-essential
-      true
-  elif (grep -qP 'PRETTY_NAME="(Linux Mint 22|.+24\.(04|10))' /etc/os-release); then
-    deps+=( libstdc++-14-dev )
-  elif (grep -qP 'PRETTY_NAME="((Debian|Raspbian).+12|Linux Mint 21|.+22\.04)' /etc/os-release); then
-    deps+=( libstdc++-12-dev )
-  elif (grep -qP 'PRETTY_NAME="((Debian|Raspbian).+11|Linux Mint 20|.+20\.04)' /etc/os-release); then
-    # Ubuntu 20.04 ships clang-10 and libstdc++-10 which lack adequate C++20
-    # support for building webrtc-sys (requires -std=c++20, lambdas in
-    # unevaluated contexts from clang 17+, and working std::ranges in the
-    # stdlib).
-    # Note: the prebuilt libwebrtc.a is compiled with libstdc++, so we must
-    # use libstdc++ (not libc++) to avoid ABI mismatches at link time.
-
-    # libstdc++-11-dev (headers with working pointer_traits/contiguous_range)
-    # is only available from the ubuntu-toolchain-r PPA. Add the source list
-    # and GPG key manually instead of using add-apt-repository, whose HKP
-    # keyserver lookups (port 11371) frequently time out in CI.
-    $maysudo "$apt" install -y curl gnupg
-    codename=$(lsb_release -cs)
-    echo "deb https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu $codename main" | \
-      $maysudo tee /etc/apt/sources.list.d/ubuntu-toolchain-r-test.list > /dev/null
-    curl -fsSL 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x1E9377A2BA9EF27F' | \
-      sed -n '/-----BEGIN PGP PUBLIC KEY BLOCK-----/,/-----END PGP PUBLIC KEY BLOCK-----/p' | \
-      $maysudo gpg --dearmor -o /etc/apt/trusted.gpg.d/ubuntu-toolchain-r-test.gpg
-    deps+=( clang-18 libstdc++-11-dev )
-  fi
+  [[ $mode == test ]] && deps+=( lld )
 
   $maysudo "$apt" update
-  $maysudo "$apt" install -y "${deps[@]}"
+  $maysudo "$apt" install -y --no-install-recommends "${deps[@]}"
 
   finalize
   exit 0
@@ -95,46 +69,14 @@ yum=$(command -v yum || true)
 if [[ -n $dnf ]] || [[ -n $yum ]]; then
   pkg_cmd="${dnf:-${yum}}"
   deps=(
-    musl-gcc
-    gcc
-    clang
-    cmake
-    alsa-lib-devel
+    curl
     fontconfig-devel
-    glib2-devel
-    libva-devel
-    wayland-devel
-    libxcb-devel
+    gcc
     libxkbcommon-x11-devel
     openssl-devel
-    libzstd-devel
-    vulkan-loader
-    sqlite-devel
-    pipewire
-    xdg-desktop-portal
-    jq
-    git
-    tar
+    pkgconf-pkg-config
   )
-  # perl used for building openssl-sys crate. See: https://docs.rs/openssl/latest/openssl/
-  if grep -qP '^ID="?(fedora)' /etc/os-release; then
-    deps+=(
-      perl-FindBin
-      perl-IPC-Cmd
-      perl-File-Compare
-      perl-File-Copy
-    )
-  elif grep -qP '^ID="?(rhel|rocky|alma|centos|ol)' /etc/os-release; then
-    deps+=( perl-interpreter )
-  fi
-
-  # gcc-c++ is g++ on RHEL8 and 8.x clones
-  if grep -qP '^ID="?(rhel|rocky|alma|centos|ol)' /etc/os-release \
-      && grep -qP '^VERSION_ID="?(8)' /etc/os-release; then
-    deps+=( gcc-c++ )
-  else
-    deps+=( g++ )
-  fi
+  [[ $mode == test ]] && deps+=( lld )
 
   # libxkbcommon-x11-devel is in a non-default repo on RHEL 8.x/9.x (except on AmazonLinux)
   if grep -qP '^VERSION_ID="?(8|9)' /etc/os-release && grep -qP '^ID="?(rhel|rocky|centos|alma|ol)' /etc/os-release; then
@@ -162,32 +104,14 @@ fi
 zyp=$(command -v zypper || true)
 if [[ -n $zyp ]]; then
   deps=(
-    alsa-devel
-    clang
-    cmake
+    curl
     fontconfig-devel
     gcc
-    libva-devel
-    gcc-c++
-    glib2-devel
-    git
-    gzip
-    jq
-    libvulkan1
-    libx11-devel
-    libxcb-devel
-    libxkbcommon-devel
+    libopenssl-devel
     libxkbcommon-x11-devel
-    libzstd-devel
-    make
-    openssl-devel
-    sqlite3-devel
-    tar
-    wayland-devel
-    xcb-util-devel
-    pipewire
-    xdg-desktop-portal
+    pkg-config
   )
+  [[ $mode == test ]] && deps+=( lld )
   $maysudo "$zyp" install -y "${deps[@]}"
   finalize
   exit 0
@@ -198,27 +122,14 @@ fi
 pacman=$(command -v pacman || true)
 if [[ -n $pacman ]]; then
   deps=(
-    gcc
-    clang
-    musl
-    cmake
-    alsa-lib
+    curl
     fontconfig
-    glib2
-    libva
-    wayland
-    libgit2
-    libxcb
+    gcc
     libxkbcommon-x11
     openssl
-    zstd
     pkgconf
-    sqlite
-    pipewire
-    xdg-desktop-portal
-    jq
-    git
   )
+  [[ $mode == test ]] && deps+=( lld )
   $maysudo "$pacman" -Syu --needed --noconfirm "${deps[@]}"
   finalize
   exit 0
@@ -229,26 +140,14 @@ fi
 xbps=$(command -v xbps-install || true)
 if [[ -n $xbps ]]; then
   deps=(
-    gettext-devel
-    clang
-    cmake
-    jq
-    elfutils-devel
-    gcc
-    alsa-lib-devel
+    curl
     fontconfig-devel
-    glib-devel
-    libva-devel
-    libxcb-devel
+    gcc
     libxkbcommon-devel
-    libzstd-devel
     openssl-devel
-    wayland-devel
-    vulkan-loader
-    sqlite-devel
-    pipewire
-    xdg-desktop-portal
+    pkg-config
   )
+  [[ $mode == test ]] && deps+=( lld )
   $maysudo "$xbps" -Syu "${deps[@]}"
   finalize
   exit 0
@@ -259,22 +158,14 @@ fi
 emerge=$(command -v emerge || true)
 if [[ -n $emerge ]]; then
   deps=(
-    app-arch/zstd
-    app-misc/jq
-    dev-libs/glib
     dev-libs/openssl
-    dev-libs/wayland
-    dev-build/cmake
-    media-libs/alsa-lib
+    dev-util/pkgconf
     media-libs/fontconfig
-    media-libs/libva
-    media-libs/vulkan-loader
-    x11-libs/libxcb
+    net-misc/curl
+    sys-devel/gcc
     x11-libs/libxkbcommon
-    dev-db/sqlite
-    media-video/pipewire
-    sys-apps/xdg-desktop-portal
   )
+  [[ $mode == test ]] && deps+=( llvm-core/lld )
   $maysudo "$emerge" -u "${deps[@]}"
   finalize
   exit 0
