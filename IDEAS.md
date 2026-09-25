@@ -28,23 +28,7 @@ value dialog to stage a binary value, parallel to the existing text box.
   the same "driver type sqlx can decode but the app can't show" gap, just
   for the type that shows up most in a typical app schema.
 
-## ~~2. Server admin & performance tools~~ — shipped
-
-All three pieces are done: the process list (`ui/process_list.rs`,
-`Connection::processes`/`kill_process`) shows `pg_stat_activity` /
-`information_schema.processlist` in a `DataGrid` the same way the console
-shows the query log, pick rows and "End Selected" to
-`pg_terminate_backend`/`KILL` them; server variables (`ui/server_variables.rs`,
-`Connection::server_variables`) lists `pg_settings` / `SHOW VARIABLES`,
-searchable by name with a client-side "changed only" toggle; the query digest
-(`ui/query_digest.rs`, `Connection::query_digest`) ranks
-`pg_stat_statements` / `performance_schema.events_statements_summary_by_digest`
-by mean time, checking first whether the instrumentation is installed/on and
-saying so plainly rather than erroring when it isn't. All three are gated off
-entirely for SQLite (there's no server to ask) and reuse `DataGrid` rather
-than building their own table.
-
-## 3. Chart integration for results and performance data
+## 2. Chart integration for results and performance data
 
 `gpui-kit` already ships chart components (`chart::{AreaChart, BarChart,
 LineChart, PieChart, RadarChart}`, plus `plot::Plot` with `#[derive(IntoPlot)]`)
@@ -68,7 +52,7 @@ reuse work already planned:
 * **Admin dashboards** — a natural home for the process-count/query-digest
   data idea 2 already shipped.
 
-## 4. Database user & permission management
+## 3. Database user & permission management
 
 `CREATE ROLE`/`CREATE USER`, `GRANT`/`REVOKE`, and a read-only view of who
 can do what — useful for a web developer setting up a per-service account or
@@ -86,17 +70,6 @@ else in the app). Worth sequencing after the others:
 
 ## Smaller ideas worth keeping around
 
-* ~~A safety nudge tied to the connection's own tag.~~ Shipped: the editor
-  already warned inline when a production-tagged connection was set to
-  `AutoApply`; a card click on one now also asks for confirmation before
-  connecting (`ConnectionConfig::is_risky_auto_apply`/`is_risky_auto_apply`
-  in `db/config.rs`, `Welcome::connect_saved_with_confirmation`). The rule
-  is shared by both — a tag whose text contains "prod" — so the editor's
-  banner and the launcher's dialog never disagree. The automatic restore on
-  launch is deliberately left alone (it goes through `Welcome::open` and
-  `connect_saved` directly, bypassing the new gate), since asking about
-  every restored production tab on every launch would be its own kind of
-  footgun.
 * **A tree view for JSON/JSONB values.** `value_dialog`/`format_value`
   already lays JSON out over multiple lines with `serde_json`; a collapsible
   tree (keys foldable, values still editable as text) would help far more
