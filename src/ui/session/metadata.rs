@@ -3,16 +3,26 @@
 
 use std::sync::Arc;
 
-use gpui_kit::component::button::Button;
 use gpui_kit::component::button::ButtonVariants as _;
+use gpui_kit::component::button::{Button, ButtonCustomVariant};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{Disableable, Sizable};
+use gpui_kit::component::{ActiveTheme as _, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, px};
 
 use crate::db::{Catalog, CatalogEntry, runtime};
 
 use super::{Session, SessionEvent, Status};
+
+/// A ghost button whose text is the theme's muted colour: it reads as
+/// chrome until hovered, for controls that should not compete with content.
+fn subtle_variant(cx: &gpui_kit::App) -> ButtonCustomVariant {
+    let theme = cx.theme();
+    ButtonCustomVariant::new(cx)
+        .foreground(theme.muted_foreground)
+        .hover(theme.accent)
+        .active(theme.secondary_active)
+}
 
 impl Session {
     /// Read the database list and the current database's tables and views.
@@ -188,7 +198,7 @@ impl Session {
         // its "databases" (main, plus attachments) are not separate files.
         if this.connection.config.engine.is_file_based() {
             return Button::new("database")
-                .ghost()
+                .custom(subtle_variant(cx))
                 .xsmall()
                 .max_w(px(160.))
                 .icon(gpui_kit::assets::IconName::Database)
@@ -209,7 +219,7 @@ impl Session {
         };
 
         Button::new("database")
-            .ghost()
+            .custom(subtle_variant(cx))
             .xsmall()
             .max_w(px(160.))
             .icon(gpui_kit::assets::IconName::Database)
