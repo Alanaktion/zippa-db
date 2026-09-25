@@ -236,7 +236,6 @@ impl RowPanel {
         h_flex()
             .gap_1()
             .p_2()
-            .items_center()
             .child(
                 div().flex_1().child(
                     Input::new(&self.filter_input)

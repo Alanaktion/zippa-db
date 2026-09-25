@@ -273,7 +273,6 @@ fn item_for(entry: &CatalogEntry) -> CommandItem {
                 .w_full()
                 .min_w_0()
                 .gap_2()
-                .items_center()
                 .child(Icon::new(icon).size_4().flex_none().text_color(muted(cx)))
                 .child(div().flex_1().min_w_0().truncate().child(name.clone()))
                 .when(!meta.is_empty(), |this| {

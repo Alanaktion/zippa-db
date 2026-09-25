@@ -127,12 +127,10 @@ impl ServerVariablesView {
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .id("server-variables-toolbar")
-            .w_full()
             .flex_none()
             .px_2()
             .py_1()
             .gap_2()
-            .items_center()
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().status_bar)
@@ -148,15 +146,14 @@ impl ServerVariablesView {
                     .checked(self.changed_only)
                     .on_click(cx.listener(|this, _, _window, cx| this.toggle_changed_only(cx))),
             )
-            .child(div().flex_1())
-            .when(self.loading, |this| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Loading…"),
-                )
-            })
+            .child(
+                div()
+                    .flex_1()
+                    .text_right()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .when(self.loading, |this| this.child("Loading…")),
+            )
             .child(
                 Button::new("refresh-server-variables")
                     .ghost()

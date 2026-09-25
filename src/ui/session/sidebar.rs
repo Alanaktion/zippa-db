@@ -323,7 +323,6 @@ impl Session {
             .segmented()
             .small()
             .text_sm()
-            .w_full()
             .selected_index(self.sidebar_tab.index())
             .on_click(cx.listener(|this, index: &usize, _window, cx| {
                 let tab = SidebarTab::from_index(*index);
@@ -352,8 +351,6 @@ impl Session {
     /// filter's line rather than as full-width buttons of their own.
     fn render_object_filter(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
-            .w_full()
-            .items_center()
             .gap_1()
             .child(
                 Input::new(&self.filter)
@@ -483,13 +480,11 @@ fn tool_row(
     Button::new(id)
         .ghost()
         .small()
-        .w_full()
         .accessibility_label(label)
         .tooltip_with_action(tooltip, action, Some("Session"))
         .child(
             h_flex()
                 .w_full()
-                .items_center()
                 .gap_2()
                 .child(Icon::new(icon).small())
                 .child(div().min_w_0().truncate().child(label)),

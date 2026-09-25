@@ -1141,29 +1141,20 @@ impl Render for TableView {
             .on_action(cx.listener(Self::on_restore_rows))
             .on_action(cx.listener(Self::on_toggle_row_panel))
             .child(self.filters.clone())
-            .child(if self.row_panel_visible {
-                div()
-                    .flex_1()
-                    .min_h_0()
+            .child(div().flex_1().min_h_0().child(if self.row_panel_visible {
+                h_resizable("table-view-columns")
+                    .with_state(&self.columns_pane)
+                    .child(resizable_panel().child(self.grid.clone()))
                     .child(
-                        h_resizable("table-view-columns")
-                            .with_state(&self.columns_pane)
-                            .child(resizable_panel().child(self.grid.clone()))
-                            .child(
-                                resizable_panel()
-                                    .size(px(280.))
-                                    .size_range(px(220.)..px(480.))
-                                    .child(self.row_panel.clone()),
-                            ),
+                        resizable_panel()
+                            .size(px(280.))
+                            .size_range(px(220.)..px(480.))
+                            .child(self.row_panel.clone()),
                     )
                     .into_any_element()
             } else {
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.grid.clone())
-                    .into_any_element()
-            })
+                self.grid.clone().into_any_element()
+            }))
             .when(self.confirming.is_some(), |this| {
                 this.child(self.render_confirm(cx))
             })

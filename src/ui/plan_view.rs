@@ -180,7 +180,6 @@ impl PlanView {
                 .w(px(SHARE_WIDTH))
                 .flex_none()
                 .gap_1()
-                .items_center()
                 .child(
                     div()
                         .w(px(BAR_WIDTH))
@@ -216,13 +215,11 @@ impl PlanView {
                     .w_full()
                     .min_w_0()
                     .gap_2()
-                    .items_center()
                     .child(
                         h_flex()
                             .flex_1()
                             .min_w_0()
                             .gap_1()
-                            .items_center()
                             .child(
                                 div()
                                     .w(px(INDENT))
@@ -275,12 +272,10 @@ impl PlanView {
         let count = warnings.len();
 
         h_flex()
-            .w_full()
             .flex_none()
             .px_2()
             .py_1()
             .gap_2()
-            .items_center()
             .justify_between()
             .border_b_1()
             .border_color(cx.theme().border)
@@ -288,7 +283,6 @@ impl PlanView {
                 h_flex()
                     .min_w_0()
                     .gap_2()
-                    .items_center()
                     .child(
                         div()
                             .text_xs()
@@ -385,7 +379,6 @@ impl PlanView {
                         .child(
                             h_flex()
                                 .gap_2()
-                                .items_center()
                                 .child(
                                     Icon::new(IconName::TriangleAlert)
                                         .xsmall()
@@ -432,7 +425,6 @@ impl PlanView {
         };
 
         h_flex()
-            .w_full()
             .flex_none()
             .px_2()
             .py_1()
@@ -488,16 +480,14 @@ impl Render for PlanView {
                         .child(plan.raw.clone()),
                 )
                 .into_any_element(),
-            Some(_) => v_flex()
+            Some(_) => div()
                 .flex_1()
                 .min_h_0()
                 .child(
-                    div().flex_1().min_h_0().child(
-                        tree(&self.tree, move |_ix, entry, _selected, _window, cx| {
-                            this.update(cx, |this, cx| this.row(entry, cx))
-                        })
-                        .size_full(),
-                    ),
+                    tree(&self.tree, move |_ix, entry, _selected, _window, cx| {
+                        this.update(cx, |this, cx| this.row(entry, cx))
+                    })
+                    .size_full(),
                 )
                 .into_any_element(),
         };

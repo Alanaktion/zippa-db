@@ -168,16 +168,20 @@ fn row(what: &'static str, keys: &'static [&'static str]) -> impl IntoElement {
         .gap_4()
         .text_sm()
         .child(div().child(what))
-        .child(h_flex().flex_none().gap_1().items_center().children(
-            keys.iter().enumerate().flat_map(|(ix, keys)| {
-                let separator = (ix > 0).then(|| div().text_xs().child("or").into_any_element());
-                let stroke = Keystroke::parse(keys)
-                    .unwrap_or_else(|_| panic!("bad keystroke {keys:?} in the shortcut list"));
-                separator
-                    .into_iter()
-                    .chain([Kbd::new(stroke).into_any_element()])
-            }),
-        ))
+        .child(
+            h_flex()
+                .flex_none()
+                .gap_1()
+                .children(keys.iter().enumerate().flat_map(|(ix, keys)| {
+                    let separator =
+                        (ix > 0).then(|| div().text_xs().child("or").into_any_element());
+                    let stroke = Keystroke::parse(keys)
+                        .unwrap_or_else(|_| panic!("bad keystroke {keys:?} in the shortcut list"));
+                    separator
+                        .into_iter()
+                        .chain([Kbd::new(stroke).into_any_element()])
+                })),
+        )
 }
 
 #[cfg(test)]

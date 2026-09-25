@@ -364,7 +364,6 @@ impl FilterBar {
         let operator = self.operator_of(index, cx).unwrap_or(Operator::Equals);
 
         h_flex()
-            .w_full()
             .gap_2()
             .child(
                 div().w(px(180.)).child(
@@ -420,7 +419,6 @@ impl Render for FilterBar {
             .collect();
 
         v_flex()
-            .w_full()
             .flex_none()
             .px_2()
             .py_1()
@@ -430,7 +428,6 @@ impl Render for FilterBar {
             .children(rows)
             .child(
                 h_flex()
-                    .w_full()
                     .gap_2()
                     .child(
                         Button::new("add-filter")

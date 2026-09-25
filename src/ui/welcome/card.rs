@@ -40,15 +40,12 @@ pub(super) fn render_card(
 
     div()
         .id(SharedString::from(format!("card-{id}")))
-        .w_full()
-        .flex_none()
         .rounded_md()
         .border_1()
         .border_color(cx.theme().border)
         .overflow_hidden()
         .child(
             h_flex()
-                .w_full()
                 .items_stretch()
                 // The environment colour, four pixels down the leading edge;
                 // the tag text beside it carries the same information.
@@ -75,12 +72,7 @@ pub(super) fn render_card(
                         }))
                         .child(card_body(config, connecting, cx)),
                 )
-                .child(
-                    h_flex()
-                        .items_center()
-                        .px_2()
-                        .child(actions_button(id, &name, &weak)),
-                ),
+                .child(h_flex().px_2().child(actions_button(id, &name, &weak))),
         )
         .into_any_element()
 }
@@ -93,14 +85,13 @@ fn card_body(config: &ConnectionConfig, connecting: bool, cx: &App) -> impl Into
         .gap_0p5()
         .py_2()
         .px_3()
-        .child(div().w_full().text_sm().truncate().child(if connecting {
+        .child(div().text_sm().truncate().child(if connecting {
             "Connecting…".to_string()
         } else {
             config.display_name()
         }))
         .child(
             div()
-                .w_full()
                 .text_xs()
                 .truncate()
                 .text_color(cx.theme().muted_foreground)
@@ -108,12 +99,9 @@ fn card_body(config: &ConnectionConfig, connecting: bool, cx: &App) -> impl Into
         )
         .child(
             h_flex()
-                .w_full()
-                .items_center()
                 .gap_2()
                 .child(
                     h_flex()
-                        .items_center()
                         .gap_1()
                         // The engine's logo in its own colour; the label beside
                         // it names the engine, so the mark is never the only cue.

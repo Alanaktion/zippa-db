@@ -245,7 +245,6 @@ impl Render for QueryEditor {
             .border_color(cx.theme().border)
             .child(
                 h_flex()
-                    .w_full()
                     .px_2()
                     .py_1()
                     .gap_2()

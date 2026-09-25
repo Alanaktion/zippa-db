@@ -164,13 +164,11 @@ impl SqliteMaintenanceView {
 
         h_flex()
             .id("sqlite-maintenance-toolbar")
-            .w_full()
             .flex_none()
             .flex_wrap()
             .px_2()
             .py_1()
             .gap_2()
-            .items_center()
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().status_bar)

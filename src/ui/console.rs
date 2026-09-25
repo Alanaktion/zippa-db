@@ -71,17 +71,16 @@ impl ConsoleView {
         let count = self.entries;
         h_flex()
             .id("console-toolbar")
-            .w_full()
             .flex_none()
             .px_2()
             .py_1()
             .gap_2()
-            .items_center()
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().status_bar)
             .child(
                 div()
+                    .flex_1()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(format!(
@@ -93,7 +92,6 @@ impl ConsoleView {
                         }
                     )),
             )
-            .child(div().flex_1())
             .child(
                 Button::new("refresh-console")
                     .ghost()

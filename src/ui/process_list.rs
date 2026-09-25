@@ -156,34 +156,24 @@ impl ProcessListView {
 
         h_flex()
             .id("process-list-toolbar")
-            .w_full()
             .flex_none()
             .px_2()
             .py_1()
             .gap_2()
-            .items_center()
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().status_bar)
-            .when(self.loading, |this| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Loading…"),
-                )
-            })
-            .when(!self.loading, |this| {
-                this.when_some(self.notice.clone(), |this, notice| {
-                    this.child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(notice),
-                    )
-                })
-            })
-            .child(div().flex_1())
+            .child(
+                div()
+                    .flex_1()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(if self.loading {
+                        "Loading…".to_string()
+                    } else {
+                        self.notice.clone().unwrap_or_default()
+                    }),
+            )
             .when(!read_only, |this| {
                 this.child(
                     Button::new("kill-selected-processes")

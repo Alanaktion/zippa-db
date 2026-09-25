@@ -330,7 +330,6 @@ impl ConnectionEditor {
             .child(
                 h_flex()
                     .gap_1()
-                    .items_center()
                     .children(TagColor::ALL.map(|color| {
                         let selected = self.color == Some(color);
                         Button::new(SharedString::from(format!("color-{}", color.key())))
@@ -469,7 +468,6 @@ impl Render for ConnectionEditor {
             )
             .child(
                 h_flex()
-                    .w_full()
                     .flex_none()
                     .gap_2()
                     .justify_end()

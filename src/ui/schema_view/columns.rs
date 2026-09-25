@@ -150,13 +150,12 @@ impl SchemaView {
             ))
             .child(sized(
                 TableCell::new().child(
-                    div().w_full().min_w_0().child(
-                        Input::new(&column.name)
-                            .id(SharedString::from(format!("column-name-{id}")))
-                            .xsmall()
-                            .readonly(!editable || dropped)
-                            .when(dropped, |this| this.line_through()),
-                    ),
+                    Input::new(&column.name)
+                        .id(SharedString::from(format!("column-name-{id}")))
+                        .xsmall()
+                        .min_w_0()
+                        .readonly(!editable || dropped)
+                        .when(dropped, |this| this.line_through()),
                 ),
                 COL_NAME,
             ))
@@ -178,12 +177,11 @@ impl SchemaView {
             ))
             .child(sized(
                 TableCell::new().child(
-                    div().w_full().min_w_0().child(
-                        Input::new(&column.default)
-                            .id(SharedString::from(format!("column-default-{id}")))
-                            .xsmall()
-                            .readonly(!editable || dropped),
-                    ),
+                    Input::new(&column.default)
+                        .id(SharedString::from(format!("column-default-{id}")))
+                        .xsmall()
+                        .min_w_0()
+                        .readonly(!editable || dropped),
                 ),
                 COL_DEFAULT,
             ))
@@ -219,11 +217,9 @@ impl SchemaView {
         v_flex()
             .id("columns-section")
             .test_support()
-            .w_full()
             .gap_2()
             .child(
                 h_flex()
-                    .w_full()
                     .justify_between()
                     .child(self.render_section_heading("COLUMNS", cx))
                     .when(editable, |this| {
@@ -241,9 +237,6 @@ impl SchemaView {
             .child(
                 div()
                     .id("columns-table-scroll")
-                    .w_full()
-                    .min_w_0()
-                    .h_auto()
                     .overflow_x_scrollbar()
                     .child(
                         Table::new()

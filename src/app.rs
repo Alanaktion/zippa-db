@@ -165,7 +165,6 @@ impl TabContent {
             Self::Session(_) => {
                 let name = h_flex()
                     .gap_1()
-                    .items_center()
                     .min_w_0()
                     .child(div().min_w_0().truncate().child(self.title(cx)).text_sm())
                     .children(
@@ -190,7 +189,6 @@ impl TabContent {
 
         h_flex()
             .gap_2()
-            .items_center()
             .min_w_0()
             .child(icon)
             .child(label)
@@ -875,13 +873,11 @@ impl Workspace {
                 h_flex()
                     .id("connection-tag")
                     .flex_none()
-                    .items_center()
                     .gap_1()
                     .child(chip)
                     .when(read_only, |this| {
                         this.child(
                             h_flex()
-                                .items_center()
                                 .gap_0p5()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
@@ -893,39 +889,32 @@ impl Workspace {
         });
 
         TitleBar::new()
-            .w_full()
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .items_center()
-                    .gap_1()
-                    .when_some(session.clone(), |this, session| {
-                        let (name, target) = {
-                            let session = session.read(cx);
-                            (session.display_name(), session.display_target())
-                        };
-                        this.child(div().text_sm().truncate().max_w(px(130.)).child(name))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .truncate()
-                                    .max_w(px(200.))
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(target),
-                            )
-                            // The bar starts a window move on mouse-move while
-                            // held, so interactive children swallow their own
-                            // press to avoid dragging the window instead.
-                            .child(
-                                h_flex()
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .child(Session::render_database_picker(&session, cx)),
-                            )
-                    }),
-            )
+            .child(h_flex().flex_1().min_w_0().gap_1().when_some(
+                session.clone(),
+                |this, session| {
+                    let (name, target) = {
+                        let session = session.read(cx);
+                        (session.display_name(), session.display_target())
+                    };
+                    this.child(div().text_sm().truncate().max_w(px(130.)).child(name))
+                        .child(
+                            div()
+                                .text_xs()
+                                .truncate()
+                                .max_w(px(200.))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(target),
+                        )
+                        // The bar starts a window move on mouse-move while
+                        // held, so interactive children swallow their own
+                        // press to avoid dragging the window instead.
+                        .child(
+                            h_flex()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(Session::render_database_picker(&session, cx)),
+                        )
+                },
+            ))
             // The connection's environment, centred on the bar. Both sides
             // share the leftover width equally, so it stays in the middle
             // whatever the name or the buttons need.
@@ -935,7 +924,6 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .justify_end()
-                    .items_center()
                     .gap_1()
                     .px_1()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -1044,7 +1032,6 @@ impl Render for Workspace {
                     v_flex()
                         .id("connection-bar")
                         .test_support()
-                        .w_full()
                         .flex_none()
                         .border_b_1()
                         .border_color(cx.theme().border)

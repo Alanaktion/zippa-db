@@ -98,7 +98,6 @@ impl TableView {
         };
 
         h_flex()
-            .w_full()
             .flex_none()
             .px_3()
             .py_1()

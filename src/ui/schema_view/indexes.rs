@@ -190,7 +190,6 @@ impl SchemaView {
                 h_flex()
                     .flex_none()
                     .gap_1()
-                    .items_center()
                     .child(
                         Checkbox::new(SharedString::from(format!("index-column-{id}-{name}")))
                             .accessibility_label(format!("Include {name}"))
@@ -242,12 +241,11 @@ impl SchemaView {
         let row = if is_new {
             row.child(sized(
                 TableCell::new().child(
-                    div().w_full().min_w_0().child(
-                        Input::new(&index.name)
-                            .id(SharedString::from(format!("index-name-{id}")))
-                            .xsmall()
-                            .readonly(!editable),
-                    ),
+                    Input::new(&index.name)
+                        .id(SharedString::from(format!("index-name-{id}")))
+                        .xsmall()
+                        .min_w_0()
+                        .readonly(!editable),
                 ),
                 COL_INDEX_NAME,
             ))
@@ -255,11 +253,9 @@ impl SchemaView {
                 TableCell::new().child(
                     h_flex()
                         .gap_3()
-                        .items_center()
                         .child(
                             h_flex()
                                 .gap_1()
-                                .items_center()
                                 .child(
                                     Checkbox::new(("index-unique", id))
                                         .accessibility_label("Unique")
@@ -281,7 +277,6 @@ impl SchemaView {
                         .child(
                             h_flex()
                                 .gap_1()
-                                .items_center()
                                 .child(
                                     Checkbox::new(("index-primary-key", id))
                                         .accessibility_label("Primary key")
@@ -386,11 +381,9 @@ impl SchemaView {
         v_flex()
             .id("indexes-section")
             .test_support()
-            .w_full()
             .gap_2()
             .child(
                 h_flex()
-                    .w_full()
                     .justify_between()
                     .child(self.render_section_heading("INDEXES", cx))
                     .when(editable, |this| {
@@ -408,9 +401,6 @@ impl SchemaView {
             .child(
                 div()
                     .id("indexes-table-scroll")
-                    .w_full()
-                    .min_w_0()
-                    .h_auto()
                     .overflow_x_scrollbar()
                     .child(
                         Table::new()

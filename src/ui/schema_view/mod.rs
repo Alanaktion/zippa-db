@@ -514,8 +514,6 @@ impl SchemaView {
         };
 
         h_flex()
-            .w_full()
-            .flex_none()
             .gap_2()
             .child(div().text_sm().child(self.object.label()))
             .child(
@@ -536,7 +534,6 @@ impl SchemaView {
 
     fn render_confirm(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
-            .w_full()
             .flex_none()
             .px_3()
             .py_2()
@@ -581,7 +578,6 @@ impl SchemaView {
         };
 
         h_flex()
-            .w_full()
             .flex_none()
             .px_3()
             .py_1()
@@ -632,7 +628,6 @@ impl Render for SchemaView {
                     .overflow_y_scrollbar()
                     .child(
                         v_flex()
-                            .w_full()
                             .p_3()
                             .gap_4()
                             .child(self.render_header(cx))
@@ -661,12 +656,13 @@ impl Render for SchemaView {
                     },
                 )
                 .child(
-                    div().flex_none().px_3().pb_2().child(
-                        Textarea::new(&self.preview)
-                            .h(px(120.))
-                            .readonly(true)
-                            .font_family(crate::settings::grid_font(cx)),
-                    ),
+                    Textarea::new(&self.preview)
+                        .flex_none()
+                        .mx_3()
+                        .mb_2()
+                        .h(px(120.))
+                        .readonly(true)
+                        .font_family(crate::settings::grid_font(cx)),
                 )
                 .child(self.render_confirm(cx))
             })

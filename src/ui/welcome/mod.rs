@@ -512,7 +512,6 @@ impl Welcome {
             .max_w(px(640.))
             .mx_auto()
             .flex_none()
-            .items_center()
             .justify_between()
             .gap_3()
             .px_6()
@@ -540,21 +539,14 @@ impl Welcome {
     }
 
     fn render_error(&self, error: &str, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id("error-banner")
-            .w_full()
-            .flex_none()
-            .px_6()
-            .pt_3()
-            .child(
-                div()
-                    .w_full()
-                    .max_h(px(96.))
-                    .overflow_y_scrollbar()
-                    .text_sm()
-                    .text_color(cx.theme().danger)
-                    .child(format!("Error: {error}")),
-            )
+        div().id("error-banner").flex_none().px_6().pt_3().child(
+            div()
+                .max_h(px(96.))
+                .overflow_y_scrollbar()
+                .text_sm()
+                .text_color(cx.theme().danger)
+                .child(format!("Error: {error}")),
+        )
     }
 
     /// The search box and the cards it filters, or the empty state.
@@ -569,44 +561,39 @@ impl Welcome {
             .filter(|config| matches_query(config, &query))
             .collect();
 
+        // A single reading column, centered and capped so the cards stay a
+        // comfortable width on a wide window.
         v_flex()
+            .w_full()
+            .max_w(px(640.))
+            .mx_auto()
             .flex_1()
             .min_h_0()
+            .px_6()
             .pt_3()
             .pb_6()
+            .gap_3()
+            .child(Input::new(&self.query).id("connection-search"))
+            .when(visible.is_empty(), |this| {
+                this.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("No connections match"),
+                )
+            })
             .child(
-                // A single reading column, centered and capped so the cards
-                // stay a comfortable width on a wide window.
-                v_flex()
-                    .w_full()
-                    .max_w(px(640.))
-                    .mx_auto()
+                div()
+                    .id("connections")
                     .flex_1()
                     .min_h_0()
-                    .px_6()
-                    .gap_3()
-                    .child(Input::new(&self.query).id("connection-search"))
-                    .when(visible.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("No connections match"),
-                        )
-                    })
+                    .overflow_y_scrollbar()
                     .child(
-                        div()
-                            .id("connections")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scrollbar()
-                            .child(
-                                v_flex().gap_2().children(
-                                    visible
-                                        .into_iter()
-                                        .map(|config| render_card(self, config, cx)),
-                                ),
-                            ),
+                        v_flex().gap_2().children(
+                            visible
+                                .into_iter()
+                                .map(|config| render_card(self, config, cx)),
+                        ),
                     ),
             )
             .into_any_element()
@@ -616,7 +603,6 @@ impl Welcome {
     fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .flex_1()
-            .size_full()
             .items_center()
             .justify_center()
             .gap_2()

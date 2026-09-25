@@ -1028,7 +1028,6 @@ impl SessionPanel {
         let message = status.message();
 
         h_flex()
-            .w_full()
             .px_3()
             .py_1()
             .flex_none()
@@ -1061,7 +1060,6 @@ impl SessionPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
-            .w_full()
             .flex_none()
             .px_2()
             .py_1()
@@ -1082,11 +1080,11 @@ impl SessionPanel {
                     button.ghost()
                 }
             }))
-            .child(div().flex_1())
             .when(has_plan, |this| {
                 this.child(
                     h_flex()
                         .flex_none()
+                        .ml_auto()
                         .gap_1()
                         .child(
                             Button::new("show-results")
@@ -1198,7 +1196,6 @@ impl Panel for SessionPanel {
             .id(("session-panel-title", key))
             .test_support()
             .gap_1()
-            .items_center()
             // Middle-click closes, the way it does in a browser. Capture
             // phase for the same reason the grid records its right-clicked
             // row that way: the ✕ button below would otherwise swallow the

@@ -218,7 +218,6 @@ impl Render for ValueView {
             .on_action(cx.listener(Self::on_save))
             .child(
                 h_flex()
-                    .w_full()
                     .gap_2()
                     .justify_between()
                     .child(div().text_sm().child(self.column.clone()))
@@ -231,23 +230,21 @@ impl Render for ValueView {
                         )
                     }),
             )
-            .child(
-                // The box fills the dialog, so it grows with the window the
-                // dialog sits in; an image preview does the same in its place.
-                div().flex_1().min_h_0().child(match &self.preview {
-                    Some(Preview::Image(image)) => {
-                        img(image.clone()).size_full().into_any_element()
-                    }
-                    None => Textarea::new(&self.input)
-                        .h_full()
-                        .readonly(!editable)
-                        .font_family(settings::grid_font(cx))
-                        .into_any_element(),
-                }),
-            )
+            // The box fills the dialog, so it grows with the window the dialog
+            // sits in; an image preview does the same in its place.
+            .child(match &self.preview {
+                Some(Preview::Image(image)) => {
+                    img(image.clone()).flex_1().min_h_0().into_any_element()
+                }
+                None => Textarea::new(&self.input)
+                    .flex_1()
+                    .min_h_0()
+                    .readonly(!editable)
+                    .font_family(settings::grid_font(cx))
+                    .into_any_element(),
+            })
             .child(
                 h_flex()
-                    .w_full()
                     .gap_2()
                     .justify_end()
                     .child(

@@ -271,7 +271,6 @@ impl SchemaView {
                 h_flex()
                     .flex_none()
                     .gap_1()
-                    .items_center()
                     .child(
                         Checkbox::new(SharedString::from(format!("fk-local-col-{id}-{name}")))
                             .accessibility_label(format!("Include {name}"))
@@ -328,7 +327,6 @@ impl SchemaView {
                 h_flex()
                     .flex_none()
                     .gap_1()
-                    .items_center()
                     .child(
                         Checkbox::new(SharedString::from(format!("fk-ref-col-{id}-{name}")))
                             .accessibility_label(format!("Include {name}"))
@@ -491,12 +489,11 @@ impl SchemaView {
 
             row.child(sized(
                 TableCell::new().child(
-                    div().w_full().min_w_0().child(
-                        Input::new(&key.name)
-                            .id(SharedString::from(format!("fk-name-{id}")))
-                            .xsmall()
-                            .readonly(!editable),
-                    ),
+                    Input::new(&key.name)
+                        .id(SharedString::from(format!("fk-name-{id}")))
+                        .xsmall()
+                        .min_w_0()
+                        .readonly(!editable),
                 ),
                 COL_FK_NAME,
             ))
@@ -509,10 +506,7 @@ impl SchemaView {
                         .child(table_picker)
                         .child(
                             h_flex()
-                                .w_full()
-                                .min_w_0()
                                 .gap_2()
-                                .items_center()
                                 .child(local_picker)
                                 .child(
                                     div()
@@ -628,11 +622,9 @@ impl SchemaView {
         v_flex()
             .id("foreign-keys-section")
             .test_support()
-            .w_full()
             .gap_2()
             .child(
                 h_flex()
-                    .w_full()
                     .justify_between()
                     .child(self.render_section_heading("FOREIGN KEYS", cx))
                     .when(editable, |this| {
@@ -650,9 +642,6 @@ impl SchemaView {
             .child(
                 div()
                     .id("foreign-keys-table-scroll")
-                    .w_full()
-                    .min_w_0()
-                    .h_auto()
                     .overflow_x_scrollbar()
                     .child(
                         Table::new()
