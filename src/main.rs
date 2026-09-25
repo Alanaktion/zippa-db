@@ -33,6 +33,7 @@ gpui_kit::assets::icon_assets!(
     [
         RefreshCw,
         FilePlus,
+        Database,
         DatabasePlus,
         Table,
         ListTree,

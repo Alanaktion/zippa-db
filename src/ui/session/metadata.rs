@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use gpui_kit::component::button::Button;
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::*;
@@ -187,9 +188,10 @@ impl Session {
         // its "databases" (main, plus attachments) are not separate files.
         if this.connection.config.engine.is_file_based() {
             return Button::new("database")
-                .outline()
+                .ghost()
                 .xsmall()
                 .max_w(px(160.))
+                .icon(gpui_kit::assets::IconName::Database)
                 .label(crate::db::file_name(&current))
                 .disabled(true)
                 .into_any_element();
@@ -207,11 +209,11 @@ impl Session {
         };
 
         Button::new("database")
-            .outline()
+            .ghost()
             .xsmall()
             .max_w(px(160.))
+            .icon(gpui_kit::assets::IconName::Database)
             .label(label)
-            .dropdown_caret(true)
             .dropdown_menu(move |mut menu, _window, _cx| {
                 if databases.is_empty() {
                     return menu.label("No databases");

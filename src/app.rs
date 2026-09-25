@@ -865,46 +865,16 @@ impl Workspace {
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let session = self.active_session();
         let connected = session.is_some();
-        let badge = session.as_ref().and_then(|session| {
-            let config = &session.read(cx).connection().config;
-            let chip = crate::ui::tag_chip(config.tag.as_deref(), config.color, cx)?;
-            let read_only = config.safety.is_read_only();
-            Some(
-                h_flex()
-                    .id("connection-tag")
-                    .flex_none()
-                    .gap_1()
-                    .child(chip)
-                    .when(read_only, |this| {
-                        this.child(
-                            h_flex()
-                                .gap_0p5()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(Icon::new(gpui_kit::assets::IconName::Lock).size_3())
-                                .child("Read only"),
-                        )
-                    }),
-            )
-        });
 
         TitleBar::new()
             .child(h_flex().flex_1().min_w_0().gap_1().when_some(
                 session.clone(),
                 |this, session| {
-                    let (name, target) = {
+                    let name = {
                         let session = session.read(cx);
-                        (session.display_name(), session.display_target())
+                        session.display_name()
                     };
-                    this.child(div().text_sm().truncate().max_w(px(130.)).child(name))
-                        .child(
-                            div()
-                                .text_xs()
-                                .truncate()
-                                .max_w(px(200.))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(target),
-                        )
+                    this.child(div().text_xs().truncate().max_w(px(130.)).child(name))
                         // The bar starts a window move on mouse-move while
                         // held, so interactive children swallow their own
                         // press to avoid dragging the window instead.
@@ -915,10 +885,6 @@ impl Workspace {
                         )
                 },
             ))
-            // The connection's environment, centred on the bar. Both sides
-            // share the leftover width equally, so it stays in the middle
-            // whatever the name or the buttons need.
-            .children(badge)
             .child(
                 h_flex()
                     .flex_1()
