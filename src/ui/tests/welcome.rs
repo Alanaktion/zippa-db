@@ -24,7 +24,7 @@ fn the_empty_state_offers_new_connection_and_open_file(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
-fn saving_a_connection_persists_its_tag_and_colour(cx: &mut TestAppContext) {
+fn saving_a_connection_persists_its_colour(cx: &mut TestAppContext) {
     let dir = ScratchDir::new();
     crate::db::store::set_config_dir_for_test(dir.path.clone());
 
@@ -36,7 +36,6 @@ fn saving_a_connection_persists_its_tag_and_colour(cx: &mut TestAppContext) {
 
     let config = ConnectionConfig {
         name: "Prod DB".into(),
-        tag: Some("Production".into()),
         color: Some(TagColor::Red),
         ..ConnectionConfig::new(Engine::Postgres)
     };
@@ -55,33 +54,34 @@ fn saving_a_connection_persists_its_tag_and_colour(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // The launcher holds it, and the store wrote it to the scratch dir.
-    let (tag, color) = welcome.update(cx, |welcome, _| {
+    let color = welcome.update(cx, |welcome, _| {
         let saved = welcome
             .connections_for_test()
             .iter()
             .find(|c| c.id == id)
             .cloned()
             .expect("the connection should be in the launcher");
-        (saved.tag, saved.color)
+        saved.color
     });
-    assert_eq!(tag.as_deref(), Some("Production"));
     assert_eq!(color, Some(TagColor::Red));
 
     let loaded = crate::db::store::load().expect("the connection should be on disk");
-    assert!(loaded.iter().any(|c| {
-        c.id == id && c.tag.as_deref() == Some("Production") && c.color == Some(TagColor::Red)
-    }));
+    assert!(
+        loaded
+            .iter()
+            .any(|c| c.id == id && c.color == Some(TagColor::Red))
+    );
 }
 
 /// The footgun IDEAS.md's safety nudge exists to catch: a card for a
-/// production-tagged, auto-applying connection asks before connecting rather
+/// production-marked, auto-applying connection asks before connecting rather
 /// than opening straight away, the way an ordinary card does.
 #[gpui_kit::test]
 fn connecting_to_a_production_auto_apply_connection_asks_first(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let database = runtime::block_on(TempDatabase::new());
     let config = ConnectionConfig {
-        tag: Some("Production".into()),
+        color: Some(TagColor::Red),
         safety: SafetyMode::AutoApply,
         ..database.config()
     };

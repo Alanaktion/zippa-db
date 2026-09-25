@@ -90,15 +90,11 @@ impl TabContent {
         }
     }
 
-    /// The connection's environment tag and colour, if it has one.
-    fn tag(&self, cx: &App) -> Option<(String, Option<TagColor>)> {
+    /// The connection's colour, if it has one.
+    fn color(&self, cx: &App) -> Option<TagColor> {
         match self {
             Self::Connect(_) => None,
-            Self::Session(session) => {
-                let config = &session.read(cx).connection().config;
-                let text = crate::ui::tag_text(config.tag.as_deref(), config.color)?;
-                Some((text, config.color))
-            }
+            Self::Session(session) => session.read(cx).connection().config.color,
         }
     }
 
@@ -128,14 +124,14 @@ impl TabContent {
         (database.as_str() != self.title(cx).as_str()).then_some(database)
     }
 
-    /// Name, tag and database in one line, for a screen reader. The label below
+    /// Name, colour and database in one line, for a screen reader. The label below
     /// is drawn as an icon beside two stacked lines, so it carries no text of
     /// its own for a name to come from.
     fn aria_label(&self, cx: &App) -> SharedString {
         let mut label = self.title(cx).to_string();
-        if let Some((tag, _)) = self.tag(cx) {
+        if let Some(color) = self.color(cx) {
             label.push_str(" · ");
-            label.push_str(&tag);
+            label.push_str(color.label());
         }
         if let Some(database) = self.database_line(cx) {
             label.push_str(" · ");
@@ -163,14 +159,7 @@ impl TabContent {
         let label = match self {
             Self::Connect(_) => v_flex().min_w_0().child(self.title(cx)),
             Self::Session(_) => {
-                let name = h_flex()
-                    .gap_1()
-                    .min_w_0()
-                    .child(div().min_w_0().truncate().child(self.title(cx)).text_sm())
-                    .children(
-                        self.tag(cx)
-                            .and_then(|(tag, color)| crate::ui::tag_chip(Some(&tag), color, cx)),
-                    );
+                let name = div().min_w_0().truncate().child(self.title(cx)).text_sm();
 
                 // The database is secondary to the name, so it sits muted and
                 // a step smaller underneath it.
@@ -772,6 +761,9 @@ impl Workspace {
                 Tab::new()
                     .aria_label(tab.aria_label(cx))
                     .px_2()
+                    // The connection's colour, faint enough that the text on
+                    // it keeps its contrast.
+                    .when_some(tab.color(cx), |this, color| this.bg(color.tint(cx)))
                     // The engine icon and both lines are drawn by `content`, so
                     // the tab carries no label of its own.
                     .child(tab.content(cx))
@@ -870,19 +862,22 @@ impl Workspace {
             .child(h_flex().flex_1().min_w_0().gap_1().when_some(
                 session.clone(),
                 |this, session| {
-                    let name = {
+                    let (name, color) = {
                         let session = session.read(cx);
-                        session.display_name()
+                        (session.display_name(), session.connection().config.color)
                     };
-                    this.child(div().text_xs().truncate().max_w(px(130.)).child(name))
-                        // The bar starts a window move on mouse-move while
-                        // held, so interactive children swallow their own
-                        // press to avoid dragging the window instead.
-                        .child(
-                            h_flex()
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .child(Session::render_database_picker(&session, cx)),
-                        )
+                    this.when_some(color, |this, color| {
+                        this.child(crate::ui::color_dot(color, cx))
+                    })
+                    .child(div().text_xs().truncate().max_w(px(130.)).child(name))
+                    // The bar starts a window move on mouse-move while
+                    // held, so interactive children swallow their own
+                    // press to avoid dragging the window instead.
+                    .child(
+                        h_flex()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(Session::render_database_picker(&session, cx)),
+                    )
                 },
             ))
             .child(

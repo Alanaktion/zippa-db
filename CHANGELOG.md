@@ -11,7 +11,7 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
 ### Features
 
 - **Connections:** a searchable launcher of saved connections, passwords in
-  the OS keychain, a per-connection tag and colour, and several connections
+  the OS keychain, an optional per-connection colour, and several connections
   open at once in tabs.
 - **Safety modes:** read-only (enforced on the server and client side),
   confirm writes, staged (the default), and auto-apply.

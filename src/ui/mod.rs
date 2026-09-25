@@ -73,45 +73,11 @@ pub fn subtle_button(cx: &App) -> ButtonCustomVariant {
         .active(theme.secondary_active)
 }
 
-/// The text a tag chip carries: the tag, or the colour's own name when only a
-/// colour was chosen, so the colour is never the only cue.
-pub fn tag_text(tag: Option<&str>, color: Option<TagColor>) -> Option<String> {
-    match tag {
-        Some(tag) if !tag.is_empty() => Some(tag.to_string()),
-        _ => color.map(|color| color.label().to_string()),
-    }
-}
-
-/// A small pill carrying a connection's tag and colour: its text always on its
-/// colour. Either one alone is enough to show it; a connection with neither
-/// has no chip.
-///
-/// The tag text is the cue; the colour only reinforces it, so a colourless tag
-/// still reads through the text and a neutral fill.
-pub fn tag_chip(
-    tag: Option<&str>,
-    color: Option<TagColor>,
-    cx: &App,
-) -> Option<impl IntoElement + use<>> {
-    let text = tag_text(tag, color)?;
-    let bg = color
-        .map(|color| color.hsla(cx))
-        .unwrap_or_else(|| cx.theme().muted);
-    let fg = color
-        .map(|color| color.on_color(cx))
-        .unwrap_or_else(|| cx.theme().muted_foreground);
-
-    Some(
-        div()
-            .flex_none()
-            .rounded_full()
-            .px_2()
-            .py_0p5()
-            .text_xs()
-            .bg(bg)
-            .text_color(fg)
-            .child(text),
-    )
+/// A small round dot in a connection's colour, for where the connection is
+/// named in a line of text — the colour's name goes with the name's own
+/// accessibility label, since the dot carries no text.
+pub fn color_dot(color: TagColor, cx: &App) -> impl IntoElement + use<> {
+    div().flex_none().size_2().rounded_full().bg(color.hsla(cx))
 }
 
 /// Resolve a [`TagColor`] to the colour it is drawn with.
@@ -121,9 +87,14 @@ pub fn tag_chip(
 /// The hue is user-chosen *data* rather than decoration, which is the one case
 /// the theme system deliberately leaves to a fixed value.
 impl TagColor {
-    /// The fill colour for a chip, bar or strip carrying this tag.
+    /// The fill colour for a dot, bar or strip carrying this colour.
     pub fn hsla(&self, cx: &App) -> Hsla {
         self.hsla_on(cx.theme())
+    }
+
+    /// The colour at a tenth of its strength, for a background it only tints.
+    pub fn tint(&self, cx: &App) -> Hsla {
+        self.hsla(cx).opacity(0.1)
     }
 
     /// A text colour that contrasts with [`TagColor::hsla`] in every theme.

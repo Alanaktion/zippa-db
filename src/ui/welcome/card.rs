@@ -1,9 +1,9 @@
 //! One saved connection, rendered as a card on the welcome screen.
 //!
 //! The card is the connect target (a full-width [`Button`]) with a leading bar
-//! in the tag colour, a title, the connection target, its engine and tag, and
-//! a trailing `…` menu for the edit/duplicate/delete commands. The colour is
-//! always accompanied by the tag's text, so it is never the only cue.
+//! in the connection's colour, a title, the connection target, its engine, and
+//! a trailing `…` menu for the edit/duplicate/delete commands. The colour's
+//! name is in the card's accessibility label.
 
 use chrono::{DateTime, Utc};
 
@@ -15,7 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, SharedString, div, px};
 use uuid::Uuid;
 
-use crate::db::{ConnectionConfig, TagColor};
+use crate::db::ConnectionConfig;
 use crate::ui::{engine_color, engine_icon};
 
 use super::Welcome;
@@ -30,9 +30,10 @@ pub(super) fn render_card(
     let connecting = this.is_connecting(&id);
     let name = config.display_name();
     let engine = config.engine;
-    let tag = config.tag.clone();
-    let tag_color = config.color.map(|color| color.hsla(cx));
-    let bar = tag_color.unwrap_or_else(|| cx.theme().muted);
+    let bar = config
+        .color
+        .map(|color| color.hsla(cx))
+        .unwrap_or_else(|| cx.theme().muted);
     let weak = cx.entity().downgrade();
     // The click handler is `'static`, so it owns its copy rather than
     // borrowing the list this card is rendered from.
@@ -47,8 +48,7 @@ pub(super) fn render_card(
         .child(
             h_flex()
                 .items_stretch()
-                // The environment colour, four pixels down the leading edge;
-                // the tag text beside it carries the same information.
+                // The connection's colour, four pixels down the leading edge.
                 .child(div().flex_none().w(px(4.)).bg(bar))
                 .child(
                     Button::new(SharedString::from(format!("connect-{id}")))
@@ -61,12 +61,10 @@ pub(super) fn render_card(
                         // row's height.
                         .with_size(Size::Size(px(0.)))
                         .disabled(connecting)
-                        .accessibility_label(format!(
-                            "{}, {}, {}",
-                            name,
-                            engine.label(),
-                            tag_text(&tag, config.color)
-                        ))
+                        .accessibility_label(match config.color {
+                            Some(color) => format!("{name}, {}, {}", engine.label(), color.label()),
+                            None => format!("{name}, {}", engine.label()),
+                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.connect_saved_with_confirmation(connect.clone(), window, cx)
                         }))
@@ -118,7 +116,6 @@ fn card_body(config: &ConnectionConfig, connecting: bool, cx: &App) -> impl Into
                                 .child(config.engine.label()),
                         ),
                 )
-                .children(crate::ui::tag_chip(config.tag.as_deref(), config.color, cx))
                 .when_some(config.last_connected, |this, when| {
                     this.child(
                         div()
@@ -183,11 +180,6 @@ pub(super) fn subtitle(config: &ConnectionConfig) -> String {
     } else {
         format!("{}:{}/{}", config.host, config.port, config.database)
     }
-}
-
-/// What the accessibility label says about the tag, or "Untagged".
-fn tag_text(tag: &Option<String>, color: Option<TagColor>) -> String {
-    crate::ui::tag_text(tag.as_deref(), color).unwrap_or_else(|| "Untagged".to_string())
 }
 
 /// Keep both ends of a long path so the file name still reads.

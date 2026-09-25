@@ -241,7 +241,7 @@ impl Welcome {
     }
 
     /// Connect to a saved connection the way a card click does, asking first
-    /// when it is the footgun a tag exists to flag: production, set to
+    /// when it is the footgun the colour exists to flag: production, set to
     /// auto-apply. The editor already warns about this combination while it
     /// is being set up, but that warning is easy to click past and easy to
     /// forget by the time the card is clicked days later — this is the last
@@ -267,7 +267,7 @@ impl Welcome {
             alert
                 .title(format!("Connect to {name}?"))
                 .description(
-                    "This connection is tagged production and set to auto-apply: edits are \
+                    "This connection is marked production and set to auto-apply: edits are \
                      written the moment you leave a row, with no confirmation.",
                 )
                 .button_props(
@@ -782,18 +782,16 @@ fn ordered(connections: &[ConnectionConfig]) -> Vec<&ConnectionConfig> {
     ordered
 }
 
-/// Whether a connection matches the search text, across name, host, database,
-/// tag and engine.
+/// Whether a connection matches the search text, across name, host, database
+/// and engine.
 fn matches_query(config: &ConnectionConfig, query: &str) -> bool {
     if query.is_empty() {
         return true;
     }
     let query = query.to_lowercase();
-    let tag = config.tag.as_deref().unwrap_or("");
     config.name.to_lowercase().contains(&query)
         || config.host.to_lowercase().contains(&query)
         || config.database.to_lowercase().contains(&query)
-        || tag.to_lowercase().contains(&query)
         || config.engine.label().to_lowercase().contains(&query)
 }
 
@@ -806,7 +804,6 @@ mod tests {
             name: name.to_string(),
             host: "db.internal".into(),
             database: "app".into(),
-            tag: Some("Production".into()),
             last_connected: last_connected
                 .map(|when| when.parse::<chrono::DateTime<Utc>>().expect("a timestamp")),
             ..ConnectionConfig::new(Engine::Postgres)
@@ -827,13 +824,12 @@ mod tests {
     }
 
     #[test]
-    fn search_matches_name_host_database_tag_and_engine() {
+    fn search_matches_name_host_database_and_engine() {
         let config = config("Prod DB", None);
 
         assert!(matches_query(&config, "prod"));
         assert!(matches_query(&config, "internal"));
         assert!(matches_query(&config, "app"));
-        assert!(matches_query(&config, "Production"));
         assert!(matches_query(&config, "postgres"));
         assert!(!matches_query(&config, "mysql"));
     }

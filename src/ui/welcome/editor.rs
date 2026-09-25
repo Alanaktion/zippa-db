@@ -39,14 +39,6 @@ pub enum EditorEvent {
     Dismissed,
 }
 
-/// A tag preset: one click fills both the tag text and its colour.
-const PRESETS: [(&str, TagColor); 4] = [
-    ("Production", TagColor::Red),
-    ("Staging", TagColor::Orange),
-    ("Development", TagColor::Blue),
-    ("Local", TagColor::Green),
-];
-
 pub struct ConnectionEditor {
     /// `None` while editing a connection that has not been saved.
     id: Option<Uuid>,
@@ -59,7 +51,6 @@ pub struct ConnectionEditor {
     username: Entity<InputState>,
     password: Entity<InputState>,
     database: Entity<InputState>,
-    tag: Entity<InputState>,
     /// Whether the user has typed in the password box since the dialog opened.
     /// The stored password is never loaded into it, so an untouched box has to
     /// mean "leave it alone" rather than "no password".
@@ -104,7 +95,6 @@ impl ConnectionEditor {
                 }
             }),
             database: cx.new(|cx| InputState::new(window, cx).placeholder("postgres")),
-            tag: cx.new(|cx| InputState::new(window, cx).placeholder("Production")),
             password_edited: false,
         };
 
@@ -159,12 +149,6 @@ impl ConnectionEditor {
         self.set_field(&self.port.clone(), &config.port.to_string(), window, cx);
         self.set_field(&self.username.clone(), &config.username, window, cx);
         self.set_field(&self.database.clone(), &config.database, window, cx);
-        self.set_field(
-            &self.tag.clone(),
-            config.tag.as_deref().unwrap_or(""),
-            window,
-            cx,
-        );
         self.set_field(&self.password.clone(), "", window, cx);
     }
 
@@ -183,9 +167,6 @@ impl ConnectionEditor {
             .parse()
             .unwrap_or_else(|_| self.engine.default_port());
 
-        let tag = self.tag.read(cx).value().trim().to_string();
-        let tag = (!tag.is_empty()).then_some(tag);
-
         ConnectionConfig {
             id: self.id.unwrap_or_else(Uuid::new_v4),
             name: self.name.read(cx).value().trim().to_string(),
@@ -195,7 +176,6 @@ impl ConnectionEditor {
             username: self.username.read(cx).value().trim().to_string(),
             database: self.database.read(cx).value().trim().to_string(),
             safety: self.safety,
-            tag,
             color: self.color,
             last_connected: None,
         }
@@ -218,18 +198,6 @@ impl ConnectionEditor {
         }
 
         self.engine = engine;
-        cx.notify();
-    }
-
-    fn apply_preset(
-        &mut self,
-        tag: &str,
-        color: TagColor,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.set_field(&self.tag.clone(), tag, window, cx);
-        self.color = Some(color);
         cx.notify();
     }
 
@@ -289,33 +257,6 @@ impl ConnectionEditor {
         }))
     }
 
-    /// The tag text (with its presets) and the colour swatches, on one line.
-    fn render_tag(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .gap_1()
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_end()
-                    .child(div().flex_1().child(field("Label", &self.tag, cx)))
-                    .child(self.render_colors(cx)),
-            )
-            .child(
-                h_flex()
-                    .gap_1()
-                    .flex_wrap()
-                    .children(PRESETS.map(|(tag, color)| {
-                        Button::new(SharedString::from(format!("preset-{tag}")))
-                            .ghost()
-                            .xsmall()
-                            .label(tag)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.apply_preset(tag, color, window, cx)
-                            }))
-                    })),
-            )
-    }
-
     /// A row of colour swatches, plus "None"; the selected one is ringed and
     /// carries a check so the state is not told by colour alone.
     fn render_colors(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -366,8 +307,8 @@ impl ConnectionEditor {
 
     /// Pick how careful this connection is about writes.
     fn render_safety(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tag = self.tag.read(cx).value().trim().to_string();
-        let hint = is_risky_auto_apply(&tag, self.safety);
+        let name = self.name.read(cx).value().trim().to_string();
+        let hint = is_risky_auto_apply(&name, self.color, self.safety);
 
         v_flex()
             .gap_1()
@@ -432,7 +373,7 @@ impl ConnectionEditor {
                 )
                 .child(field("Database", &self.database, cx))
             })
-            .child(self.render_tag(cx))
+            .child(self.render_colors(cx))
             .child(self.render_safety(cx))
     }
 

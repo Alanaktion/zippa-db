@@ -15,9 +15,9 @@ features you'd expect from a modern database client.
 ## 🌟 What it does
 
 * **Connections.** Save connections and open several at once, each in its own
-  tab. Passwords live in the OS keychain, never on disk. A tag and colour (say,
-  a red `Production`) follows a connection into its tab, so you always know
-  where you are. Your open connections, tabs, and query buffers come back on
+  tab. Passwords live in the OS keychain, never on disk. An optional colour (say,
+  red for production) marks a connection's tab and title bar, so you always
+  know where you are. Your open connections, tabs, and query buffers come back on
   the next launch.
 * **Safety modes.** Each connection is *read-only*, *confirm writes*, *staged*
   (the default: edits wait until you apply them), or *auto-apply*. Read-only is

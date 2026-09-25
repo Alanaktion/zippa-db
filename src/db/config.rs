@@ -100,12 +100,12 @@ impl SafetyMode {
     }
 }
 
-/// A fixed palette a connection can be tagged with.
+/// A fixed palette a connection can be coloured with.
 ///
 /// A palette rather than arbitrary hex: a colour is resolved against the theme
 /// for contrast in light and dark, and stays valid when a theme changes. The
-/// colour is always shown with its [`label`](TagColor::label) next to it, so it
-/// is never the only way to tell one environment from another.
+/// colour's [`label`](TagColor::label) is what a screen reader hears in its
+/// place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TagColor {
@@ -181,12 +181,10 @@ pub struct ConnectionConfig {
     /// before the setting existed, which read back as the safer mode.
     #[serde(default)]
     pub safety: SafetyMode,
-    /// A free-text environment label (e.g. "Production"), shown with its
-    /// colour everywhere the connection appears.
-    #[serde(default)]
-    pub tag: Option<String>,
-    /// The palette colour behind [`ConnectionConfig::tag`]. Absent in files
-    /// written before tagging existed.
+    /// The palette colour the connection is marked with, if any: a dot in the
+    /// title bar and a tint on its tab. Absent in files written before
+    /// colouring existed. (Files from when a connection also had a free-text
+    /// `tag` still read: serde skips the field.)
     #[serde(default)]
     pub color: Option<TagColor>,
     /// When this connection was last opened, for most-recent-first ordering.
@@ -205,7 +203,6 @@ impl ConnectionConfig {
             username: String::new(),
             database: String::new(),
             safety: SafetyMode::default(),
-            tag: None,
             color: None,
             last_connected: None,
         }
@@ -233,20 +230,23 @@ impl ConnectionConfig {
         format!("{}:{}/{}", self.host, self.port, self.database)
     }
 
-    /// Whether this connection is the footgun a tag exists to flag: one that
-    /// reads as production and writes without asking. Shared by the
+    /// Whether this connection is the footgun the colour exists to flag: one
+    /// that reads as production and writes without asking. Shared by the
     /// connection editor's inline warning and the launcher's confirm-before-
     /// connect, so both draw the same line.
     pub fn is_risky_auto_apply(&self) -> bool {
-        is_risky_auto_apply(self.tag.as_deref().unwrap_or(""), self.safety)
+        is_risky_auto_apply(&self.name, self.color, self.safety)
     }
 }
 
 /// The rule [`ConnectionConfig::is_risky_auto_apply`] applies, taken as plain
-/// values so the connection editor can ask it about a tag still being typed
+/// values so the connection editor can ask it about a name still being typed
 /// — before there is a whole `ConnectionConfig` to ask.
-pub fn is_risky_auto_apply(tag: &str, safety: SafetyMode) -> bool {
-    safety.auto_applies() && tag.to_lowercase().contains("prod")
+///
+/// A connection reads as production when it is coloured red or its name
+/// mentions "prod" (case-insensitively).
+pub fn is_risky_auto_apply(name: &str, color: Option<TagColor>, safety: SafetyMode) -> bool {
+    safety.auto_applies() && (color == Some(TagColor::Red) || name.to_lowercase().contains("prod"))
 }
 
 impl Default for ConnectionConfig {
@@ -268,26 +268,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_production_tag_with_auto_apply_is_risky() {
-        assert!(is_risky_auto_apply("Production", SafetyMode::AutoApply));
-        // Case-insensitive, and matches a tag that merely contains the word.
-        assert!(is_risky_auto_apply("prod-east", SafetyMode::AutoApply));
+    fn a_production_connection_with_auto_apply_is_risky() {
+        assert!(is_risky_auto_apply(
+            "App",
+            Some(TagColor::Red),
+            SafetyMode::AutoApply
+        ));
+        // Case-insensitive, and matches a name that merely contains the word.
+        assert!(is_risky_auto_apply(
+            "prod-east",
+            None,
+            SafetyMode::AutoApply
+        ));
     }
 
     #[test]
-    fn a_production_tag_is_not_risky_under_a_safer_mode() {
+    fn a_production_connection_is_not_risky_under_a_safer_mode() {
         for safety in [
             SafetyMode::ReadOnly,
             SafetyMode::ConfirmWrites,
             SafetyMode::Staged,
         ] {
-            assert!(!is_risky_auto_apply("Production", safety));
+            assert!(!is_risky_auto_apply(
+                "Production",
+                Some(TagColor::Red),
+                safety
+            ));
         }
     }
 
     #[test]
-    fn auto_apply_is_not_risky_without_a_production_tag() {
-        assert!(!is_risky_auto_apply("", SafetyMode::AutoApply));
-        assert!(!is_risky_auto_apply("Staging", SafetyMode::AutoApply));
+    fn auto_apply_is_not_risky_without_a_production_marker() {
+        assert!(!is_risky_auto_apply("", None, SafetyMode::AutoApply));
+        assert!(!is_risky_auto_apply(
+            "Staging",
+            Some(TagColor::Orange),
+            SafetyMode::AutoApply
+        ));
     }
 }
