@@ -165,17 +165,29 @@ impl Welcome {
                 self.save(config.clone(), password.clone(), window, cx);
                 self.close_editor(window, cx);
             }
-            EditorEvent::Connect { config, password } => {
+            EditorEvent::Connect {
+                config,
+                password,
+                save,
+            } => {
+                // Whether the keychain can hold a password for it is decided
+                // before this save, which would make a new connection look
+                // saved without having stored one.
+                let saved = self.connections.iter().any(|saved| saved.id == config.id);
+                if *save {
+                    self.save(config.clone(), password.clone(), window, cx);
+                }
                 self.close_editor(window, cx);
                 // An untouched box reports no password; a saved connection then
                 // connects with whatever the keychain holds, the way a card
                 // click does. A file database has no password to look up, and a
-                // connection that was never saved has nothing stored.
-                let saved = self.connections.iter().any(|saved| saved.id == config.id);
+                // connection that was never saved has nothing stored. A box
+                // the user emptied is no password at all.
                 match password {
-                    Some(password) => {
+                    Some(password) if !password.is_empty() => {
                         self.connect(config.clone(), Some(password.clone()), window, cx)
                     }
+                    Some(_) => self.connect(config.clone(), None, window, cx),
                     None if saved && !config.engine.is_file_based() => {
                         self.connect_using_stored_password(config.clone(), cx)
                     }
@@ -704,6 +716,23 @@ impl Welcome {
             return;
         };
         editor.update(cx, |editor, cx| editor.focus_password_for_test(window, cx));
+    }
+
+    /// Open the editor on a new connection, as "New connection" does.
+    #[cfg(test)]
+    pub(crate) fn new_connection_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_editor(None, window, cx);
+    }
+
+    /// Run `f` against the open editor.
+    #[cfg(test)]
+    pub(crate) fn with_editor_for_test<R>(
+        &self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut ConnectionEditor, &mut Context<ConnectionEditor>) -> R,
+    ) -> R {
+        let editor = self.editor.clone().expect("the editor should be open");
+        editor.update(cx, f)
     }
 
     /// Duplicate a connection the way the card's `…` menu does.

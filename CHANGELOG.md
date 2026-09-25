@@ -12,7 +12,8 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
 
 - **Connections:** a searchable launcher of saved connections, passwords in
   the OS keychain, an optional per-connection colour, and several connections
-  open at once in tabs.
+  open at once in tabs. The connection editor tests a connection without
+  closing, and Connect saves first (its menu connects without saving).
 - **Safety modes:** read-only (enforced on the server and client side),
   confirm writes, staged (the default), and auto-apply.
 - **Workspace restore:** open connections, their tabs, and unsaved query

@@ -243,7 +243,9 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-enter", SaveValue, Some("ValueDialog > Input")),
         // The connection editor dialog: Escape gives up, Cmd+Enter connects.
         // The fields are single-line inputs, but their own context is deeper
-        // than the editor's, so both paths are bound.
+        // than the editor's, so both paths are bound. Enter in a field
+        // connects too, the way it submits any form; it is not bound on the
+        // editor itself, where it belongs to whichever button has the focus.
         KeyBinding::new("escape", EditorClose, Some("ConnectionEditor")),
         KeyBinding::new("escape", EditorClose, Some("ConnectionEditor > Input")),
         KeyBinding::new("secondary-enter", EditorConnect, Some("ConnectionEditor")),
@@ -252,5 +254,6 @@ pub fn bind(cx: &mut App) {
             EditorConnect,
             Some("ConnectionEditor > Input"),
         ),
+        KeyBinding::new("enter", EditorConnect, Some("ConnectionEditor > Input")),
     ]);
 }

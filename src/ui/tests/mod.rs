@@ -936,3 +936,43 @@ fn prepare_editor(
         })
         .unwrap();
 }
+
+/// Open the editor on a new connection, and wait for it to draw.
+fn new_connection_editor(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> Entity<Welcome> {
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("the active tab should be showing the connection manager");
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.new_connection_for_test(window, cx)
+        });
+    })
+    .unwrap();
+    draw_workspace(cx, handle);
+    welcome
+}
+
+/// Pick `engine` in the open editor and fill its database field in.
+fn fill_editor(
+    cx: &mut TestAppContext,
+    handle: &WorkspaceWindow,
+    welcome: &Entity<Welcome>,
+    engine: Engine,
+    database: &str,
+) {
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| {
+                editor.fill_for_test(engine, database, window, cx)
+            })
+        });
+    })
+    .unwrap();
+}
+
+fn editor_status(cx: &mut TestAppContext, welcome: &Entity<Welcome>) -> String {
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, _| editor.status_for_test())
+    })
+}

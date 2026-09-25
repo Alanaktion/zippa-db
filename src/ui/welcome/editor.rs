@@ -7,15 +7,19 @@
 //! reacts to its panels.
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::base::TestSupportExt;
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants, DropdownButton};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Icon, Selectable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Window, actions, div};
+use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Task, Window, actions, div, px};
 use uuid::Uuid;
 
-use crate::db::{ConnectionConfig, Engine, SafetyMode, TagColor, is_risky_auto_apply};
+use crate::db::{
+    Connection, ConnectionConfig, Engine, SafetyMode, TagColor, is_risky_auto_apply, runtime, store,
+};
 
 actions!(zippa_db, [EditorClose, EditorConnect]);
 
@@ -29,11 +33,14 @@ pub enum EditorEvent {
         config: ConnectionConfig,
         password: Option<String>,
     },
-    /// Connect immediately with this config. `password` is `None` when the box
-    /// is blank, which is no password rather than the stored one.
+    /// Connect with this config, saving it first when `save` is set.
+    ///
+    /// `password` means what it does for [`EditorEvent::Saved`]: `None` for a
+    /// box the user never touched, `Some("")` for one they emptied.
     Connect {
         config: ConnectionConfig,
         password: Option<String>,
+        save: bool,
     },
     /// The dialog was dismissed without saving or connecting.
     Dismissed,
@@ -55,6 +62,33 @@ pub struct ConnectionEditor {
     /// The stored password is never loaded into it, so an untouched box has to
     /// mean "leave it alone" rather than "no password".
     password_edited: bool,
+    /// What the form has to say below the fields: a test under way or its
+    /// outcome, or why the inputs cannot be used.
+    status: Status,
+    /// The connection test under way, dropped (and so cancelled) with the
+    /// editor or by the next test.
+    test: Option<Task<()>>,
+}
+
+/// The line between the form and its buttons.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Status {
+    None,
+    Testing,
+    Succeeded,
+    Failed(String),
+}
+
+/// What each field shows while it is empty, for one engine: `(name, user,
+/// database)`. The user and database are the ones a fresh server has; MySQL
+/// needs no database at all, and SQLite's is a file.
+fn placeholders(engine: Engine) -> (&'static str, &'static str, &'static str) {
+    match engine {
+        Engine::Postgres => ("Local PostgreSQL", "postgres", "postgres"),
+        Engine::MySql => ("Local MySQL", "root", "Optional"),
+        Engine::Sqlite if cfg!(windows) => ("Local SQLite", "", r"C:\path\to\database.db"),
+        Engine::Sqlite => ("Local SQLite", "", "/path/to/database.db"),
+    }
 }
 
 impl EventEmitter<EditorEvent> for ConnectionEditor {}
@@ -77,12 +111,12 @@ impl ConnectionEditor {
             engine,
             safety: config.as_ref().map(|c| c.safety).unwrap_or_default(),
             color: config.as_ref().and_then(|c| c.color),
-            name: cx.new(|cx| InputState::new(window, cx).placeholder("Local Postgres")),
+            name: cx.new(|cx| InputState::new(window, cx)),
             host: cx.new(|cx| InputState::new(window, cx).default_value("localhost")),
             port: cx.new(|cx| {
                 InputState::new(window, cx).default_value(engine.default_port().to_string())
             }),
-            username: cx.new(|cx| InputState::new(window, cx).placeholder("postgres")),
+            username: cx.new(|cx| InputState::new(window, cx)),
             password: cx.new(|cx| {
                 let input = InputState::new(window, cx).masked(true);
                 // A saved connection's password is never read back into the
@@ -94,21 +128,75 @@ impl ConnectionEditor {
                     input
                 }
             }),
-            database: cx.new(|cx| InputState::new(window, cx).placeholder("postgres")),
+            database: cx.new(|cx| InputState::new(window, cx)),
             password_edited: false,
+            status: Status::None,
+            test: None,
         };
 
         if let Some(config) = config {
             editor.load(&config, window, cx);
         }
+        editor.set_placeholders(window, cx);
 
         // Subscribed after `load`, so filling the form in is not mistaken for
         // the user typing: only a change made from here on is a new password.
         let password = editor.password.clone();
         cx.subscribe_in(&password, window, Self::on_password_event)
             .detach();
+        for field in editor.fields() {
+            cx.subscribe_in(&field, window, Self::on_field_event)
+                .detach();
+        }
 
         editor
+    }
+
+    fn fields(&self) -> [Entity<InputState>; 6] {
+        [
+            self.name.clone(),
+            self.host.clone(),
+            self.port.clone(),
+            self.username.clone(),
+            self.password.clone(),
+            self.database.clone(),
+        ]
+    }
+
+    /// Show the current engine's examples in the empty fields.
+    fn set_placeholders(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let (name, username, database) = placeholders(self.engine);
+        for (field, placeholder) in [
+            (&self.name, name),
+            (&self.username, username),
+            (&self.database, database),
+        ] {
+            field.update(cx, |state, cx| {
+                state.set_placeholder(placeholder, window, cx)
+            });
+        }
+    }
+
+    /// A result reported for other inputs no longer says anything about
+    /// these, so an edit clears it.
+    fn on_field_event(
+        &mut self,
+        _field: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            self.clear_status(cx);
+        }
+    }
+
+    /// Forget the last outcome, leaving a test still under way alone.
+    fn clear_status(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.status, Status::None | Status::Testing) {
+            self.status = Status::None;
+            cx.notify();
+        }
     }
 
     /// Note that the user typed in the password box.
@@ -198,21 +286,121 @@ impl ConnectionEditor {
         }
 
         self.engine = engine;
+        self.set_placeholders(window, cx);
+        self.clear_status(cx);
         cx.notify();
     }
 
+    /// Why the inputs cannot be used as they stand, in words for the user.
+    ///
+    /// An empty port is the engine's default rather than a mistake; one that
+    /// is not a port number is, where it used to fall back to the default
+    /// without a word.
+    fn invalid(&self, cx: &App) -> Option<&'static str> {
+        if self.engine.is_file_based() {
+            return self
+                .database
+                .read(cx)
+                .value()
+                .trim()
+                .is_empty()
+                .then_some("Enter the path to the database file.");
+        }
+
+        if self.host.read(cx).value().trim().is_empty() {
+            return Some("Enter the host to connect to.");
+        }
+        let port = self.port.read(cx).value().trim().to_string();
+        if !port.is_empty() && !port.parse::<u16>().is_ok_and(|port| port > 0) {
+            return Some("The port must be a number from 1 to 65535.");
+        }
+        None
+    }
+
+    /// Report invalid inputs below the form; `true` when there were any.
+    fn refuse_invalid(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(message) = self.invalid(cx) else {
+            return false;
+        };
+        self.test = None;
+        self.status = Status::Failed(message.to_string());
+        cx.notify();
+        true
+    }
+
     fn save(&mut self, cx: &mut Context<Self>) {
+        if self.refuse_invalid(cx) {
+            return;
+        }
         let config = self.config(cx);
         let password = self.password(cx);
         cx.emit(EditorEvent::Saved { config, password });
     }
 
-    fn connect(&mut self, cx: &mut Context<Self>) {
+    /// Connect, saving the connection first unless `save` is off.
+    fn connect(&mut self, save: bool, cx: &mut Context<Self>) {
+        if self.refuse_invalid(cx) {
+            return;
+        }
         let config = self.config(cx);
-        // A blank box means no password here: connecting cannot pick up the
-        // stored one from inside the dialog.
-        let password = self.password(cx).filter(|password| !password.is_empty());
-        cx.emit(EditorEvent::Connect { config, password });
+        let password = self.password(cx);
+        cx.emit(EditorEvent::Connect {
+            config,
+            password,
+            save,
+        });
+    }
+
+    /// Open a connection with the form as it stands and close it again,
+    /// reporting how it went without leaving the dialog.
+    ///
+    /// The password is the one a Connect would use: what the box holds once
+    /// typed in, otherwise what the keychain holds for a saved connection.
+    fn test_connection(&mut self, cx: &mut Context<Self>) {
+        if self.refuse_invalid(cx) {
+            return;
+        }
+
+        let config = self.config(cx);
+        let typed = self.password(cx);
+        let stored = typed.is_none() && self.id.is_some() && !config.engine.is_file_based();
+        let id = config.id;
+        // The keychain can prompt, or simply be slow, so it is read off the
+        // UI thread like the launcher's own lookup.
+        let password = cx.background_spawn(async move {
+            match typed {
+                Some(password) => Ok(Some(password).filter(|password| !password.is_empty())),
+                None if stored => store::password(&id),
+                None => Ok(None),
+            }
+        });
+
+        self.status = Status::Testing;
+        cx.notify();
+
+        self.test = Some(cx.spawn(async move |this, cx| {
+            let outcome = match password.await {
+                Ok(password) => {
+                    let task = runtime::spawn(async move {
+                        let connection = Connection::open(config, password).await?;
+                        connection.close().await;
+                        anyhow::Ok(())
+                    });
+                    match task.await {
+                        Ok(Ok(())) => Status::Succeeded,
+                        Ok(Err(error)) => Status::Failed(format!("{error:#}")),
+                        Err(_) => Status::Failed("the test was cancelled".into()),
+                    }
+                }
+                Err(error) => Status::Failed(format!("{error:#}")),
+            };
+            this.update(cx, |this, cx| {
+                this.status = outcome;
+                this.test = None;
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// What the password box means for the keychain.
@@ -234,7 +422,7 @@ impl ConnectionEditor {
     }
 
     fn on_connect(&mut self, _: &EditorConnect, _window: &mut Window, cx: &mut Context<Self>) {
-        self.connect(cx);
+        self.connect(true, cx);
     }
 
     fn render_engines(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -273,10 +461,21 @@ impl ConnectionEditor {
                     .gap_1()
                     .children(TagColor::ALL.map(|color| {
                         let selected = self.color == Some(color);
+                        let swatch = color.hsla(cx);
                         Button::new(SharedString::from(format!("color-{}", color.key())))
                             .xsmall()
                             .rounded_full()
-                            .bg(color.hsla(cx))
+                            // A custom variant rather than a plain `bg`, so the
+                            // hover and press states stay the swatch's colour
+                            // instead of the default button's.
+                            .custom(
+                                ButtonCustomVariant::new(cx)
+                                    .color(swatch)
+                                    .foreground(color.on_color(cx))
+                                    .hover(swatch.opacity(0.85))
+                                    .active(swatch.opacity(0.7)),
+                            )
+                            .bg(swatch)
                             .selected(selected)
                             .accessibility_label(color.label())
                             .tooltip(color.label())
@@ -377,10 +576,130 @@ impl ConnectionEditor {
             .child(self.render_safety(cx))
     }
 
+    /// The test's progress or outcome, or why the inputs were refused. Told in
+    /// words as well as colour.
+    fn render_status(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let theme = cx.theme();
+        let (icon, color, text) = match &self.status {
+            Status::None => return None,
+            Status::Testing => (
+                IconName::Loader,
+                theme.muted_foreground,
+                "Testing connection…".to_string(),
+            ),
+            Status::Succeeded => (
+                IconName::CircleCheck,
+                theme.success,
+                "Connection succeeded.".to_string(),
+            ),
+            Status::Failed(message) => {
+                (IconName::CircleX, theme.danger, format!("Error: {message}"))
+            }
+        };
+
+        Some(
+            h_flex()
+                .id("editor-status")
+                .flex_none()
+                .items_start()
+                .gap_2()
+                .text_sm()
+                .text_color(color)
+                .child(Icon::new(icon).flex_none().mt_0p5())
+                .child(div().flex_1().min_w_0().child(text)),
+        )
+    }
+
+    /// Connect, which saves first, with a menu for connecting without saving.
+    fn render_connect(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let editor = cx.entity().downgrade();
+        let unsaved = if self.id.is_some() {
+            "Connect Without Saving Changes"
+        } else {
+            "Connect Without Saving"
+        };
+
+        DropdownButton::new("editor-connect-split")
+            .primary()
+            .button(
+                Button::new("editor-connect")
+                    .label("Connect")
+                    .tooltip_with_action(
+                        "Save and connect",
+                        &EditorConnect,
+                        Some("ConnectionEditor"),
+                    )
+                    .on_click(cx.listener(|this, _, _window, cx| this.connect(true, cx))),
+            )
+            .dropdown_menu(move |menu, _window, _cx| {
+                let editor = editor.clone();
+                menu.item(PopupMenuItem::new(unsaved).on_click(move |_, _window, cx| {
+                    editor.update(cx, |this, cx| this.connect(false, cx)).ok();
+                }))
+            })
+    }
+
     /// The password this form would write to the keychain, for a test to read.
     #[cfg(test)]
     pub(crate) fn password_intent_for_test(&self, cx: &App) -> Option<String> {
         self.password(cx)
+    }
+
+    /// Pick `engine` and fill the database field in, the way clicking and
+    /// typing would.
+    #[cfg(test)]
+    pub(crate) fn fill_for_test(
+        &mut self,
+        engine: Engine,
+        database: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_engine(engine, window, cx);
+        self.set_field(&self.database.clone(), database, window, cx);
+    }
+
+    /// Type `value` over the port box's contents.
+    #[cfg(test)]
+    pub(crate) fn set_port_for_test(&self, value: &str, window: &mut Window, cx: &mut App) {
+        self.set_field(&self.port, value, window, cx);
+    }
+
+    /// The line below the form, as the user reads it; empty when there is none.
+    #[cfg(test)]
+    pub(crate) fn status_for_test(&self) -> String {
+        match &self.status {
+            Status::None => String::new(),
+            Status::Testing => "testing".into(),
+            Status::Succeeded => "succeeded".into(),
+            Status::Failed(message) => format!("Error: {message}"),
+        }
+    }
+
+    /// What the name, user, and database boxes show while empty.
+    #[cfg(test)]
+    pub(crate) fn placeholders_for_test(&self, cx: &App) -> [String; 3] {
+        [&self.name, &self.username, &self.database]
+            .map(|field| field.read(cx).presentation().placeholder().to_string())
+    }
+
+    /// Run the Test Connection button's check.
+    #[cfg(test)]
+    pub(crate) fn test_connection_for_test(&mut self, cx: &mut Context<Self>) {
+        self.test_connection(cx);
+    }
+
+    /// Connect the way the split button does: saving first, or from its menu
+    /// without.
+    #[cfg(test)]
+    pub(crate) fn connect_for_test(&mut self, save: bool, cx: &mut Context<Self>) {
+        self.connect(save, cx);
+    }
+
+    /// Put the caret in the name box, where the dialog opens with it.
+    #[cfg(test)]
+    pub(crate) fn focus_name_for_test(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus(window, cx);
     }
 
     /// Put the caret in the password box, the way a click would.
@@ -401,17 +720,39 @@ impl Render for ConnectionEditor {
             .on_action(cx.listener(Self::on_close))
             .on_action(cx.listener(Self::on_connect))
             .child(
+                // The inputs' focus ring is drawn outside their border, which
+                // this scroll area would clip at its edges; the padding gives
+                // the ring room, and the negative margin keeps the fields
+                // lined up with the title and the buttons. The margin sits on
+                // a wrapper because a scrollable keeps its own margin on the
+                // content, inside the edge that clips.
                 div()
+                    .id("editor-form")
+                    .test_support()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
-                    .child(self.render_form(cx)),
+                    .mx(px(-4.))
+                    .child(
+                        div()
+                            .size_full()
+                            .overflow_y_scrollbar()
+                            .child(div().p(px(4.)).child(self.render_form(cx))),
+                    ),
             )
+            .children(self.render_status(cx))
             .child(
                 h_flex()
                     .flex_none()
                     .gap_2()
-                    .justify_end()
+                    .child(
+                        Button::new("editor-test")
+                            .outline()
+                            .label("Test Connection")
+                            .loading(self.status == Status::Testing)
+                            .tooltip("Check that these settings connect, without closing")
+                            .on_click(cx.listener(|this, _, _window, cx| this.test_connection(cx))),
+                    )
+                    .child(div().flex_1())
                     .child(
                         Button::new("editor-cancel")
                             .ghost()
@@ -425,17 +766,7 @@ impl Render for ConnectionEditor {
                             .tooltip("Save this connection without connecting")
                             .on_click(cx.listener(|this, _, _window, cx| this.save(cx))),
                     )
-                    .child(
-                        Button::new("editor-connect")
-                            .primary()
-                            .label("Connect")
-                            .tooltip_with_action(
-                                "Connect",
-                                &EditorConnect,
-                                Some("ConnectionEditor"),
-                            )
-                            .on_click(cx.listener(|this, _, _window, cx| this.connect(cx))),
-                    ),
+                    .child(self.render_connect(cx)),
             )
     }
 }
@@ -450,5 +781,10 @@ fn field(label: &str, input: &Entity<InputState>, cx: &App) -> impl IntoElement 
                 .text_color(cx.theme().muted_foreground)
                 .child(label.to_string()),
         )
-        .child(Input::new(input))
+        .child(
+            div()
+                .id(SharedString::from(format!("field-{label}")))
+                .test_support()
+                .child(Input::new(input)),
+        )
 }

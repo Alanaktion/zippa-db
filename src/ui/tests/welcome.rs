@@ -404,3 +404,263 @@ fn engine_marks_read_in_every_bundled_theme(cx: &mut TestAppContext) {
         }
     });
 }
+
+#[gpui_kit::test]
+fn the_editor_suggests_values_for_the_chosen_engine(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+    let placeholders = |cx: &mut TestAppContext| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| editor.placeholders_for_test(cx))
+        })
+    };
+
+    assert_eq!(
+        placeholders(cx),
+        ["Local PostgreSQL", "postgres", "postgres"].map(String::from)
+    );
+
+    fill_editor(cx, &handle, &welcome, Engine::MySql, "");
+    assert_eq!(
+        placeholders(cx),
+        ["Local MySQL", "root", "Optional"].map(String::from),
+        "switching engine should swap the suggestions for MySQL's"
+    );
+
+    fill_editor(cx, &handle, &welcome, Engine::Sqlite, "");
+    let [name, _, database] = placeholders(cx);
+    assert_eq!(name, "Local SQLite");
+    assert!(
+        database.ends_with("database.db"),
+        "SQLite's database is a file, so it should suggest a path, not {database:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn testing_a_connection_reports_in_the_dialog(cx: &mut TestAppContext) {
+    let config_dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(config_dir.path.clone());
+
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+
+    // Nothing to connect to yet: the inputs are refused before any attempt.
+    fill_editor(cx, &handle, &welcome, Engine::Sqlite, "");
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.test_connection_for_test(cx))
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        editor_status(cx, &welcome),
+        "Error: Enter the path to the database file."
+    );
+
+    // A file that is not there is the driver's error, shown in the dialog.
+    let dir = ScratchDir::new();
+    let missing = dir.path.join("missing.db");
+    fill_editor(
+        cx,
+        &handle,
+        &welcome,
+        Engine::Sqlite,
+        &missing.to_string_lossy(),
+    );
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| editor.focus_name_for_test(window, cx))
+        });
+        window.input("Scratch", cx);
+    })
+    .unwrap();
+    assert_eq!(
+        editor_status(cx, &welcome),
+        "",
+        "typing should clear the result that was about the old inputs"
+    );
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.test_connection_for_test(cx))
+    });
+    cx.run_until_parked();
+    let status = editor_status(cx, &welcome);
+    assert!(
+        status.starts_with("Error: could not open"),
+        "a failed test should say why, not {status:?}"
+    );
+    assert!(
+        !missing.exists(),
+        "testing must not create the database file"
+    );
+
+    // A real one succeeds, and either way the dialog stays open.
+    let database = runtime::block_on(TempDatabase::new());
+    fill_editor(
+        cx,
+        &handle,
+        &welcome,
+        Engine::Sqlite,
+        &database.config().database,
+    );
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.test_connection_for_test(cx))
+    });
+    cx.run_until_parked();
+    assert_eq!(editor_status(cx, &welcome), "succeeded");
+    assert!(welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+    assert!(
+        welcome.update(cx, |welcome, _| welcome.connections_for_test().is_empty()),
+        "testing a connection should not save it"
+    );
+}
+
+#[gpui_kit::test]
+fn a_port_that_is_not_a_number_is_refused(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| {
+                editor.set_port_for_test("54x2", window, cx)
+            })
+        });
+    })
+    .unwrap();
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.connect_for_test(true, cx))
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        editor_status(cx, &welcome),
+        "Error: The port must be a number from 1 to 65535."
+    );
+    assert!(
+        welcome.update(cx, |welcome, _| welcome.editor_open_for_test()),
+        "a refused connect should leave the dialog open to fix the port"
+    );
+}
+
+#[gpui_kit::test]
+fn connect_saves_a_new_connection(cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+    let database = runtime::block_on(TempDatabase::new());
+    let path = database.config().database;
+    fill_editor(cx, &handle, &welcome, Engine::Sqlite, &path);
+
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.connect_for_test(true, cx))
+    });
+    cx.run_until_parked();
+
+    assert!(
+        crate::db::store::load()
+            .expect("the store should be readable")
+            .iter()
+            .any(|config| config.database == path),
+        "Connect should have saved the new connection"
+    );
+    assert!(
+        handle
+            .update(cx, |workspace, _, _| workspace.active_session_for_test())
+            .unwrap()
+            .is_some(),
+        "and then connected to it"
+    );
+}
+
+#[gpui_kit::test]
+fn connect_without_saving_leaves_the_list_alone(cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+    let database = runtime::block_on(TempDatabase::new());
+    fill_editor(
+        cx,
+        &handle,
+        &welcome,
+        Engine::Sqlite,
+        &database.config().database,
+    );
+
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.connect_for_test(false, cx))
+    });
+    cx.run_until_parked();
+
+    assert!(
+        handle
+            .update(cx, |workspace, _, _| workspace.active_session_for_test())
+            .unwrap()
+            .is_some(),
+        "the connection should open"
+    );
+    assert!(
+        crate::db::store::load()
+            .expect("the store should be readable")
+            .is_empty(),
+        "without being saved"
+    );
+}
+
+#[gpui_kit::test]
+fn enter_in_a_field_connects(cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+    let database = runtime::block_on(TempDatabase::new());
+    fill_editor(
+        cx,
+        &handle,
+        &welcome,
+        Engine::Sqlite,
+        &database.config().database,
+    );
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| editor.focus_name_for_test(window, cx))
+        });
+    })
+    .unwrap();
+
+    press_workspace(cx, &handle, "enter");
+
+    assert!(
+        handle
+            .update(cx, |workspace, _, _| workspace.active_session_for_test())
+            .unwrap()
+            .is_some(),
+        "Enter in the name box should connect"
+    );
+}
+
+#[gpui_kit::test]
+fn the_editor_leaves_room_for_the_focus_ring(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    new_connection_editor(cx, &handle);
+
+    // The ring is drawn 3px outside an input's border, and the form's scroll
+    // area clips whatever passes its edge.
+    const RING: f32 = 3.;
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        let area = window.find("editor-form").bounds();
+        for field in ["field-Name", "field-Host", "field-Port", "field-Database"] {
+            let input = window.find(field).bounds();
+            assert!(
+                input.left() - px(RING) >= area.left()
+                    && input.right() + px(RING) <= area.right()
+                    && input.top() - px(RING) >= area.top(),
+                "{field}'s focus ring would be clipped: {input:?} in {area:?}"
+            );
+        }
+    })
+    .unwrap();
+}

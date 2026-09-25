@@ -101,4 +101,5 @@ Two ordering rules make the row menu work, both learned the hard way: the cell a
 * The sidebar's object list is reachable by keyboard
 * Nothing is told by color alone: errors say so in words, staged cells are underlined, deleted rows are struck through
 * The grid's per-row pick boxes are not tab stops — one per row would mean tabbing through a page of them — so `Space`, `Shift`+arrows, `Cmd+A`, and `Cmd+Shift+A` are what pick rows from the keyboard; the header's "select every row" box is still tab-reachable
+* Known deviation: the connection editor's Connect split button has an unnamed caret half — `gpui-kit`'s `DropdownButton` builds that `Button` itself and exposes no label for it. Its one item, connecting without saving, is not reachable any other way yet.
 * Known deviation: a dock panel's own `+` (beside its tab strip) is not tab-reachable — `gpui-kit`'s dock forces `tab_stop(false)` on toolbar buttons. `Cmd+T` is bound and named in the button's tooltip, and the workspace toolbar's `new-query` button (`src/app.rs`) is still tab-reachable, so a new query tab is always reachable by keyboard some other way.
