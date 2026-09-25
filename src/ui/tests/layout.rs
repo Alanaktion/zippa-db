@@ -4,7 +4,7 @@ use super::*;
 
 #[gpui_kit::test]
 fn the_error_banner_keeps_the_new_connection_button_in_view(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::component::init);
+    cx.update(init_ui);
     let handle = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
         Welcome::new(window, cx)
     });
@@ -51,7 +51,7 @@ fn result_grid_is_visible_after_a_query(cx: &mut TestAppContext) {
         .expect("could not open the test database");
 
     let handle = {
-        cx.update(gpui_kit::component::init);
+        cx.update(init_ui);
         let connection = Arc::new(connection);
         cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
             Session::new(connection, window, cx)
@@ -92,7 +92,7 @@ fn many_tabs_keep_the_result_grid_inside_the_window(cx: &mut TestAppContext) {
     let connection = runtime::block_on(Connection::open(database.config(), None))
         .expect("could not open the test database");
 
-    cx.update(gpui_kit::component::init);
+    cx.update(init_ui);
     let handle = {
         let connection = Arc::new(connection);
         cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
@@ -138,7 +138,7 @@ fn sidebar_lists_objects_beside_the_panes(cx: &mut TestAppContext) {
     let connection = runtime::block_on(Connection::open(database.config(), None))
         .expect("could not open the test database");
 
-    cx.update(gpui_kit::component::init);
+    cx.update(init_ui);
     let handle = {
         let connection = Arc::new(connection);
         cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
@@ -200,7 +200,7 @@ fn dragging_the_divider_resizes_the_sidebar(cx: &mut TestAppContext) {
     let connection = runtime::block_on(Connection::open(database.config(), None))
         .expect("could not open the test database");
 
-    cx.update(gpui_kit::component::init);
+    cx.update(init_ui);
     let handle = {
         let connection = Arc::new(connection);
         cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
@@ -227,13 +227,18 @@ fn dragging_the_divider_resizes_the_sidebar(cx: &mut TestAppContext) {
 
 /// Frames must not get more expensive as the result set grows: the grid
 /// virtualizes rows, so only the visible ones may cost anything.
+///
+/// Measured against a result that fits on screen rather than a fixed budget,
+/// so the test says the same thing in an unoptimized build (CI's) as in an
+/// optimized one. Each figure is the fastest of several frames, which keeps a
+/// busy machine's stalls out of the comparison.
 #[gpui_kit::test]
 fn large_results_do_not_make_frames_expensive(cx: &mut TestAppContext) {
     let database = runtime::block_on(TempDatabase::new());
     let connection = runtime::block_on(Connection::open(database.config(), None))
         .expect("could not open the test database");
 
-    cx.update(gpui_kit::component::init);
+    cx.update(init_ui);
     let handle = {
         let connection = Arc::new(connection);
         cx.open_window(size(px(1280.), px(800.)), |window, cx| {
@@ -241,53 +246,44 @@ fn large_results_do_not_make_frames_expensive(cx: &mut TestAppContext) {
         })
     };
 
-    let result = QueryResult {
-        columns: (0..12).map(|index| format!("column_{index}")).collect(),
-        rows: (0..5000)
-            .map(|row| (0..12).map(|col| Some(format!("v{row}-{col}"))).collect())
-            .collect(),
-        ..QueryResult::default()
+    let mut frame_with = |rows: usize| {
+        let result = QueryResult {
+            columns: (0..12).map(|index| format!("column_{index}")).collect(),
+            rows: (0..rows)
+                .map(|row| (0..12).map(|col| Some(format!("v{row}-{col}"))).collect())
+                .collect(),
+            ..QueryResult::default()
+        };
+        handle
+            .update(cx, |session, _, cx| {
+                session.show_result_for_test(result, cx)
+            })
+            .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            (0..20)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    window.render_frame(cx);
+                    started.elapsed()
+                })
+                .min()
+                .unwrap()
+        })
+        .unwrap()
     };
 
-    handle
-        .update(cx, |session, _, cx| {
-            session.show_result_for_test(result, cx)
-        })
-        .unwrap();
-
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.draw(cx).clear(cx);
-        let started = std::time::Instant::now();
-        for _ in 0..20 {
-            window.render_frame(cx);
-        }
-        let loaded = started.elapsed() / 20;
-        assert!(
-            loaded < std::time::Duration::from_millis(50),
-            "a frame with 5000 rows took {loaded:?}"
-        );
-    })
-    .unwrap();
-
-    handle
-        .update(cx, |session, _, cx| {
-            session.show_result_for_test(QueryResult::default(), cx)
-        })
-        .unwrap();
-
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let started = std::time::Instant::now();
-        for _ in 0..20 {
-            window.render_frame(cx);
-        }
-        let empty = started.elapsed() / 20;
-        assert!(
-            empty < std::time::Duration::from_millis(50),
-            "an empty frame took {empty:?}"
-        );
-    })
-    .unwrap();
+    let screenful = frame_with(50);
+    let loaded = frame_with(5000);
+    let empty = frame_with(0);
+    assert!(
+        loaded < screenful * 3,
+        "a frame with 5000 rows took {loaded:?}, against {screenful:?} with 50"
+    );
+    assert!(
+        empty < screenful * 3,
+        "an empty frame took {empty:?} after 5000 rows, against {screenful:?} with 50"
+    );
 }
 
 #[gpui_kit::test]
@@ -296,7 +292,7 @@ fn long_object_lists_scroll_inside_the_sidebar(cx: &mut TestAppContext) {
     let connection = runtime::block_on(Connection::open(database.config(), None))
         .expect("could not open the test database");
 
-    cx.update(gpui_kit::component::init);
+    cx.update(init_ui);
     let handle = {
         let connection = Arc::new(connection);
         cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {

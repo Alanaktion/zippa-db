@@ -14,9 +14,9 @@ use gpui_kit::component::table::ColumnSort;
 use gpui_kit::component::{Root, Theme, ThemeMode, WindowExt};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext as _, Bounds, Context, ElementId, Entity, InputEvent as _, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, TestAppContext, Window, WindowHandle,
-    point, px, size,
+    App, AppContext as _, Bounds, Context, ElementId, Entity, InputEvent as _, Modifiers,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, TestAppContext, Window,
+    WindowHandle, point, px, size,
 };
 use uuid::Uuid;
 
@@ -66,6 +66,16 @@ mod workspace;
 
 const WINDOW: (f32, f32) = (900., 600.);
 
+/// `gpui_kit::component::init` with reduced motion on. GPUI times animations
+/// on the wall clock, not the test scheduler's, and a dialog slides into
+/// place: in a slow (unoptimized) build it can move between a click's
+/// mouse-down and mouse-up, and the click misses its button. Reduced motion
+/// draws every one-shot animation at its end state from the first frame.
+fn init_ui(cx: &mut App) {
+    gpui_kit::component::init(cx);
+    cx.set_reduce_motion(true);
+}
+
 fn contains(window: Bounds<Pixels>, element: Bounds<Pixels>) -> bool {
     element.left() >= window.left()
         && element.right() <= window.right()
@@ -105,7 +115,7 @@ fn session_with_safety(
         .expect("could not open the test database");
 
     cx.update(|cx| {
-        gpui_kit::component::init(cx);
+        init_ui(cx);
         crate::keymap::bind(cx);
     });
     let handle = {
@@ -286,7 +296,7 @@ fn workspace(cx: &mut TestAppContext) -> WorkspaceWindow {
 /// from the file — so no test ever reads the developer's own workspace.
 fn workspace_from(cx: &mut TestAppContext, state: WorkspaceState) -> WorkspaceWindow {
     cx.update(|cx| {
-        gpui_kit::component::init(cx);
+        init_ui(cx);
         crate::keymap::bind(cx);
     });
 

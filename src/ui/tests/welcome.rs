@@ -328,7 +328,7 @@ fn editing_a_connection_keeps_its_last_connected_stamp(cx: &mut TestAppContext) 
 #[gpui_kit::test]
 fn tag_colors_contrast_in_every_bundled_theme(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        gpui_kit::component::init(cx);
+        init_ui(cx);
         crate::settings::load_builtin_themes(cx);
     });
 
@@ -367,7 +367,7 @@ fn tag_colors_contrast_in_every_bundled_theme(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn engine_marks_read_in_every_bundled_theme(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        gpui_kit::component::init(cx);
+        init_ui(cx);
         crate::settings::load_builtin_themes(cx);
     });
 

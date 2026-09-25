@@ -29,7 +29,7 @@ fn a_table_opens_with_the_page_size_from_the_settings(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn every_theme_file_under_assets_themes_is_registered(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        gpui_kit::component::init(cx);
+        init_ui(cx);
         settings::load_builtin_themes(cx);
     });
 
@@ -59,7 +59,7 @@ fn the_picker_still_offers_gpui_kits_own_themes_alongside_zippas(cx: &mut TestAp
     // it, so `gpui_kit::init`'s own "Default Light"/"Default Dark" stay
     // choosable — Zippa's theme is only the default when nothing is picked.
     cx.update(|cx| {
-        gpui_kit::component::init(cx);
+        init_ui(cx);
         settings::load_builtin_themes(cx);
     });
 
@@ -78,7 +78,7 @@ fn the_picker_still_offers_gpui_kits_own_themes_alongside_zippas(cx: &mut TestAp
 
 #[gpui_kit::test]
 fn the_settings_window_is_opened_once(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::component::init);
+    cx.update(init_ui);
 
     let opened = cx.update(|cx| {
         settings_window::open(cx);
@@ -98,7 +98,7 @@ fn the_settings_window_is_opened_once(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn the_settings_window_shows_its_pages(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::component::init);
+    cx.update(init_ui);
     cx.update(settings_window::open);
 
     let handle = cx
@@ -139,7 +139,7 @@ fn the_toolbar_button_opens_the_settings(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn scrollbars_stay_on_screen_unless_the_setting_says_otherwise(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::component::init);
+    cx.update(init_ui);
     let _handle = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
         Workspace::with_state_for_test(WorkspaceState::default(), window, cx)
     });
@@ -165,7 +165,7 @@ fn scrollbars_stay_on_screen_unless_the_setting_says_otherwise(cx: &mut TestAppC
 
 #[gpui_kit::test]
 fn pinning_the_appearance_overrides_the_system(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::component::init);
+    cx.update(init_ui);
     // The workspace is what subscribes to the window's appearance.
     let _handle = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
         Workspace::with_state_for_test(WorkspaceState::default(), window, cx)

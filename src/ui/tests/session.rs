@@ -9,7 +9,7 @@ fn switching_database_is_refused_for_sqlite(cx: &mut TestAppContext) {
         .expect("could not open the test database");
     let path = connection.database().to_string();
 
-    cx.update(gpui_kit::component::init);
+    cx.update(init_ui);
     let handle = {
         let connection = Arc::new(connection);
         cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
