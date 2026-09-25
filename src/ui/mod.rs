@@ -29,6 +29,7 @@ pub mod welcome;
 #[cfg(test)]
 mod tests;
 
+use gpui_kit::component::button::ButtonCustomVariant;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{ActiveTheme, Root, Theme, WindowExt};
 use gpui_kit::prelude::*;
@@ -57,6 +58,19 @@ pub fn notify_info(window: &mut Window, cx: &mut App, message: impl Into<SharedS
     if window.root::<Root>().flatten().is_some() {
         window.push_notification(Notification::info(message.into()), cx);
     }
+}
+
+/// A ghost button whose text is the theme's muted colour: it reads as chrome
+/// until hovered, for controls that should not compete with content.
+///
+/// Pass it to `.custom(..)`; `ButtonVariant` is a closed enum, so a named
+/// variant is not something this crate can add.
+pub fn subtle_button(cx: &App) -> ButtonCustomVariant {
+    let theme = cx.theme();
+    ButtonCustomVariant::new(cx)
+        .foreground(theme.muted_foreground)
+        .hover(theme.accent)
+        .active(theme.secondary_active)
 }
 
 /// The text a tag chip carries: the tag, or the colour's own name when only a
