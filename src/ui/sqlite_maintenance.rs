@@ -87,6 +87,12 @@ impl SqliteMaintenanceView {
     }
 
     fn run(&mut self, task: Maintenance, cx: &mut Context<Self>) {
+        // The confirm dialog answers later; a run started in the meantime
+        // wins and this answer is dropped.
+        if self.running.is_some() {
+            return;
+        }
+
         self.running = Some(task);
         self.notice = None;
         self.error = None;

@@ -129,6 +129,8 @@ fn the_dialog_saves_with_the_platform_shortcut(cx: &mut TestAppContext) {
 
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
+    // The value is laid out on the background executor.
+    cx.run_until_parked();
     draw_workspace(cx, &handle);
 
     let dialog = handle
@@ -185,6 +187,8 @@ fn saving_an_untouched_null_leaves_it_null(cx: &mut TestAppContext) {
     // The second row has no name, so the box opens on the word `NULL`.
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.view_cell(1, 1, cx));
+    // The value is laid out on the background executor.
+    cx.run_until_parked();
     draw_workspace(cx, &handle);
 
     let dialog = handle
@@ -223,6 +227,8 @@ fn the_dialog_coerces_a_typed_null_like_the_cell_editor(cx: &mut TestAppContext)
 
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
+    // The value is laid out on the background executor.
+    cx.run_until_parked();
     draw_workspace(cx, &handle);
 
     let dialog = handle
@@ -258,6 +264,8 @@ fn escape_closes_the_dialog_without_saving(cx: &mut TestAppContext) {
 
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
+    // The value is laid out on the background executor.
+    cx.run_until_parked();
     draw_workspace(cx, &handle);
 
     let dialog = handle
@@ -313,6 +321,8 @@ fn a_click_inside_the_dialog_never_reaches_the_grid(cx: &mut TestAppContext) {
     let before = grid.read_with(cx, |grid, cx| grid.selection_for_test(cx));
 
     grid.update(cx, |grid, cx| grid.view_cell(0, 1, cx));
+    // The value is laid out on the background executor.
+    cx.run_until_parked();
     draw_workspace(cx, &handle);
 
     // Clicking into the dialog's box would land on whatever grid cell lies

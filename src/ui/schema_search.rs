@@ -20,7 +20,7 @@ use gpui_kit::component::{ActiveTheme, Icon, Sizable, WindowExt, h_flex, v_flex}
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, IntoElement, Render, SharedString, Window, div, px};
 
-use crate::db::catalog::{self, MAX_HITS};
+use crate::db::catalog::{self, Hit, MAX_HITS};
 use crate::db::{Catalog, CatalogEntry, CatalogKind, Query};
 
 use super::session::Session;
@@ -43,6 +43,12 @@ pub struct SchemaSearchView {
     query: String,
     /// The kind chips that are switched on; empty means every kind.
     kinds: Vec<CatalogKind>,
+    /// The ranked hits for `query`, computed on the background executor so
+    /// typing never stalls the UI; `generation` drops results a newer
+    /// keystroke has already superseded.
+    hits: Vec<Hit>,
+    matched: usize,
+    generation: u64,
 }
 
 impl SchemaSearchView {
@@ -50,13 +56,58 @@ impl SchemaSearchView {
         let state = cx.new(|cx| CommandState::new(window, cx));
         // The catalog is read in the background as the session opens; when it
         // lands, the "Loading schema…" line is replaced by the results.
-        cx.observe(&session, |_, _, cx| cx.notify()).detach();
-        Self {
+        cx.observe(&session, |this, _, cx| this.refresh_search(cx))
+            .detach();
+        let view = Self {
             state,
             session,
             query: String::new(),
             kinds: Vec::new(),
+            hits: Vec::new(),
+            matched: 0,
+            generation: 0,
+        };
+        // The first search runs on the next tick: the session opening this
+        // dialog is borrowed while `new` runs, so it cannot be read yet.
+        cx.spawn(async move |this, cx| {
+            this.update_in(cx, |this, _, cx| this.refresh_search(cx))
+                .ok();
+        })
+        .detach();
+        view
+    }
+
+    /// Re-rank the catalog against the current query off the UI thread.
+    ///
+    /// A full scan plus sort of up to 200k entries costs tens of milliseconds,
+    /// so it runs on the background executor and folds in when it lands.
+    fn refresh_search(&mut self, cx: &mut Context<Self>) {
+        let catalog = self.session.read(cx).catalog();
+        let mut query = Query::parse(&self.query);
+        // The chips narrow the query the way the `kind:` prefix does; both can
+        // be used at once and a kind either selects is kept.
+        for kind in &self.kinds {
+            if !query.kinds.contains(kind) {
+                query.kinds.push(*kind);
+            }
         }
+        self.generation += 1;
+        let generation = self.generation;
+        cx.spawn(async move |this, cx| {
+            let (hits, matched) = cx
+                .background_spawn(async move { catalog::search(&catalog.entries, &query) })
+                .await;
+            this.update_in(cx, |this, _, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.hits = hits;
+                this.matched = matched;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn toggle_kind(&mut self, kind: CatalogKind, cx: &mut Context<Self>) {
@@ -66,7 +117,7 @@ impl SchemaSearchView {
             }
             None => self.kinds.push(kind),
         }
-        cx.notify();
+        self.refresh_search(cx);
     }
 
     fn render_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -83,7 +134,7 @@ impl SchemaSearchView {
                     .accessibility_label("Show every kind of result")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.kinds.clear();
-                        cx.notify();
+                        this.refresh_search(cx);
                     })),
             )
             .children(CatalogKind::ALL.into_iter().map(|kind| {
@@ -139,13 +190,8 @@ impl Render for SchemaSearchView {
 
         // The chips narrow the query the way the `kind:` prefix does; both can
         // be used at once and a kind either selects is kept.
-        let mut query = Query::parse(&self.query);
-        for kind in &self.kinds {
-            if !query.kinds.contains(kind) {
-                query.kinds.push(*kind);
-            }
-        }
-        let (hits, matched) = catalog::search(&catalog.entries, &query);
+        let hits = &self.hits;
+        let matched = self.matched;
 
         // One Command group per heading, with a parallel list of the entries
         // each row stands for, so confirming a path finds its entry.
@@ -154,7 +200,7 @@ impl Render for SchemaSearchView {
         for heading in GROUPS.map(CatalogKind::group) {
             let mut group = CommandGroup::new().label(heading);
             let mut section = Vec::new();
-            for hit in &hits {
+            for hit in hits {
                 let entry = &catalog.entries[hit.index];
                 if entry.kind.group() != heading {
                     continue;
@@ -203,7 +249,7 @@ impl Render for SchemaSearchView {
                 if let Some(view) = view.upgrade() {
                     view.update(cx, |this, cx| {
                         this.query = query;
-                        cx.notify();
+                        this.refresh_search(cx);
                     });
                 }
             })

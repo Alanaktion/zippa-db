@@ -80,6 +80,12 @@ impl ProcessListView {
     /// action already does — there is no staging for this, so it asks every
     /// time rather than following the connection's safety mode.
     fn kill_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // One question at a time; the confirm funnels into `run_kill`, which
+        // carries the in-flight guard.
+        if window.has_active_dialog(cx) {
+            return;
+        }
+
         let picked = self.grid.read(cx).snapshot(Scope::Picked, cx);
         let ids: Vec<String> = picked
             .rows
@@ -121,6 +127,15 @@ impl ProcessListView {
     }
 
     fn run_kill(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
+        // The confirm dialog answers later; a kill started in the meantime
+        // wins. `loading` doubles as the busy flag: it disables the toolbar
+        // buttons, and the trailing `refresh` clears it when the list lands.
+        if self.loading {
+            return;
+        }
+        self.loading = true;
+        cx.notify();
+
         let connection = self.connection.clone();
         let count = ids.len();
         let task = runtime::spawn(async move {

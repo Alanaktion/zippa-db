@@ -112,6 +112,13 @@ impl Welcome {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // One editor at a time: a second New while one is open must not stack
+        // another, or the first dialog's close would clear `editor` from under
+        // the second.
+        if self.editor.is_some() {
+            return;
+        }
+
         let title = if config.is_some() {
             "Edit connection"
         } else {
@@ -265,6 +272,12 @@ impl Welcome {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // One question at a time; the confirm funnels into `connect`, which
+        // carries the in-flight guard.
+        if window.has_active_dialog(cx) {
+            return;
+        }
+
         if !config.is_risky_auto_apply() {
             self.connect_saved(config, window, cx);
             return;
@@ -363,6 +376,13 @@ impl Welcome {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // One connection attempt at a time: a second activation while the
+        // first is still opening must not start another, or two live sessions
+        // would open on the one connection.
+        if self.connecting.is_some() {
+            return;
+        }
+
         self.connecting = Some(config.id);
         self.error = None;
         cx.notify();

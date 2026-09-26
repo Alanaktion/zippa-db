@@ -421,6 +421,8 @@ fn copying_as_csv_takes_only_the_picked_rows(cx: &mut TestAppContext) {
     pick_row(cx, handle, 0);
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Csv), cx));
+    // The layout runs on the background executor.
+    cx.run_until_parked();
 
     assert_eq!(
         clipboard(cx),
@@ -436,6 +438,8 @@ fn copying_with_nothing_picked_takes_every_row_as_it_stands(cx: &mut TestAppCont
     stage_cell(cx, &view, 0, 1, "renamed");
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Csv), cx));
+    // The layout runs on the background executor.
+    cx.run_until_parked();
 
     assert_eq!(
         clipboard(cx),
@@ -456,6 +460,8 @@ fn a_row_marked_for_deletion_is_still_copied(cx: &mut TestAppContext) {
     grid.update(cx, |grid, cx| grid.delete_selected(cx));
     grid.update(cx, |grid, cx| grid.clear_row_selection(cx));
     grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Csv), cx));
+    // The layout runs on the background executor.
+    cx.run_until_parked();
 
     assert_eq!(
         clipboard(cx),
@@ -470,6 +476,8 @@ fn copying_as_json_is_typed(cx: &mut TestAppContext) {
 
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Json), cx));
+    // The layout runs on the background executor.
+    cx.run_until_parked();
 
     assert_eq!(
         clipboard(cx),
@@ -502,6 +510,8 @@ fn copying_as_sql_writes_inserts_for_the_table(cx: &mut TestAppContext) {
 
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
     grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Sql), cx));
+    // The layout runs on the background executor.
+    cx.run_until_parked();
 
     assert_eq!(
         clipboard(cx),
@@ -550,6 +560,8 @@ fn a_copy_too_large_for_the_clipboard_is_capped_and_says_so(cx: &mut TestAppCont
     };
     grid.update(cx, |grid, cx| grid.set_result(result, cx));
     grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Csv), cx));
+    // The layout runs on the background executor.
+    cx.run_until_parked();
 
     let text = clipboard(cx).expect("something should be on the clipboard");
     assert_eq!(
@@ -592,6 +604,8 @@ fn a_query_result_copies_and_says_so_in_the_status_bar(cx: &mut TestAppContext) 
     // other shapes are, and a query tab reports them in its status bar rather
     // than in a footer.
     grid.update(cx, |grid, cx| grid.copy_as(CopyAs::Rows(Format::Csv), cx));
+    // The layout runs on the background executor.
+    cx.run_until_parked();
     assert_eq!(clipboard(cx), Some("id,name\n1,alpha\n".to_string()));
     assert_eq!(
         handle

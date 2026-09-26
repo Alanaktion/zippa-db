@@ -755,6 +755,18 @@ impl SessionPanel {
         }
     }
 
+    /// Whether a run is in flight, holding the abort handle a second send
+    /// would otherwise overwrite.
+    pub(crate) fn has_running_task(&self) -> bool {
+        matches!(
+            &self.content,
+            TabContent::Query {
+                running: Some(_),
+                ..
+            }
+        )
+    }
+
     /// Put a finished run's results in this tab.
     pub(crate) fn show_results(&mut self, results: Vec<QueryResult>, cx: &mut Context<Self>) {
         let TabContent::Query {

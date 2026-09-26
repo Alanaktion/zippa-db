@@ -171,3 +171,35 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 - **Read in full (at the audit revision):** every file under `src/` (78 `.rs` files) plus `README.md`, `TODO.md`, `AGENTS.md`, `CLAUDE.md`, the since-merged `IDEAS.md`/`IDEAS2.md`, `Cargo.toml`, `about.toml`, `.editorconfig`, `.github/workflows/ci.yml`, and the vendored `gpui-component`/`gpui-pre` sources where a finding depended on their defaults.
 - **Not run for the audit:** the app itself and no live server; every UI symptom and server-behaviour claim above is marked ⚠︎ inferred or "unverified" rather than asserted. MySQL and Postgres containers were later used for the three ignored live-server tests (see §5).
 - **Not audited:** packaging (`cargo packager`) and the icon assets; the bundled theme files; licensing (`about.toml` lists `Apache-2.0`/`MIT` as accepted, and `LICENSE` was not cross-checked against them).
+
+## 9. Stability audit — hangs and crashes (2026-09-26, revision `3303ae4`)
+
+Prompted by UI hangs and crashes on macOS dev builds. Three passes over all non-test code at `3303ae4`: panic sources (incl. debug-only integer overflow), hang sources (UI-thread blocking, locks across awaits, never-resolving futures, render loops, unbounded growth), and GPUI/macOS misuse (thread affinity, entity lifecycles, dialogs, dock, focus) with emphasis on the views added since 2026-09-19. Static reading only; the one reproduced panic was extracted into a scratch program. Ranked most-likely-first.
+
+### Crashes
+
+- **[H] `rewrite_identifiers` panics on a bare non-ASCII character in stored SQL** (`src/ui/schema_view/rebuild.rs`, ~line 589). `tokenize()` classifies any non-ASCII byte as a 1-byte `Punct` token, so `&sql[token.start..token.end]` can split a UTF-8 char boundary — reproduced: `end byte index 23 is not a char boundary; it is inside 'é'`. Fires in release builds too. Trigger: structure tab → rename a column → Apply, with any stored explicit index/trigger/dependent-view SQL containing a bare non-ASCII identifier (e.g. `CREATE INDEX i ON t(prénom)`). Non-ASCII inside strings, quoted identifiers, and comments is safe.
+- **[L] Unguarded `fk.referenced_columns[0]`** (`src/ui/table_view/mod.rs`, ~line 967). `referenced_columns` comes from `split_columns`, which yields `[]` on empty server text; a single-column FK reporting no referenced columns panics when followed from a cell. Vanishingly rare in practice.
+- **[M] Double confirm runs a write twice and orphans the first abort handle** (`src/ui/session/running.rs`, `confirm_write`/`confirm_explain`). No `has_active_dialog` guard: a second Cmd+Enter while the confirm is open stacks a second dialog; confirming both executes the write twice, and the second `send` overwrites the first task's abort handle, so Cmd+. can no longer cancel the first query. Same shape in `confirm_explain` (runs `EXPLAIN ANALYZE` twice).
+- **[M] `Welcome::connect` has no re-entry guard** (`src/ui/welcome/mod.rs`). `connecting` is set but never checked; the only guard is the card button's `.disabled(connecting)`, which needs a re-render. Double activation opens two live sessions (two pools, two metadata reloads) on one connection. The risky-card path (`connect_saved_with_confirmation`) sets no guard at all. `open_editor` has the same gap (stacked dialogs clobber `self.editor`; contrast `Session::open_import_dialog`'s `self.import.is_some()` guard).
+- **[L] `Workspace::take_value_dialog` opens a dialog mid-render** (`src/app.rs`). One-shot per consumed `ValueRequest`, so no render loop; a second request while one is open stacks and clobbers `self.value`, and the first view's `Dismissed` pops the wrong dialog. Hard to trigger (modal overlay blocks the grid).
+
+### Hangs (UI thread stalls)
+
+- **[H] Table export formats the entire result on the UI thread** (`src/ui/table_view/export.rs:104`, `export_result`). The query runs on the tokio runtime and the *write* is backgrounded, but the O(rows×cols) `export::render` string formatting between them runs in a `cx.spawn` task, i.e. GPUI's main thread. Every export; a seconds-long freeze on large tables — the top suspect for the reported hangs. (AUDIT §1 noted the memory side; this is the UI-thread side.)
+- **[M] Schema search re-runs the full catalog search inside `render`, per keystroke** (`src/ui/schema_search.rs:145`). `catalog::search` scans up to 200k entries plus a full sort of hits, on the UI thread, on every keystroke.
+- **[M] Row panel re-walks whole values on every render** (`src/ui/table_view/row_panel.rs:281` → `data_grid/format.rs:47` `needs_a_window`). `text.chars().count() > LONG_VALUE` walks the entire value with no short-circuit, per visible field, per render — typing in the column filter or a focus change re-walks multi-MB values.
+- **[M] "Copy as" formats up to 100k rows on the UI thread** (`src/ui/data_grid/clipboard.rs:156`, `copy_snapshot`). Bounded by `MAX_COPY_ROWS`/50 MB, but still a multi-second freeze for big selections.
+- **[L] Value dialog pretty-prints big JSON on the UI thread** (`src/ui/data_grid/mod.rs`, `view_cell` → `format_value` → `pretty_json`). One-off per dialog open.
+- **[L] Console refresh clones up to 500 full SQL texts on the UI thread** (`src/ui/console.rs:48`, `refresh`). Proportional to logged bytes after huge script runs.
+- **[L] Query editor clones and re-splits the whole buffer on re-render** (`src/ui/query_editor.rs:234` → `statement::at_cursor`). No per-keystroke subscription, so only a hitch with multi-MB buffers.
+
+### Checked and clean
+
+- No `unsafe` in `src/` or `build.rs`. Production `unwrap`/`expect` surface is small and guarded (`changed()` provably implies `original.is_some()`; indexing in the grid delegate is `.get()`-based; `page * limit` overflow is unreachable — ~10¹⁴ pages needed — and debug-only in theory).
+- No blocking on the UI thread besides the above: keychain reads/writes are backgrounded, `sql_file` read/write go through `background_spawn`, no `block_on`/`.wait()`/blocking `recv` in non-test UI code, `QueryLog`'s `Mutex` is never held across an await.
+- No GPUI thread-affinity violations: no `std::thread::spawn`/`tokio::spawn` touching UI state; all `runtime::spawn` closures capture only `Arc<Connection>` and results land via guarded `update_in(cx, …).ok()`. No `cx.new()` or `cx.notify()` inside any `render()` (except the one-shot `take_value_dialog`), no render loops, no timers/intervals, subscriptions don't leak, dock `TabGroup` is never read during paint, the five new views delegate focus to the grid's table handle per the AGENTS.md rule.
+
+### Suggested fix directions
+
+Move `export::render` into `background_spawn` (export.rs and clipboard.rs); debounce or background the schema-search hit computation; memoize `needs_a_window` per value; fix `tokenize()` to advance by char boundary (or slice with `get()`); add re-entry guards (`has_active_dialog` / `connecting` / `editor.is_some()`) mirroring `open_import_dialog`; don't overwrite a live abort handle in `Session::send`.

@@ -864,10 +864,6 @@ impl DataGrid {
             .cloned()
             .unwrap_or_default();
         let value = delegate.cell(row_ix, col_ix).clone();
-        // What the box opens with, and what the save closure compares against:
-        // the display form, not the value itself.
-        let text = format_value(&value, &type_name);
-
         // Nothing was read back to show, but an owner that can address this
         // row by its key may be able to fetch the real bytes and replace the
         // dialog with a preview of them.
@@ -878,49 +874,67 @@ impl DataGrid {
 
         // The stand-ins the driver hands back describe a value rather than
         // holding it, so there is nothing to edit and the window says why.
+        let editable = delegate.is_editable(row_ix, col_ix);
         let note = if query::is_placeholder(&value) {
             Some("This value was not read back from the server.")
-        } else if !delegate.is_editable(row_ix, col_ix) {
+        } else if !editable {
             Some("This value cannot be edited here.")
         } else {
             None
         };
 
-        let save: Option<value_dialog::Save> = delegate.is_editable(row_ix, col_ix).then(|| {
-            let grid = cx.weak_entity();
-            let opened_with = text.clone();
-            Rc::new(move |typed: String, cx: &mut App| {
-                let Some(grid) = grid.upgrade() else {
-                    return;
-                };
-                // The box opens with the value laid out for reading — `NULL`,
-                // JSON indented — so saving it as it stood is not an edit. This
-                // is what keeps an untouched `NULL` a `NULL` rather than the
-                // four characters the box spelled it with.
-                if typed == opened_with {
-                    return;
-                }
-                grid.update(cx, |grid, cx| {
-                    let value = staged_value(typed, Settings::global(cx).coerce_null_literal);
-                    grid.stage_cell(row_ix, col_ix, value, cx)
+        // Laying a multi-megabyte value out for reading is real parsing work
+        // (a big JSON document is pretty-printed); it runs on the background
+        // executor so the dialog opens without stalling the UI on the click.
+        cx.spawn(async move |this, cx| {
+            let text = cx
+                .background_spawn(async move { format_value(&value, &type_name) })
+                .await;
+
+            this.update_in(cx, |_this, _window, cx| {
+                // What the save closure compares against: the display form,
+                // not the value itself.
+                let save: Option<value_dialog::Save> = editable.then(|| {
+                    let grid = cx.weak_entity();
+                    let opened_with = text.clone();
+                    Rc::new(move |typed: String, cx: &mut App| {
+                        let Some(grid) = grid.upgrade() else {
+                            return;
+                        };
+                        // The box opens with the value laid out for reading —
+                        // `NULL`, JSON indented — so saving it as it stood is
+                        // not an edit. This is what keeps an untouched `NULL`
+                        // a `NULL` rather than the four characters the box
+                        // spelled it with.
+                        if typed == opened_with {
+                            return;
+                        }
+                        grid.update(cx, |grid, cx| {
+                            let value =
+                                staged_value(typed, Settings::global(cx).coerce_null_literal);
+                            grid.stage_cell(row_ix, col_ix, value, cx)
+                        });
+                    }) as value_dialog::Save
                 });
-            }) as value_dialog::Save
-        });
 
-        value_dialog::open(
-            ValueRequest {
-                column: column.clone().into(),
-                text,
-                note: note.map(Into::into),
-                save,
-                preview: None,
-            },
-            cx,
-        );
+                value_dialog::open(
+                    ValueRequest {
+                        column: column.clone().into(),
+                        text,
+                        note: note.map(Into::into),
+                        save,
+                        preview: None,
+                    },
+                    cx,
+                );
 
-        if let Some(row) = binary_preview_row {
-            cx.emit(BinaryPreviewRequested { row, column });
-        }
+                if let Some(row) = binary_preview_row {
+                    cx.emit(BinaryPreviewRequested { row, column });
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Show the selected cell's value.

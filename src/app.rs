@@ -640,6 +640,14 @@ impl Workspace {
             return;
         };
 
+        // One value dialog at a time: a second request while one is open must
+        // not stack another, or the first view's dismiss would pop the wrong
+        // dialog and `value` would point at a closed one. The grid sits behind
+        // the modal overlay, so this cannot happen through the UI.
+        if self.value.is_some() {
+            return;
+        }
+
         let view = cx.new(|cx| ValueView::new(request, window, cx));
         // Saving or dismissing from inside the body closes the dialog from
         // this side; the routes the dialog answers itself (its close button,

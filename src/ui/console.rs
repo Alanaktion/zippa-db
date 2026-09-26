@@ -44,12 +44,29 @@ impl ConsoleView {
     }
 
     /// Re-read the log and show it, newest first.
+    ///
+    /// The snapshot clones every logged statement's text — tens of megabytes
+    /// after a huge script run — so it is taken on the background executor
+    /// and folds in when it lands.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        let log = self.connection.query_log().snapshot();
-        self.entries = log.len();
-        let result = as_result(&log);
-        self.grid.update(cx, |grid, cx| grid.set_result(result, cx));
-        cx.notify();
+        let connection = self.connection.clone();
+        cx.spawn(async move |this, cx| {
+            let (entries, result) = cx
+                .background_spawn(async move {
+                    let log = connection.query_log().snapshot();
+                    let entries = log.len();
+                    let result = as_result(&log);
+                    (entries, result)
+                })
+                .await;
+            this.update_in(cx, |this, _, cx| {
+                this.entries = entries;
+                this.grid.update(cx, |grid, cx| grid.set_result(result, cx));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn clear(&mut self, cx: &mut Context<Self>) {

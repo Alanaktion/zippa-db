@@ -709,12 +709,20 @@ fn tokenize(sql: &str) -> Vec<Token> {
                 }
                 Kind::Quoted
             }
-            byte if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' => {
-                while index < bytes.len()
-                    && (bytes[index].is_ascii_alphanumeric()
-                        || bytes[index] == b'_'
-                        || bytes[index] == b'$')
-                {
+            byte if byte.is_ascii_alphanumeric()
+                || byte == b'_'
+                || byte == b'$'
+                || !byte.is_ascii() =>
+            {
+                // A non-ASCII byte joins the word: UTF-8 continuation bytes are
+                // non-ASCII too, so the loop consumes whole characters and a
+                // bare `prénom` is one token a rename can match. Without this
+                // the fallback arm would split the character mid-way and the
+                // `&sql[start..end]` slicing below would panic.
+                while index < bytes.len() && {
+                    let byte = bytes[index];
+                    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || !byte.is_ascii()
+                } {
                     index += 1;
                 }
                 Kind::Word
@@ -1107,6 +1115,17 @@ mod tests {
         assert_eq!(
             rewrite_identifiers(sql, &[("name".to_string(), "title".to_string())]),
             "CREATE INDEX i ON items (title) -- name\n/* name */ WHERE body = 'name'"
+        );
+    }
+
+    #[test]
+    fn a_bare_non_ascii_identifier_is_rewritten_not_split() {
+        // Used to panic: the tokenizer split `é` mid-character and the
+        // `&sql[start..end]` slicing aborted the process.
+        let sql = "CREATE INDEX i ON t (prénom)";
+        assert_eq!(
+            rewrite_identifiers(sql, &[("prénom".to_string(), "prenom".to_string())]),
+            "CREATE INDEX i ON t (prenom)"
         );
     }
 

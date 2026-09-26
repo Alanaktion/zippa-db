@@ -101,15 +101,21 @@ impl TableView {
                 }
             };
 
-            let rendered = export::render(
-                format,
-                engine,
-                &table,
-                &result.columns,
-                &result.column_types,
-                &result.rows,
-            );
+            // Laying the rows out is O(rows×cols) string work; it runs on the
+            // background executor so a big export does not stall the UI.
             let rows = result.row_count();
+            let rendered = cx
+                .background_spawn(async move {
+                    export::render(
+                        format,
+                        engine,
+                        &table,
+                        &result.columns,
+                        &result.column_types,
+                        &result.rows,
+                    )
+                })
+                .await;
             let export::Rendered { text, skipped } = rendered;
 
             let written = cx

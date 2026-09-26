@@ -2,6 +2,7 @@
 //! submenu, and [`DataGrid::snapshot`], the one place that decides which rows
 //! and cells a copy or an export takes.
 
+use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Window};
 
 use crate::db::Engine;
@@ -153,33 +154,46 @@ impl DataGrid {
 
         let engine = self.engine(cx);
         let table = self.table_name(cx).unwrap_or_default();
-        let rendered = export::render(
-            format,
-            engine,
-            &table,
-            &snapshot.columns,
-            &snapshot.types,
-            &snapshot.rows,
-        );
-        let (text, capped_bytes) = cap_bytes(rendered.text);
 
-        let message = if rows < total {
-            format!("Copied first {rows} of {total} rows as {}", format.label())
-        } else if capped_bytes {
-            format!(
-                "Copied the first {} MB as {}",
-                MAX_COPY_BYTES / (1024 * 1024),
-                format.label()
-            )
-        } else {
-            format!(
-                "Copied {} as {}",
-                count_of(rows, "row", "rows"),
-                format.label()
-            )
-        };
+        // Laying the rows out is O(rows×cols) string work; it runs on the
+        // background executor so a big copy does not stall the UI.
+        cx.spawn(async move |this, cx| {
+            let rendered = cx
+                .background_spawn(async move {
+                    export::render(
+                        format,
+                        engine,
+                        &table,
+                        &snapshot.columns,
+                        &snapshot.types,
+                        &snapshot.rows,
+                    )
+                })
+                .await;
+            let (text, capped_bytes) = cap_bytes(rendered.text);
 
-        self.put_on_clipboard(text, with_skipped(message, rendered.skipped), cx);
+            let message = if rows < total {
+                format!("Copied first {rows} of {total} rows as {}", format.label())
+            } else if capped_bytes {
+                format!(
+                    "Copied the first {} MB as {}",
+                    MAX_COPY_BYTES / (1024 * 1024),
+                    format.label()
+                )
+            } else {
+                format!(
+                    "Copied {} as {}",
+                    count_of(rows, "row", "rows"),
+                    format.label()
+                )
+            };
+
+            this.update_in(cx, |this, _window, cx| {
+                this.put_on_clipboard(text, with_skipped(message, rendered.skipped), cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Put `text` on the clipboard and tell the owner what it was.

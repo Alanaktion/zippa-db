@@ -76,6 +76,12 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // One question at a time: a second Cmd+Enter while the dialog is open
+        // must not stack another, or confirming both would run the write twice.
+        if window.has_active_dialog(cx) {
+            return;
+        }
+
         let target = self.display_target();
         let statements = statement::split(&sql).len();
         let session = cx.entity().downgrade();
@@ -131,6 +137,13 @@ impl Session {
         let Some((editor, grid)) = panel.read(cx).query_parts() else {
             return;
         };
+
+        // A run already in flight keeps its abort handle: a second send would
+        // overwrite it, orphaning the first query past cancelling. Cancel it
+        // (Cmd+.) first to run something else.
+        if panel.read(cx).has_running_task() {
+            return;
+        }
 
         // A run is a natural checkpoint for the buffer text.
         cx.emit(SessionEvent::Changed);
@@ -220,6 +233,11 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // One question at a time, the way a write is asked about.
+        if window.has_active_dialog(cx) {
+            return;
+        }
+
         let session = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let session = session.clone();
@@ -261,6 +279,11 @@ impl Session {
         let Some((editor, grid)) = panel.read(cx).query_parts() else {
             return;
         };
+
+        // The plan read keeps its abort handle the way a run does.
+        if panel.read(cx).has_running_task() {
+            return;
+        }
 
         panel.update(cx, |panel, cx| {
             panel.set_status(Status::Running);

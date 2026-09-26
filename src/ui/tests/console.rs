@@ -16,6 +16,8 @@ fn a_user_run_shows_up_in_the_console(cx: &mut TestAppContext) {
             session.open_console_for_test(window, cx)
         })
         .unwrap();
+    // The refresh snapshots the log on the background executor.
+    cx.run_until_parked();
 
     let console = handle
         .update(cx, |session, _, cx| session.active_console_view(cx))
@@ -40,6 +42,8 @@ fn opening_a_table_logs_its_reads_as_internal(cx: &mut TestAppContext) {
             session.open_console_for_test(window, cx)
         })
         .unwrap();
+    // The refresh snapshots the log on the background executor.
+    cx.run_until_parked();
 
     let console = handle
         .update(cx, |session, _, cx| session.active_console_view(cx))
@@ -96,6 +100,8 @@ fn the_clear_button_empties_the_log(cx: &mut TestAppContext) {
             session.open_console_for_test(window, cx)
         })
         .unwrap();
+    // The refresh snapshots the log on the background executor.
+    cx.run_until_parked();
 
     let console = handle
         .update(cx, |session, _, cx| session.active_console_view(cx))

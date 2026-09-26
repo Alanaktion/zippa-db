@@ -53,11 +53,18 @@ pub fn needs_a_window(value: &Cell, type_name: &str) -> bool {
         return false;
     };
 
-    text.contains('\n')
-        || text.chars().count() > LONG_VALUE
-        || (type_name.to_ascii_uppercase().starts_with("JSON")
-            || text.trim_start().starts_with(['{', '[']))
-            && pretty_json(text).is_some()
+    // Only the head of the value is ever inspected, so this stays O(LONG_VALUE)
+    // no matter how large the value is. A newline past LONG_VALUE cannot change
+    // the answer: it already means the value is long.
+    let head: String = text.chars().take(LONG_VALUE + 1).collect();
+    if head.contains('\n') || head.chars().count() > LONG_VALUE {
+        return true;
+    }
+
+    // Only short values reach the JSON check, so parsing them is cheap.
+    (type_name.to_ascii_uppercase().starts_with("JSON")
+        || text.trim_start().starts_with(['{', '[']))
+        && pretty_json(text).is_some()
 }
 
 /// `text` laid out over several lines, if it is JSON at all.

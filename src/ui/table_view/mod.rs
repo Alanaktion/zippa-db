@@ -948,6 +948,11 @@ impl TableView {
         else {
             return;
         };
+        // A malformed catalog entry can name no referenced column; there is
+        // nothing to filter on then.
+        let Some(referenced) = fk.referenced_columns.first() else {
+            return;
+        };
         let Some(Some(value)) = self
             .grid
             .read(cx)
@@ -964,7 +969,7 @@ impl TableView {
                 kind: ObjectKind::Table,
             },
             filter: FilterSpec {
-                column: fk.referenced_columns[0].clone(),
+                column: referenced.clone(),
                 operator: Operator::Equals,
                 value,
             },
