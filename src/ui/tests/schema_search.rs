@@ -161,3 +161,33 @@ fn the_sidebar_button_opens_the_dialog(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn results_land_after_the_debounce(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let _database = connect(cx, &handle);
+    cx.run_until_parked();
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("connecting should leave a session open");
+    let view = cx
+        .update_window(handle.window.into(), |_, window, cx| {
+            crate::ui::schema_search::open(session, window, cx)
+        })
+        .unwrap()
+        .expect("the dialog should open");
+    cx.run_until_parked();
+
+    // The scan waits out the debounce, so nothing has landed yet.
+    assert_eq!(view.read_with(cx, |view, _| view.hit_count_for_test()), 0);
+
+    cx.background_executor
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(
+        view.read_with(cx, |view, _| view.hit_count_for_test()) > 0,
+        "the debounced scan should have landed"
+    );
+}

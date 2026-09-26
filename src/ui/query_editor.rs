@@ -13,6 +13,10 @@ use gpui_kit::{Context, Entity, EventEmitter, Window, actions, div};
 
 use gpui_kit::assets::IconName as AssetIcon;
 
+use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use crate::db::{Engine, statement};
 use crate::settings;
 use crate::ui::session::{OpenFile, SaveFile};
@@ -40,6 +44,17 @@ pub struct QueryEditor {
     /// The engine this buffer runs against, so the analyze button can say when
     /// the server has no `EXPLAIN ANALYZE`.
     engine: Engine,
+    /// Memoized `statement` plus its write/read judgement. Both clone the
+    /// whole buffer and re-split its statements, a hitch on every render
+    /// with a multi-MB buffer; the key is a hash of the buffer, cursor, and
+    /// selection, so an untouched buffer answers without touching the text.
+    statement_cache: RefCell<Option<StatementCache>>,
+}
+
+struct StatementCache {
+    key: u64,
+    statement: Option<String>,
+    writes: bool,
 }
 
 impl EventEmitter<QueryEditorEvent> for QueryEditor {}
@@ -65,6 +80,7 @@ impl QueryEditor {
             state,
             running: false,
             engine,
+            statement_cache: RefCell::new(None),
         }
     }
 
@@ -200,15 +216,7 @@ impl QueryEditor {
     /// The plan of a write can be read, but asking the server to run it for
     /// actual times cannot, so the analyze button is disabled and says why.
     pub(crate) fn statement_writes(&self, cx: &gpui_kit::App) -> bool {
-        let Some(sql) = self.statement(cx) else {
-            return false;
-        };
-        // A statement with its own `EXPLAIN` header is judged by what it
-        // explains, so `EXPLAIN ANALYZE SELECT` still reads as a read.
-        let inner = statement::explained(&sql)
-            .map(|(inner, _)| inner)
-            .unwrap_or(sql);
-        statement::first_write(&inner).is_some()
+        self.cached_statement(cx).1
     }
 
     /// The one statement a run should send.
@@ -217,6 +225,51 @@ impl QueryEditor {
     /// statements, and running it verbatim is what selecting it asked for.
     /// Otherwise the statement the caret is in is the one that runs.
     fn statement(&self, cx: &gpui_kit::App) -> Option<String> {
+        self.cached_statement(cx).0
+    }
+
+    /// The statement a run would send, plus whether it writes — memoized.
+    ///
+    /// Finding the statement clones the whole buffer and re-splits it, a
+    /// hitch on every render with a multi-MB buffer. The key hashes the
+    /// buffer's chunks (borrowed, never copied) together with the cursor
+    /// and selection, so an untouched buffer answers from the cache.
+    fn cached_statement(&self, cx: &gpui_kit::App) -> (Option<String>, bool) {
+        let key = {
+            let state = self.state.read(cx);
+            let mut hasher = DefaultHasher::new();
+            for chunk in state.text().chunks() {
+                chunk.hash(&mut hasher);
+            }
+            state.cursor().hash(&mut hasher);
+            state.selected_range().hash(&mut hasher);
+            hasher.finish()
+        };
+        if let Some(cached) = self.statement_cache.borrow().as_ref()
+            && cached.key == key
+        {
+            return (cached.statement.clone(), cached.writes);
+        }
+        let statement = self.compute_statement(cx);
+        let writes = statement.as_ref().is_some_and(|sql| {
+            // A statement with its own `EXPLAIN` header is judged by what it
+            // explains, so `EXPLAIN ANALYZE SELECT` still reads as a read.
+            let inner = statement::explained(sql)
+                .map(|(inner, _)| inner)
+                .unwrap_or_else(|| sql.clone());
+            statement::first_write(&inner).is_some()
+        });
+        *self.statement_cache.borrow_mut() = Some(StatementCache {
+            key,
+            statement: statement.clone(),
+            writes,
+        });
+        (statement, writes)
+    }
+
+    /// The uncached statement: the selection verbatim, else the statement
+    /// the caret is in.
+    fn compute_statement(&self, cx: &gpui_kit::App) -> Option<String> {
         let state = self.state.read(cx);
 
         let selected = state.selected_value().to_string();

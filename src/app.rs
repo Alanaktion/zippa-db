@@ -834,7 +834,7 @@ impl Workspace {
 
     fn on_search_schema(&mut self, _: &SearchSchema, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(session) = self.active_session() {
-            crate::ui::schema_search::open(session, window, cx);
+            let _ = crate::ui::schema_search::open(session, window, cx);
         }
     }
 

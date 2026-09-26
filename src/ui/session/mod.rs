@@ -372,7 +372,7 @@ impl Session {
 
     fn on_search_schema(&mut self, _: &SearchSchema, window: &mut Window, cx: &mut Context<Self>) {
         let session = cx.entity().clone();
-        crate::ui::schema_search::open(session, window, cx);
+        let _ = crate::ui::schema_search::open(session, window, cx);
     }
 
     fn on_open_console(&mut self, _: &OpenConsole, window: &mut Window, cx: &mut Context<Self>) {

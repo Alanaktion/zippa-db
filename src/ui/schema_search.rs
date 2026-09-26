@@ -12,6 +12,7 @@
 //! from the ranked hits on every keystroke.
 
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -34,6 +35,11 @@ const GROUPS: [CatalogKind; 5] = [
     CatalogKind::Routine,
     CatalogKind::Trigger,
 ];
+
+/// How long a burst of keystrokes may settle before the catalog is
+/// re-scanned. The scan already runs off the UI thread, but re-running it
+/// per keystroke is still wasted work.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
 pub struct SchemaSearchView {
     state: Entity<CommandState>,
@@ -94,6 +100,16 @@ impl SchemaSearchView {
         self.generation += 1;
         let generation = self.generation;
         cx.spawn(async move |this, cx| {
+            // Let a burst of keystrokes settle before scanning; a newer one
+            // supersedes this run and its results are dropped by the
+            // generation check below.
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            let superseded = this
+                .update_in(cx, |this, _, _| this.generation != generation)
+                .unwrap_or(true);
+            if superseded {
+                return;
+            }
             let (hits, matched) = cx
                 .background_spawn(async move { catalog::search(&catalog.entries, &query) })
                 .await;
@@ -118,6 +134,12 @@ impl SchemaSearchView {
             None => self.kinds.push(kind),
         }
         self.refresh_search(cx);
+    }
+
+    /// How many ranked hits are currently shown, for a test to read.
+    #[cfg(test)]
+    pub(crate) fn hit_count_for_test(&self) -> usize {
+        self.hits.len()
     }
 
     fn render_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -154,9 +176,16 @@ impl SchemaSearchView {
 }
 
 /// Open schema search over the active window.
-pub fn open(session: Entity<Session>, window: &mut Window, cx: &mut App) {
+/// Open the schema search dialog, unless one is already open.
+///
+/// Returns the dialog's view when one was opened.
+pub fn open(
+    session: Entity<Session>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Entity<SchemaSearchView>> {
     if window.has_active_dialog(cx) {
-        return;
+        return None;
     }
 
     let view = cx.new(|cx| SchemaSearchView::new(session, window, cx));
@@ -175,6 +204,7 @@ pub fn open(session: Entity<Session>, window: &mut Window, cx: &mut App) {
     });
 
     state.update(cx, |state, cx| state.focus(window, cx));
+    Some(view)
 }
 
 impl Render for SchemaSearchView {

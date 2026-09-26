@@ -372,7 +372,7 @@ impl Session {
                     )
                     .on_click(cx.listener(|_this, _, window, cx| {
                         let session = cx.entity().clone();
-                        crate::ui::schema_search::open(session, window, cx);
+                        let _ = crate::ui::schema_search::open(session, window, cx);
                     })),
             )
             .child(

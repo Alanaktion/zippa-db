@@ -76,7 +76,7 @@ impl QuickSwitcherView {
             // A dialog of its own, and only one can be open at a time: the
             // caller has closed this one already.
             SwitcherTarget::SearchSchema => {
-                crate::ui::schema_search::open(session, window, cx);
+                let _ = crate::ui::schema_search::open(session, window, cx);
             }
         }
     }
