@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Manages the MySQL/Postgres containers the #[ignore]d live tests run against
+# (`cargo test -- --ignored live_`). Servers and credentials mirror the
+# defaults in `src/db/tests.rs`; override with `ZIPPA_TEST_MYSQL_URL`,
+# `ZIPPA_TEST_POSTGRES_URL`, or `ZIPPA_TEST_POSTGRES_YEN_URL`.
+#
+#   script/test-db up    # start both, waiting until healthy
+#   script/test-db down  # stop and remove both
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+case "${1:-up}" in
+  up)
+    docker compose up -d --wait
+    cat <<EOF
+
+Test databases are up:
+  MySQL    mysql://root:secret@127.0.0.1:3307/app
+  Postgres postgres://postgres:secret@127.0.0.1:5433/app (+ zippa_yen)
+
+Run the live tests with:
+  cargo test -- --ignored live_
+EOF
+    ;;
+  down) docker compose down ;;
+  *)
+    echo "usage: script/test-db [up|down]" >&2
+    exit 2
+    ;;
+esac

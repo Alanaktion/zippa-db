@@ -739,17 +739,30 @@ impl Connection {
         if self.config.safety.is_read_only() {
             anyhow::bail!("this connection is read-only");
         }
-        let sql = match self.config.engine {
+        match self.config.engine {
             // `pg_terminate_backend` takes the backend's pid; the row's own
             // id column is exactly that.
-            Engine::Postgres => format!(
-                "select pg_terminate_backend({})",
-                typed_placeholder(Engine::Postgres, 1, "INT4")
-            ),
-            Engine::MySql => "KILL ?".to_string(),
+            Engine::Postgres => {
+                let sql = format!(
+                    "select pg_terminate_backend({})",
+                    typed_placeholder(Engine::Postgres, 1, "INT4")
+                );
+                self.execute(&sql, vec![Some(id.to_string())]).await?;
+            }
+            Engine::MySql => {
+                // `KILL` takes no bound parameter: through the
+                // prepared-statement protocol MySQL answers with a
+                // non-standard OK packet that sqlx cannot decode
+                // (`unknown column type 0xf3`). The id comes from the
+                // server's own process list, so parsing it as an integer
+                // keeps the interpolated statement safe.
+                let pid: u64 = id
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("not a process id: {id}"))?;
+                self.execute(&format!("KILL {pid}"), vec![]).await?;
+            }
             Engine::Sqlite => anyhow::bail!("SQLite has no server processes to end"),
-        };
-        self.execute(&sql, vec![Some(id.to_string())]).await?;
+        }
         Ok(())
     }
 

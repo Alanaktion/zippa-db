@@ -1,0 +1,41 @@
+# Test databases for the `#[ignore]`d live tests in `src/db/tests.rs`
+# (`cargo test -- --ignored live_`). Mirrors the connection strings those
+# tests default to when `ZIPPA_TEST_*_URL` is unset:
+#
+#   MySQL:    mysql://root:secret@127.0.0.1:3307/app
+#   Postgres: postgres://postgres:secret@127.0.0.1:5433/app
+#   plus the yen-locale database the money test needs:
+#             postgres://postgres:secret@127.0.0.1:5433/zippa_yen
+#
+# Managed with `./script/test-db up|down`; the `live-tests` CI workflow uses
+# the same file so local and CI run against identical servers.
+
+services:
+  postgres:
+    build: ./docker/postgres
+    environment:
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: app
+    ports:
+      - "5433:5432"
+    # Lets the query-digest test take its "available" branch instead of only
+    # ever exercising "extension not installed".
+    command: postgres -c shared_preload_libraries=pg_stat_statements
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: app
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-psecret"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

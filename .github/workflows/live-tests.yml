@@ -1,0 +1,97 @@
+name: Live DB tests
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Nightly; the `changes` job skips the run when main has no new commits
+    # since the last run that verified it.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+# A newer push to main makes the running one moot.
+concurrency:
+  group: live-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  # Cargo.toml optimizes the dev profile so `cargo run` is usable. This
+  # workflow only runs headless tests, so build everything unoptimized
+  # instead (the per-package override for dependencies is passed with
+  # `--config` below).
+  CARGO_PROFILE_DEV_OPT_LEVEL: 0
+  CARGO_PROFILE_TEST_OPT_LEVEL: 0
+  # Without this, sccache falls back to an empty local disk cache.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+  RUSTFLAGS: -C link-arg=-fuse-ld=lld
+
+jobs:
+  changes:
+    name: New commits since last run
+    runs-on: ubuntu-latest
+    outputs:
+      new_commits: ${{ steps.check.outputs.new_commits }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Pushes and manual runs always verify; only the schedule skips.
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "new_commits=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! current="$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)"; then
+            # Fail open: run rather than silently skip on an API hiccup.
+            echo "new_commits=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The newest run that verified main (or skipped because there was
+          # nothing new). Failures and cancellations are excluded on purpose
+          # so a broken nightly is retried instead of skipped forever.
+          last="$(gh api "repos/${{ github.repository }}/actions/workflows/live-tests.yml/runs?per_page=20" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "skipped")][0].head_sha // empty')"
+          if [ -n "$current" ] && [ "$current" != "$last" ]; then
+            echo "new_commits=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "new_commits=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    name: Live DB tests
+    needs: changes
+    if: needs.changes.outputs.new_commits == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - run: ./script/linux test
+      # compose.yaml is the same file developers use locally, so the live
+      # tests run against identical MySQL/Postgres servers.
+      - run: ./script/test-db up
+      - run: >
+          cargo test --verbose
+          --config 'profile.dev.package."*".opt-level=0'
+          --config 'profile.test.package."*".opt-level=0'
+          -- --ignored live_
+      - run: ./script/test-db down
+        if: always()
+      - run: sccache --show-stats
+        if: always()

@@ -124,7 +124,15 @@ cargo test
 ```
 
 A few tests run against a live MySQL or Postgres server and are `#[ignore]`d
-by default; each one's doc comment says which container it expects.
+by default. Start matching containers with `./script/test-db up` (defined in
+`compose.yaml`; the nightly `live-tests` workflow uses the same file), then run:
+
+```bash
+cargo test -- --ignored live_
+```
+
+`ZIPPA_TEST_MYSQL_URL`, `ZIPPA_TEST_POSTGRES_URL`, and
+`ZIPPA_TEST_POSTGRES_YEN_URL` point the tests at different servers.
 
 ### Packaging
 
