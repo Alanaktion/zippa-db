@@ -9,6 +9,7 @@
 //! connection is closed from its shortcut or the File menu.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt;
@@ -21,9 +22,11 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, Entity, EntityId, FocusHandle, Hsla, MouseButton, Pixels,
-    SharedString, Window, actions, div, px,
+    AnyElement, App, ClipboardItem, Context, Entity, EntityId, FocusHandle, Hsla, MouseButton,
+    Pixels, SharedString, Window, actions, div, px,
 };
+
+use crate::crash_log;
 
 use crate::db::{Connection, TagColor, runtime, store};
 use crate::settings;
@@ -234,6 +237,43 @@ impl Workspace {
         };
         workspace.restore_tabs(state, window, cx);
         workspace
+    }
+
+    /// If the last run crashed, say so once. Either answer clears the
+    /// report, so it is not shown again; "Copy report" puts the whole
+    /// thing, backtrace included, on the clipboard for a bug report.
+    ///
+    /// This needs the window's root layer, so it runs after `Root::new`,
+    /// not during the build.
+    pub(crate) fn report_crash(window: &mut Window, cx: &mut App) {
+        let Some(report) = crash_log::pending() else {
+            return;
+        };
+        let summary = crash_log::summary(&report);
+        let report = Rc::new(report);
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let report = Rc::clone(&report);
+            alert
+                .title("Zippa DB crashed")
+                .description(format!(
+                    "The last session ended in a crash:\n\n{summary}\n\nCopy the full report to send it with a bug report."
+                ))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Copy report")
+                        .cancel_text("Dismiss")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(report.to_string()));
+                    crash_log::clear();
+                    true
+                })
+                .on_cancel(move |_, _, _| {
+                    crash_log::clear();
+                    true
+                })
+        });
     }
 
     /// Reopen every connection the last session had, then let each turn its

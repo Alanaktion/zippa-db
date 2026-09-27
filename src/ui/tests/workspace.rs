@@ -670,3 +670,24 @@ fn clicking_a_saved_connection_opens_it(cx: &mut TestAppContext) {
         "a click on the card should open the connection"
     );
 }
+
+#[gpui_kit::test]
+fn a_recorded_crash_opens_its_report(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!("zippa-db-crash-ui-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("could not create the scratch directory");
+    crate::db::store::set_config_dir_for_test(dir.clone());
+    std::fs::write(
+        dir.join("crashes.log"),
+        "=== Zippa DB crashed at 2026-09-26 ===\nmessage: boom\n",
+    )
+    .expect("could not write the crash log");
+
+    let handle = workspace_from(cx, WorkspaceState::default());
+    cx.run_until_parked();
+
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "the recorded crash should open its report as a dialog"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

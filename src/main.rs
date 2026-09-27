@@ -4,6 +4,7 @@
 )]
 
 mod app;
+mod crash_log;
 mod db;
 mod keymap;
 mod menu;
@@ -80,6 +81,10 @@ impl AssetSource for AppAssets {
 }
 
 fn main() {
+    // Before anything else: a panic must leave a crash report behind, not
+    // just vanish the window.
+    crash_log::install();
+
     gpui_kit::application()
         .with_assets(AppAssets)
         .run(|cx: &mut App| {
@@ -122,7 +127,10 @@ fn main() {
                 })
                 .detach();
 
-                cx.new(|cx| Root::new(workspace, window, cx))
+                let root = cx.new(|cx| Root::new(workspace, window, cx));
+                // The crash dialog needs the root layer above to exist.
+                Workspace::report_crash(window, cx);
+                root
             })
             .expect("failed to open window");
 

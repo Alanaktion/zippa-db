@@ -308,6 +308,13 @@ fn workspace_from(cx: &mut TestAppContext, state: WorkspaceState) -> WorkspaceWi
         *view.borrow_mut() = Some(workspace.clone());
         Root::new(workspace, window, cx)
     });
+    // The crash dialog needs the root layer the window above just built.
+    // `update_window` (not `update`) avoids borrowing the root view,
+    // which the dialog itself needs to update.
+    cx.update_window(window.into(), |_, window, cx| {
+        Workspace::report_crash(window, cx)
+    })
+    .unwrap();
     let view = view.into_inner().expect("the workspace is built above");
 
     WorkspaceWindow { window, view }
