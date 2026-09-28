@@ -10,8 +10,8 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, IconName, Sizable, h_flex, v_flex};
-use gpui_kit::{SharedString, prelude::*, rems};
 use gpui_kit::{App, Context, Entity, EventEmitter, Focusable, Window, div, px};
+use gpui_kit::{SharedString, prelude::*, rems};
 use regex::Regex;
 
 use crate::db::query::{self, Cell};
@@ -348,7 +348,9 @@ impl RowPanel {
                             .line_height(px(12.))
                             .text_color(cx.theme().muted_foreground)
                             .overflow_x_hidden()
-                            .text_overflow(gpui_kit::TextOverflow::Truncate(SharedString::new_static("…")))
+                            .text_overflow(gpui_kit::TextOverflow::Truncate(
+                                SharedString::new_static("…"),
+                            ))
                             .child(format!("{column} · {type_name}")),
                     )
                     .child(menu),

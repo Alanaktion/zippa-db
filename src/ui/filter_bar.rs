@@ -8,7 +8,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::select::{Select, SelectEvent, SelectState};
+use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, IndexPath, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Window, div, px};
@@ -97,7 +97,7 @@ pub struct FilterSpec {
 /// The bar asks its owner to read the filters again.
 pub struct FiltersChanged;
 
-type Choices = Entity<SelectState<Vec<SharedString>>>;
+type Choices = Entity<SelectState<SearchableVec<SharedString>>>;
 
 /// One line of the bar.
 struct FilterRow {
@@ -187,7 +187,7 @@ impl FilterBar {
 
         for row in &self.rows {
             row.column.update(cx, |state, cx| {
-                state.set_items(self.columns.clone(), window, cx);
+                state.set_items(SearchableVec::new(self.columns.clone()), window, cx);
             });
         }
     }
@@ -205,8 +205,13 @@ impl FilterBar {
         cx: &mut Context<Self>,
     ) -> FilterRow {
         let column = cx.new(|cx| {
-            SelectState::new(column_items, Some(IndexPath::new(column_index)), window, cx)
-                .searchable(true)
+            SelectState::new(
+                SearchableVec::new(column_items),
+                Some(IndexPath::new(column_index)),
+                window,
+                cx,
+            )
+            .searchable(true)
         });
 
         let operators: Vec<SharedString> = Operator::ALL
@@ -218,7 +223,12 @@ impl FilterBar {
             .position(|candidate| *candidate == operator)
             .expect("every operator is in ALL");
         let operator_state = cx.new(|cx| {
-            SelectState::new(operators, Some(IndexPath::new(operator_index)), window, cx)
+            SelectState::new(
+                SearchableVec::new(operators),
+                Some(IndexPath::new(operator_index)),
+                window,
+                cx,
+            )
         });
 
         let hint = Self::value_hint(operator);
@@ -232,7 +242,7 @@ impl FilterBar {
         // the filters are read again when the user asks for them to be.
         cx.subscribe(
             &column,
-            |this, _, _: &SelectEvent<Vec<SharedString>>, cx| {
+            |this, _, _: &SelectEvent<SearchableVec<SharedString>>, cx| {
                 cx.notify();
                 this.apply(cx);
             },
@@ -240,7 +250,7 @@ impl FilterBar {
         .detach();
         cx.subscribe(
             &operator_state,
-            |this, _, _: &SelectEvent<Vec<SharedString>>, cx| {
+            |this, _, _: &SelectEvent<SearchableVec<SharedString>>, cx| {
                 cx.notify();
                 this.apply(cx);
             },
