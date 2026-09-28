@@ -55,8 +55,9 @@ impl Session {
                     }
                     restored += 1;
                 }
-                PanelState::Table { object } => {
+                PanelState::Table { object, filters } => {
                     self.open_object(&object, ObjectViewMode::Data, window, cx);
+                    self.restore_table_filters(&object, filters, window, cx);
                     restored += 1;
                 }
                 PanelState::Schema { object } => {

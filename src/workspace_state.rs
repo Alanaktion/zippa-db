@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::db::{DatabaseObject, store};
+use crate::ui::filter_bar::FilterSpec;
 
 const FILE_NAME: &str = "workspace.json";
 
@@ -74,6 +75,10 @@ pub enum PanelState {
     },
     Table {
         object: DatabaseObject,
+        /// The filter bar's rows, in order. A file written by an older build
+        /// has none, so an empty table opens unfiltered the way it always did.
+        #[serde(default)]
+        filters: Vec<FilterSpec>,
     },
     Schema {
         object: DatabaseObject,
@@ -152,6 +157,7 @@ pub fn save(_state: &WorkspaceState) -> Result<()> {
 mod tests {
     use super::*;
     use crate::db::ObjectKind;
+    use crate::ui::filter_bar::Operator;
 
     fn scratch_dir() -> PathBuf {
         let path = std::env::temp_dir().join(format!("zippa-workspace-{}", Uuid::new_v4()));
@@ -186,7 +192,14 @@ mod tests {
                         sql: "select 2".into(),
                         file: Some(PathBuf::from("/tmp/report.sql")),
                     },
-                    PanelState::Table { object: object() },
+                    PanelState::Table {
+                        object: object(),
+                        filters: vec![FilterSpec {
+                            column: "status".into(),
+                            operator: Operator::Equals,
+                            value: "active".into(),
+                        }],
+                    },
                     PanelState::Schema { object: object() },
                 ],
             }],

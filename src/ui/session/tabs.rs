@@ -267,21 +267,46 @@ impl Session {
     ) {
         self.open_object(object, ObjectViewMode::Data, window, cx);
 
-        let target = self
-            .panels
+        let Some(view) = self.table_view_of(object, cx) else {
+            return;
+        };
+        view.update(cx, |view, cx| {
+            view.apply_external_filter(filter, window, cx)
+        });
+    }
+
+    /// The open data tab for `object`, if it has one — the lookup
+    /// [`Self::open_object_filtered`] and [`Self::restore_table_filters`]
+    /// both need once the tab is open.
+    fn table_view_of(&self, object: &DatabaseObject, cx: &App) -> Option<Entity<TableView>> {
+        self.panels
             .iter()
             .find(|panel| {
                 let panel = panel.read(cx);
                 panel.mode() == Some(ObjectViewMode::Data)
                     && panel.object(cx).as_ref() == Some(object)
             })
-            .and_then(|panel| panel.read(cx).table_view());
-        let Some(view) = target else {
+            .and_then(|panel| panel.read(cx).table_view())
+    }
+
+    /// Put a restored table tab's filters back, keeping every one of them —
+    /// unlike [`Self::open_object_filtered`], which replaces the lot with a
+    /// single foreign key jump. Called right after [`Self::open_object`] has
+    /// opened (or brought forward) the tab.
+    pub(crate) fn restore_table_filters(
+        &mut self,
+        object: &DatabaseObject,
+        filters: Vec<FilterSpec>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if filters.is_empty() {
+            return;
+        }
+        let Some(view) = self.table_view_of(object, cx) else {
             return;
         };
-        view.update(cx, |view, cx| {
-            view.apply_external_filter(filter, window, cx)
-        });
+        view.update(cx, |view, cx| view.restore_filters(filters, window, cx));
     }
 
     /// Close a tab, asking first if it holds unsaved changes.

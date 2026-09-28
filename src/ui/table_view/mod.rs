@@ -989,6 +989,24 @@ impl TableView {
         });
     }
 
+    /// This table's filters as they stand, for `workspace.json`.
+    pub(crate) fn filters(&self, cx: &App) -> Vec<FilterSpec> {
+        self.filters.read(cx).specs(cx)
+    }
+
+    /// Put back the filters a restored tab had, keeping every one of them —
+    /// unlike [`Self::apply_external_filter`], which replaces the lot with a
+    /// single foreign key jump.
+    pub(crate) fn restore_filters(
+        &mut self,
+        filters: Vec<FilterSpec>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.filters
+            .update(cx, |bar, cx| bar.set_filters(&filters, window, cx));
+    }
+
     fn on_apply_edits(&mut self, _: &ApplyEdits, _window: &mut Window, cx: &mut Context<Self>) {
         self.commit(cx);
     }

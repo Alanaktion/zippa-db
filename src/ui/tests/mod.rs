@@ -32,7 +32,7 @@ use crate::db::tests::TempDatabase;
 use crate::db::{
     Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, SafetyMode, TagColor, runtime,
 };
-use crate::ui::filter_bar::Operator;
+use crate::ui::filter_bar::{FilterSpec, Operator};
 use crate::ui::session::{CloseScope, Session};
 use crate::ui::welcome::Welcome;
 

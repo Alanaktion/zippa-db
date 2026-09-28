@@ -185,6 +185,112 @@ fn setting_a_filter_replaces_whatever_was_there(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn setting_several_filters_at_once_keeps_every_one(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // The plural of `set_filter`: restoring a saved table tab puts back every
+    // filter it had, not just the last one.
+    let filters = view.read_with(cx, |view, _| view.filters_for_test());
+    filters
+        .downgrade()
+        .update_in(cx, |filters, window, cx| {
+            filters.set_filters(
+                &[
+                    FilterSpec {
+                        column: "id".into(),
+                        operator: Operator::Greater,
+                        value: "0".into(),
+                    },
+                    FilterSpec {
+                        column: "name".into(),
+                        operator: Operator::Equals,
+                        value: "alpha".into(),
+                    },
+                ],
+                window,
+                cx,
+            );
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    filters.read_with(cx, |filters, _cx| {
+        assert_eq!(
+            filters.filter_count_for_test(),
+            2,
+            "set_filters should keep every spec it was given"
+        );
+    });
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where id > ? and name = ? limit 500 offset 0"
+        );
+        assert_eq!(view.loaded_rows_for_test(), 1);
+    });
+}
+
+#[gpui_kit::test]
+fn a_restored_table_tab_reapplies_its_saved_filters(cx: &mut TestAppContext) {
+    let database = runtime::block_on(TempDatabase::new());
+    let config = database.config();
+    let state = WorkspaceState {
+        sessions: vec![SessionState {
+            connection: config.id,
+            database: Some(config.database.clone()),
+            active: 0,
+            panels: vec![PanelState::Table {
+                object: DatabaseObject {
+                    schema: None,
+                    name: "items".into(),
+                    kind: ObjectKind::Table,
+                },
+                filters: vec![FilterSpec {
+                    column: "name".into(),
+                    operator: Operator::Equals,
+                    value: "alpha".into(),
+                }],
+            }],
+        }],
+        ..WorkspaceState::default()
+    };
+
+    let (_dir, handle) = restored_workspace(cx, state, vec![config]);
+    cx.run_until_parked();
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the restored connection should have become a session");
+    let view = session
+        .read_with(cx, |session, _| session.panel_for_test(0))
+        .read_with(cx, |panel, _| {
+            panel
+                .table_view()
+                .expect("the restored tab should be a table")
+        });
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where name = ? limit 500 offset 0",
+            "the saved filter should be back on the where clause"
+        );
+        assert_eq!(view.loaded_rows_for_test(), 1, "only one row says alpha");
+    });
+
+    let filters = view.read_with(cx, |view, _| view.filters_for_test());
+    filters.read_with(cx, |filters, _cx| {
+        assert_eq!(
+            filters.filter_count_for_test(),
+            1,
+            "the filter bar should show the restored row"
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn filtering_asks_before_it_discards_staged_edits(cx: &mut TestAppContext) {
     let (database, handle, view) = table_view(cx);
     cx.run_until_parked();

@@ -480,6 +480,7 @@ fn a_restored_table_tab_replaces_the_empty_editor(cx: &mut TestAppContext) {
                     name: "items".into(),
                     kind: ObjectKind::Table,
                 },
+                filters: Vec::new(),
             }],
         }],
         ..WorkspaceState::default()
@@ -629,6 +630,11 @@ fn a_restored_state_round_trips_through_snapshot(cx: &mut TestAppContext) {
                         name: "items".into(),
                         kind: ObjectKind::Table,
                     },
+                    filters: vec![FilterSpec {
+                        column: "name".into(),
+                        operator: Operator::Equals,
+                        value: "alpha".into(),
+                    }],
                 },
             ],
         }],
@@ -643,7 +649,7 @@ fn a_restored_state_round_trips_through_snapshot(cx: &mut TestAppContext) {
         .read_with(cx, |workspace, cx| workspace.state_for_test(cx));
     assert_eq!(
         round_tripped, state,
-        "a restored window should snapshot back to the state it came from"
+        "a restored window should snapshot back to the state it came from, filters included"
     );
 }
 

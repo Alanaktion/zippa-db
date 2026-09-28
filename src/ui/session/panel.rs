@@ -459,6 +459,7 @@ impl SessionPanel {
             },
             TabContent::Table { view } => PanelState::Table {
                 object: view.read(cx).object().clone(),
+                filters: view.read(cx).filters(cx),
             },
             TabContent::Schema { view } => PanelState::Schema {
                 object: view.read(cx).object().clone(),

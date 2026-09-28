@@ -12,9 +12,10 @@ use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectStat
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, IndexPath, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Window, div, px};
+use serde::{Deserialize, Serialize};
 
 /// What a filter tests a column with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Operator {
     Equals,
     NotEquals,
@@ -86,7 +87,7 @@ impl Operator {
 }
 
 /// One filter, as the owner reads it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilterSpec {
     pub column: String,
     pub operator: Operator,
@@ -314,6 +315,42 @@ impl FilterBar {
 
         let row = Self::build_row(items, column_index, operator, value, window, cx);
         self.rows.push(row);
+        self.apply(cx);
+    }
+
+    /// Replace every filter with `specs`, e.g. restoring a table tab's
+    /// filters from `workspace.json`. The plural of [`Self::set_filter`]: one
+    /// row per spec, applied once rather than once per row.
+    ///
+    /// Like `set_filter`, this may run before the table's first load has told
+    /// the bar its columns, so each row is seeded the same way.
+    pub fn set_filters(
+        &mut self,
+        specs: &[FilterSpec],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if specs.is_empty() {
+            self.clear(cx);
+            return;
+        }
+
+        self.rows.clear();
+        for spec in specs {
+            let known = self.columns.iter().any(|name| name == &spec.column);
+            let items = if known {
+                self.columns.clone()
+            } else {
+                vec![SharedString::from(spec.column.clone())]
+            };
+            let column_index = items
+                .iter()
+                .position(|name| name == &spec.column)
+                .unwrap_or(0);
+
+            let row = Self::build_row(items, column_index, spec.operator, &spec.value, window, cx);
+            self.rows.push(row);
+        }
         self.apply(cx);
     }
 
