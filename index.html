@@ -131,7 +131,7 @@
         </div>
         <div class="flex items-center gap-2">
           <span class="font-bold text-lg tracking-tight text-light-text dark:text-dark-text">Zippa<span class="text-light-violet dark:text-dark-violet">DB</span></span>
-          <span class="px-2 py-0.5 text-[10px] font-mono font-medium rounded-full bg-light-subtle dark:bg-dark-subtle border border-light-border dark:border-dark-border text-light-muted dark:text-dark-muted">v0.1-dev</span>
+          <span class="px-2 py-0.5 text-[10px] font-mono font-medium rounded-full bg-light-subtle dark:bg-dark-subtle border border-light-border dark:border-dark-border text-light-muted dark:text-dark-muted">v0.1.0</span>
         </div>
       </a>
 
@@ -197,7 +197,7 @@
         </a>
 
         <div class="w-full sm:w-auto flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs font-mono text-light-muted dark:text-dark-muted">
-          <span>cargo install ./zippa-db</span>
+          <span>cargo install zippa-db</span>
           <button onclick="copyCargoCmd(this)" class="p-1 hover:text-light-text dark:hover:text-dark-text transition-colors" title="Copy command">
             <i data-lucide="copy" class="w-4 h-4"></i>
           </button>
@@ -582,7 +582,7 @@
               <h3 class="text-xl font-bold mb-1">macOS</h3>
               <p class="text-xs text-light-muted dark:text-dark-muted mb-6">Apple Silicon</p>
             </div>
-            <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0-dev/Zippa.DB_0.1.0_aarch64.dmg" class="w-full py-2.5 px-4 rounded-lg bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base font-medium text-xs flex items-center justify-center gap-2 hover:opacity-90 transition-opacity">
+            <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.0/Zippa.DB_0.1.0_aarch64.dmg" class="w-full py-2.5 px-4 rounded-lg bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base font-medium text-xs flex items-center justify-center gap-2 hover:opacity-90 transition-opacity">
               <i data-lucide="download" class="w-4 h-4"></i> .dmg (Apple Silicon)
             </a>
           </div>
@@ -598,10 +598,10 @@
               <p class="text-xs text-light-muted dark:text-dark-muted mb-6">AppImage & DEB</p>
             </div>
             <div class="flex gap-2">
-              <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0-dev/zippa-db_0.1.0_x86_64.AppImage" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
+              <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.0/zippa-db_0.1.0_x86_64.AppImage" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
                 <i data-lucide="download" class="w-4 h-4"></i> AppImage
               </a>
-              <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0-dev/zippa-db_0.1.0_x86_64.deb" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
+              <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.0/zippa-db_0.1.0_amd64.deb" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
                 .deb
               </a>
             </div>
@@ -617,12 +617,9 @@
               <h3 class="text-xl font-bold mb-1">Windows</h3>
               <p class="text-xs text-light-muted dark:text-dark-muted mb-6">Windows 10 / 11 (Vulkan / Direct3D)</p>
             </div>
-            <!--<a href="https://github.com/Alanaktion/zippa-db/releases/download/v0-dev/zippa-db_0.1.0_x86_64.exe" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
-              <i data-lucide="download" class="w-4 h-4"></i> .msi Installer
-            </a>-->
-            <div class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 opacity-50">
-              Coming Soon
-            </div>
+            <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.0/zippa-db_0.1.0_x64-setup.exe" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
+              <i data-lucide="download" class="w-4 h-4"></i> .exe Installer
+            </a>
           </div>
 
         </div>
@@ -721,7 +718,7 @@
 
     // Helper Copy functions
     function copyCargoCmd(btn) {
-      const text = "cargo install --git https://github.com/Alanaktion/zippa-db";
+      const text = "cargo install zippa-db";
       copyToClipboard(text, btn, "Command Copied!");
     }
 
