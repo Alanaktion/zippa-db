@@ -74,6 +74,10 @@ jobs:
 
       - run: cargo install cargo-packager --locked
 
+      # cargo-packager expects the binary to already exist; it does not build it.
+      - name: Build
+        run: cargo build --release
+
       - name: Package
         env:
           # linuxdeploy runs inside CI without FUSE access, and its bundled

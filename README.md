@@ -142,6 +142,7 @@ reads `[package.metadata.packager]` in `Cargo.toml`:
 
 ```bash
 cargo install cargo-packager --locked
+cargo build --release   # cargo-packager packages the built binary; it does not build it
 
 cargo packager --release --formats app,dmg        # macOS
 cargo packager --release --formats appimage,deb   # Linux (needs fuse/libfuse2)
