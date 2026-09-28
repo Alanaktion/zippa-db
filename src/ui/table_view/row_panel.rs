@@ -10,7 +10,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, IconName, Sizable, h_flex, v_flex};
-use gpui_kit::prelude::*;
+use gpui_kit::{SharedString, prelude::*, rems};
 use gpui_kit::{App, Context, Entity, EventEmitter, Focusable, Window, div, px};
 use regex::Regex;
 
@@ -332,12 +332,12 @@ impl RowPanel {
                 .into_any_element(),
             Field::Area(input) => Textarea::new(input)
                 .xsmall()
+                .line_height(rems(1.0))
                 .readonly(!editable)
                 .into_any_element(),
         };
 
         v_flex()
-            .gap_0p5()
             .child(
                 h_flex()
                     .gap_1()
@@ -347,7 +347,8 @@ impl RowPanel {
                             .text_size(px(10.))
                             .line_height(px(12.))
                             .text_color(cx.theme().muted_foreground)
-                            .when(deleted, |this| this.line_through())
+                            .overflow_x_hidden()
+                            .text_overflow(gpui_kit::TextOverflow::Truncate(SharedString::new_static("…")))
                             .child(format!("{column} · {type_name}")),
                     )
                     .child(menu),
@@ -408,8 +409,8 @@ impl Render for RowPanel {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .gap_2()
-                    .p_2()
+                    .gap_1()
+                    .p_1()
                     .when(status == RowStatus::Deleted, |this| {
                         this.child(
                             div()

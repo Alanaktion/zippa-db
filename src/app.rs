@@ -906,7 +906,7 @@ impl Workspace {
         let connected = session.is_some();
 
         TitleBar::new()
-            .child(h_flex().flex_1().min_w_0().gap_1().when_some(
+            .child(h_flex().flex_1().min_w_0().gap_2().when_some(
                 session.clone(),
                 |this, session| {
                     let (name, color) = {
