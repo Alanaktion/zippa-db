@@ -27,6 +27,60 @@ fn switching_database_is_refused_for_sqlite(cx: &mut TestAppContext) {
         .unwrap();
 }
 
+/// `Session::switch_database` replaces the connection (and its pool), so the
+/// query log it carries would reset to empty on every switch unless the
+/// session explicitly carries it forward — losing exactly the statements a
+/// console pane exists to show, internal reads included.
+///
+/// SQLite is the only engine the fast suite runs against, and switching is
+/// refused for it outright, so this needs a real second database; see
+/// `live_postgres_money_scales_by_the_servers_locale_not_always_by_100` in
+/// `db/tests.rs` for how to start one. `cargo test -- --ignored live_`.
+#[gpui_kit::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_switching_database_carries_the_console_log_forward(cx: &mut TestAppContext) {
+    let connection = runtime::block_on(crate::db::tests::live_postgres(
+        "ZIPPA_TEST_POSTGRES_URL",
+        "app",
+    ));
+
+    cx.update(init_ui);
+    let handle = {
+        let connection = Arc::new(connection);
+        cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
+            Session::new(connection, window, cx)
+        })
+    };
+    cx.run_until_parked();
+
+    let before = handle
+        .update(cx, |session, _, _| {
+            session.connection().query_log().snapshot().len()
+        })
+        .unwrap();
+    assert!(
+        before > 0,
+        "the session's own startup reads should already be logged"
+    );
+
+    handle
+        .update(cx, |session, _, cx| {
+            session.switch_database("zippa_yen".to_string(), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let after = handle
+        .update(cx, |session, _, _| {
+            session.connection().query_log().snapshot().len()
+        })
+        .unwrap();
+    assert!(
+        after >= before,
+        "the log from before the switch should carry over, not reset with the new pool"
+    );
+}
+
 #[gpui_kit::test]
 fn clicking_a_table_opens_a_table_tab(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);

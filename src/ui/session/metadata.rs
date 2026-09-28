@@ -10,7 +10,7 @@ use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, px};
 
-use crate::db::{Catalog, CatalogEntry, runtime};
+use crate::db::{Catalog, CatalogEntry, Connection, runtime};
 
 use super::{Session, SessionEvent, Status};
 
@@ -139,22 +139,7 @@ impl Session {
                 this.switching = false;
                 match opened {
                     Ok(Ok(connection)) => {
-                        let previous =
-                            std::mem::replace(&mut this.connection, Arc::new(connection));
-                        runtime::spawn(async move { previous.close().await });
-
-                        this.objects.clear();
-                        this.stored.clear();
-                        this.catalog = Arc::new(Catalog::default());
-                        this.catalog_loading = true;
-                        this.catalog_error = None;
-                        this.rebuild_tree(cx);
-                        let connection = this.connection.clone();
-                        for panel in this.panels.clone() {
-                            let connection = connection.clone();
-                            panel.update(cx, |panel, cx| panel.set_connection(connection, cx));
-                        }
-                        this.reload_metadata(cx);
+                        this.adopt_connection(connection, cx);
                         cx.emit(SessionEvent::Changed);
                     }
                     Ok(Err(error)) => {
@@ -181,6 +166,39 @@ impl Session {
             .ok();
         })
         .detach();
+    }
+
+    /// Swap `self.connection` for a freshly opened one on another database:
+    /// close what it replaces, carry its console history forward, reset the
+    /// schema read, and point every open panel at the new connection.
+    ///
+    /// Shared by [`Self::switch_database`] and a restore that switches before
+    /// building any tabs, so both keep the panels, the catalog, and the
+    /// console in step the same way.
+    pub(super) fn adopt_connection(&mut self, connection: Connection, cx: &mut Context<Self>) {
+        let previous = std::mem::replace(&mut self.connection, Arc::new(connection));
+
+        // The console's history belongs to the tab, not the pool about to
+        // close: an internal read that failed right before the switch (or
+        // any read from before it) should still be there to look at
+        // afterward rather than vanish with the connection that logged it.
+        for entry in previous.query_log().snapshot() {
+            self.connection.query_log().record(entry);
+        }
+        runtime::spawn(async move { previous.close().await });
+
+        self.objects.clear();
+        self.stored.clear();
+        self.catalog = Arc::new(Catalog::default());
+        self.catalog_loading = true;
+        self.catalog_error = None;
+        self.rebuild_tree(cx);
+        let connection = self.connection.clone();
+        for panel in self.panels.clone() {
+            let connection = connection.clone();
+            panel.update(cx, |panel, cx| panel.set_connection(connection, cx));
+        }
+        self.reload_metadata(cx);
     }
 
     /// The database dropdown, rendered by whoever owns the toolbar.

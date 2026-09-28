@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, Window};
 
+use crate::db::runtime;
 use crate::workspace_state::{PanelState, SessionState};
 
-use super::{ObjectViewMode, Session, SessionPanel, Status};
+use super::{ObjectViewMode, Session, SessionEvent, SessionPanel, Status};
 
 impl Session {
     /// This session as it would be restored: the connection it belongs to, the
@@ -27,16 +28,84 @@ impl Session {
 
     /// Rebuild the tabs this session had, in order.
     ///
-    /// Restoring goes through the same constructors a manual open does, so
-    /// panel keys, `opened` numbering, and the dock all stay consistent. A
-    /// restored buffer is not run; a restored table loads its first page the
-    /// way opening it from the sidebar does.
+    /// A saved database that differs from the one the connection just opened
+    /// on is switched to *first*, before any tab is built: building a table
+    /// or query tab against the connection still on the old database would
+    /// let its first read run before the switch lands. Usually that is just
+    /// a moment of wrong data, quietly corrected once the switch's own
+    /// reload replaces it — but a connection opened with no default database
+    /// selected at all fails that read outright ("No database selected"
+    /// on MySQL) rather than reading anything, and the error reaches the
+    /// user as a toast before the correction does.
     pub(crate) fn restore(
         &mut self,
         state: SessionState,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        match state.database.clone() {
+            Some(database) if database != self.connection.database() => {
+                self.restore_after_switching(database, state, window, cx);
+            }
+            _ => self.restore_panels(state, window, cx),
+        }
+    }
+
+    /// Switch to `database`, then build the tabs against the connection that
+    /// is actually on it. A database that cannot be reopened — dropped since
+    /// the last run, say — falls back to restoring against the connection's
+    /// own default database rather than stranding the tabs.
+    fn restore_after_switching(
+        &mut self,
+        database: String,
+        state: SessionState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switching = true;
+        cx.notify();
+
+        let connection = self.connection.clone();
+        let task = runtime::spawn(async move { connection.with_database(&database).await });
+
+        cx.spawn_in(window, async move |this, cx| {
+            let opened = task.await;
+            this.update_in(cx, |this, window, cx| {
+                this.switching = false;
+                match opened {
+                    Ok(Ok(connection)) => {
+                        this.adopt_connection(connection, cx);
+                        cx.emit(SessionEvent::Changed);
+                    }
+                    Ok(Err(error)) => {
+                        crate::ui::notify_error(
+                            window,
+                            cx,
+                            format!("Error: could not switch to the saved database: {error:#}"),
+                        );
+                    }
+                    Err(_) => {
+                        crate::ui::notify_error(
+                            window,
+                            cx,
+                            "Error: switching to the saved database was cancelled".to_string(),
+                        );
+                    }
+                }
+                this.restore_panels(state, window, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Build every tab `state` names, against whatever connection the
+    /// session currently has. Restoring goes through the same constructors a
+    /// manual open does, so panel keys, `opened` numbering, and the dock all
+    /// stay consistent. A restored buffer is not run; a restored table loads
+    /// its first page the way opening it from the sidebar does.
+    fn restore_panels(&mut self, state: SessionState, window: &mut Window, cx: &mut Context<Self>) {
         // `Session::new` always opens one empty editor; it is closed again
         // below once there is something restored to take its place.
         let placeholder = self.panels.first().cloned();
@@ -151,11 +220,5 @@ impl Session {
         }
 
         self.activate_tab(state.active, window, cx);
-
-        if let Some(database) = state.database
-            && database != self.connection.database()
-        {
-            self.switch_database(database, cx);
-        }
     }
 }

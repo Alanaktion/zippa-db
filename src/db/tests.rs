@@ -1637,7 +1637,11 @@ async fn live_mysql_query_digest_reports_availability() {
 
 /// Open a Postgres connection for a live test, against the database named by
 /// `var` (falling back to `127.0.0.1:5433`/`database` when unset).
-async fn live_postgres(var: &str, database: &str) -> Connection {
+///
+/// `pub(crate)` rather than private: `ui::tests` reuses this for the one live
+/// test that needs a second real database to switch to, since the fast
+/// SQLite-backed suite has no such thing.
+pub(crate) async fn live_postgres(var: &str, database: &str) -> Connection {
     let url = env::var(var)
         .unwrap_or_else(|_| format!("postgres://postgres:secret@127.0.0.1:5433/{database}"));
     let rest = url.strip_prefix("postgres://").expect("a postgres:// URL");
