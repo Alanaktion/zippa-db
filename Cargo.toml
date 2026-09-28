@@ -34,7 +34,7 @@ flate2 = "1"
 futures = "0.3.34"
 # One dependency pulls in GPUI (Zed's preview channel), gpui-base, the styled
 # component library, and the default icon set.
-gpui-kit = { version = "0.6", features = ["tree-sitter-sql"] }
+gpui-kit = { version = "0.7", features = ["tree-sitter-sql"] }
 keyring = "4"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
@@ -58,7 +58,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 zstd = "0.13"
 
 [dev-dependencies]
-gpui-kit = { version = "0.6", features = ["test-support"] }
+gpui-kit = { version = "0.7", features = ["test-support"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 # Read by `cargo packager` (https://github.com/crabnebula-dev/cargo-packager)

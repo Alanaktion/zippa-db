@@ -331,8 +331,7 @@ impl RowPanel {
                 .readonly(!editable)
                 .into_any_element(),
             Field::Area(input) => Textarea::new(input)
-                .text_xs()
-                .p_0() // TODO: actually apply xsmall()-like style, this padding override doesn't work.
+                .xsmall()
                 .readonly(!editable)
                 .into_any_element(),
         };

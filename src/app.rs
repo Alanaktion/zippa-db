@@ -17,8 +17,7 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Root, Sizable, Size, TitleBar, WindowExt, h_flex,
-    v_flex,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, Size, TitleBar, WindowExt, h_flex, v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -243,8 +242,8 @@ impl Workspace {
     /// report, so it is not shown again; "Copy report" puts the whole
     /// thing, backtrace included, on the clipboard for a bug report.
     ///
-    /// This needs the window's root layer, so it runs after `Root::new`,
-    /// not during the build.
+    /// This needs the window's root layer, so it runs after the window is
+    /// open, not during the build.
     pub(crate) fn report_crash(window: &mut Window, cx: &mut App) {
         let Some(report) = crash_log::pending() else {
             return;
@@ -1008,10 +1007,10 @@ fn close(connection: Arc<Connection>) {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A requested value dialog is opened before anything else, so it is
+        // on screen in the frame that asked for it; the kit's root hosts it
+        // above this tree.
         self.take_value_dialog(window, cx);
-        // Taking it first puts the dialog in the root's list in time for this
-        // layer, so it is on screen in the frame that asked for it.
-        let dialogs = Root::render_dialog_layer(window, cx);
 
         let body = match &self.tabs[self.active] {
             TabContent::Connect(welcome) => welcome.clone().into_any_element(),
@@ -1048,9 +1047,6 @@ impl Render for Workspace {
                 )
             })
             .child(div().flex_1().min_h_0().child(body))
-            // The value dialog lives in the window's `Root` rather than in the
-            // tree above, so it covers the whole window and takes the focus.
-            .children(dialogs)
     }
 }
 

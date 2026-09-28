@@ -14,7 +14,7 @@ mod workspace_state;
 
 use std::borrow::Cow;
 
-use gpui_kit::component::{Root, TitleBar};
+use gpui_kit::component::TitleBar;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, AssetSource, Bounds, Result, SharedString, TitlebarOptions, WindowBounds, WindowOptions,
@@ -112,7 +112,10 @@ fn main() {
                 ..TitleBar::window_options()
             };
 
-            cx.open_window(options, |window, cx| {
+            // The kit wraps the content in its own `Root`, which hosts
+            // dialogs, sheets, and notifications; the builder just returns
+            // the workspace.
+            let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
                 let workspace = cx.new(|cx| Workspace::new(window, cx));
 
                 // The last save before the process ends: a checkpoint on every
@@ -127,12 +130,14 @@ fn main() {
                 })
                 .detach();
 
-                let root = cx.new(|cx| Root::new(workspace, window, cx));
-                // The crash dialog needs the root layer above to exist.
-                Workspace::report_crash(window, cx);
-                root
+                workspace
             })
             .expect("failed to open window");
+
+            // The crash dialog needs the root layer above to exist.
+            window
+                .update(cx, |_, window, cx| Workspace::report_crash(window, cx))
+                .ok();
 
             cx.activate(true);
         });
