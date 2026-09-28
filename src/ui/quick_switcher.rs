@@ -30,6 +30,11 @@ pub(crate) enum SwitcherTarget {
     ExplainAnalyze,
     SwitchDatabase(String),
     SearchSchema,
+    OpenConsole,
+    OpenProcessList,
+    OpenServerVariables,
+    OpenQueryDigest,
+    OpenMaintenance,
 }
 
 pub struct QuickSwitcherView {
@@ -77,6 +82,21 @@ impl QuickSwitcherView {
             // caller has closed this one already.
             SwitcherTarget::SearchSchema => {
                 let _ = crate::ui::schema_search::open(session, window, cx);
+            }
+            SwitcherTarget::OpenConsole => {
+                session.update(cx, |session, cx| session.open_console(window, cx))
+            }
+            SwitcherTarget::OpenProcessList => {
+                session.update(cx, |session, cx| session.open_process_list(window, cx))
+            }
+            SwitcherTarget::OpenServerVariables => {
+                session.update(cx, |session, cx| session.open_server_variables(window, cx))
+            }
+            SwitcherTarget::OpenQueryDigest => {
+                session.update(cx, |session, cx| session.open_query_digest(window, cx))
+            }
+            SwitcherTarget::OpenMaintenance => {
+                session.update(cx, |session, cx| session.open_maintenance(window, cx))
             }
         }
     }
@@ -256,6 +276,55 @@ impl Render for QuickSwitcherView {
                     .keywords(["explain", "analyze", "plan", "query", "timing"]),
             );
             act_targets.push(SwitcherTarget::ExplainAnalyze);
+
+            act_group = act_group.item(
+                CommandItem::new()
+                    .label("Console")
+                    .icon(IconName::SquareTerminal)
+                    .keywords(["console", "log", "statements", "history"]),
+            );
+            act_targets.push(SwitcherTarget::OpenConsole);
+
+            if is_file_based {
+                act_group = act_group.item(
+                    CommandItem::new()
+                        .label("Maintenance")
+                        .icon(IconName::Wrench)
+                        .keywords([
+                            "maintenance",
+                            "integrity",
+                            "check",
+                            "optimize",
+                            "vacuum",
+                            "analyze",
+                        ]),
+                );
+                act_targets.push(SwitcherTarget::OpenMaintenance);
+            } else {
+                act_group = act_group.item(
+                    CommandItem::new()
+                        .label("Processes")
+                        .icon(IconName::Activity)
+                        .keywords(["processes", "connections", "activity", "kill"]),
+                );
+                act_targets.push(SwitcherTarget::OpenProcessList);
+
+                act_group = act_group.item(
+                    CommandItem::new()
+                        .label("Variables")
+                        .icon(IconName::SlidersHorizontal)
+                        .keywords(["variables", "settings", "configuration", "server"]),
+                );
+                act_targets.push(SwitcherTarget::OpenServerVariables);
+
+                act_group = act_group.item(
+                    CommandItem::new()
+                        .label("Query Digest")
+                        .icon(IconName::Gauge)
+                        .keywords(["digest", "slow", "queries", "performance"]),
+                );
+                act_targets.push(SwitcherTarget::OpenQueryDigest);
+            }
 
             targets.push(act_targets);
             groups.push(act_group);

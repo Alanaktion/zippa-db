@@ -243,6 +243,30 @@ fn the_explain_item_reads_the_active_statement(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_console_item_opens_the_console_tab(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let _database = connect(cx, &handle);
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("active session");
+    assert_eq!(session.update(cx, |session, _| session.panels().len()), 1);
+
+    let view = switcher_view(cx, &handle, &session);
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.choose_for_test(SwitcherTarget::OpenConsole, window, cx)
+        })
+        .unwrap();
+
+    session.update(cx, |session, cx| {
+        assert_eq!(session.panels().len(), 2);
+        assert!(session.panels()[1].read(cx).is_console());
+    });
+}
+
+#[gpui_kit::test]
 fn the_schema_search_item_opens_the_dialog(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let _database = connect(cx, &handle);
