@@ -225,7 +225,7 @@
             <div class="flex items-center gap-2.5">
               <span class="text-sm font-semibold text-light-text dark:text-dark-text">Local</span>
               <span class="flex items-center gap-1.5 text-xs font-mono text-light-muted dark:text-dark-muted">
-                <i data-lucide="database" class="w-3.5 h-3.5"></i> sso_test
+                <i data-lucide="database" class="w-3.5 h-3.5"></i> store
               </span>
             </div>
             <div class="ml-auto flex items-center gap-0.5 text-light-muted dark:text-dark-muted">
@@ -250,16 +250,11 @@
               </div>
               <div class="px-3 pt-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-light-muted dark:text-dark-muted">Tables & Views</div>
               <div class="flex-1 px-1.5 space-y-px text-[13px]">
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">changelog</div>
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">config</div>
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">logins_sites</div>
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">sites</div>
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">ul_blocked_ips</div>
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">ul_log</div>
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">ul_logins</div>
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">ul_nonces</div>
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">ul_sessions</div>
-                <div class="px-2 py-1 rounded-md bg-light-violet/10 dark:bg-dark-violet/10 text-light-text dark:text-dark-text font-medium">users</div>
+                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">categories</div>
+                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">customers</div>
+                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">order_items</div>
+                <div class="px-2 py-1 rounded-md bg-light-violet/10 dark:bg-dark-violet/10 text-light-text dark:text-dark-text font-medium">orders</div>
+                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">products</div>
               </div>
               <div class="p-2">
                 <div class="flex rounded-lg bg-light-subtle dark:bg-dark-subtle p-0.5 text-xs font-medium">
@@ -280,7 +275,7 @@
                 </div>
                 <div class="flex items-center gap-2 px-3.5 py-2 bg-light-base/70 dark:bg-dark-base/70 text-light-text dark:text-dark-text border-r border-light-border dark:border-dark-border font-medium">
                   <i data-lucide="table" class="w-3.5 h-3.5"></i>
-                  <span>users</span>
+                  <span>orders</span>
                   <i data-lucide="x" class="w-3.5 h-3.5"></i>
                 </div>
                 <div class="ml-auto flex items-center gap-0.5 px-2 text-light-muted dark:text-dark-muted">
@@ -304,22 +299,52 @@
                     <tr class="border-b border-light-border dark:border-dark-border text-light-muted dark:text-dark-muted text-left">
                       <th class="w-10 px-3 py-2 font-normal"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></th>
                       <th class="px-3 py-2 font-medium whitespace-nowrap">id <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
-                      <th class="px-3 py-2 font-medium whitespace-nowrap">ulogin_id <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
-                      <th class="px-3 py-2 font-medium whitespace-nowrap">pass_hash <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
-                      <th class="px-3 py-2 font-medium whitespace-nowrap">email <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
-                      <th class="px-3 py-2 font-medium whitespace-nowrap">first_name <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
-                      <th class="px-3 py-2 font-medium whitespace-nowrap">last_name <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
+                      <th class="px-3 py-2 font-medium whitespace-nowrap">customer_id <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
+                      <th class="px-3 py-2 font-medium whitespace-nowrap">status <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
+                      <th class="px-3 py-2 font-medium whitespace-nowrap">total <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
+                      <th class="px-3 py-2 font-medium whitespace-nowrap">created_at <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
                     </tr>
                   </thead>
                   <tbody class="font-mono text-xs">
                     <tr class="border-b border-light-border/60 dark:border-dark-border/60 text-light-text dark:text-dark-text">
                       <td class="px-3 py-2"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></td>
                       <td class="px-3 py-2">1</td>
-                      <td class="px-3 py-2">1</td>
-                      <td class="px-3 py-2 text-light-muted dark:text-dark-muted italic">NULL</td>
-                      <td class="px-3 py-2 bg-light-violet/10 dark:bg-dark-violet/15">test@example.com</td>
-                      <td class="px-3 py-2">Test</td>
-                      <td class="px-3 py-2">User</td>
+                      <td class="px-3 py-2">42</td>
+                      <td class="px-3 py-2 bg-light-violet/10 dark:bg-dark-violet/15">shipped</td>
+                      <td class="px-3 py-2">129.99</td>
+                      <td class="px-3 py-2">2026-09-20 14:03:11</td>
+                    </tr>
+                    <tr class="border-b border-light-border/60 dark:border-dark-border/60 text-light-text dark:text-dark-text">
+                      <td class="px-3 py-2"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></td>
+                      <td class="px-3 py-2">2</td>
+                      <td class="px-3 py-2">17</td>
+                      <td class="px-3 py-2">pending</td>
+                      <td class="px-3 py-2">59.50</td>
+                      <td class="px-3 py-2">2026-09-21 09:41:02</td>
+                    </tr>
+                    <tr class="border-b border-light-border/60 dark:border-dark-border/60 text-light-text dark:text-dark-text">
+                      <td class="px-3 py-2"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></td>
+                      <td class="px-3 py-2">3</td>
+                      <td class="px-3 py-2">42</td>
+                      <td class="px-3 py-2">delivered</td>
+                      <td class="px-3 py-2">24.00</td>
+                      <td class="px-3 py-2">2026-09-22 18:15:47</td>
+                    </tr>
+                    <tr class="border-b border-light-border/60 dark:border-dark-border/60 text-light-text dark:text-dark-text">
+                      <td class="px-3 py-2"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></td>
+                      <td class="px-3 py-2">4</td>
+                      <td class="px-3 py-2">8</td>
+                      <td class="px-3 py-2">cancelled</td>
+                      <td class="px-3 py-2">199.00</td>
+                      <td class="px-3 py-2">2026-09-23 11:02:36</td>
+                    </tr>
+                    <tr class="text-light-text dark:text-dark-text">
+                      <td class="px-3 py-2"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></td>
+                      <td class="px-3 py-2">5</td>
+                      <td class="px-3 py-2">23</td>
+                      <td class="px-3 py-2">shipped</td>
+                      <td class="px-3 py-2">84.75</td>
+                      <td class="px-3 py-2">2026-09-24 16:55:19</td>
                     </tr>
                   </tbody>
                 </table>
@@ -334,7 +359,7 @@
                   <span class="flex items-center gap-1.5 px-1.5 py-0.5 rounded-md border border-light-border dark:border-dark-border text-light-text dark:text-dark-text font-mono">
                     <i data-lucide="minus" class="w-3 h-3"></i> 300 <i data-lucide="plus" class="w-3 h-3"></i>
                   </span>
-                  <span>Rows 1–1</span>
+                  <span>Rows 1–5</span>
                 </div>
                 <div class="hidden sm:flex items-center gap-4 text-light-text dark:text-dark-text">
                   <span>New row</span>
@@ -361,52 +386,38 @@
                 </div>
                 <div>
                   <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">ulogin_id · INT UNSIGNED</span>
+                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">customer_id · INT UNSIGNED</span>
                     <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
                   </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">1</div>
+                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">42</div>
                 </div>
                 <div>
                   <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">pass_hash · VARCHAR</span>
+                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">status · VARCHAR</span>
                     <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
                   </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">&nbsp;</div>
+                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">shipped</div>
                 </div>
                 <div>
                   <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">email · VARCHAR</span>
+                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">total · DECIMAL(10,2)</span>
                     <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
                   </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">test@example.com</div>
+                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">129.99</div>
                 </div>
                 <div>
                   <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">first_name · VARCHAR</span>
+                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">created_at · DATETIME</span>
                     <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
                   </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">Test</div>
-                </div>
-                <div>
-                  <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">last_name · VARCHAR</span>
-                    <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
-                  </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">User</div>
-                </div>
-                <div>
-                  <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">phone · VARCHAR</span>
-                    <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
-                  </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">1234567890</div>
+                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">2026-09-20 14:03:11</div>
                 </div>
                 <div class="opacity-60">
                   <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">logins · INT UNSIGNED</span>
+                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">notes · TEXT</span>
                     <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
                   </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">3</div>
+                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">&nbsp;</div>
                 </div>
               </div>
             </div>
@@ -436,9 +447,9 @@
           </div>
 
           <div class="space-y-1">
-            <div class="text-3xl sm:text-4xl font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">3</div>
-            <div class="text-sm font-medium text-light-text dark:text-dark-text">Database Engines</div>
-            <div class="text-xs text-light-muted dark:text-dark-muted">PostgreSQL, MySQL & SQLite in one app</div>
+            <div class="text-3xl sm:text-4xl font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">Virtualized</div>
+            <div class="text-sm font-medium text-light-text dark:text-dark-text">Data Grid</div>
+            <div class="text-xs text-light-muted dark:text-dark-muted">Smooth scrolling on large result sets</div>
           </div>
 
           <div class="space-y-1">
