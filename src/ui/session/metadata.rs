@@ -18,6 +18,7 @@ impl Session {
     /// Read the database list and the current database's tables and views.
     pub(crate) fn reload_metadata(&mut self, cx: &mut Context<Self>) {
         let connection = self.connection.clone();
+        let started_on = connection.clone();
         let task = runtime::spawn(async move {
             (
                 connection.databases().await,
@@ -30,6 +31,16 @@ impl Session {
         cx.spawn(async move |this, cx| {
             let loaded = task.await;
             this.update_in(cx, |this, window, cx| {
+                // `switch_database` replaces `self.connection` and closes the
+                // one this task started on, then kicks off its own reload. A
+                // read still in flight against the old connection at that
+                // point loses its pool mid-await and comes back an error;
+                // that error is stale (the fresh reload already has, or will
+                // have, the right answer), so it is dropped rather than
+                // shown.
+                if !Arc::ptr_eq(&this.connection, &started_on) {
+                    return;
+                }
                 this.metadata_error = None;
                 match loaded {
                     Ok((databases, objects, stored, catalog)) => {
