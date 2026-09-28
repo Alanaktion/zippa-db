@@ -206,6 +206,14 @@ impl Session {
         self.panels.push(panel.clone());
         self.active = Some(panel.downgrade());
         self.sync_tree_selection(cx);
+        // A newly installed tab is not reached through `bring_forward`, which
+        // is what puts the keyboard in an already-open tab when it is
+        // switched to — so a tab opened from anywhere but a mouse click on
+        // its own element (the quick switcher, a keybinding, the sidebar)
+        // would otherwise leave focus wherever it was, and every shortcut
+        // bound under the new tab's context reads as having nothing to act
+        // on until the user clicks into it by hand.
+        self.focus(window, cx);
         cx.emit(SessionEvent::Changed);
         cx.notify();
     }
