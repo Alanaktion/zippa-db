@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use super::ConnectionConfig;
 
+#[cfg_attr(test, allow(dead_code))]
 const SERVICE: &str = "zippa-db";
 const FILE_NAME: &str = "connections.json";
 
@@ -30,13 +31,29 @@ pub(crate) fn set_config_dir_for_test(path: PathBuf) {
 
 /// Where Zippa keeps its files: connections, settings, and user themes.
 pub(crate) fn config_dir() -> Result<PathBuf> {
+    // A test never sees the developer's real directory: one that has not
+    // pointed this at its own scratch directory gets a per-process one, so a
+    // test that forgets cannot overwrite the real files.
     #[cfg(test)]
-    if let Some(dir) = TEST_CONFIG_DIR.with(|dir| dir.borrow().clone()) {
-        return Ok(dir);
-    }
+    return Ok({
+        static FALLBACK: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        TEST_CONFIG_DIR
+            .with(|dir| dir.borrow().clone())
+            .unwrap_or_else(|| {
+                FALLBACK
+                    .get_or_init(|| {
+                        std::env::temp_dir()
+                            .join(format!("zippa-db-test-config-{}", std::process::id()))
+                    })
+                    .clone()
+            })
+    });
 
-    let dir = dirs::config_dir().context("no config directory for this platform")?;
-    Ok(dir.join(SERVICE))
+    #[cfg(not(test))]
+    {
+        let dir = dirs::config_dir().context("no config directory for this platform")?;
+        Ok(dir.join(SERVICE))
+    }
 }
 
 fn config_file() -> Result<PathBuf> {
