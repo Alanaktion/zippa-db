@@ -16,6 +16,7 @@ use gpui_kit::{App, Context, SharedString, div, px};
 use uuid::Uuid;
 
 use crate::db::ConnectionConfig;
+use crate::ui::busy::busy_label;
 use crate::ui::{engine_color, engine_icon};
 
 use super::Welcome;
@@ -83,11 +84,15 @@ fn card_body(config: &ConnectionConfig, connecting: bool, cx: &App) -> impl Into
         .gap_0p5()
         .py_2()
         .px_3()
-        .child(div().text_sm().truncate().child(if connecting {
-            "Connecting…".to_string()
+        .child(if connecting {
+            busy_label("Connecting…", cx.theme().foreground).into_any_element()
         } else {
-            config.display_name()
-        }))
+            div()
+                .text_sm()
+                .truncate()
+                .child(config.display_name())
+                .into_any_element()
+        })
         .child(
             div()
                 .text_xs()

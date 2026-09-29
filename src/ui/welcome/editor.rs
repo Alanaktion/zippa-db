@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::db::{
     Connection, ConnectionConfig, Engine, SafetyMode, TagColor, is_risky_auto_apply, runtime, store,
 };
+use crate::ui::busy::spinner;
 
 actions!(zippa_db, [EditorClose, EditorConnect]);
 
@@ -579,6 +580,7 @@ impl ConnectionEditor {
     /// The test's progress or outcome, or why the inputs were refused. Told in
     /// words as well as colour.
     fn render_status(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let testing = self.status == Status::Testing;
         let theme = cx.theme();
         let (icon, color, text) = match &self.status {
             Status::None => return None,
@@ -605,7 +607,11 @@ impl ConnectionEditor {
                 .gap_2()
                 .text_sm()
                 .text_color(color)
-                .child(Icon::new(icon).flex_none().mt_0p5())
+                .child(if testing {
+                    spinner(cx).into_any_element()
+                } else {
+                    Icon::new(icon).flex_none().mt_0p5().into_any_element()
+                })
                 .child(div().flex_1().min_w_0().child(text)),
         )
     }

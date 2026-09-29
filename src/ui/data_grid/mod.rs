@@ -27,6 +27,7 @@ use crate::db::Engine;
 use crate::db::export::Format;
 use crate::db::query::{self, Cell, QueryResult};
 use crate::settings::{self, Settings};
+use crate::ui::busy::busy_label;
 use crate::ui::value_dialog::{self, ValueRequest};
 
 mod clipboard;
@@ -194,6 +195,9 @@ pub struct StagedRow {
 pub struct DataGrid {
     table: Entity<TableState<ResultDelegate>>,
     has_result: bool,
+    /// The owner is reading a result for this grid, so the empty state shows a
+    /// spinner rather than telling the user to run a query.
+    loading: bool,
     /// The cell editor, shared with the delegate that renders it.
     editor: Entity<InputState>,
 }
@@ -380,6 +384,7 @@ impl DataGrid {
         Self {
             table,
             has_result: false,
+            loading: false,
             editor,
         }
     }
@@ -1267,6 +1272,15 @@ impl DataGrid {
         cx.notify();
     }
 
+    /// Say whether the owner is reading a result. Only the empty state reads
+    /// it: a grid already showing rows keeps them while a reload runs.
+    pub fn set_loading(&mut self, loading: bool, cx: &mut Context<Self>) {
+        if self.loading != loading {
+            self.loading = loading;
+            cx.notify();
+        }
+    }
+
     fn is_empty(&self, cx: &App) -> bool {
         self.table.read(cx).delegate().result.columns.is_empty()
     }
@@ -1288,22 +1302,20 @@ fn staged_value(text: String, coerce: bool) -> Cell {
 impl Render for DataGrid {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.is_empty(cx) {
-            let message = if self.has_result {
-                "Statement returned no columns"
+            let muted = cx.theme().muted_foreground;
+            let message = if self.loading {
+                busy_label("Loading…", muted).into_any_element()
+            } else if self.has_result {
+                "Statement returned no columns".into_any_element()
             } else {
-                "Run a query to see results"
+                "Run a query to see results".into_any_element()
             };
 
             return v_flex()
                 .size_full()
                 .items_center()
                 .justify_center()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(message),
-                )
+                .child(div().text_sm().text_color(muted).child(message))
                 .into_any_element();
         }
 

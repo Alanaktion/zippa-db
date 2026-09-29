@@ -23,6 +23,7 @@ use gpui_kit::{App, Context, Entity, IntoElement, Render, SharedString, Window, 
 
 use crate::db::catalog::{self, Hit, MAX_HITS};
 use crate::db::{Catalog, CatalogEntry, CatalogKind, Query};
+use crate::ui::busy::busy_label;
 
 use super::session::Session;
 
@@ -251,6 +252,7 @@ impl Render for SchemaSearchView {
             let (message, danger) = empty_state(&catalog, loading, error.as_deref());
             (message, danger, cx.theme().muted_foreground)
         };
+        let busy = loading && error.is_none();
         let empty_color = if danger { cx.theme().danger } else { muted };
         let (notice, notice_danger) = notice(&catalog, matched, error.as_deref());
         let notice_color = if notice_danger {
@@ -267,12 +269,14 @@ impl Render for SchemaSearchView {
             .filterable(false)
             .max_h(px(420.))
             .empty(move |_, _, _cx| {
-                div()
-                    .p_4()
-                    .text_center()
-                    .text_sm()
-                    .text_color(empty_color)
-                    .child(empty.clone())
+                let line = div().p_4().text_sm().text_color(empty_color);
+                if busy {
+                    line.flex()
+                        .justify_center()
+                        .child(busy_label(empty.clone(), empty_color))
+                } else {
+                    line.text_center().child(empty.clone())
+                }
             })
             .on_query(move |query, _window, cx| {
                 let query = query.to_string();

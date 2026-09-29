@@ -26,6 +26,7 @@ use crate::db::DatabaseObject;
 use crate::db::Engine;
 use crate::db::Plan;
 use crate::db::query::QueryResult;
+use crate::ui::busy::busy_label;
 use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::{Copied, DataGrid};
 use crate::ui::plan_view::PlanView;
@@ -1058,7 +1059,11 @@ impl SessionPanel {
                     .overflow_y_scroll()
                     .text_xs()
                     .text_color(color)
-                    .child(message),
+                    .child(if matches!(status, Status::Running) {
+                        busy_label(message, color).into_any_element()
+                    } else {
+                        message.into_any_element()
+                    }),
             )
     }
 

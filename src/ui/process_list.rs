@@ -18,6 +18,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, FocusHandle, Focusable, SharedString, Window, div};
 
 use crate::db::{Connection, runtime};
+use crate::ui::busy::busy_label;
 use crate::ui::data_grid::{DataGrid, Scope};
 
 pub struct ProcessListView {
@@ -53,6 +54,7 @@ impl ProcessListView {
         self.loading = true;
         self.error = None;
         self.notice = None;
+        self.grid.update(cx, |grid, cx| grid.set_loading(true, cx));
         cx.notify();
 
         let connection = self.connection.clone();
@@ -62,6 +64,7 @@ impl ProcessListView {
             let result = task.await;
             this.update(cx, |this, cx| {
                 this.loading = false;
+                this.grid.update(cx, |grid, cx| grid.set_loading(false, cx));
                 match result {
                     Ok(Ok(result)) => {
                         this.grid.update(cx, |grid, cx| grid.set_result(result, cx));
@@ -184,9 +187,9 @@ impl ProcessListView {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(if self.loading {
-                        "Loading…".to_string()
+                        busy_label("Loading…", cx.theme().muted_foreground).into_any_element()
                     } else {
-                        self.notice.clone().unwrap_or_default()
+                        self.notice.clone().unwrap_or_default().into_any_element()
                     }),
             )
             .when(!read_only, |this| {

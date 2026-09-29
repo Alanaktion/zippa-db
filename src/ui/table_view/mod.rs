@@ -461,6 +461,7 @@ impl TableView {
         self.loading = true;
         self.error = None;
         self.notice = None;
+        self.grid.update(cx, |grid, cx| grid.set_loading(true, cx));
         cx.notify();
 
         let (sql, params) = self.query_with_params(cx);
@@ -471,6 +472,7 @@ impl TableView {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
                 this.loading = false;
+                this.grid.update(cx, |grid, cx| grid.set_loading(false, cx));
                 match result {
                     Ok(Ok(mut query_result)) => {
                         this.take_key_column(&mut query_result);

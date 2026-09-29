@@ -24,6 +24,7 @@ use regex::Regex;
 
 use crate::db::query::{Cell, QueryResult};
 use crate::db::{Connection, runtime};
+use crate::ui::busy::busy_label;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::text_filter;
 
@@ -71,6 +72,7 @@ impl ServerVariablesView {
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
+        self.grid.update(cx, |grid, cx| grid.set_loading(true, cx));
         cx.notify();
 
         let connection = self.connection.clone();
@@ -80,6 +82,7 @@ impl ServerVariablesView {
             let result = task.await;
             this.update(cx, |this, cx| {
                 this.loading = false;
+                this.grid.update(cx, |grid, cx| grid.set_loading(false, cx));
                 match result {
                     Ok(Ok(result)) => {
                         this.all = result;
@@ -152,7 +155,13 @@ impl ServerVariablesView {
                     .text_right()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .when(self.loading, |this| this.child("Loading…")),
+                    .when(self.loading, |this| {
+                        this.child(
+                            h_flex()
+                                .justify_end()
+                                .child(busy_label("Loading…", cx.theme().muted_foreground)),
+                        )
+                    }),
             )
             .child(
                 Button::new("refresh-server-variables")

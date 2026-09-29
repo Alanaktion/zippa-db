@@ -27,6 +27,7 @@ use gpui_kit::{Action, ClipboardItem, Context, Entity, SharedString, Window, div
 use regex::Regex;
 
 use crate::db::{DatabaseObject, Engine, ObjectKind, StoredKind, StoredObject};
+use crate::ui::busy::skeleton_rows;
 use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
@@ -134,6 +135,8 @@ impl Session {
             objects.is_empty() && stored_hidden,
         ) {
             (Some(error), _, _) => Some((error.clone(), cx.theme().danger)),
+            // Still reading: the skeleton below says so, not an empty result.
+            (None, true, _) if self.catalog_loading => None,
             (None, true, _) => Some((
                 "No tables, views or routines".to_string(),
                 cx.theme().muted_foreground,
@@ -172,6 +175,10 @@ impl Session {
             .when_some(notice, |this, (message, color)| {
                 this.child(div().px_1().text_xs().text_color(color).child(message))
             })
+            .when(
+                self.catalog_loading && self.objects.is_empty() && self.stored.is_empty(),
+                |this| this.child(skeleton_rows(6)),
+            )
             .child(
                 div().id("objects").flex_1().min_h_0().child(
                     tree(

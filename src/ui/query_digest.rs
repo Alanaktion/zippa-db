@@ -19,6 +19,7 @@ use gpui_kit::{App, Context, Entity, FocusHandle, Focusable, SharedString, Windo
 
 use crate::db::query::QueryResult;
 use crate::db::{Connection, QueryDigest, runtime};
+use crate::ui::busy::busy_label;
 use crate::ui::data_grid::DataGrid;
 
 pub struct QueryDigestView {
@@ -57,6 +58,7 @@ impl QueryDigestView {
         self.loading = true;
         self.error = None;
         self.unavailable = None;
+        self.grid.update(cx, |grid, cx| grid.set_loading(true, cx));
         cx.notify();
 
         let connection = self.connection.clone();
@@ -66,6 +68,7 @@ impl QueryDigestView {
             let result = task.await;
             this.update(cx, |this, cx| {
                 this.loading = false;
+                this.grid.update(cx, |grid, cx| grid.set_loading(false, cx));
                 match result {
                     Ok(Ok(QueryDigest::Available(result))) => {
                         this.grid.update(cx, |grid, cx| grid.set_result(result, cx));
@@ -100,7 +103,9 @@ impl QueryDigestView {
                     .flex_1()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .when(self.loading, |this| this.child("Loading…")),
+                    .when(self.loading, |this| {
+                        this.child(busy_label("Loading…", cx.theme().muted_foreground))
+                    }),
             )
             .child(
                 Button::new(SharedString::from("refresh-query-digest"))

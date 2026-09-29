@@ -14,6 +14,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, SharedString, Window, div, px};
 
 use crate::db::{DatabaseObject, ForeignKeyDef, ObjectKind, ReferentialAction, runtime};
+use crate::ui::busy::busy_label;
 
 use super::layout::*;
 use super::sql::ForeignKeyEdit;
@@ -314,8 +315,7 @@ impl SchemaView {
                 .flex_1()
                 .min_w_0()
                 .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child("Loading columns…")
+                .child(busy_label("Loading columns…", cx.theme().muted_foreground))
                 .into_any_element();
         }
 

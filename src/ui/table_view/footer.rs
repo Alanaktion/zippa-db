@@ -9,6 +9,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Context, div, px};
 
 use crate::db::export::Format;
+use crate::ui::busy::busy_label;
 
 use super::{ApplyEdits, DiscardEdits, InsertRow, TableView, ToggleRowPanel, change_summary};
 
@@ -76,6 +77,7 @@ impl TableView {
 
         // An error says so in words: the colour it is drawn in is the only
         // other thing telling it apart from the row count beside it.
+        let busy = self.error.is_none() && (self.loading || self.committing);
         let message = match (&self.error, self.loading, self.committing) {
             (Some(error), _, _) => (format!("Error: {error}"), cx.theme().danger),
             (None, _, true) => ("Writing…".to_string(), cx.theme().muted_foreground),
@@ -144,12 +146,18 @@ impl TableView {
                             .w(px(88.))
                             .child(NumberInput::new(&self.limit_input).xsmall()),
                     )
-                    .child(
+                    .child(if busy {
+                        div()
+                            .text_xs()
+                            .child(busy_label(message.0.clone(), message.1))
+                            .into_any_element()
+                    } else {
                         div()
                             .text_xs()
                             .text_color(message.1)
-                            .child(message.0.clone()),
-                    ),
+                            .child(message.0.clone())
+                            .into_any_element()
+                    }),
             )
             .child(
                 h_flex()

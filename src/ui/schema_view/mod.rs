@@ -26,6 +26,7 @@ use crate::db::{
     ColumnDef, Connection, DatabaseObject, Engine, ForeignKeyDef, IndexDef, ObjectKind,
     RebuildSource, ReferentialAction, TableSchema, runtime,
 };
+use crate::ui::busy::busy_label;
 
 mod columns;
 mod foreign_keys;
@@ -569,6 +570,7 @@ impl SchemaView {
     }
 
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let busy = self.error.is_none() && (self.loading || self.applying);
         let message = match (&self.error, self.loading, self.applying, &self.notice) {
             (Some(error), _, _, _) => (format!("Error: {error}"), cx.theme().danger),
             (None, _, true, _) => ("Applying…".to_string(), cx.theme().muted_foreground),
@@ -586,7 +588,18 @@ impl SchemaView {
             .border_t_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().status_bar)
-            .child(div().text_xs().text_color(message.1).child(message.0))
+            .child(if busy {
+                div()
+                    .text_xs()
+                    .child(busy_label(message.0, message.1))
+                    .into_any_element()
+            } else {
+                div()
+                    .text_xs()
+                    .text_color(message.1)
+                    .child(message.0)
+                    .into_any_element()
+            })
             .child(
                 h_flex()
                     .gap_2()
