@@ -29,6 +29,7 @@ use crate::crash_log;
 
 use crate::db::{Connection, TagColor, runtime, store};
 use crate::settings;
+use crate::ui::busy;
 use crate::ui::session::{NewTab, QuickSwitcher, Refresh, SearchSchema, Session, SessionEvent};
 use crate::ui::settings_window::{self, OpenSettings};
 use crate::ui::shortcuts_dialog::{self, ShowShortcuts};
@@ -1012,9 +1013,17 @@ impl Render for Workspace {
         // above this tree.
         self.take_value_dialog(window, cx);
 
-        let body = match &self.tabs[self.active] {
-            TabContent::Connect(welcome) => welcome.clone().into_any_element(),
-            TabContent::Session(session) => session.clone().into_any_element(),
+        // Only the tab in front is covered: a restore opening several
+        // connections at once shows the one the user is looking at.
+        let (body, opening) = match &self.tabs[self.active] {
+            TabContent::Connect(welcome) => (
+                welcome.clone().into_any_element(),
+                welcome.read(cx).connecting_name().map(str::to_string),
+            ),
+            TabContent::Session(session) => (
+                session.clone().into_any_element(),
+                session.read(cx).opening_name(),
+            ),
         };
 
         v_flex()
@@ -1046,7 +1055,16 @@ impl Render for Workspace {
                         .child(self.render_tab_bar(cx)),
                 )
             })
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(body)
+                    .when_some(opening, |this, name| {
+                        this.child(busy::overlay(format!("Connecting to {name}…"), cx))
+                    }),
+            )
     }
 }
 

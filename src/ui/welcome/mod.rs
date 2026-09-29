@@ -47,6 +47,8 @@ pub struct Welcome {
     query: Entity<InputState>,
     /// The connection being connected to, if any.
     connecting: Option<Uuid>,
+    /// What the connection being opened is called, for the workspace overlay.
+    connecting_name: Option<String>,
     /// An error to show in the banner at the top of the screen.
     error: Option<String>,
     /// The editor dialog open over the screen, if any.
@@ -73,6 +75,7 @@ impl Welcome {
             connections,
             query,
             connecting: None,
+            connecting_name: None,
             error,
             editor: None,
             focus: cx.focus_handle(),
@@ -99,6 +102,11 @@ impl Welcome {
         } else {
             self.focus.focus(window, cx);
         }
+    }
+
+    /// The name of the connection being opened, while one is.
+    pub(crate) fn connecting_name(&self) -> Option<&str> {
+        self.connecting_name.as_deref()
     }
 
     fn is_connecting(&self, id: &Uuid) -> bool {
@@ -384,6 +392,7 @@ impl Welcome {
         }
 
         self.connecting = Some(config.id);
+        self.connecting_name = Some(config.display_name());
         self.error = None;
         cx.notify();
 
@@ -392,6 +401,7 @@ impl Welcome {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
                 this.connecting = None;
+                this.connecting_name = None;
                 match result {
                     Ok(Ok(connection)) => {
                         this.error = None;

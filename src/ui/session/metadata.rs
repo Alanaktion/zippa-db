@@ -17,11 +17,37 @@ use super::{Session, SessionEvent, Status};
 impl Session {
     /// Read the database list and the current database's tables and views.
     pub(crate) fn reload_metadata(&mut self, cx: &mut Context<Self>) {
+        self.metadata_error = None;
         let connection = self.connection.clone();
         let started_on = connection.clone();
+        // The database list is its own read, so it lands as soon as it can:
+        // the opening overlay waits on it and nothing else.
+        let listing = connection.clone();
+        let databases_task = runtime::spawn(async move { listing.databases().await });
+        let started = started_on.clone();
+        cx.spawn(async move |this, cx| {
+            let databases = databases_task.await;
+            this.update(cx, |this, cx| {
+                // Answering for a connection this session has since left.
+                if !Arc::ptr_eq(&this.connection, &started) {
+                    return;
+                }
+                this.opening = false;
+                match databases {
+                    Ok(Ok(databases)) => this.databases = databases,
+                    Ok(Err(error)) => this.metadata_error = Some(format!("{error:#}")),
+                    Err(_) => {
+                        this.metadata_error = Some("reading the databases was cancelled".into())
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+
         let task = runtime::spawn(async move {
             (
-                connection.databases().await,
                 connection.objects().await,
                 connection.stored_objects().await,
                 connection.catalog().await,
@@ -41,13 +67,8 @@ impl Session {
                 if !Arc::ptr_eq(&this.connection, &started_on) {
                     return;
                 }
-                this.metadata_error = None;
                 match loaded {
-                    Ok((databases, objects, stored, catalog)) => {
-                        match databases {
-                            Ok(databases) => this.databases = databases,
-                            Err(error) => this.metadata_error = Some(format!("{error:#}")),
-                        }
+                    Ok((objects, stored, catalog)) => {
                         match objects {
                             Ok(objects) => this.objects = objects,
                             Err(error) => this.metadata_error = Some(format!("{error:#}")),
@@ -103,6 +124,12 @@ impl Session {
     /// The whole schema, for [`SearchSchema`].
     pub(crate) fn catalog(&self) -> Arc<Catalog> {
         self.catalog.clone()
+    }
+
+    /// The connection's name while it is still being opened — authenticated
+    /// but with its database list not yet read — for the workspace's overlay.
+    pub(crate) fn opening_name(&self) -> Option<String> {
+        self.opening.then(|| self.connection.config.display_name())
     }
 
     pub(crate) fn catalog_loading(&self) -> bool {

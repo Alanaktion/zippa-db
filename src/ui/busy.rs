@@ -37,3 +37,33 @@ pub fn skeleton_rows(rows: usize) -> impl IntoElement {
             .w(gpui_kit::relative(WIDTHS[ix % WIDTHS.len()]))
     }))
 }
+
+/// A scrim over the whole window with `message` and a spinner in a card at the
+/// middle. It occludes the view beneath, so nothing there can be clicked
+/// while the work it stands for is still running.
+pub fn overlay(message: impl Into<SharedString>, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    div()
+        .id("busy-overlay")
+        .absolute()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme.background.opacity(0.6))
+        .occlude()
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .px_5()
+                .py_3()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover)
+                .text_sm()
+                .child(Spinner::new().small().color(theme.muted_foreground))
+                .child(div().child(message.into())),
+        )
+}

@@ -87,6 +87,9 @@ pub struct Session {
     /// Sidebar beside the editor and grid.
     columns: Entity<ResizableState>,
     databases: Vec<String>,
+    /// Until the first database list has been read, so the workspace can
+    /// cover the session while a connection finishes opening.
+    opening: bool,
     objects: Vec<DatabaseObject>,
     /// Functions, procedures and sequences, listed after the tables.
     stored: Vec<StoredObject>,
@@ -148,6 +151,7 @@ impl Session {
             opened: 0,
             columns: cx.new(|_| ResizableState::default()),
             databases: Vec::new(),
+            opening: true,
             objects: Vec::new(),
             stored: Vec::new(),
             filter,
