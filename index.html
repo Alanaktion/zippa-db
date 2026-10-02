@@ -571,7 +571,7 @@
               <h3 class="text-xl font-bold mb-1">macOS</h3>
               <p class="text-xs text-light-muted dark:text-dark-muted mb-6">Apple Silicon</p>
             </div>
-            <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.0/Zippa.DB_0.1.0_aarch64.dmg" class="w-full py-2.5 px-4 rounded-lg bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base font-medium text-xs flex items-center justify-center gap-2 hover:opacity-90 transition-opacity">
+            <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.0/Zippa.DB_0.1.0_aarch64.dmg" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors" data-os="mac">
               <i data-lucide="download" class="w-4 h-4"></i> .dmg (Apple Silicon)
             </a>
           </div>
@@ -587,7 +587,7 @@
               <p class="text-xs text-light-muted dark:text-dark-muted mb-6">AppImage & DEB</p>
             </div>
             <div class="flex gap-2">
-              <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.0/zippa-db_0.1.0_x86_64.AppImage" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
+              <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.0/zippa-db_0.1.0_x86_64.AppImage" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2" data-os="linux">
                 <i data-lucide="download" class="w-4 h-4"></i> AppImage
               </a>
               <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.0/zippa-db_0.1.0_amd64.deb" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
@@ -606,7 +606,7 @@
               <h3 class="text-xl font-bold mb-1">Windows</h3>
               <p class="text-xs text-light-muted dark:text-dark-muted mb-6">Windows 10 / 11 (Vulkan / Direct3D)</p>
             </div>
-            <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.0/zippa-db_0.1.0_x64-setup.exe" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
+            <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.0/zippa-db_0.1.0_x64-setup.exe" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors" data-os="win">
               <i data-lucide="download" class="w-4 h-4"></i> .exe Installer
             </a>
           </div>
@@ -696,12 +696,23 @@
     // Detect user OS for smart CTA label
     const detectedOS = document.getElementById('detectedOS');
     const userAgent = navigator.userAgent.toLowerCase();
+    const otherClass = 'bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors'.split(' ');
+    const detectedClass = 'bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base hover:opacity-90 transition-opacity'.split(' ');
     if (userAgent.includes('mac')) {
       detectedOS.textContent = 'macOS';
+      const cl = document.querySelector('a[data-os="mac"]').classList;
+      cl.remove(...otherClass);
+      cl.add(...detectedClass);
     } else if (userAgent.includes('win')) {
       detectedOS.textContent = 'Windows';
+      const cl = document.querySelector('a[data-os="win"]').classList;
+      cl.remove(...otherClass);
+      cl.add(...detectedClass);
     } else if (userAgent.includes('linux')) {
       detectedOS.textContent = 'Linux';
+      const cl = document.querySelector('a[data-os="linux"]').classList;
+      cl.remove(...otherClass);
+      cl.add(...detectedClass);
     }
 
     // Helper Copy functions
@@ -710,10 +721,10 @@
       copyToClipboard(text, btn, "Command Copied!");
     }
 
-    function copyBrewCmd(btn) {
-      const text = "brew install --cask zippa-db";
-      copyToClipboard(text, btn, "Brew Copied!");
-    }
+    // function copyBrewCmd(btn) {
+    //   const text = "brew install --cask zippa-db";
+    //   copyToClipboard(text, btn, "Brew Copied!");
+    // }
 
     function copyToClipboard(text, button, successText) {
       const tempInput = document.createElement("input");
