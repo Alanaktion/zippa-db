@@ -161,7 +161,17 @@ impl TabContent {
         let label = match self {
             Self::Connect(_) => v_flex().min_w_0().child(self.title(cx)),
             Self::Session(_) => {
-                let name = div().min_w_0().truncate().child(self.title(cx)).text_sm();
+                let title = div().min_w_0().truncate().child(self.title(cx)).text_sm();
+
+                // The same dot the title bar draws beside the name, so the
+                // colour reads without relying on the faint tab tint alone.
+                let name = h_flex()
+                    .gap_1p5()
+                    .min_w_0()
+                    .child(title)
+                    .when_some(self.color(cx), |this, color| {
+                        this.child(crate::ui::color_dot(color, cx))
+                    });
 
                 // The database is secondary to the name, so it sits muted and
                 // a step smaller underneath it.
