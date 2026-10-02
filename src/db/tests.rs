@@ -3,6 +3,7 @@
 
 use std::env;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{AssertSqlSafe, Executor};
@@ -13,6 +14,10 @@ use super::schema::ReferentialAction;
 use super::{
     CatalogKind, Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, QueryDigest,
     RowKey, SafetyMode, TagColor, keyword_literal, quote_identifier, typed_placeholder,
+};
+use super::{
+    Decision, OnFailure, QueryOutcome, QuerySource, ScriptFailure, ScriptMode, ScriptOutcome,
+    ScriptRun, Step,
 };
 
 pub(crate) struct TempDatabase {
@@ -566,53 +571,281 @@ async fn execute_reports_no_rows_for_a_missing_key() {
     connection.close().await;
 }
 
+/// Open `database` the way a session holds a connection, for a script run.
+async fn shared(database: &TempDatabase) -> Arc<Connection> {
+    Arc::new(
+        Connection::open(database.config(), None)
+            .await
+            .expect("could not open the test database"),
+    )
+}
+
+/// The outcome of a script that is expected to have run to the end.
+fn finished(step: Result<Step, anyhow::Error>) -> ScriptOutcome {
+    match step.expect("the script could not run") {
+        Step::Finished(outcome) => outcome,
+        Step::Paused(_, failure) => panic!("the script paused on {failure:?}"),
+    }
+}
+
+/// The run and its failure, for a script expected to have paused.
+fn paused(step: Result<Step, anyhow::Error>) -> (ScriptRun, ScriptFailure) {
+    match step.expect("the script could not run") {
+        Step::Paused(run, failure) => (*run, failure),
+        Step::Finished(outcome) => panic!("the script finished: {outcome:?}"),
+    }
+}
+
+async fn item_count(connection: &Connection) -> String {
+    connection
+        .run_query("SELECT COUNT(*) FROM items")
+        .await
+        .expect("the count failed")
+        .rows[0][0]
+        .clone()
+        .expect("a count is never NULL")
+}
+
+/// Two inserts with a failure between them.
+const FAILS_IN_THE_MIDDLE: &str = "INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
+                                   INSERT INTO not_a_table VALUES (1);\n\
+                                   INSERT INTO items VALUES (4, 'delta', 4.0, NULL);";
+
 #[tokio::test]
 async fn a_script_runs_every_statement_in_one_transaction() {
     let database = TempDatabase::new().await;
-    let connection = Connection::open(database.config(), None)
-        .await
-        .expect("could not open the test database");
+    let connection = shared(&database).await;
 
-    let results = connection
-        .run_script(
+    let outcome = finished(
+        ScriptRun::start(
+            connection.clone(),
             "INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
              SELECT name FROM items WHERE id = 3;",
+            ScriptMode::Transaction,
+            OnFailure::Ask,
         )
-        .await
-        .expect("the script failed");
-    assert_eq!(results.len(), 2, "one result per statement");
-    assert_eq!(results[1].rows, [[Some("gamma".to_string())]]);
+        .await,
+    );
+    assert_eq!(outcome.results.len(), 2, "one result per statement");
+    assert_eq!(outcome.results[1].rows, [[Some("gamma".to_string())]]);
+    assert!(outcome.failures.is_empty());
+    assert_eq!(outcome.summary(), None, "a clean run has nothing to add");
 
     connection.close().await;
 }
 
 #[tokio::test]
-async fn a_failing_statement_rolls_the_whole_script_back() {
+async fn a_failure_pauses_the_script_and_rolling_back_undoes_it() {
     let database = TempDatabase::new().await;
-    let connection = Connection::open(database.config(), None)
-        .await
-        .expect("could not open the test database");
+    let connection = shared(&database).await;
 
-    let error = connection
-        .run_script(
-            "INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
-             INSERT INTO not_a_table VALUES (1);",
+    let (run, failure) = paused(
+        ScriptRun::start(
+            connection.clone(),
+            FAILS_IN_THE_MIDDLE,
+            ScriptMode::Transaction,
+            OnFailure::Ask,
         )
-        .await
-        .expect_err("the second statement should fail");
+        .await,
+    );
+    assert_eq!((failure.index, failure.total, failure.line), (1, 3, 2));
     assert!(
-        format!("{error:#}").contains("statement 2"),
-        "the error should name which statement failed: {error:#}"
+        failure.message.contains("not_a_table"),
+        "the failure should carry the server's message: {}",
+        failure.message
     );
 
-    let result = connection
-        .run_query("SELECT COUNT(*) FROM items")
-        .await
-        .expect("the query failed");
+    let outcome = finished(run.resume(Decision::Abort).await);
+    assert!(outcome.rolled_back);
     assert_eq!(
-        result.rows,
-        [[Some("2".to_string())]],
+        item_count(&connection).await,
+        "2",
         "the insert before the failure should have been rolled back too"
+    );
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn skipping_a_failure_keeps_the_rest_of_the_transaction() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+
+    let (run, _) = paused(
+        ScriptRun::start(
+            connection.clone(),
+            FAILS_IN_THE_MIDDLE,
+            ScriptMode::Transaction,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    let outcome = finished(run.resume(Decision::Skip).await);
+    assert!(!outcome.rolled_back);
+    assert_eq!(outcome.results.len(), 2);
+    assert_eq!(outcome.failures.len(), 1);
+    assert_eq!(
+        item_count(&connection).await,
+        "4",
+        "both inserts should have been committed"
+    );
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn skipping_every_error_stops_asking() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+
+    let (run, _) = paused(
+        ScriptRun::start(
+            connection.clone(),
+            "INSERT INTO not_a_table VALUES (1);\n\
+             INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
+             INSERT INTO nor_this VALUES (1);",
+            ScriptMode::Transaction,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    let outcome = finished(run.resume(Decision::SkipAll).await);
+    assert_eq!(
+        outcome
+            .failures
+            .iter()
+            .map(|failure| failure.index)
+            .collect::<Vec<_>>(),
+        [0, 2]
+    );
+    assert_eq!(item_count(&connection).await, "3");
+
+    let failures = outcome.failures_result().expect("the failures are listed");
+    assert_eq!(failures.columns, ["#", "line", "statement", "error"]);
+    assert_eq!(failures.rows.len(), 2);
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn ignoring_errors_without_a_transaction_keeps_what_worked() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+
+    let outcome = finished(
+        ScriptRun::start(
+            connection.clone(),
+            FAILS_IN_THE_MIDDLE,
+            ScriptMode::Autocommit,
+            OnFailure::Skip,
+        )
+        .await,
+    );
+    assert_eq!(outcome.failures.len(), 1);
+    assert_eq!(item_count(&connection).await, "4");
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn stopping_without_a_transaction_keeps_what_ran_before() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+
+    let (run, _) = paused(
+        ScriptRun::start(
+            connection.clone(),
+            FAILS_IN_THE_MIDDLE,
+            ScriptMode::Autocommit,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    let outcome = finished(run.resume(Decision::Abort).await);
+    assert!(outcome.stopped && !outcome.rolled_back);
+    assert_eq!(item_count(&connection).await, "3");
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn closing_a_paused_script_rolls_its_transaction_back() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+
+    let (run, _) = paused(
+        ScriptRun::start(
+            connection.clone(),
+            FAILS_IN_THE_MIDDLE,
+            ScriptMode::Transaction,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    run.close().await;
+    assert_eq!(item_count(&connection).await, "2");
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_scripts_statements_are_logged_one_by_one() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    connection.query_log().clear();
+
+    finished(
+        ScriptRun::start(
+            connection.clone(),
+            FAILS_IN_THE_MIDDLE,
+            ScriptMode::Transaction,
+            OnFailure::Skip,
+        )
+        .await,
+    );
+    let log = connection.query_log().snapshot();
+    let sql: Vec<&str> = log.iter().map(|entry| entry.sql.as_str()).collect();
+    assert_eq!(sql.len(), 3, "the savepoints are not the user's: {sql:?}");
+    assert!(
+        log.iter()
+            .any(|entry| matches!(entry.outcome, QueryOutcome::Error(_))
+                && entry.sql.contains("not_a_table")),
+        "the failure is logged with its error"
+    );
+    assert!(log.iter().all(|entry| entry.source == QuerySource::User));
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_read_only_connection_refuses_a_script_before_it_runs() {
+    let database = TempDatabase::new().await;
+    let connection = Arc::new(
+        Connection::open(
+            ConnectionConfig {
+                safety: SafetyMode::ReadOnly,
+                ..database.config()
+            },
+            None,
+        )
+        .await
+        .expect("could not open the test database"),
+    );
+
+    let error = match ScriptRun::start(
+        connection.clone(),
+        "SELECT 1; DELETE FROM items",
+        ScriptMode::Transaction,
+        OnFailure::Ask,
+    )
+    .await
+    {
+        Ok(_) => panic!("a read-only connection should refuse the delete"),
+        Err(error) => format!("{error:#}"),
+    };
+    assert!(
+        error.contains("read-only") && error.contains("DELETE"),
+        "{error}"
     );
 
     connection.close().await;
@@ -1632,6 +1865,88 @@ async fn live_mysql_query_digest_reports_availability() {
         }
     }
 
+    connection.close().await;
+}
+
+/// A script inside a transaction carries on past a skipped failure on
+/// Postgres, which aborts the whole transaction at an error unless the
+/// statement ran under a savepoint. Runs against `compose.yaml`'s Postgres:
+///
+/// ```text
+/// ./script/test-db up
+/// cargo test -- --ignored live_postgres_a_script
+/// ```
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_a_script_carries_on_past_a_skipped_failure() {
+    let connection = Arc::new(live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await);
+
+    // A temporary table lives on the script's own connection and goes with it.
+    let (run, failure) = paused(
+        ScriptRun::start(
+            connection.clone(),
+            "CREATE TEMPORARY TABLE zippa_script_skip (id int PRIMARY KEY);\n\
+             INSERT INTO zippa_script_skip VALUES (1);\n\
+             INSERT INTO zippa_script_skip VALUES (1);\n\
+             INSERT INTO zippa_script_skip VALUES (2);\n\
+             SELECT COUNT(*) FROM zippa_script_skip;",
+            ScriptMode::Transaction,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    assert_eq!(failure.index, 2, "the duplicate key should fail");
+
+    let outcome = finished(run.resume(Decision::Skip).await);
+    assert_eq!(
+        outcome.results.last().map(|result| result.rows.clone()),
+        Some(vec![vec![Some("2".to_string())]]),
+        "the transaction should have carried on past the failure"
+    );
+
+    connection.close().await;
+}
+
+/// A MySQL script of plain row changes rolls back as a whole. Runs against
+/// `compose.yaml`'s MySQL:
+///
+/// ```text
+/// ./script/test-db up
+/// cargo test -- --ignored live_mysql_a_script
+/// ```
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_a_script_of_row_changes_rolls_back() {
+    let (connection, pool) = live_mysql().await;
+    let connection = Arc::new(connection);
+
+    pool.execute("DROP TABLE IF EXISTS zippa_script_rollback")
+        .await
+        .expect("could not clear the fixture");
+    pool.execute("CREATE TABLE zippa_script_rollback (id int PRIMARY KEY) ENGINE=InnoDB")
+        .await
+        .expect("could not create the fixture");
+
+    let (run, _) = paused(
+        ScriptRun::start(
+            connection.clone(),
+            "INSERT INTO zippa_script_rollback VALUES (1);\n\
+             INSERT INTO not_a_table VALUES (1);",
+            ScriptMode::Transaction,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    let outcome = finished(run.resume(Decision::Abort).await);
+    assert!(outcome.rolled_back);
+
+    let count = connection
+        .run_query("SELECT COUNT(*) FROM zippa_script_rollback")
+        .await
+        .expect("the count failed");
+    assert_eq!(count.rows, [[Some("0".to_string())]]);
+
+    pool.execute("DROP TABLE zippa_script_rollback").await.ok();
     connection.close().await;
 }
 

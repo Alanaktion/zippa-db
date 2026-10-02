@@ -20,7 +20,12 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   buffers come back on the next launch.
 - **SQL editor:** run the statement under the caret, the selection, or the
   whole buffer; one result per statement; cancel a run; open and save `.sql`
-  files. Scripts run in one transaction on Postgres and SQLite.
+  files. A script runs in one transaction on every engine and pauses on each
+  error to roll back, skip it, or skip every error; a script holding a
+  statement no transaction can (`LOCK TABLES`, `VACUUM`, MySQL DDL, its own
+  `BEGIN`/`COMMIT`) is flagged in the toolbar and asks before running without
+  one. Run Script Ignoring Errors (`Cmd`/`Ctrl`+`Alt`+`Shift`+`Enter`) runs
+  every statement with no transaction and lists the failures afterwards.
 - **Query plans:** `EXPLAIN` and `EXPLAIN ANALYZE` as a tree with costs, rows,
   timing, and warnings.
 - **Table view:** paging, row limit, sorting, a filter bar, a row panel, and

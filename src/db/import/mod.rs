@@ -24,11 +24,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use sqlx::AssertSqlSafe;
-use sqlx::pool::PoolConnection;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::config::Engine;
+use super::dedicated::Dedicated;
 use splitter::Chunk;
 pub use splitter::Dialect;
 
@@ -157,68 +156,9 @@ impl ImportSummary {
     }
 }
 
-/// A dedicated connection for the length of one import.
-pub(crate) enum Session {
-    Postgres(PoolConnection<sqlx::Postgres>),
-    MySql(PoolConnection<sqlx::MySql>),
-    Sqlite(PoolConnection<sqlx::Sqlite>),
-}
-
-impl Session {
-    pub(crate) async fn postgres(pool: &sqlx::PgPool) -> Result<Self> {
-        Ok(Session::Postgres(dedicated(pool).await?))
-    }
-
-    pub(crate) async fn mysql(pool: &sqlx::MySqlPool) -> Result<Self> {
-        Ok(Session::MySql(dedicated(pool).await?))
-    }
-
-    pub(crate) async fn sqlite(pool: &sqlx::SqlitePool) -> Result<Self> {
-        Ok(Session::Sqlite(dedicated(pool).await?))
-    }
-
-    pub(crate) fn engine(&self) -> Engine {
-        match self {
-            Session::Postgres(_) => Engine::Postgres,
-            Session::MySql(_) => Engine::MySql,
-            Session::Sqlite(_) => Engine::Sqlite,
-        }
-    }
-
-    /// Run one statement, discarding whatever it returns.
-    async fn execute(&mut self, sql: &str) -> Result<()> {
-        match self {
-            Session::Postgres(connection) => {
-                let statement = AssertSqlSafe(sql.to_string());
-                sqlx::query(statement).execute(&mut **connection).await?;
-            }
-            Session::MySql(connection) => {
-                let statement = AssertSqlSafe(sql.to_string());
-                sqlx::query(statement).execute(&mut **connection).await?;
-            }
-            Session::Sqlite(connection) => {
-                let statement = AssertSqlSafe(sql.to_string());
-                sqlx::query(statement).execute(&mut **connection).await?;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Check one connection out of `pool` and mark it to close rather than return
-/// to the pool, so a cancelled import cannot leave a transaction behind.
-async fn dedicated<DB>(pool: &sqlx::Pool<DB>) -> Result<PoolConnection<DB>>
-where
-    DB: sqlx::Database,
-{
-    let mut connection = pool.acquire().await?;
-    connection.close_on_drop();
-    Ok(connection)
-}
-
 /// Connect `session`, read `request`'s dump, and run it.
 pub(crate) async fn run(
-    mut session: Session,
+    mut session: Dedicated,
     dialect: Dialect,
     request: &ImportRequest,
     sender: UnboundedSender<ImportProgress>,
@@ -370,7 +310,7 @@ pub(crate) async fn run(
 /// is streamed rather than assembled: a table's export never sits in memory all
 /// at once.
 async fn copy_block<I>(
-    session: &mut Session,
+    session: &mut Dedicated,
     statement: &str,
     chunks: &mut std::iter::Peekable<I>,
     progress: &mut Progress,
@@ -382,7 +322,7 @@ where
     I: Iterator<Item = Result<Chunk>>,
 {
     match session {
-        Session::Postgres(connection) => {
+        Dedicated::Postgres(connection, _) => {
             let mut writer = connection.copy_in_raw(statement).await?;
             while matches!(chunks.peek(), Some(Ok(Chunk::CopyData(_)))) {
                 match chunks.next() {
@@ -467,7 +407,7 @@ fn mentions(head: &str, needle: &str) -> bool {
 }
 
 /// One line's worth of `sql`, for an error log.
-fn excerpt(sql: &str) -> String {
+pub(crate) fn excerpt(sql: &str) -> String {
     let flat = sql.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() > 120 {
         let mut shortened: String = flat.chars().take(119).collect();

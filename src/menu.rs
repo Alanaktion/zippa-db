@@ -20,7 +20,9 @@ use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnect
 use crate::ui::data_grid::{
     ClearRowSelection, CopyValue, CopyWithHeaders, SelectAllRows, ViewCell,
 };
-use crate::ui::query_editor::{Explain, ExplainAnalyze, RunQuery, RunScript};
+use crate::ui::query_editor::{
+    Explain, ExplainAnalyze, RunQuery, RunScript, RunScriptIgnoringErrors,
+};
 use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
     OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, PreviousTab,
@@ -100,6 +102,7 @@ fn menus() -> Vec<Menu> {
         Menu::new("Query").items(vec![
             MenuItem::action("Run Query", RunQuery),
             MenuItem::action("Run Script", RunScript),
+            MenuItem::action("Run Script Ignoring Errors", RunScriptIgnoringErrors),
             MenuItem::separator(),
             MenuItem::action("Explain", Explain),
             MenuItem::action("Explain Analyze", ExplainAnalyze),
@@ -194,6 +197,10 @@ mod tests {
             ("Disconnect", TypeId::of::<Disconnect>()),
             ("Run Query", TypeId::of::<RunQuery>()),
             ("Run Script", TypeId::of::<RunScript>()),
+            (
+                "Run Script Ignoring Errors",
+                TypeId::of::<RunScriptIgnoringErrors>(),
+            ),
             ("Explain", TypeId::of::<Explain>()),
             ("Explain Analyze", TypeId::of::<ExplainAnalyze>()),
             ("Cancel Query", TypeId::of::<CancelQuery>()),

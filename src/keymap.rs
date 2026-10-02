@@ -11,7 +11,9 @@ use crate::ui::data_grid::{
     SelectAllRows, ToggleRow, ViewCell,
 };
 use crate::ui::import_dialog::CloseImport;
-use crate::ui::query_editor::{Explain, ExplainAnalyze, RunQuery, RunScript};
+use crate::ui::query_editor::{
+    Explain, ExplainAnalyze, RunQuery, RunScript, RunScriptIgnoringErrors,
+};
 use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
     OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, PreviousTab,
@@ -80,6 +82,18 @@ pub fn bind(cx: &mut App) {
             Some("QueryEditor > Input"),
         ),
         KeyBinding::new("secondary-shift-enter", RunScript, Some("QueryEditor")),
+        // The whole buffer again, without a transaction and past every
+        // failure — re-running a migration that was partly applied before.
+        KeyBinding::new(
+            "secondary-alt-shift-enter",
+            RunScriptIgnoringErrors,
+            Some("QueryEditor > Input"),
+        ),
+        KeyBinding::new(
+            "secondary-alt-shift-enter",
+            RunScriptIgnoringErrors,
+            Some("QueryEditor"),
+        ),
         // Reading the plan, with and without running the statement. The
         // editor's own context leaves both free.
         KeyBinding::new("secondary-e", Explain, Some("QueryEditor > Input")),

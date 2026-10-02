@@ -4,9 +4,9 @@
 //!
 //! Kept on [`super::Connection`] itself rather than pushed anywhere: `db/`
 //! has no UI to push to, and every statement already passes through one of
-//! a handful of shared entry points (`run_query_with`, `run_script`,
-//! `execute`, `execute_script`), so recording it there costs the rest of the
-//! app nothing. A console reads [`QueryLog::snapshot`] when it is opened and
+//! a handful of shared entry points (`run_query_with`, `execute`,
+//! `execute_script`, and a script run's `script::ScriptRun`), so recording it
+//! there costs the rest of the app nothing. A console reads [`QueryLog::snapshot`] when it is opened and
 //! when asked to refresh; nothing here wakes one on its own.
 //!
 //! Not covered: `import_dump` and `rebuild_table` run on a dedicated

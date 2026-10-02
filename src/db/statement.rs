@@ -176,6 +176,18 @@ pub fn first_write(sql: &str) -> Option<String> {
     })
 }
 
+/// The first `limit` words of the first statement in `sql`, upper-cased.
+///
+/// Comments and quoted text are left out the way [`first_write`] leaves them
+/// out, so `/* note */ lock tables` starts with `LOCK`.
+pub fn leading_words(sql: &str, limit: usize) -> Vec<String> {
+    statements(sql)
+        .into_iter()
+        .next()
+        .map(|(words, _, _)| words.into_iter().take(limit).collect())
+        .unwrap_or_default()
+}
+
 /// Whether one statement, already reduced to its words, only reads.
 fn reads(words: &[String]) -> bool {
     let Some(first) = words.first() else {
@@ -443,6 +455,16 @@ mod tests {
         assert_eq!(split("select 'a; b'").len(), 1);
         // Stray semicolons and blank space run nothing.
         assert!(split(" ; \n ;").is_empty());
+    }
+
+    #[test]
+    fn leading_words_skip_comments_and_quotes() {
+        assert_eq!(
+            leading_words("/* first */ -- second\n lock Tables `t` write", 3),
+            ["LOCK", "TABLES", "WRITE"]
+        );
+        assert_eq!(leading_words("vacuum; select 1", 5), ["VACUUM"]);
+        assert!(leading_words("  -- nothing\n", 2).is_empty());
     }
 
     #[test]

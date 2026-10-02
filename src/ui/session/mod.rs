@@ -332,7 +332,12 @@ impl Session {
                 self.open_tab(None, String::new(), false, window, cx);
             }
             SessionPanelEvent::Run(sql) => self.run(panel, sql.clone(), window, cx),
-            SessionPanelEvent::RunScript(sql) => self.run_script(panel, sql.clone(), window, cx),
+            SessionPanelEvent::RunScript(sql) => {
+                self.run_script(panel, sql.clone(), false, window, cx)
+            }
+            SessionPanelEvent::RunScriptIgnoringErrors(sql) => {
+                self.run_script(panel, sql.clone(), true, window, cx)
+            }
             SessionPanelEvent::Explain { sql, analyze } => {
                 self.explain(panel, sql.clone(), *analyze, window, cx)
             }

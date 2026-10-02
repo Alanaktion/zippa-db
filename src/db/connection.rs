@@ -13,12 +13,13 @@ use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use sqlx::Either;
 use sqlx::{
-    AssertSqlSafe, Column, Database, Encode, Executor, IntoArguments, Row, SqlSafeStr, Transaction,
-    Type, TypeInfo,
+    AssertSqlSafe, Column, Database, Encode, Executor, IntoArguments, Row, SqlSafeStr, Type,
+    TypeInfo,
 };
 
 use super::catalog::{Catalog, CatalogEntry, CatalogKind, MAX_ENTRIES};
 use super::config::{ConnectionConfig, Engine};
+use super::dedicated::Dedicated;
 use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary};
 use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
@@ -411,7 +412,13 @@ impl Connection {
     }
 
     /// Add one statement to the query log, for the console.
-    fn log(&self, sql: &str, source: QuerySource, elapsed: Duration, outcome: QueryOutcome) {
+    pub(crate) fn log(
+        &self,
+        sql: &str,
+        source: QuerySource,
+        elapsed: Duration,
+        outcome: QueryOutcome,
+    ) {
         self.query_log.record(LoggedQuery {
             sql: sql.to_string(),
             source,
@@ -588,65 +595,14 @@ impl Connection {
         }
     }
 
-    /// Run every statement in `sql`, in order.
-    ///
-    /// Each one's rows come back on their own, so a script that selects twice
-    /// answers with two results. On Postgres and SQLite the whole script runs
-    /// in one transaction, so a statement that fails leaves nothing behind —
-    /// it is rolled back rather than left half-applied. MySQL commits DDL
-    /// implicitly (the same limit `import::run` documents for a dump's
-    /// rollback policy), so a wrapping transaction would not cover a script
-    /// there either: a script still runs one statement at a time, and a
-    /// failure leaves what ran before it applied.
-    pub async fn run_script(&self, sql: &str) -> Result<Vec<QueryResult>> {
-        let statements = statement::split(sql);
-        for statement in &statements {
-            self.refuse_write(&statement.text)?;
+    /// Check one connection out of the pool for a job that needs its session
+    /// state to last — an import, or a script run.
+    pub(crate) async fn dedicated(&self) -> Result<Dedicated> {
+        match &self.pool {
+            Pool::Postgres(pool) => Dedicated::postgres(pool, self.money_scale).await,
+            Pool::MySql(pool) => Dedicated::mysql(pool).await,
+            Pool::Sqlite(pool) => Dedicated::sqlite(pool).await,
         }
-        let started = Instant::now();
-        let result = match &self.pool {
-            Pool::Postgres(pool) => {
-                let scale = self.money_scale;
-                run_script_transactional(
-                    pool,
-                    &statements,
-                    move |row, index| postgres::cell(row, index, scale),
-                    postgres::rows_affected,
-                )
-                .await
-            }
-            Pool::Sqlite(pool) => {
-                run_script_transactional(pool, &statements, sqlite::cell, sqlite::rows_affected)
-                    .await
-            }
-            Pool::MySql(pool) => {
-                run_script_untransacted(pool, &statements, mysql::cell, mysql::rows_affected).await
-            }
-        };
-
-        // Each statement's own elapsed time is known on success, so it gets
-        // its own log entry; a script that failed partway is logged as one
-        // entry for the whole buffer, since there is no per-statement result
-        // to point at.
-        match &result {
-            Ok(results) => {
-                for (statement, result) in statements.iter().zip(results) {
-                    self.log(
-                        &statement.text,
-                        QuerySource::User,
-                        result.elapsed,
-                        query_outcome(result),
-                    );
-                }
-            }
-            Err(error) => self.log(
-                sql,
-                QuerySource::User,
-                started.elapsed(),
-                QueryOutcome::Error(format!("{error:#}")),
-            ),
-        }
-        result
     }
 
     /// Run a SQL dump against this connection.
@@ -673,12 +629,7 @@ impl Connection {
             Engine::Sqlite => Dialect::Sqlite,
         };
 
-        let session = match &self.pool {
-            Pool::Postgres(pool) => import::Session::postgres(pool).await?,
-            Pool::MySql(pool) => import::Session::mysql(pool).await?,
-            Pool::Sqlite(pool) => import::Session::sqlite(pool).await?,
-        };
-
+        let session = self.dedicated().await?;
         import::run(session, dialect, &request, progress).await
     }
 
@@ -849,7 +800,7 @@ impl Connection {
     /// The server is told to refuse writes as well when the pool is opened;
     /// this is the half that can name the statement it stopped, and that
     /// stops it before it costs a round trip.
-    fn refuse_write(&self, sql: &str) -> Result<()> {
+    pub(crate) fn refuse_write(&self, sql: &str) -> Result<()> {
         if !self.config.safety.is_read_only() {
             return Ok(());
         }
@@ -887,8 +838,8 @@ impl Connection {
     /// Postgres and SQLite run DDL transactionally, so the whole set runs in
     /// one transaction: a statement that fails leaves nothing applied rather
     /// than a rename half-done and a retype missing. MySQL commits DDL
-    /// implicitly — the same limit `Connection::run_script` and
-    /// `import::run`'s rollback policy document — so it still runs one
+    /// implicitly — the same limit a script run (`script::transaction_blocker`)
+    /// and `import::run`'s rollback policy document — so it still runs one
     /// statement at a time, and a failure there leaves what ran before it.
     pub async fn execute_script(&self, statements: &[String]) -> Result<()> {
         if self.config.safety.is_read_only() {
@@ -967,78 +918,14 @@ impl Connection {
     }
 }
 
-/// Run `statements` one at a time on their own connection, with no
-/// transaction: each one commits (or fails) on its own, the way MySQL's
-/// implicit DDL commit forces every write there to behave anyway.
-async fn run_script_untransacted<DB, F>(
-    pool: &sqlx::Pool<DB>,
-    statements: &[statement::Statement],
-    cell: F,
-    rows_affected: fn(&DB::QueryResult) -> u64,
-) -> Result<Vec<QueryResult>>
-where
-    DB: Database,
-    for<'c> &'c sqlx::Pool<DB>: Executor<'c, Database = DB>,
-    <DB as Database>::Arguments: IntoArguments<DB>,
-    for<'q> Option<String>: Encode<'q, DB>,
-    String: Type<DB>,
-    F: Fn(&DB::Row, usize) -> Cell,
-{
-    let mut results = Vec::new();
-    for (position, statement) in statements.iter().enumerate() {
-        let result = fetch_all(pool, &statement.text, Vec::new(), &cell, rows_affected)
-            .await
-            .with_context(|| format!("statement {}", position + 1))?;
-        results.push(result);
-    }
-    Ok(results)
-}
-
-/// Run `statements` inside one transaction, rolling it back rather than
-/// committing anything if one of them fails.
-async fn run_script_transactional<DB, F>(
-    pool: &sqlx::Pool<DB>,
-    statements: &[statement::Statement],
-    cell: F,
-    rows_affected: fn(&DB::QueryResult) -> u64,
-) -> Result<Vec<QueryResult>>
-where
-    DB: Database,
-    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
-    <DB as Database>::Arguments: IntoArguments<DB>,
-    F: Fn(&DB::Row, usize) -> Cell,
-{
-    let mut tx = pool
-        .begin()
-        .await
-        .context("could not start the script's transaction")?;
-
-    let mut results = Vec::new();
-    for (position, statement) in statements.iter().enumerate() {
-        match fetch_in_transaction(&mut tx, &statement.text, &cell, rows_affected).await {
-            Ok(result) => results.push(result),
-            Err(error) => {
-                // Best-effort: a connection that cannot even roll back is
-                // dropped, which aborts the transaction on its own.
-                tx.rollback().await.ok();
-                return Err(error.context(format!("statement {}", position + 1)));
-            }
-        }
-    }
-
-    tx.commit().await.context("could not commit the script")?;
-    Ok(results)
-}
-
-/// Run one statement inside `tx` and turn its rows into a [`QueryResult`].
+/// Run one statement on `connection` and turn its rows into a
+/// [`QueryResult`].
 ///
-/// Sibling to [`fetch_all`], reached through `Deref`/`DerefMut` rather than
-/// `Executor` directly: sqlx's blanket `Executor` impls for `&mut
-/// Transaction` are disabled upstream (a compiler-overflow workaround noted
-/// in its own source), so this reaches the connection the same way
-/// `import::Session::execute` and `sqlite::rebuild` already do.
-async fn fetch_in_transaction<DB, F>(
-    tx: &mut Transaction<'_, DB>,
+/// Sibling to [`fetch_all`] for a connection held on its own rather than a
+/// pool — a [`Dedicated`] one, reached through `Deref`/`DerefMut` the same way
+/// `sqlite::rebuild` reaches its own.
+pub(crate) async fn fetch_on<DB, F>(
+    connection: &mut DB::Connection,
     sql: &str,
     cell: F,
     rows_affected: fn(&DB::QueryResult) -> u64,
@@ -1054,7 +941,7 @@ where
     let query = sqlx::query(statement.clone());
 
     #[allow(deprecated)]
-    let mut results = query.fetch_many(&mut **tx);
+    let mut results = query.fetch_many(&mut *connection);
     let mut rows = Vec::new();
     let mut affected: Option<u64> = None;
     while let Some(result) = results.next().await {
@@ -1070,7 +957,7 @@ where
 
     let (columns, column_types): (Vec<String>, Vec<String>) = match rows.first() {
         Some(row) => describe_columns(row.columns()),
-        None => Executor::describe(&mut **tx, statement)
+        None => Executor::describe(&mut *connection, statement)
             .await
             .map(|described| describe_columns(described.columns()))
             .unwrap_or_default(),
@@ -1187,7 +1074,7 @@ where
 
 /// What a finished read did, for the query log — the same "rows, or rows
 /// affected" distinction [`QueryResult::summary`] draws for the status bar.
-fn query_outcome(result: &QueryResult) -> QueryOutcome {
+pub(crate) fn query_outcome(result: &QueryResult) -> QueryOutcome {
     if result.rows.is_empty() && result.affected.is_some() {
         QueryOutcome::Affected(result.affected.unwrap_or_default())
     } else {
@@ -1242,9 +1129,8 @@ where
 /// Run `statements` inside one transaction, rolling it back rather than
 /// committing anything if one of them fails.
 ///
-/// Sibling to [`run_script_transactional`]: this one discards each
-/// statement's own row count, since a schema edit's caller only needs to
-/// know whether the whole thing went through.
+/// A schema edit's caller only needs to know whether the whole thing went
+/// through, so each statement's own row count is discarded.
 async fn execute_script_transactional<DB>(
     pool: &sqlx::Pool<DB>,
     statements: &[String],

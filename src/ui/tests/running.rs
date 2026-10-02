@@ -160,3 +160,122 @@ fn cancelling_stops_waiting_on_a_query(cx: &mut TestAppContext) {
         "the editor should stop saying it is running"
     );
 }
+
+/// Three inserts, the middle one into a table that is not there.
+const SCRIPT_FAILING_IN_THE_MIDDLE: &str = "insert into items values (3, 'gamma', 3.0, NULL);\n\
+                                            insert into not_a_table values (1);\n\
+                                            insert into items values (4, 'delta', 4.0, NULL);";
+
+fn workspace_status(cx: &mut TestAppContext, session: &Entity<Session>) -> String {
+    session.read_with(cx, |session, cx| session.active_status_for_test(cx))
+}
+
+#[gpui_kit::test]
+fn a_failing_script_pauses_and_rolling_back_keeps_nothing(cx: &mut TestAppContext) {
+    let (database, handle, session) = workspace_session_with_safety(cx, SafetyMode::Staged);
+
+    prepare_workspace_editor(cx, &handle, &session, SCRIPT_FAILING_IN_THE_MIDDLE);
+    press_workspace(cx, &handle, "secondary-shift-enter");
+
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "the failure should be asked about"
+    );
+
+    click_workspace(cx, &handle, "script-abort");
+    cx.run_until_parked();
+
+    assert!(!workspace_dialog_open(cx, &handle));
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        2,
+        "rolling back should undo the insert before the failure"
+    );
+    let status = workspace_status(cx, &session);
+    assert!(
+        status.starts_with("Error: Rolled back"),
+        "the status bar should say the script was rolled back: {status}"
+    );
+}
+
+#[gpui_kit::test]
+fn skipping_a_failure_finishes_the_script_and_lists_it(cx: &mut TestAppContext) {
+    let (database, handle, session) = workspace_session_with_safety(cx, SafetyMode::Staged);
+
+    prepare_workspace_editor(cx, &handle, &session, SCRIPT_FAILING_IN_THE_MIDDLE);
+    press_workspace(cx, &handle, "secondary-shift-enter");
+    click_workspace(cx, &handle, "script-skip");
+    cx.run_until_parked();
+
+    assert_eq!(runtime::block_on(other_count(&database)), 4);
+    let (results, _) = session.read_with(cx, |session, cx| session.results_for_test(cx));
+    assert_eq!(results, 3, "two inserts, then the failures");
+    let status = workspace_status(cx, &session);
+    assert!(
+        status.contains("1 statement failed and skipped"),
+        "the status bar should count the failures: {status}"
+    );
+}
+
+#[gpui_kit::test]
+fn the_ignore_errors_shortcut_runs_everything_without_asking(cx: &mut TestAppContext) {
+    let (database, handle, session) = workspace_session_with_safety(cx, SafetyMode::Staged);
+
+    prepare_workspace_editor(cx, &handle, &session, SCRIPT_FAILING_IN_THE_MIDDLE);
+    press_workspace(cx, &handle, "secondary-alt-shift-enter");
+
+    assert!(
+        !workspace_dialog_open(cx, &handle),
+        "ignoring errors asks nothing"
+    );
+    assert_eq!(runtime::block_on(other_count(&database)), 4);
+}
+
+#[gpui_kit::test]
+fn a_script_a_transaction_cannot_hold_is_asked_about_first(cx: &mut TestAppContext) {
+    let (database, handle, session) = workspace_session_with_safety(cx, SafetyMode::Staged);
+
+    prepare_workspace_editor(
+        cx,
+        &handle,
+        &session,
+        "insert into items values (3, 'gamma', 3.0, NULL);\nvacuum;",
+    );
+    press_workspace(cx, &handle, "secondary-shift-enter");
+
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "a script with VACUUM should ask before running without a transaction"
+    );
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        2,
+        "nothing runs until the question is answered"
+    );
+
+    click_workspace(cx, &handle, "ok");
+    cx.run_until_parked();
+    assert_eq!(runtime::block_on(other_count(&database)), 3);
+}
+
+#[gpui_kit::test]
+fn escaping_the_failure_question_rolls_back(cx: &mut TestAppContext) {
+    let (database, handle, session) = workspace_session_with_safety(cx, SafetyMode::Staged);
+
+    prepare_workspace_editor(cx, &handle, &session, SCRIPT_FAILING_IN_THE_MIDDLE);
+    press_workspace(cx, &handle, "secondary-shift-enter");
+    assert!(workspace_dialog_open(cx, &handle));
+
+    press_workspace(cx, &handle, "escape");
+
+    assert!(!workspace_dialog_open(cx, &handle));
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        2,
+        "a question dismissed without an answer should take the careful one"
+    );
+    assert!(
+        !session.read_with(cx, |session, cx| session.active_is_running(cx)),
+        "the tab should be free to run again"
+    );
+}

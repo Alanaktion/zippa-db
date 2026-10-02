@@ -26,6 +26,8 @@ use crate::db::DatabaseObject;
 use crate::db::Engine;
 use crate::db::Plan;
 use crate::db::query::QueryResult;
+use crate::db::runtime;
+use crate::db::{ScriptMode, ScriptRun};
 use crate::ui::busy::busy_label;
 use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::{Copied, DataGrid};
@@ -81,6 +83,7 @@ pub(crate) enum SessionPanelEvent {
     NewTabRequested,
     Run(String),
     RunScript(String),
+    RunScriptIgnoringErrors(String),
     /// The user asked for a statement's plan.
     Explain {
         sql: String,
@@ -139,6 +142,7 @@ impl SessionPanel {
                 results: Vec::new(),
                 result: 0,
                 running: None,
+                script: None,
                 baseline: sql,
                 plan: None,
                 show_plan: false,
@@ -285,6 +289,9 @@ impl SessionPanel {
         match event {
             QueryEditorEvent::Run(sql) => cx.emit(SessionPanelEvent::Run(sql.clone())),
             QueryEditorEvent::RunScript(sql) => cx.emit(SessionPanelEvent::RunScript(sql.clone())),
+            QueryEditorEvent::RunScriptIgnoringErrors(sql) => {
+                cx.emit(SessionPanelEvent::RunScriptIgnoringErrors(sql.clone()))
+            }
             QueryEditorEvent::Explain { sql, analyze } => cx.emit(SessionPanelEvent::Explain {
                 sql: sql.clone(),
                 analyze: *analyze,
@@ -758,15 +765,35 @@ impl SessionPanel {
     }
 
     /// Whether a run is in flight, holding the abort handle a second send
-    /// would otherwise overwrite.
+    /// would otherwise overwrite — or a script is paused on a failure,
+    /// holding its connection until it is answered.
     pub(crate) fn has_running_task(&self) -> bool {
         matches!(
             &self.content,
             TabContent::Query {
                 running: Some(_),
                 ..
+            } | TabContent::Query {
+                script: Some(_),
+                ..
             }
         )
+    }
+
+    /// Hold a script paused on a failure until the user answers.
+    pub(crate) fn park_script(&mut self, run: Box<ScriptRun>) {
+        if let TabContent::Query { script, .. } = &mut self.content {
+            *script = Some(run);
+        }
+    }
+
+    /// The paused script, taken to be answered — or `None` when it has
+    /// already been answered, cancelled, or closed with its tab.
+    pub(crate) fn take_script(&mut self) -> Option<Box<ScriptRun>> {
+        match &mut self.content {
+            TabContent::Query { script, .. } => script.take(),
+            _ => None,
+        }
     }
 
     /// Put a finished run's results in this tab.
@@ -900,6 +927,14 @@ impl SessionPanel {
         }
 
         *status = Status::Done("Cancelled".into());
+        if let Some(run) = self.take_script() {
+            let message = match run.mode() {
+                ScriptMode::Transaction => "Cancelled; the script's transaction was rolled back",
+                ScriptMode::Autocommit => "Cancelled; the statements before the error were applied",
+            };
+            self.set_status(Status::Done(message.into()));
+            close_script(run);
+        }
         editor.update(cx, |editor, cx| editor.set_running(false, cx));
         cx.notify();
         true
@@ -912,6 +947,9 @@ impl SessionPanel {
             && let Some(running) = running.take()
         {
             running.abort();
+        }
+        if let Some(run) = self.take_script() {
+            close_script(run);
         }
     }
 
@@ -1378,4 +1416,11 @@ impl Render for SessionPanel {
             .size_full()
             .child(body)
     }
+}
+
+/// Give up on a paused script on the database runtime, where its connection
+/// has to be closed — closing it is what rolls an open transaction back.
+pub(crate) fn close_script(run: Box<ScriptRun>) {
+    // Nothing to wait for: the connection goes either way.
+    drop(runtime::spawn(run.close()));
 }

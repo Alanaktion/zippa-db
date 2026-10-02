@@ -82,8 +82,12 @@ const GROUPS: &[Group] = &[
                 &["secondary-enter"],
             ),
             (
-                "Run every statement in the buffer",
+                "Run every statement in the buffer, in one transaction",
                 &["secondary-shift-enter"],
+            ),
+            (
+                "Run every statement without a transaction, skipping errors",
+                &["secondary-alt-shift-enter"],
             ),
             (
                 "Show the statement's plan without running it",

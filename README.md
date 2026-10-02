@@ -23,8 +23,13 @@ features you'd expect from a modern database client.
   (the default: edits wait until you apply them), or *auto-apply*. Read-only is
   enforced by the server and by a client-side check of your SQL.
 * **SQL editor.** Highlighted SQL, run the current statement, the selection, or
-  the whole script, with one result tab per statement. `EXPLAIN` and
-  `EXPLAIN ANALYZE` show up as a readable plan tree.
+  the whole script, with one result tab per statement. A script runs in one
+  transaction and stops on each error to ask whether to roll back, skip it, or
+  skip every error; one that cannot run in a transaction (`LOCK TABLES`,
+  `VACUUM`, MySQL DDL) asks before running without one. *Run Script Ignoring
+  Errors* runs everything with no transaction and lists what failed — handy
+  for re-running a half-applied migration. `EXPLAIN` and `EXPLAIN ANALYZE`
+  show up as a readable plan tree.
 * **Tables.** Open a table to page, sort, and filter it. Edit cells, add rows,
   and mark rows for deletion; pending changes are marked in the grid and
   written together when you apply them.

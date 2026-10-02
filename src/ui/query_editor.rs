@@ -17,11 +17,20 @@ use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use crate::db::{Engine, statement};
+use crate::db::{Blocker, Engine, statement, transaction_blocker};
 use crate::settings;
 use crate::ui::session::{OpenFile, SaveFile};
 
-actions!(zippa_db, [RunQuery, RunScript, Explain, ExplainAnalyze]);
+actions!(
+    zippa_db,
+    [
+        RunQuery,
+        RunScript,
+        RunScriptIgnoringErrors,
+        Explain,
+        ExplainAnalyze
+    ]
+);
 
 pub enum QueryEditorEvent {
     /// The user asked to run one statement: what is selected, or the one the
@@ -29,6 +38,8 @@ pub enum QueryEditorEvent {
     Run(String),
     /// The user asked to run the whole buffer, statement by statement.
     RunScript(String),
+    /// The same, with no transaction and every failure skipped.
+    RunScriptIgnoringErrors(String),
     /// The user asked for the statement's plan. `analyze` asks the server to
     /// run it so the plan carries actual times.
     Explain { sql: String, analyze: bool },
@@ -49,6 +60,9 @@ pub struct QueryEditor {
     /// with a multi-MB buffer; the key is a hash of the buffer, cursor, and
     /// selection, so an untouched buffer answers without touching the text.
     statement_cache: RefCell<Option<StatementCache>>,
+    /// Memoized statement that would keep the whole buffer out of a
+    /// transaction, keyed by a hash of the buffer alone.
+    blocker_cache: RefCell<Option<(u64, Option<Blocker>)>>,
 }
 
 struct StatementCache {
@@ -81,6 +95,7 @@ impl QueryEditor {
             running: false,
             engine,
             statement_cache: RefCell::new(None),
+            blocker_cache: RefCell::new(None),
         }
     }
 
@@ -154,7 +169,16 @@ impl QueryEditor {
     }
 
     fn run_script(&mut self, _: &RunScript, _window: &mut Window, cx: &mut Context<Self>) {
-        self.emit_run_script(cx);
+        self.emit_run_script(false, cx);
+    }
+
+    fn run_script_ignoring_errors(
+        &mut self,
+        _: &RunScriptIgnoringErrors,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.emit_run_script(true, cx);
     }
 
     fn explain(&mut self, _: &Explain, _window: &mut Window, cx: &mut Context<Self>) {
@@ -182,8 +206,10 @@ impl QueryEditor {
         cx.emit(QueryEditorEvent::Run(sql));
     }
 
-    /// Run the whole buffer, statement by statement.
-    fn emit_run_script(&mut self, cx: &mut Context<Self>) {
+    /// Run the whole buffer, statement by statement — in a transaction that
+    /// asks about each failure, or, `ignoring_errors`, without one and past
+    /// every failure.
+    fn emit_run_script(&mut self, ignoring_errors: bool, cx: &mut Context<Self>) {
         if self.running {
             return;
         }
@@ -193,7 +219,11 @@ impl QueryEditor {
             return;
         }
 
-        cx.emit(QueryEditorEvent::RunScript(sql));
+        cx.emit(if ignoring_errors {
+            QueryEditorEvent::RunScriptIgnoringErrors(sql)
+        } else {
+            QueryEditorEvent::RunScript(sql)
+        });
     }
 
     /// Ask for the current statement's plan.
@@ -267,6 +297,28 @@ impl QueryEditor {
         (statement, writes)
     }
 
+    /// The statement that would keep a script run of the whole buffer out of
+    /// a transaction, if there is one — memoized on the buffer's text, since
+    /// the toolbar asks on every render.
+    pub(crate) fn transaction_blocker(&self, cx: &gpui_kit::App) -> Option<Blocker> {
+        let key = {
+            let mut hasher = DefaultHasher::new();
+            for chunk in self.state.read(cx).text().chunks() {
+                chunk.hash(&mut hasher);
+            }
+            hasher.finish()
+        };
+        if let Some((cached, blocker)) = self.blocker_cache.borrow().as_ref()
+            && *cached == key
+        {
+            return blocker.clone();
+        }
+        let sql = self.state.read(cx).value().to_string();
+        let blocker = transaction_blocker(self.engine, &statement::split(&sql));
+        *self.blocker_cache.borrow_mut() = Some((key, blocker.clone()));
+        blocker
+    }
+
     /// The uncached statement: the selection verbatim, else the statement
     /// the caret is in.
     fn compute_statement(&self, cx: &gpui_kit::App) -> Option<String> {
@@ -286,11 +338,13 @@ impl Render for QueryEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let writes = self.statement_writes(cx);
         let can_analyze = self.analyze_supported();
+        let blocker = self.transaction_blocker(cx);
 
         v_flex()
             .key_context("QueryEditor")
             .on_action(cx.listener(Self::run))
             .on_action(cx.listener(Self::run_script))
+            .on_action(cx.listener(Self::run_script_ignoring_errors))
             .on_action(cx.listener(Self::explain))
             .on_action(cx.listener(Self::explain_analyze))
             .size_full()
@@ -379,23 +433,53 @@ impl Render for QueryEditor {
                                         this.emit_explain(true, cx)
                                     })),
                             )
-                            .child(
+                            .child({
+                                // A buffer a transaction cannot hold says so
+                                // before it is run, in words and with its
+                                // own icon rather than a colour.
+                                let (icon, label) = match &blocker {
+                                    Some(blocker) => (
+                                        IconName::TriangleAlert,
+                                        format!(
+                                            "Run every statement without a transaction: {}",
+                                            blocker.message()
+                                        ),
+                                    ),
+                                    None => (
+                                        IconName::SquareTerminal,
+                                        "Run every statement in one transaction, asking about \
+                                         each error"
+                                            .to_string(),
+                                    ),
+                                };
                                 Button::new("run-script")
                                     .ghost()
                                     .small()
-                                    .icon(IconName::SquareTerminal)
-                                    .accessibility_label("Run every statement in the buffer")
+                                    .icon(icon)
+                                    .accessibility_label(label.clone())
+                                    .tooltip_with_action(label, &RunScript, Some("QueryEditor"))
+                                    .disabled(self.running)
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.emit_run_script(false, cx)
+                                    }))
+                            })
+                            .child(
+                                Button::new("run-script-ignoring-errors")
+                                    .ghost()
+                                    .small()
+                                    .icon(AssetIcon::FastForward)
+                                    .accessibility_label(
+                                        "Run every statement without a transaction, skipping errors",
+                                    )
                                     .tooltip_with_action(
-                                        "Run every statement in the buffer",
-                                        &RunScript,
+                                        "Run every statement without a transaction, skipping errors",
+                                        &RunScriptIgnoringErrors,
                                         Some("QueryEditor"),
                                     )
                                     .disabled(self.running)
-                                    .on_click(
-                                        cx.listener(|this, _, _window, cx| {
-                                            this.emit_run_script(cx)
-                                        }),
-                                    ),
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.emit_run_script(true, cx)
+                                    })),
                             )
                             .child(
                                 Button::new("run")

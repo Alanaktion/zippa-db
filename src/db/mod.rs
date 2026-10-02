@@ -18,6 +18,10 @@
 //! * [`query`] — what a run comes back as.
 //! * [`export`] — laying a result out as CSV, JSON, or SQL `INSERT`.
 //! * [`import`] — reading a SQL dump back in as statements.
+//! * [`script`] — running a whole query buffer, with or without a
+//!   transaction, pausing on a failure for the user to answer.
+//! * [`dedicated`] — one connection held for the length of an import or a
+//!   script.
 //! * [`runtime`] — the Tokio runtime every database call is submitted to.
 //! * [`store`] — connection metadata on disk, passwords in the OS keychain.
 
@@ -25,6 +29,7 @@ pub mod binary;
 pub mod catalog;
 pub mod config;
 pub mod connection;
+pub(crate) mod dedicated;
 pub mod export;
 pub mod import;
 pub mod mysql;
@@ -34,6 +39,7 @@ pub mod query;
 pub mod query_log;
 pub mod runtime;
 pub mod schema;
+pub mod script;
 pub mod sql;
 pub mod sqlite;
 pub mod statement;
@@ -54,6 +60,10 @@ pub use plan::{Explained, Plan, PlanNode};
 pub use query_log::{LoggedQuery, QueryOutcome, QuerySource};
 pub use schema::{
     ColumnDef, ForeignKeyDef, IndexDef, RebuildSource, ReferentialAction, TableSchema,
+};
+pub use script::{
+    Blocker, Decision, OnFailure, ScriptFailure, ScriptMode, ScriptOutcome, ScriptRun, Step,
+    transaction_blocker,
 };
 pub use sql::quote_identifier;
 pub(crate) use sql::{keyword_literal, placeholder, quote_literal, text_type, typed_placeholder};

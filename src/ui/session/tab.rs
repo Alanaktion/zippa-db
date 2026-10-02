@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use gpui_kit::Entity;
 
+use crate::db::ScriptRun;
 use crate::db::query::QueryResult;
 use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::DataGrid;
@@ -70,6 +71,8 @@ pub(crate) enum TabContent {
         result: usize,
         /// Handle on the run in flight, so it can be given up on.
         running: Option<tokio::task::AbortHandle>,
+        /// A script paused on a failure, waiting for the user's answer.
+        script: Option<Box<ScriptRun>>,
         /// The buffer's content as last opened or saved, to tell dirty from
         /// clean.
         baseline: String,
