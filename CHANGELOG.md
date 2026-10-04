@@ -67,6 +67,14 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   as icon rows; SQLite gets the console and a maintenance tab of integrity
   checks, optimize, analyze, vacuum, and WAL checkpoint). Disconnect leaves
   the sidebar, with the File menu and `Cmd`/`Ctrl`+`D` carrying it instead.
+- Postgres geometric types (`point`, `line`, `lseg`, `box`, `path`,
+  `polygon`, `circle`), `hstore`, the built-in ranges, and `macaddr8` show
+  their values and can be edited, rather than standing in as `<POINT>` and
+  the like. A Postgres `numeric` keeps the scale it was stored with (`1.5`
+  rather than `1.5000`).
+- `Cmd`/`Ctrl`+`C` copies a value that was never read back as an empty cell
+  and says so, the way `Copy as` already wrote it, rather than putting the
+  `<3 bytes>`-style description on the clipboard.
 - Declared the minimum Rust version (1.95) and package metadata in
   `Cargo.toml`.
 - Brought `README.md`, `AGENTS.md`/`CLAUDE.md`, `TODO.md` (which now absorbs
