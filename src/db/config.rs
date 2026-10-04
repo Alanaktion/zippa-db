@@ -396,6 +396,14 @@ pub struct ConnectionConfig {
     /// before tunnels existed, which read back as off.
     #[serde(default)]
     pub ssh: SshConfig,
+    /// How long, in seconds, the server lets one statement run before it
+    /// cancels it; `None` (and files written before the setting existed) for
+    /// no limit. Enforced by the server — `statement_timeout` on Postgres,
+    /// `max_execution_time` (MariaDB: `max_statement_time`) on MySQL, which
+    /// applies to reads only — and ignored by SQLite, which has no server to
+    /// enforce it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement_timeout: Option<u32>,
 }
 
 impl ConnectionConfig {
@@ -413,6 +421,7 @@ impl ConnectionConfig {
             last_connected: None,
             ssl: SslConfig::default(),
             ssh: SshConfig::default(),
+            statement_timeout: None,
         }
     }
 

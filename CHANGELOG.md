@@ -19,6 +19,12 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   and a client certificate and key. They can also connect through an SSH
   tunnel, signing in with the SSH agent, a private key file, or a password,
   and checking the jump host against `~/.ssh/known_hosts`.
+- **Connection health:** a dropped connection or an unresponsive server is
+  told in words rather than as the driver's error, a statement gives up
+  waiting for a free connection after 10 seconds, and Reconnect
+  (`Cmd`/`Ctrl`+`Shift`+`R`, the File menu, or the database picker) opens a
+  fresh connection while keeping every tab. Postgres and MySQL connections
+  take an optional statement timeout.
 - **Safety modes:** read-only (enforced on the server and client side),
   confirm writes, staged (the default), and auto-apply.
 - **Workspace restore:** open connections, their tabs, and unsaved query
@@ -72,6 +78,14 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   as icon rows; SQLite gets the console and a maintenance tab of integrity
   checks, optimize, analyze, vacuum, and WAL checkpoint). Disconnect leaves
   the sidebar, with the File menu and `Cmd`/`Ctrl`+`D` carrying it instead.
+- Postgres geometric types (`point`, `line`, `lseg`, `box`, `path`,
+  `polygon`, `circle`), `hstore`, the built-in ranges, and `macaddr8` show
+  their values and can be edited, rather than standing in as `<POINT>` and
+  the like. A Postgres `numeric` keeps the scale it was stored with (`1.5`
+  rather than `1.5000`).
+- `Cmd`/`Ctrl`+`C` copies a value that was never read back as an empty cell
+  and says so, the way `Copy as` already wrote it, rather than putting the
+  `<3 bytes>`-style description on the clipboard.
 - Declared the minimum Rust version (1.95) and package metadata in
   `Cargo.toml`.
 - Brought `README.md`, `AGENTS.md`/`CLAUDE.md`, `TODO.md` (which now absorbs

@@ -10,8 +10,7 @@ known defects and risks in the shipped code are tracked in
 ## 1. Connections & security
 
 * Paste a connection URL (`postgres://user@host/db`) to fill the form; read `DATABASE_URL`, `~/.pgpass`, `~/.my.cnf`
-* Connection health: detect a dropped connection, offer "Reconnect" rather than a raw driver error, keepalive
-* Optional statement timeout per connection
+* Connection keepalive: a periodic ping while idle, so a dropped connection is noticed before the next query rather than by it
 
 ## 2. Data grid & table view
 

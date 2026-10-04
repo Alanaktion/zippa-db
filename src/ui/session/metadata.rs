@@ -123,11 +123,29 @@ impl Session {
         if self.connection.config.engine.is_file_based() {
             return;
         }
-        if self.switching || database == self.connection.database() {
+        if database == self.connection.database() {
+            return;
+        }
+        self.reopen(database, false, cx);
+    }
+
+    /// Throw the pool away and open a fresh one to the same database, for a
+    /// connection the server dropped or that stopped answering. The tabs, the
+    /// console history, and anything typed stay as they are.
+    pub(crate) fn reconnect(&mut self, cx: &mut Context<Self>) {
+        let database = self.connection.database().to_string();
+        self.reopen(database, true, cx);
+    }
+
+    /// Open a new pool to `database` and adopt it in place of the current
+    /// one: a database switch, or (`reconnect`) a reconnect to the same one.
+    fn reopen(&mut self, database: String, reconnect: bool, cx: &mut Context<Self>) {
+        if self.switching {
             return;
         }
 
         self.switching = true;
+        self.reconnecting = reconnect;
         cx.notify();
 
         let connection = self.connection.clone();
@@ -137,10 +155,14 @@ impl Session {
             let opened = task.await;
             this.update_in(cx, |this, window, cx| {
                 this.switching = false;
+                this.reconnecting = false;
                 match opened {
                     Ok(Ok(connection)) => {
                         this.adopt_connection(connection, cx);
                         cx.emit(SessionEvent::Changed);
+                        if reconnect {
+                            crate::ui::notify_info(window, cx, "Reconnected.");
+                        }
                     }
                     Ok(Err(error)) => {
                         let message = format!("{error:#}");
@@ -152,7 +174,11 @@ impl Session {
                         crate::ui::notify_error(window, cx, format!("Error: {message}"));
                     }
                     Err(_) => {
-                        let message = "switching database was cancelled";
+                        let message = if reconnect {
+                            "reconnecting was cancelled"
+                        } else {
+                            "switching database was cancelled"
+                        };
                         if let Some(panel) = this.active_panel() {
                             panel.update(cx, |panel, _| {
                                 panel.set_status(Status::Error(message.into()))
@@ -229,7 +255,9 @@ impl Session {
         let databases = this.databases.clone();
         let weak = session.downgrade();
 
-        let label = if this.switching {
+        let label = if this.reconnecting {
+            "Reconnecting…".to_string()
+        } else if this.switching {
             "Switching…".to_string()
         } else if current.is_empty() {
             "No database".to_string()
@@ -244,6 +272,22 @@ impl Session {
             .icon(gpui_kit::assets::IconName::Database)
             .label(label)
             .dropdown_menu(move |mut menu, _window, _cx| {
+                // First, so it is there however long the list below runs,
+                // and even when the list could not be read because the
+                // connection is what failed.
+                // A click rather than the `Reconnect` action: the picker sits
+                // in the workspace's title bar, outside the session's own
+                // element, so the action would never reach it.
+                let reconnect = weak.clone();
+                menu = menu
+                    .item(
+                        PopupMenuItem::new("Reconnect").on_click(move |_, _window, cx| {
+                            if let Some(session) = reconnect.upgrade() {
+                                session.update(cx, |session, cx| session.reconnect(cx));
+                            }
+                        }),
+                    )
+                    .separator();
                 if databases.is_empty() {
                     return menu.label("No databases");
                 }

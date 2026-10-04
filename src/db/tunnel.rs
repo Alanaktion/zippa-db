@@ -92,6 +92,12 @@ impl Tunnel {
         })
     }
 
+    /// Whether the SSH session or the listener in front of it has ended, so
+    /// the tunnel carries nothing any more.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.session.is_closed() || self.listener.is_finished()
+    }
+
     /// The loopback port the pool connects to.
     pub(crate) fn local_port(&self) -> u16 {
         self.local_port

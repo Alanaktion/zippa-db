@@ -26,10 +26,18 @@ use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
 use super::tunnel::Tunnel;
-use super::{mysql, postgres, sqlite, statement, typed_placeholder};
+use super::{health, mysql, postgres, sqlite, statement, typed_placeholder};
 
 /// Connections opened per saved connection.
 pub(crate) const POOL_SIZE: u32 = 5;
+
+/// Pool settings every engine shares: the size, and how long a statement
+/// waits for a free connection (see [`health::ACQUIRE_TIMEOUT`]).
+pub(crate) fn pool_options<DB: Database>() -> sqlx::pool::PoolOptions<DB> {
+    sqlx::pool::PoolOptions::new()
+        .max_connections(POOL_SIZE)
+        .acquire_timeout(health::ACQUIRE_TIMEOUT)
+}
 
 /// An engine-specific connection pool.
 #[derive(Debug)]
@@ -153,6 +161,10 @@ pub struct Connection {
     /// on the same server, so switching database does not sign in again;
     /// the tunnel closes when the last of them goes.
     tunnel: Option<Arc<Tunnel>>,
+    /// The SSH password or key passphrase, kept in memory (like `password`)
+    /// so a reconnect can open a fresh tunnel when the jump host dropped the
+    /// old one. Never written to disk.
+    ssh_secret: Option<String>,
 }
 
 /// The secrets a connection is opened with: read from the keychain, or typed
@@ -183,27 +195,32 @@ impl Connection {
     /// Open a pool and verify it by acquiring one connection, first opening
     /// the SSH tunnel the connection is configured with, if any.
     pub async fn open_with(config: ConnectionConfig, credentials: Credentials) -> Result<Self> {
-        let tunnel = if config.ssh.enabled && !config.engine.is_file_based() {
-            let tunnel = Tunnel::open(
-                &config.ssh,
-                credentials.ssh.as_deref(),
-                &config.host,
-                config.port,
-            )
-            .await?;
-            Some(Arc::new(tunnel))
-        } else {
-            None
-        };
-        Self::open_through(config, credentials.password, tunnel).await
+        let tunnel = Self::tunnel(&config, credentials.ssh.as_deref()).await?;
+        Self::open_through(config, credentials, tunnel).await
+    }
+
+    /// Open the tunnel `config` asks for, or `None` when it asks for none.
+    async fn tunnel(
+        config: &ConnectionConfig,
+        secret: Option<&str>,
+    ) -> Result<Option<Arc<Tunnel>>> {
+        if !config.ssh.enabled || config.engine.is_file_based() {
+            return Ok(None);
+        }
+        let tunnel = Tunnel::open(&config.ssh, secret, &config.host, config.port).await?;
+        Ok(Some(Arc::new(tunnel)))
     }
 
     /// Open the pool, pointed at `tunnel`'s loopback port when there is one.
     async fn open_through(
         config: ConnectionConfig,
-        password: Option<String>,
+        credentials: Credentials,
         tunnel: Option<Arc<Tunnel>>,
     ) -> Result<Self> {
+        let Credentials {
+            password,
+            ssh: ssh_secret,
+        } = credentials;
         // The driver is told the tunnel's end; `config` keeps the host as the
         // jump host sees it, which is what the user saved and what is shown.
         let mut target = config.clone();
@@ -228,6 +245,7 @@ impl Connection {
             money_scale,
             query_log: QueryLog::default(),
             tunnel,
+            ssh_secret,
         })
     }
 
@@ -249,7 +267,18 @@ impl Connection {
     pub async fn with_database(&self, database: &str) -> Result<Self> {
         let mut config = self.config.clone();
         config.database = database.to_string();
-        Self::open_through(config, self.password.clone(), self.tunnel.clone()).await
+        // The tunnel is shared while it lives; one the jump host has dropped
+        // is opened afresh, which is what lets Reconnect recover from it.
+        let tunnel = match &self.tunnel {
+            Some(tunnel) if !tunnel.is_closed() => Some(tunnel.clone()),
+            Some(_) => Self::tunnel(&config, self.ssh_secret.as_deref()).await?,
+            None => None,
+        };
+        let credentials = Credentials {
+            password: self.password.clone(),
+            ssh: self.ssh_secret.clone(),
+        };
+        Self::open_through(config, credentials, tunnel).await
     }
 
     /// Databases the user can switch to on this server.
@@ -497,7 +526,7 @@ impl Connection {
     /// read-only connection run `EXPLAIN ANALYZE`, which the classifier would
     /// otherwise refuse for the `ANALYZE` word alone.
     async fn fetch(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
-        match &self.pool {
+        let result = match &self.pool {
             Pool::Postgres(pool) => {
                 let scale = self.money_scale;
                 fetch_all(
@@ -515,7 +544,8 @@ impl Connection {
             Pool::Sqlite(pool) => {
                 fetch_all(pool, sql, params, sqlite::cell, sqlite::rows_affected).await
             }
-        }
+        };
+        result.map_err(health::plain)
     }
 
     /// The raw bytes behind one binary cell, read fresh for a value preview.
@@ -527,13 +557,14 @@ impl Connection {
     /// previewed; `None` covers both "no such row" and "the value is NULL".
     pub async fn fetch_binary(&self, sql: &str, params: Vec<Cell>) -> Result<Option<Vec<u8>>> {
         self.refuse_write(sql)?;
-        match &self.pool {
+        let result = match &self.pool {
             Pool::Postgres(pool) => {
                 fetch_binary_column(pool, sql, params, postgres::raw_bytes).await
             }
             Pool::MySql(pool) => fetch_binary_column(pool, sql, params, mysql::raw_bytes).await,
             Pool::Sqlite(pool) => fetch_binary_column(pool, sql, params, sqlite::raw_bytes).await,
-        }
+        };
+        result.map_err(health::plain)
     }
 
     /// Read the plan for one statement.
@@ -659,11 +690,12 @@ impl Connection {
     /// Check one connection out of the pool for a job that needs its session
     /// state to last — an import, or a script run.
     pub(crate) async fn dedicated(&self) -> Result<Dedicated> {
-        match &self.pool {
+        let dedicated = match &self.pool {
             Pool::Postgres(pool) => Dedicated::postgres(pool, self.money_scale).await,
             Pool::MySql(pool) => Dedicated::mysql(pool).await,
             Pool::Sqlite(pool) => Dedicated::sqlite(pool).await,
-        }
+        };
+        dedicated.map_err(health::plain)
     }
 
     /// Run a SQL dump against this connection.
@@ -884,7 +916,8 @@ impl Connection {
             Pool::Postgres(pool) => execute_with(pool, sql, params, postgres::rows_affected).await,
             Pool::MySql(pool) => execute_with(pool, sql, params, mysql::rows_affected).await,
             Pool::Sqlite(pool) => execute_with(pool, sql, params, sqlite::rows_affected).await,
-        };
+        }
+        .map_err(health::plain);
         let outcome = match &result {
             Ok(affected) => QueryOutcome::Affected(*affected),
             Err(error) => QueryOutcome::Error(format!("{error:#}")),
@@ -913,13 +946,17 @@ impl Connection {
             // instead.
             Pool::Postgres(pool) => {
                 let started = Instant::now();
-                let result = execute_script_transactional(pool, statements).await;
+                let result = execute_script_transactional(pool, statements)
+                    .await
+                    .map_err(health::plain);
                 self.log_script(statements, started.elapsed(), &result);
                 result
             }
             Pool::Sqlite(pool) => {
                 let started = Instant::now();
-                let result = execute_script_transactional(pool, statements).await;
+                let result = execute_script_transactional(pool, statements)
+                    .await
+                    .map_err(health::plain);
                 self.log_script(statements, started.elapsed(), &result);
                 result
             }

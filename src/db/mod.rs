@@ -7,6 +7,8 @@
 //!
 //! * [`config`] — what the user saves about a connection, before it is opened.
 //! * [`connection`] — the live pool, and the shared read and write paths.
+//! * [`health`] — telling a dropped or unreachable server apart from a SQL
+//!   error, and saying so in words.
 //! * [`binary`] — sniffing and laying out the bytes behind a binary value.
 //! * [`query_log`] — the bounded record of every statement a connection has
 //!   sent, for the console pane.
@@ -31,6 +33,7 @@ pub mod config;
 pub mod connection;
 pub(crate) mod dedicated;
 pub mod export;
+pub mod health;
 pub mod import;
 pub mod mysql;
 pub mod plan;
@@ -55,7 +58,7 @@ pub use config::{
     ConnectionConfig, Engine, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode, TagColor,
     is_risky_auto_apply,
 };
-pub(crate) use connection::POOL_SIZE;
+pub(crate) use connection::pool_options;
 pub use connection::{
     Connection, Credentials, DatabaseObject, ObjectKind, QueryDigest, RowKey, StoredKind,
     StoredObject,

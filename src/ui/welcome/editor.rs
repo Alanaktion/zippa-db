@@ -79,6 +79,8 @@ pub struct ConnectionEditor {
     /// untouched box from an emptied one.
     ssh_secret: Entity<InputState>,
     ssh_secret_edited: bool,
+    /// Seconds the server lets one statement run; blank for no limit.
+    statement_timeout: Entity<InputState>,
     /// Whether the user has typed in the password box since the dialog opened.
     /// The stored password is never loaded into it, so an untouched box has to
     /// mean "leave it alone" rather than "no password".
@@ -171,6 +173,7 @@ impl ConnectionEditor {
                 }
             }),
             ssh_secret_edited: false,
+            statement_timeout: cx.new(|cx| InputState::new(window, cx).placeholder("No limit")),
             password_edited: false,
             status: Status::None,
             test: None,
@@ -197,7 +200,7 @@ impl ConnectionEditor {
         editor
     }
 
-    fn fields(&self) -> [Entity<InputState>; 14] {
+    fn fields(&self) -> [Entity<InputState>; 15] {
         [
             self.name.clone(),
             self.host.clone(),
@@ -213,6 +216,7 @@ impl ConnectionEditor {
             self.ssh_user.clone(),
             self.ssh_key.clone(),
             self.ssh_secret.clone(),
+            self.statement_timeout.clone(),
         ]
     }
 
@@ -304,6 +308,11 @@ impl ConnectionEditor {
         self.set_field(&self.port.clone(), &config.port.to_string(), window, cx);
         self.set_field(&self.username.clone(), &config.username, window, cx);
         self.set_field(&self.database.clone(), &config.database, window, cx);
+        let timeout = config
+            .statement_timeout
+            .map(|seconds| seconds.to_string())
+            .unwrap_or_default();
+        self.set_field(&self.statement_timeout.clone(), &timeout, window, cx);
         self.set_field(&self.password.clone(), "", window, cx);
         self.ssl_mode = config.ssl.mode;
         self.set_field(&self.ssl_ca.clone(), &config.ssl.ca_cert, window, cx);
@@ -349,6 +358,19 @@ impl ConnectionEditor {
             safety: self.safety,
             color: self.color,
             last_connected: None,
+            // Blank and `0` both mean no limit; SQLite has no server to
+            // enforce one, so a value left from another engine is dropped.
+            statement_timeout: if self.engine.is_file_based() {
+                None
+            } else {
+                self.statement_timeout
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse()
+                    .ok()
+                    .filter(|&seconds: &u32| seconds > 0)
+            },
             ssl: self.ssl(cx),
             ssh: self.ssh(cx),
         }
@@ -448,6 +470,10 @@ impl ConnectionEditor {
         let port = self.port.read(cx).value().trim().to_string();
         if !port.is_empty() && !port.parse::<u16>().is_ok_and(|port| port > 0) {
             return Some("The port must be a number from 1 to 65535.");
+        }
+        let timeout = self.statement_timeout.read(cx).value().trim().to_string();
+        if !timeout.is_empty() && timeout.parse::<u32>().is_err() {
+            return Some("The statement timeout must be a whole number of seconds.");
         }
         self.ssl(cx).invalid().or_else(|| self.ssh(cx).invalid())
     }
@@ -848,7 +874,16 @@ impl ConnectionEditor {
                         .child(div().flex_1().child(field("User", &self.username, cx)))
                         .child(div().flex_1().child(field("Password", &self.password, cx))),
                 )
-                .child(field("Database", &self.database, cx))
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .child(div().flex_1().child(field("Database", &self.database, cx)))
+                        .child(div().w_40().child(field(
+                            "Statement timeout (s)",
+                            &self.statement_timeout,
+                            cx,
+                        ))),
+                )
                 .child(self.render_ssl(cx))
                 .child(self.render_ssh(cx))
             })
