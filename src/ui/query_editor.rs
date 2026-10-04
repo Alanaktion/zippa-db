@@ -228,21 +228,50 @@ impl QueryEditor {
         self.state.read(cx).completion_menu_state().open
     }
 
-    /// Every keystroke, seen before the editor: with the menu closed, start
-    /// the next completion where the caret is now.
+    /// Every keystroke, seen before the editor.
+    fn on_key_down(&mut self, _: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.restart_completion(cx);
+        self.follow_caret(window, cx);
+    }
+
+    /// With the menu closed, start the next completion where the caret is now.
     ///
     /// `gpui-kit` remembers where the first completion started and never
     /// forgets it; a later keystroke before that offset — the caret moved
     /// back to an earlier line, say to finish a `SELECT` list after writing
     /// its `FROM` — is then ignored and the menu never opens. Setting the
     /// start afresh while nothing is showing keeps it at or before the caret.
-    fn restart_completion(&mut self, _: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn restart_completion(&mut self, cx: &mut Context<Self>) {
         if self.completion_open(cx) {
             return;
         }
         self.state.update(cx, |state, cx| {
             let cursor = state.cursor();
             state.present_completion_items(cursor, "", Vec::new(), cx);
+        });
+    }
+
+    /// Draw the editor once more after the frame that moves the caret, so
+    /// the completion menu follows it straight away.
+    ///
+    /// The menu places itself from the caret's position in the *last* frame
+    /// painted, and its new items usually land before the keystroke's own
+    /// frame is drawn — so that frame shows it where the caret was, and
+    /// nothing redraws it until the caret next blinks. Next-frame callbacks
+    /// run before that tick's draw, hence the two levels: the outer one runs
+    /// before the keystroke's frame, the inner one after it is painted.
+    fn follow_caret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let editor = cx.entity().downgrade();
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |_, cx| {
+                let Some(editor) = editor.upgrade() else {
+                    return;
+                };
+                let state = editor.read(cx).state.clone();
+                if state.read(cx).completion_menu_state().open {
+                    state.update(cx, |_, cx| cx.notify());
+                }
+            });
         });
     }
 
@@ -430,7 +459,7 @@ impl Render for QueryEditor {
             .on_action(cx.listener(Self::run_script_ignoring_errors))
             .on_action(cx.listener(Self::explain))
             .on_action(cx.listener(Self::explain_analyze))
-            .capture_key_down(cx.listener(Self::restart_completion))
+            .capture_key_down(cx.listener(Self::on_key_down))
             .capture_action(cx.listener(Self::accept_with_tab))
             .capture_action(cx.listener(Self::enter_with_menu_open))
             .size_full()
