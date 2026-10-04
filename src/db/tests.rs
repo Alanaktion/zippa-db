@@ -1871,8 +1871,11 @@ async fn live_postgres_statement_timeout_cancels_a_long_statement() {
         .expect("could not read the setting");
     assert_eq!(shown.rows[0][0].as_deref(), Some("1s"));
 
+    // Not `pg_sleep`: the process-list test running alongside ends any
+    // backend whose query mentions it, which would read as a lost connection
+    // rather than a timeout.
     let error = connection
-        .run_query("SELECT pg_sleep(5)")
+        .run_query("SELECT count(*) FROM generate_series(1, 10000000000) AS zippa_timeout_test")
         .await
         .expect_err("the server should cancel a statement past the timeout");
     assert!(
@@ -1908,13 +1911,22 @@ async fn live_postgres_a_terminated_backend_reads_as_a_lost_connection() {
 
     let sleeper = {
         let victim = victim.clone();
-        tokio::spawn(async move { victim.run_query("SELECT pg_sleep(30)").await })
+        // Named so the query below ends this backend alone, and without
+        // `pg_sleep` in it so the process-list test alongside does not end
+        // it first.
+        tokio::spawn(async move {
+            victim
+                .run_query(
+                    "SELECT count(*) FROM generate_series(1, 10000000000) AS zippa_terminate_test",
+                )
+                .await
+        })
     };
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     watcher
         .run_query(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
-             WHERE query = 'SELECT pg_sleep(30)' AND pid <> pg_backend_pid()",
+             WHERE query LIKE '%zippa_terminate_test%' AND pid <> pg_backend_pid()",
         )
         .await
         .expect("could not end the sleeping backend");
