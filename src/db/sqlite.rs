@@ -1,13 +1,11 @@
 //! SQLite driver (local file databases).
 
 use anyhow::{Context, Result};
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteQueryResult, SqliteRow,
-};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRow};
 use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 
 use super::query::{self, Cell};
-use super::{ConnectionConfig, POOL_MAX, decode, quote_literal};
+use super::{ConnectionConfig, decode, pool_options, quote_literal};
 
 /// A SQLite connection has one main database plus any attached ones.
 pub(crate) const DATABASES_SQL: &str = "SELECT name FROM pragma_database_list ORDER BY seq";
@@ -61,8 +59,7 @@ pub(crate) async fn connect(config: &ConnectionConfig) -> Result<SqlitePool> {
         // that slips past the client-side check can write.
         .read_only(config.safety.is_read_only());
 
-    let pool = SqlitePoolOptions::new()
-        .max_connections(POOL_MAX)
+    let pool = pool_options()
         .connect_with(options)
         .await
         .with_context(|| format!("could not open {}", config.database))?;

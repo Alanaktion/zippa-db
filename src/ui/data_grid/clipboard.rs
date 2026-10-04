@@ -47,26 +47,24 @@ impl DataGrid {
         self.commit_editor(cx);
 
         if let Some((row_ix, col_ix)) = cell {
-            let text = self
-                .table
-                .read(cx)
-                .delegate()
-                .cell(row_ix, col_ix)
-                .clone()
-                .unwrap_or_default();
-            self.put_on_clipboard(text, "Copied value".to_string(), cx);
+            self.copy_cell(row_ix, col_ix, cx);
             return;
         }
 
         if !self.table.read(cx).delegate().rows_selected.is_empty() {
             let (snapshot, total) = self.snapshot_capped(Scope::Picked, MAX_COPY_ROWS, cx);
             let rows = snapshot.rows.len();
+            let mut skipped = 0;
             let text = snapshot
                 .rows
                 .iter()
                 .map(|row| {
                     row.iter()
-                        .map(|cell| cell.clone().unwrap_or_default())
+                        .map(|cell| {
+                            let (text, read_back) = cell_text(cell);
+                            skipped += usize::from(!read_back);
+                            text
+                        })
                         .collect::<Vec<String>>()
                         .join("\t")
                 })
@@ -80,21 +78,26 @@ impl DataGrid {
             } else {
                 format!("Copied {}", count_of(rows, "row", "rows"))
             };
-            self.put_on_clipboard(text, message, cx);
+            self.put_on_clipboard(text, with_skipped(message, skipped), cx);
             return;
         }
 
         let Some((row_ix, col_ix)) = self.selected_cell(cx) else {
             return;
         };
-        let text = self
-            .table
-            .read(cx)
-            .delegate()
-            .cell(row_ix, col_ix)
-            .clone()
-            .unwrap_or_default();
-        self.put_on_clipboard(text, "Copied value".to_string(), cx);
+        self.copy_cell(row_ix, col_ix, cx);
+    }
+
+    /// Copy one cell's value, a stand-in going out as the `NULL` it would be
+    /// in any `Copy as` shape.
+    fn copy_cell(&mut self, row_ix: usize, col_ix: usize, cx: &mut Context<Self>) {
+        let (text, read_back) = cell_text(self.table.read(cx).delegate().cell(row_ix, col_ix));
+        let message = if read_back {
+            "Copied value".to_string()
+        } else {
+            "Value not read back, copied as NULL".to_string()
+        };
+        self.put_on_clipboard(text, message, cx);
     }
 
     /// Copy what a `Copy as` menu item asked for, in the shape it named.
@@ -315,6 +318,18 @@ fn column_cells(snapshot: &Snapshot) -> Vec<Cell> {
         .iter()
         .map(|row| row.first().cloned().unwrap_or(None))
         .collect()
+}
+
+/// One cell as `Cmd+C` writes it, and whether it was a real value: a `NULL`
+/// copies as nothing, and so does a stand-in for a value that was never read
+/// back (`query::is_placeholder`), the way the TSV `Copy as` writes both —
+/// the description is not the value, and pasting it somewhere would pass it
+/// off as one.
+fn cell_text(cell: &Cell) -> (String, bool) {
+    if query::is_placeholder(cell) {
+        return (String::new(), false);
+    }
+    (cell.clone().unwrap_or_default(), true)
 }
 
 /// `1 row` / `3 rows`, for a notice.

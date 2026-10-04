@@ -50,6 +50,7 @@ impl Session {
                 title,
                 sql.clone(),
                 self.connection.config.engine,
+                self.catalog.clone(),
                 window,
                 cx,
             )

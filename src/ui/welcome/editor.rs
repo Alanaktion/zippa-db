@@ -17,8 +17,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Task, Window, actions, div, px};
 use uuid::Uuid;
 
+use crate::db::store::SecretEdits;
 use crate::db::{
-    Connection, ConnectionConfig, Engine, SafetyMode, TagColor, is_risky_auto_apply, runtime, store,
+    Connection, ConnectionConfig, Engine, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode,
+    TagColor, is_risky_auto_apply, runtime, store,
 };
 use crate::ui::busy::spinner;
 
@@ -28,19 +30,19 @@ actions!(zippa_db, [EditorClose, EditorConnect]);
 pub enum EditorEvent {
     /// Save the connection without connecting.
     ///
-    /// `password` is `None` when the user never touched the box, so a save that
-    /// was not about the password leaves the stored one alone.
+    /// Each of `secrets` is `None` when the user never touched its box, so a
+    /// save that was not about the password leaves the stored one alone.
     Saved {
         config: ConnectionConfig,
-        password: Option<String>,
+        secrets: SecretEdits,
     },
     /// Connect with this config, saving it first when `save` is set.
     ///
-    /// `password` means what it does for [`EditorEvent::Saved`]: `None` for a
+    /// `secrets` means what it does for [`EditorEvent::Saved`]: `None` for a
     /// box the user never touched, `Some("")` for one they emptied.
     Connect {
         config: ConnectionConfig,
-        password: Option<String>,
+        secrets: SecretEdits,
         save: bool,
     },
     /// The dialog was dismissed without saving or connecting.
@@ -59,6 +61,26 @@ pub struct ConnectionEditor {
     username: Entity<InputState>,
     password: Entity<InputState>,
     database: Entity<InputState>,
+    ssl_mode: SslMode,
+    /// The certificate files encryption may need: an authority to trust, and
+    /// the client's own certificate and key.
+    ssl_ca: Entity<InputState>,
+    ssl_cert: Entity<InputState>,
+    ssl_key: Entity<InputState>,
+    /// The SSH tunnel: whether there is one, how it signs in, and its boxes.
+    ssh_enabled: bool,
+    ssh_auth: SshAuth,
+    ssh_host: Entity<InputState>,
+    ssh_port: Entity<InputState>,
+    ssh_user: Entity<InputState>,
+    ssh_key: Entity<InputState>,
+    /// The SSH password or key passphrase. Like the database password, never
+    /// loaded back from the keychain, so `ssh_secret_edited` tells an
+    /// untouched box from an emptied one.
+    ssh_secret: Entity<InputState>,
+    ssh_secret_edited: bool,
+    /// Seconds the server lets one statement run; blank for no limit.
+    statement_timeout: Entity<InputState>,
     /// Whether the user has typed in the password box since the dialog opened.
     /// The stored password is never loaded into it, so an untouched box has to
     /// mean "leave it alone" rather than "no password".
@@ -130,6 +152,28 @@ impl ConnectionEditor {
                 }
             }),
             database: cx.new(|cx| InputState::new(window, cx)),
+            ssl_mode: SslMode::default(),
+            ssl_ca: cx.new(|cx| {
+                InputState::new(window, cx).placeholder("Optional: the system's authorities")
+            }),
+            ssl_cert: cx.new(|cx| InputState::new(window, cx).placeholder("Optional")),
+            ssl_key: cx.new(|cx| InputState::new(window, cx).placeholder("Optional")),
+            ssh_enabled: false,
+            ssh_auth: SshAuth::default(),
+            ssh_host: cx.new(|cx| InputState::new(window, cx).placeholder("bastion.example.com")),
+            ssh_port: cx.new(|cx| InputState::new(window, cx).default_value("22")),
+            ssh_user: cx.new(|cx| InputState::new(window, cx)),
+            ssh_key: cx.new(|cx| InputState::new(window, cx).placeholder("~/.ssh/id_ed25519")),
+            ssh_secret: cx.new(|cx| {
+                let input = InputState::new(window, cx).masked(true);
+                if editing {
+                    input.placeholder("Leave blank to keep the saved one")
+                } else {
+                    input
+                }
+            }),
+            ssh_secret_edited: false,
+            statement_timeout: cx.new(|cx| InputState::new(window, cx).placeholder("No limit")),
             password_edited: false,
             status: Status::None,
             test: None,
@@ -145,6 +189,9 @@ impl ConnectionEditor {
         let password = editor.password.clone();
         cx.subscribe_in(&password, window, Self::on_password_event)
             .detach();
+        let ssh_secret = editor.ssh_secret.clone();
+        cx.subscribe_in(&ssh_secret, window, Self::on_ssh_secret_event)
+            .detach();
         for field in editor.fields() {
             cx.subscribe_in(&field, window, Self::on_field_event)
                 .detach();
@@ -153,7 +200,7 @@ impl ConnectionEditor {
         editor
     }
 
-    fn fields(&self) -> [Entity<InputState>; 6] {
+    fn fields(&self) -> [Entity<InputState>; 15] {
         [
             self.name.clone(),
             self.host.clone(),
@@ -161,6 +208,15 @@ impl ConnectionEditor {
             self.username.clone(),
             self.password.clone(),
             self.database.clone(),
+            self.ssl_ca.clone(),
+            self.ssl_cert.clone(),
+            self.ssl_key.clone(),
+            self.ssh_host.clone(),
+            self.ssh_port.clone(),
+            self.ssh_user.clone(),
+            self.ssh_key.clone(),
+            self.ssh_secret.clone(),
+            self.statement_timeout.clone(),
         ]
     }
 
@@ -216,6 +272,20 @@ impl ConnectionEditor {
         }
     }
 
+    /// Note that the user typed in the SSH secret box, the way
+    /// [`on_password_event`](Self::on_password_event) does for the password.
+    fn on_ssh_secret_event(
+        &mut self,
+        _secret: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            self.ssh_secret_edited = true;
+        }
+    }
+
     fn set_field(
         &self,
         field: &Entity<InputState>,
@@ -238,7 +308,28 @@ impl ConnectionEditor {
         self.set_field(&self.port.clone(), &config.port.to_string(), window, cx);
         self.set_field(&self.username.clone(), &config.username, window, cx);
         self.set_field(&self.database.clone(), &config.database, window, cx);
+        let timeout = config
+            .statement_timeout
+            .map(|seconds| seconds.to_string())
+            .unwrap_or_default();
+        self.set_field(&self.statement_timeout.clone(), &timeout, window, cx);
         self.set_field(&self.password.clone(), "", window, cx);
+        self.ssl_mode = config.ssl.mode;
+        self.set_field(&self.ssl_ca.clone(), &config.ssl.ca_cert, window, cx);
+        self.set_field(&self.ssl_cert.clone(), &config.ssl.client_cert, window, cx);
+        self.set_field(&self.ssl_key.clone(), &config.ssl.client_key, window, cx);
+        self.ssh_enabled = config.ssh.enabled;
+        self.ssh_auth = config.ssh.auth;
+        self.set_field(&self.ssh_host.clone(), &config.ssh.host, window, cx);
+        self.set_field(
+            &self.ssh_port.clone(),
+            &config.ssh.port.to_string(),
+            window,
+            cx,
+        );
+        self.set_field(&self.ssh_user.clone(), &config.ssh.username, window, cx);
+        self.set_field(&self.ssh_key.clone(), &config.ssh.key_path, window, cx);
+        self.set_field(&self.ssh_secret.clone(), "", window, cx);
     }
 
     /// Put the caret in the first field the user is about to fill in.
@@ -267,7 +358,72 @@ impl ConnectionEditor {
             safety: self.safety,
             color: self.color,
             last_connected: None,
+            // Blank and `0` both mean no limit; SQLite has no server to
+            // enforce one, so a value left from another engine is dropped.
+            statement_timeout: if self.engine.is_file_based() {
+                None
+            } else {
+                self.statement_timeout
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse()
+                    .ok()
+                    .filter(|&seconds: &u32| seconds > 0)
+            },
+            ssl: self.ssl(cx),
+            ssh: self.ssh(cx),
         }
+    }
+
+    /// Read the tunnel settings. They are kept when the tunnel is switched
+    /// off, so switching it back on does not mean typing them again. A port
+    /// that is not a number reads as 0, which `SshConfig::invalid` refuses.
+    fn ssh(&self, cx: &App) -> SshConfig {
+        let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_string();
+        let port = text(&self.ssh_port);
+        SshConfig {
+            enabled: self.ssh_enabled,
+            host: text(&self.ssh_host),
+            port: if port.is_empty() {
+                22
+            } else {
+                port.parse().unwrap_or(0)
+            },
+            username: text(&self.ssh_user),
+            auth: self.ssh_auth,
+            key_path: text(&self.ssh_key),
+        }
+    }
+
+    fn set_ssh_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.ssh_enabled = enabled;
+        self.clear_status(cx);
+        cx.notify();
+    }
+
+    fn set_ssh_auth(&mut self, auth: SshAuth, cx: &mut Context<Self>) {
+        self.ssh_auth = auth;
+        self.clear_status(cx);
+        cx.notify();
+    }
+
+    /// Read the encryption settings. The paths are kept whatever the mode, so
+    /// stepping down to `Prefer` and back does not lose them.
+    fn ssl(&self, cx: &App) -> SslConfig {
+        let path = |input: &Entity<InputState>| input.read(cx).value().trim().to_string();
+        SslConfig {
+            mode: self.ssl_mode,
+            ca_cert: path(&self.ssl_ca),
+            client_cert: path(&self.ssl_cert),
+            client_key: path(&self.ssl_key),
+        }
+    }
+
+    fn set_ssl_mode(&mut self, mode: SslMode, cx: &mut Context<Self>) {
+        self.ssl_mode = mode;
+        self.clear_status(cx);
+        cx.notify();
     }
 
     fn set_engine(&mut self, engine: Engine, window: &mut Window, cx: &mut Context<Self>) {
@@ -315,7 +471,11 @@ impl ConnectionEditor {
         if !port.is_empty() && !port.parse::<u16>().is_ok_and(|port| port > 0) {
             return Some("The port must be a number from 1 to 65535.");
         }
-        None
+        let timeout = self.statement_timeout.read(cx).value().trim().to_string();
+        if !timeout.is_empty() && timeout.parse::<u32>().is_err() {
+            return Some("The statement timeout must be a whole number of seconds.");
+        }
+        self.ssl(cx).invalid().or_else(|| self.ssh(cx).invalid())
     }
 
     /// Report invalid inputs below the form; `true` when there were any.
@@ -334,8 +494,8 @@ impl ConnectionEditor {
             return;
         }
         let config = self.config(cx);
-        let password = self.password(cx);
-        cx.emit(EditorEvent::Saved { config, password });
+        let secrets = self.secrets(cx);
+        cx.emit(EditorEvent::Saved { config, secrets });
     }
 
     /// Connect, saving the connection first unless `save` is off.
@@ -344,10 +504,10 @@ impl ConnectionEditor {
             return;
         }
         let config = self.config(cx);
-        let password = self.password(cx);
+        let secrets = self.secrets(cx);
         cx.emit(EditorEvent::Connect {
             config,
-            password,
+            secrets,
             save,
         });
     }
@@ -355,7 +515,7 @@ impl ConnectionEditor {
     /// Open a connection with the form as it stands and close it again,
     /// reporting how it went without leaving the dialog.
     ///
-    /// The password is the one a Connect would use: what the box holds once
+    /// The secrets are the ones a Connect would use: what a box holds once
     /// typed in, otherwise what the keychain holds for a saved connection.
     fn test_connection(&mut self, cx: &mut Context<Self>) {
         if self.refuse_invalid(cx) {
@@ -363,27 +523,23 @@ impl ConnectionEditor {
         }
 
         let config = self.config(cx);
-        let typed = self.password(cx);
-        let stored = typed.is_none() && self.id.is_some() && !config.engine.is_file_based();
-        let id = config.id;
+        let secrets = self.secrets(cx);
+        let saved = self.id.is_some();
         // The keychain can prompt, or simply be slow, so it is read off the
         // UI thread like the launcher's own lookup.
-        let password = cx.background_spawn(async move {
-            match typed {
-                Some(password) => Ok(Some(password).filter(|password| !password.is_empty())),
-                None if stored => store::password(&id),
-                None => Ok(None),
-            }
-        });
+        let credentials = {
+            let config = config.clone();
+            cx.background_spawn(async move { store::credentials(&config, &secrets, saved) })
+        };
 
         self.status = Status::Testing;
         cx.notify();
 
         self.test = Some(cx.spawn(async move |this, cx| {
-            let outcome = match password.await {
-                Ok(password) => {
+            let outcome = match credentials.await {
+                Ok(credentials) => {
                     let task = runtime::spawn(async move {
-                        let connection = Connection::open(config, password).await?;
+                        let connection = Connection::open_with(config, credentials).await?;
                         connection.close().await;
                         anyhow::Ok(())
                     });
@@ -412,6 +568,16 @@ impl ConnectionEditor {
     fn password(&self, cx: &App) -> Option<String> {
         self.password_edited
             .then(|| self.password.read(cx).value().to_string())
+    }
+
+    /// Both secret boxes, as [`password`](Self::password) reads one.
+    fn secrets(&self, cx: &App) -> SecretEdits {
+        SecretEdits {
+            password: self.password(cx),
+            ssh: self
+                .ssh_secret_edited
+                .then(|| self.ssh_secret.read(cx).value().to_string()),
+        }
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
@@ -548,6 +714,143 @@ impl ConnectionEditor {
             )
     }
 
+    /// Pick how the connection is encrypted, with the certificate files once
+    /// the mode insists on encryption (`SslMode::uses_files`); below that they
+    /// are neither shown nor sent.
+    fn render_ssl(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let files = self.ssl_mode.uses_files();
+
+        v_flex()
+            .gap_3()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("SSL"),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .children(SslMode::ALL.map(|mode| {
+                                let button =
+                                    Button::new(SharedString::from(format!("ssl-{mode:?}")))
+                                        .label(mode.label())
+                                        .tooltip(mode.description())
+                                        .on_click(cx.listener(move |this, _, _window, cx| {
+                                            this.set_ssl_mode(mode, cx)
+                                        }));
+
+                                if self.ssl_mode == mode {
+                                    button.primary()
+                                } else {
+                                    button.outline()
+                                }
+                            })),
+                    ),
+            )
+            .when(files, |this| {
+                this.child(field("CA certificate", &self.ssl_ca, cx)).child(
+                    h_flex()
+                        .gap_3()
+                        .child(div().flex_1().child(field(
+                            "Client certificate",
+                            &self.ssl_cert,
+                            cx,
+                        )))
+                        .child(div().flex_1().child(field("Client key", &self.ssl_key, cx))),
+                )
+            })
+    }
+
+    /// Whether to connect through an SSH tunnel and, when so, the jump host
+    /// and how to sign in to it. The database's host and port above are then
+    /// as the jump host sees them.
+    fn render_ssh(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let enabled = self.ssh_enabled;
+        // A certificate is checked against the host the driver dials, which
+        // through a tunnel is the tunnel's own loopback end.
+        let verify_full = enabled && self.ssl_mode == SslMode::VerifyFull;
+
+        v_flex()
+            .gap_3()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("SSH tunnel"),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .children([(false, "Off"), (true, "On")].map(|(on, label)| {
+                                let button =
+                                    Button::new(SharedString::from(format!("ssh-{label}")))
+                                        .label(label)
+                                        .tooltip(if on {
+                                            "Connect through an SSH jump host"
+                                        } else {
+                                            "Connect to the database directly"
+                                        })
+                                        .on_click(cx.listener(move |this, _, _window, cx| {
+                                            this.set_ssh_enabled(on, cx)
+                                        }));
+                                if enabled == on {
+                                    button.primary()
+                                } else {
+                                    button.outline()
+                                }
+                            })),
+                    ),
+            )
+            .when(verify_full, |this| {
+                this.child(div().text_xs().text_color(cx.theme().warning).child(
+                    "Through a tunnel the certificate is checked against 127.0.0.1, \
+                             so Verify full will fail; use Verify CA.",
+                ))
+            })
+            .when(enabled, |this| {
+                let secret = self.ssh_auth.secret_label();
+                this.child(
+                    h_flex()
+                        .gap_3()
+                        .child(div().flex_1().child(field("SSH host", &self.ssh_host, cx)))
+                        .child(div().w_24().child(field("SSH port", &self.ssh_port, cx))),
+                )
+                .child(field("SSH user", &self.ssh_user, cx))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .children(SshAuth::ALL.map(|auth| {
+                            let button =
+                                Button::new(SharedString::from(format!("ssh-auth-{auth:?}")))
+                                    .label(auth.label())
+                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                        this.set_ssh_auth(auth, cx)
+                                    }));
+                            if self.ssh_auth == auth {
+                                button.primary()
+                            } else {
+                                button.outline()
+                            }
+                        })),
+                )
+                .when(self.ssh_auth == SshAuth::PrivateKey, |this| {
+                    this.child(field("Private key", &self.ssh_key, cx))
+                })
+                .when_some(secret, |this, label| {
+                    this.child(field(label, &self.ssh_secret, cx))
+                })
+            })
+    }
+
     fn render_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let file_based = self.engine.is_file_based();
 
@@ -571,7 +874,18 @@ impl ConnectionEditor {
                         .child(div().flex_1().child(field("User", &self.username, cx)))
                         .child(div().flex_1().child(field("Password", &self.password, cx))),
                 )
-                .child(field("Database", &self.database, cx))
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .child(div().flex_1().child(field("Database", &self.database, cx)))
+                        .child(div().w_40().child(field(
+                            "Statement timeout (s)",
+                            &self.statement_timeout,
+                            cx,
+                        ))),
+                )
+                .child(self.render_ssl(cx))
+                .child(self.render_ssh(cx))
             })
             .child(self.render_colors(cx))
             .child(self.render_safety(cx))
@@ -663,6 +977,54 @@ impl ConnectionEditor {
     ) {
         self.set_engine(engine, window, cx);
         self.set_field(&self.database.clone(), database, window, cx);
+    }
+
+    /// Pick an SSL mode the way its button does.
+    #[cfg(test)]
+    pub(crate) fn set_ssl_mode_for_test(&mut self, mode: SslMode, cx: &mut Context<Self>) {
+        self.set_ssl_mode(mode, cx);
+    }
+
+    /// Type into the CA, client certificate, and client key boxes.
+    #[cfg(test)]
+    pub(crate) fn set_ssl_files_for_test(
+        &self,
+        [ca, cert, key]: [&str; 3],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.set_field(&self.ssl_ca, ca, window, cx);
+        self.set_field(&self.ssl_cert, cert, window, cx);
+        self.set_field(&self.ssl_key, key, window, cx);
+    }
+
+    /// Switch the tunnel on and fill its boxes in, the way clicking and typing
+    /// would: `[host, port, user]`.
+    #[cfg(test)]
+    pub(crate) fn fill_ssh_for_test(
+        &mut self,
+        auth: SshAuth,
+        [host, port, user]: [&str; 3],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_ssh_enabled(true, cx);
+        self.set_ssh_auth(auth, cx);
+        self.set_field(&self.ssh_host.clone(), host, window, cx);
+        self.set_field(&self.ssh_port.clone(), port, window, cx);
+        self.set_field(&self.ssh_user.clone(), user, window, cx);
+    }
+
+    /// The secret boxes as the form would hand them to the keychain.
+    #[cfg(test)]
+    pub(crate) fn secrets_for_test(&self, cx: &App) -> SecretEdits {
+        self.secrets(cx)
+    }
+
+    /// The config the form would save or connect with.
+    #[cfg(test)]
+    pub(crate) fn config_for_test(&self, cx: &App) -> ConnectionConfig {
+        self.config(cx)
     }
 
     /// Type `value` over the port box's contents.

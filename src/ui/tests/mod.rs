@@ -30,13 +30,14 @@ use crate::db::export::Format;
 use crate::db::query::QueryResult;
 use crate::db::tests::TempDatabase;
 use crate::db::{
-    Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, SafetyMode, TagColor,
-    TxnState, runtime,
+    Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, SafetyMode, SshAuth,
+    SshConfig, SslConfig, SslMode, TagColor, TxnState, runtime,
 };
 use crate::ui::filter_bar::{FilterSpec, Operator};
 use crate::ui::session::{CloseScope, Session};
 use crate::ui::welcome::Welcome;
 
+mod completion;
 mod console;
 mod editing;
 mod explain;

@@ -4,6 +4,7 @@
 //! own state and notifies independently of the rest of the window.
 
 pub mod busy;
+pub mod completion;
 pub mod console;
 pub mod data_grid;
 pub mod engine;

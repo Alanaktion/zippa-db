@@ -27,6 +27,58 @@ fn switching_database_is_refused_for_sqlite(cx: &mut TestAppContext) {
         .unwrap();
 }
 
+/// Reconnecting swaps in a fresh pool to the same database and keeps
+/// everything the user had: the tabs, what was typed in them, and the
+/// console's record of what the old pool sent.
+#[gpui_kit::test]
+fn reconnecting_opens_a_fresh_pool_and_keeps_the_tabs(cx: &mut TestAppContext) {
+    let database = runtime::block_on(TempDatabase::new());
+    let connection = runtime::block_on(Connection::open(database.config(), None))
+        .expect("could not open the test database");
+    let path = connection.database().to_string();
+
+    cx.update(init_ui);
+    let handle = {
+        let connection = Arc::new(connection);
+        cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
+            Session::new(connection, window, cx)
+        })
+    };
+    cx.run_until_parked();
+
+    let (before, titles, logged) = handle
+        .update(cx, |session, window, cx| {
+            session.prepare_active_editor_for_test("SELECT 42", window, cx);
+            let before = session.connection();
+            let logged = before.query_log().snapshot().len();
+            assert!(
+                logged > 0,
+                "opening the session should have read the schema"
+            );
+            session.reconnect(cx);
+            (before, session.tab_titles(cx), logged)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    handle
+        .update(cx, |session, _, cx| {
+            let after = session.connection();
+            assert!(
+                !Arc::ptr_eq(&before, &after),
+                "reconnecting should open a new pool"
+            );
+            assert_eq!(after.database(), path);
+            assert_eq!(session.tab_titles(cx), titles);
+            assert_eq!(session.active_sql(cx), "SELECT 42");
+            assert!(
+                after.query_log().snapshot().len() >= logged,
+                "the console's history should carry over"
+            );
+        })
+        .unwrap();
+}
+
 /// `Session::switch_database` replaces the connection (and its pool), so the
 /// query log it carries would reset to empty on every switch unless the
 /// session explicitly carries it forward — losing exactly the statements a

@@ -31,9 +31,9 @@ There are no "unfinished feature" placeholders in the usual sense: no `todo!()`/
 
 `Connection::catalog` now stops building entries at `MAX_ENTRIES` (200 000) and only counts the rest, but the three per-kind queries (columns, indexes, triggers) are still fully materialised `QueryResult`s first. A very large schema costs its rows once in memory before the cap applies.
 
-### [M] Postgres `cell` has no arm for several types sqlx can decode
+### [L] Postgres `cell` still has no arm for a few types
 
-`postgres.rs` handles `MACADDR` but not `MACADDR8`, and none of sqlx 0.9's geometric/hstore/lrange types (`PgPoint`, `PgBox`, `PgCircle`, `PgHstore`, ranges, …). Those fall to the `_ => value!(String)` arm, fail, and render as `<POINT>`-style stand-ins (`src/db/postgres.rs`, `cell`) — which export as NULL and cannot be edited.
+The geometric types, `hstore`, the six built-in ranges and `macaddr8` now read back as the text Postgres prints (pinned by `live_postgres_geometry_ranges_hstore_and_macaddr8_read_back_as_text`). What is left falls to the `_ => value!(String)` arm and renders as a `<TYPE>` stand-in: arrays of ranges (sqlx reads an empty element as unbounded), `box[]` (its elements are `;`-separated), `macaddr8[]`, and types sqlx has no mapping for that are not text on the wire, such as `tsvector`, `pg_lsn`, and multiranges (`src/db/postgres.rs`, `cell`). A `numeric[]` still shows each element widened to whole base-10000 digits (`1.5000`), since only a single `numeric` and a `numrange` read their display scale from the raw value.
 
 ### [L] Import pre-flight heuristics
 
@@ -64,7 +64,6 @@ The "destructive statement" count only sees the first 64 KiB of the dump (`src/d
 
 ### Behaviour that differs between two paths to the same thing
 
-- **[M] Stand-ins are handled two ways across the copy paths.** `Cmd+C` puts the driver's description on the clipboard verbatim (`src/ui/data_grid/clipboard.rs` `copy`, asserted in `src/ui/tests/navigation.rs`), whereas `Cmd+Shift+C` and the `Copy as` submenu route through `export`, which writes `NULL` and counts it.
 - **[L] `MAX_COPY_BYTES` is not applied to every copy.** Row copies are now capped at `MAX_COPY_ROWS` before any row is cloned, but the byte cap still skips single-cell copies and both column shapes (`src/ui/data_grid/clipboard.rs`).
 - **[L] A NULL is shown differently in the grid and the row panel.** The grid renders it as the word `NULL` (`src/ui/data_grid/format.rs`); the row panel shows an empty box (`src/ui/table_view/row_panel.rs`). Both coerce a typed `null` per the setting, and the value dialog does too.
 - **[L] Three different guards for "a dialog is already open".** `window.has_active_dialog` (`src/ui/quick_switcher.rs`, `src/ui/schema_search.rs`, `src/ui/shortcuts_dialog.rs`), a struct field (`Session::import`, `src/ui/session/files.rs`), and none at all (`src/ui/welcome/mod.rs`).
@@ -137,7 +136,7 @@ Small in number and mostly guarded, but they are panics in paths that process us
 
 - **Every result is materialised before it is rendered.** `fetch_all` collects the whole row stream into `Vec<Row>` and converts each cell to an owned `String` (`src/db/connection.rs`). The grid virtualizes only the *rendering*, so memory is proportional to the result; the README says so.
 - **Per-frame allocation in the row panel.** `render_field` calls `is_field_editable` and `needs_a_window` for every visible field (`src/ui/table_view/row_panel.rs`), and both end in `query::is_binary_type`, which allocates an uppercased `String` per call (`src/db/query.rs`).
-- **`is_placeholder` misclassifies genuine short bracketed values.** `src/db/query.rs` treats any `<…>` whose inner text has no brackets or space as a driver stand-in, so a real `<nil>`, `<item>` or `<3 bytes>` text value is treated as "never read back": uneditable (`src/ui/data_grid/delegate.rs`), claims so in the value dialog, dropped from copies, and exported as `NULL`/empty (`src/db/export.rs`). The test only covers `<a>hi</a>` and `<>`.
+- **`is_placeholder` misclassifies genuine short bracketed values.** `src/db/query.rs` treats any `<…>` whose inner text has no brackets, parentheses, comma, or space as a driver stand-in, so a real `<nil>`, `<item>` or `<3 bytes>` text value is treated as "never read back": uneditable (`src/ui/data_grid/delegate.rs`), claims so in the value dialog, dropped from copies, and exported as `NULL`/empty (`src/db/export.rs`). The test only covers `<a>hi</a>`, `<>`, and a `circle`.
 - **Cancellation arms nothing can reach, and work that outlives its tab.** The connect task's abort handle is never kept (`src/ui/welcome/mod.rs`), same for `reload_metadata` and `switch_database` (`src/ui/session/metadata.rs`), so their "cancelled" branches can only be reached by a panic, which would be misreported. Table-view loads, writes and exports are `runtime::spawn`ed and detached with no abort handle (`src/ui/table_view/mod.rs`, `export.rs`), so nothing stops a page load or an export, and closing the tab leaves the future running. `CancelQuery`/`Cmd+.` only reaches queries and imports (`src/ui/session/running.rs`).
 - **Unchecked indexing / arithmetic** (all currently safe, listed for completeness): `self.tabs[self.active]` (`src/app.rs`, safe because `tabs` is never empty), `self.panels[index]` with a modulo (`src/ui/session/files.rs`), and `page * limit` / `limit`/`offset` interpolation (`src/ui/table_view/sql.rs`, `footer.rs`), clamped by `settings::MAX_PAGE_SIZE`.
 - **`describe` failures are swallowed.** `Executor::describe(pool, statement)` is called with no bound parameters and `unwrap_or_default()`ed (`src/db/connection.rs`), so a parameterised statement that returns no rows can silently lose its column list. ⚠︎ Unverified against a live Postgres; every in-tree caller casts its placeholders.
@@ -152,7 +151,7 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 - **In `#[cfg(test)]` the keychain is a no-op** (`src/db/store.rs`), so the real credential-store contract is never exercised and each call site has two code paths to keep right.
 - **Column dragging, the row-limit entry/stepper, and a grid keybinding inside a query tab** have no tests (`src/ui/table_view/mod.rs` `on_limit_event`/`on_limit_step`; `src/ui/tests/rows.rs` calls `copy_as` directly).
 - **MySQL is only tested for metadata and imports through paths that cannot reach most of them** — every pure test in `src/db/tests.rs` opens a SQLite `TempDatabase`, and the MySQL rollback→stop fallback and session-variable restore (`src/db/import/mod.rs`) are MySQL-only.
-- **Live-server tests are `#[ignore]`d by default** and run only in `.github/workflows/live-tests.yml` (nightly, on push to `main`, and on dispatch); each doc comment names its container. The engine-divergence findings (timestamp labelling, unsupported-type stand-ins) are still unverified end to end.
+- **Live-server tests are `#[ignore]`d by default** and run only in `.github/workflows/live-tests.yml` (nightly, on push to `main`, and on dispatch); each doc comment names its container. The timestamp-labelling divergence is still unverified end to end.
 
 ## 6. CI
 
@@ -160,11 +159,10 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 
 ## 7. Suggested triage order
 
-1. **Postgres `cell` arms** (§1) — geometric/hstore/range/`MACADDR8` values currently stand in as unreadable and uneditable.
-2. **Copy-path consistency** (§2) — make `Cmd+C` treat a stand-in the way `Copy as` does, and apply the byte cap to every copy.
-3. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations.
-4. **Durability** (§4) — the checkpoint/flush interleaving on `workspace.json` (the `record_connected` race is fixed).
-5. **CI on macOS and Windows** (§6).
+1. **Copy byte cap** (§2) — apply `MAX_COPY_BYTES` to every copy.
+2. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations.
+3. **Durability** (§4) — the checkpoint/flush interleaving on `workspace.json` (the `record_connected` race is fixed).
+4. **CI on macOS and Windows** (§6).
 
 ## 8. What this audit did and did not cover
 

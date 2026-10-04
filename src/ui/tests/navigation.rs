@@ -110,9 +110,35 @@ fn copying_with_rows_picked_out_takes_the_whole_rows(cx: &mut TestAppContext) {
 
     assert_eq!(
         clipboard(cx),
-        Some("1\talpha\t1.5\t<3 bytes>\n2\t\t\t".to_string()),
+        Some("1\talpha\t1.5\t\n2\t\t\t".to_string()),
         "the rows should copy as one line each, columns separated by tabs, \
-         and a NULL as nothing"
+         and a NULL as nothing — so should the `<3 bytes>` stand-in, the way \
+         Copy as writes it"
+    );
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Copied 2 rows (1 value not read back, copied as NULL)".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn the_copy_shortcut_copies_a_stand_in_as_nothing(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    cx.update(|cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("stale".to_string())));
+
+    // `payload` holds `<3 bytes>`, a description of a value rather than one.
+    select_cell(cx, &view, 0, 3);
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-c");
+    cx.run_until_parked();
+
+    // An empty string reads back as no text at all.
+    assert_eq!(clipboard(cx).unwrap_or_default(), "");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Value not read back, copied as NULL".to_string())
     );
 }
 

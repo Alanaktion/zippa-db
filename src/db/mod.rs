@@ -7,10 +7,13 @@
 //!
 //! * [`config`] — what the user saves about a connection, before it is opened.
 //! * [`connection`] — the live pool, and the shared read and write paths.
+//! * [`health`] — telling a dropped or unreachable server apart from a SQL
+//!   error, and saying so in words.
 //! * [`binary`] — sniffing and laying out the bytes behind a binary value.
 //! * [`query_log`] — the bounded record of every statement a connection has
 //!   sent, for the console pane.
 //! * [`catalog`] — the whole schema once per session, and the search over it.
+//! * [`completion`] — what the SQL editor offers for the word under the caret.
 //! * [`schema`] — a table's own definition: columns, indexes, foreign keys.
 //! * [`sql`] — quoting and placing bind parameters in generated statements.
 //! * [`statement`] — splitting and classifying the user's own SQL.
@@ -29,10 +32,12 @@
 
 pub mod binary;
 pub mod catalog;
+pub mod completion;
 pub mod config;
 pub mod connection;
 pub(crate) mod dedicated;
 pub mod export;
+pub mod health;
 pub mod import;
 pub mod mysql;
 pub mod pinned;
@@ -47,16 +52,21 @@ pub mod sql;
 pub mod sqlite;
 pub mod statement;
 pub mod store;
+pub(crate) mod tunnel;
 
 #[cfg(test)]
 pub(crate) mod tests;
 
 pub use catalog::{Catalog, CatalogEntry, CatalogKind, Query};
 pub(crate) use config::file_name;
-pub use config::{ConnectionConfig, Engine, SafetyMode, TagColor, is_risky_auto_apply};
-pub(crate) use connection::POOL_MAX;
+pub use config::{
+    ConnectionConfig, Engine, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode, TagColor,
+    is_risky_auto_apply,
+};
+pub(crate) use connection::pool_options;
 pub use connection::{
-    Connection, DatabaseObject, ObjectKind, QueryDigest, RowKey, StoredKind, StoredObject,
+    Connection, Credentials, DatabaseObject, ObjectKind, QueryDigest, RowKey, StoredKind,
+    StoredObject,
 };
 pub use import::{ImportProgress, ImportRequest, ImportSummary, OnError};
 pub use pinned::{PinnedConnection, TxnState};

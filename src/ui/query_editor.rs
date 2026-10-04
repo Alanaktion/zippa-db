@@ -2,23 +2,25 @@
 //!
 //! A code editor with SQL highlighting that hands the statement under the
 //! caret, the selection, or the whole buffer to the session, which runs it and
-//! can cancel it. Completion from live introspection is still ahead (TODO.md
-//! section 3).
+//! can cancel it. Typing offers completions from the session's catalog and a
+//! list of SQL keywords (see [`crate::ui::completion`]).
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::input::{Editor, EditorState, Enter, IndentInline};
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, EventEmitter, Window, actions, div};
+use gpui_kit::{Context, Entity, EventEmitter, KeyDownEvent, Window, actions, div, px};
 
 use gpui_kit::assets::IconName as AssetIcon;
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use crate::db::{Blocker, Engine, statement, transaction_blocker};
-use crate::settings;
+use crate::settings::{self, CompletionKey, Settings};
+use crate::ui::completion::{SharedCatalog, SqlCompletions};
 use crate::ui::session::{OpenFile, SaveFile};
 
 actions!(
@@ -31,6 +33,10 @@ actions!(
         ExplainAnalyze
     ]
 );
+
+/// The widest the completion menu grows, in pixels. `gpui-kit`'s default of
+/// 320 cuts off a long column name once its type and table are beside it.
+const COMPLETION_MENU_WIDTH: f32 = 480.;
 
 pub enum QueryEditorEvent {
     /// The user asked to run one statement: what is selected, or the one the
@@ -51,6 +57,9 @@ pub enum QueryEditorEvent {
 
 pub struct QueryEditor {
     state: Entity<EditorState>,
+    /// The provider the editor asks, kept so a test can ask it too.
+    #[cfg(test)]
+    completions: Rc<SqlCompletions>,
     running: bool,
     /// The engine this buffer runs against, so the analyze button can say when
     /// the server has no `EXPLAIN ANALYZE`.
@@ -75,23 +84,33 @@ impl EventEmitter<QueryEditorEvent> for QueryEditor {}
 
 impl QueryEditor {
     /// Open an editor that already holds `sql`, as when a table is opened from
-    /// the sidebar.
+    /// the sidebar. `catalog` is the session's, which completions are read
+    /// from.
     pub fn with_text(
         sql: impl Into<String>,
         engine: Engine,
+        catalog: SharedCatalog,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let sql = sql.into();
+        let completions = Rc::new(SqlCompletions { catalog, engine });
         let state = cx.new(|cx| {
-            EditorState::new(window, cx)
+            let mut state = EditorState::new(window, cx)
                 .language("sql")
                 .placeholder("SELECT * FROM …")
-                .default_value(sql)
+                .default_value(sql);
+            let lsp = state.lsp_mut();
+            lsp.completion_provider = Some(completions.clone());
+            // Wide enough for a long column name beside its type and table.
+            lsp.completion_menu.max_width = px(COMPLETION_MENU_WIDTH);
+            state
         });
 
         Self {
             state,
+            #[cfg(test)]
+            completions,
             running: false,
             engine,
             statement_cache: RefCell::new(None),
@@ -132,6 +151,16 @@ impl QueryEditor {
     pub(crate) fn select_for_test(&self, range: std::ops::Range<usize>, cx: &mut Context<Self>) {
         self.state
             .update(cx, |state, cx| state.set_selected_range(range, cx));
+    }
+
+    /// The labels the completion menu would offer with the caret where it is.
+    #[cfg(test)]
+    pub(crate) fn completions_for_test(&self, cx: &gpui_kit::App) -> Vec<String> {
+        let state = self.state.read(cx);
+        self.completions
+            .complete(state.text(), state.cursor())
+            .map(|completions| completions.items.into_iter().map(|s| s.label).collect())
+            .unwrap_or_default()
     }
 
     /// The statement a run would send, for a test to read.
@@ -192,6 +221,89 @@ impl QueryEditor {
         cx: &mut Context<Self>,
     ) {
         self.emit_explain(true, cx);
+    }
+
+    /// Whether the completion menu is on screen.
+    fn completion_open(&self, cx: &gpui_kit::App) -> bool {
+        self.state.read(cx).completion_menu_state().open
+    }
+
+    /// Every keystroke, seen before the editor.
+    fn on_key_down(&mut self, _: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.restart_completion(cx);
+        self.follow_caret(window, cx);
+    }
+
+    /// With the menu closed, start the next completion where the caret is now.
+    ///
+    /// `gpui-kit` remembers where the first completion started and never
+    /// forgets it; a later keystroke before that offset — the caret moved
+    /// back to an earlier line, say to finish a `SELECT` list after writing
+    /// its `FROM` — is then ignored and the menu never opens. Setting the
+    /// start afresh while nothing is showing keeps it at or before the caret.
+    fn restart_completion(&mut self, cx: &mut Context<Self>) {
+        if self.completion_open(cx) {
+            return;
+        }
+        self.state.update(cx, |state, cx| {
+            let cursor = state.cursor();
+            state.present_completion_items(cursor, "", Vec::new(), cx);
+        });
+    }
+
+    /// Draw the editor once more after the frame that moves the caret, so
+    /// the completion menu follows it straight away.
+    ///
+    /// The menu places itself from the caret's position in the *last* frame
+    /// painted, and its new items usually land before the keystroke's own
+    /// frame is drawn — so that frame shows it where the caret was, and
+    /// nothing redraws it until the caret next blinks. Next-frame callbacks
+    /// run before that tick's draw, hence the two levels: the outer one runs
+    /// before the keystroke's frame, the inner one after it is painted.
+    fn follow_caret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let editor = cx.entity().downgrade();
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |_, cx| {
+                let Some(editor) = editor.upgrade() else {
+                    return;
+                };
+                let state = editor.read(cx).state.clone();
+                if state.read(cx).completion_menu_state().open {
+                    state.update(cx, |_, cx| cx.notify());
+                }
+            });
+        });
+    }
+
+    /// `Tab`, seen before the editor indents: with Tab chosen to accept a
+    /// suggestion and the menu open, it takes the highlighted one instead.
+    fn accept_with_tab(&mut self, _: &IndentInline, window: &mut Window, cx: &mut Context<Self>) {
+        if Settings::global(cx).accept_completion != CompletionKey::Tab || !self.completion_open(cx)
+        {
+            return;
+        }
+        // The menu answers `Enter` by taking the highlighted suggestion.
+        let accept = Box::new(Enter {
+            secondary: false,
+            shift: false,
+        });
+        self.state.update(cx, |state, cx| {
+            state.route_overlay_action(accept, window, cx)
+        });
+        cx.stop_propagation();
+    }
+
+    /// `Enter`, seen before the menu: with Tab chosen to accept, Enter closes
+    /// the menu and goes on to start a new line.
+    fn enter_with_menu_open(&mut self, action: &Enter, _: &mut Window, cx: &mut Context<Self>) {
+        if action.secondary
+            || Settings::global(cx).accept_completion != CompletionKey::Tab
+            || !self.completion_open(cx)
+        {
+            return;
+        }
+        self.state
+            .update(cx, |state, cx| state.dismiss_lsp_overlays(cx));
     }
 
     /// Run what is selected, or the statement the caret is in.
@@ -347,6 +459,9 @@ impl Render for QueryEditor {
             .on_action(cx.listener(Self::run_script_ignoring_errors))
             .on_action(cx.listener(Self::explain))
             .on_action(cx.listener(Self::explain_analyze))
+            .capture_key_down(cx.listener(Self::on_key_down))
+            .capture_action(cx.listener(Self::accept_with_tab))
+            .capture_action(cx.listener(Self::enter_with_menu_open))
             .size_full()
             .border_b_1()
             .border_color(cx.theme().border)

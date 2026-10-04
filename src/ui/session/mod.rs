@@ -18,7 +18,8 @@ use gpui_kit::{
 
 use regex::Regex;
 
-use crate::db::{Catalog, CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObject};
+use crate::db::{CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObject};
+use crate::ui::completion::SharedCatalog;
 use crate::ui::import_dialog::ImportView;
 
 mod files;
@@ -54,6 +55,7 @@ actions!(
         CancelQuery,
         QuickSwitcher,
         Disconnect,
+        Reconnect,
         ImportSqlDump,
         SearchSchema,
         OpenConsole,
@@ -102,16 +104,21 @@ pub struct Session {
     objects_tree: Entity<TreeState>,
     /// Set when the schema could not be read; queries still work.
     metadata_error: Option<String>,
-    /// The whole schema, for [`SearchSchema`]. Read once in the background as
-    /// the session opens and again on refresh, so a keystroke never waits on
-    /// the server. Holds only names until the read lands.
-    catalog: Arc<Catalog>,
+    /// The whole schema, for [`SearchSchema`] and the query editors'
+    /// completions. Read once in the background as the session opens and
+    /// again on refresh, so a keystroke never waits on the server. Holds only
+    /// names until the read lands. Shared with every query tab's editor, which
+    /// reads whichever snapshot is current.
+    catalog: SharedCatalog,
     /// Whether that read is still in flight, so the dialog can say so.
     catalog_loading: bool,
     /// Why the full catalog could not be read, when it could not; search then
     /// finds names but not columns, indexes or triggers.
     catalog_error: Option<String>,
     switching: bool,
+    /// Whether that reopen is a [`Reconnect`] to the same database rather
+    /// than a switch, so the picker can say which.
+    reconnecting: bool,
     /// The next panel's stable key. See `SessionPanel`'s `key` field.
     next_key: usize,
     /// The import dialog, while one is open over the window.
@@ -155,10 +162,11 @@ impl Session {
             sidebar_tab: SidebarTab::Schema,
             objects_tree: cx.new(|cx| TreeState::new(cx)),
             metadata_error: None,
-            catalog: Arc::new(Catalog::default()),
+            catalog: SharedCatalog::default(),
             catalog_loading: true,
             catalog_error: None,
             switching: false,
+            reconnecting: false,
             next_key: 0,
             import: None,
         };
@@ -438,6 +446,10 @@ impl Session {
         cx.emit(SessionEvent::Disconnected);
     }
 
+    fn on_reconnect(&mut self, _: &Reconnect, _window: &mut Window, cx: &mut Context<Self>) {
+        self.reconnect(cx);
+    }
+
     /// Open what a schema search result is about.
     ///
     /// A table or view opens its rows; a column opens its table's rows with
@@ -552,6 +564,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_open_query_digest))
             .on_action(cx.listener(Self::on_open_maintenance))
             .on_action(cx.listener(Self::on_disconnect))
+            .on_action(cx.listener(Self::on_reconnect))
             .child(
                 h_resizable("session-columns")
                     .with_state(&self.columns)

@@ -17,14 +17,18 @@ features you'd expect from a modern database client.
 * **Connections.** Save connections and open several at once, each in its own
   tab. Passwords live in the OS keychain, never on disk. An optional colour (say,
   red for production) marks a connection's tab and title bar, so you always
-  know where you are. Your open connections, tabs, and query buffers come back on
+  know where you are. Each server connection picks an SSL mode (*disable*,
+  *prefer*, *require*, *verify CA*, *verify full*) with optional CA and client
+  certificate files, and can connect through an SSH tunnel (agent, key file, or
+  password; the SSH secret lives in the keychain too). Your open connections, tabs, and query buffers come back on
   the next launch.
 * **Safety modes.** Each connection is *read-only*, *confirm writes*, *staged*
   (the default: edits wait until you apply them), or *auto-apply*. Read-only is
   enforced by the server and by a client-side check of your SQL.
-* **SQL editor.** Highlighted SQL, run the current statement, the selection, or
-  the whole script, with one result tab per statement. A script runs in one
-  transaction and stops on each error to ask whether to roll back, skip it, or
+* **SQL editor.** Highlighted SQL with completion of tables, columns (including
+  through an alias), schemas, and keywords as you type. Run the current
+  statement, the selection, or the whole script, with one result tab per
+  statement. A script runs in one transaction and stops on each error to ask whether to roll back, skip it, or
   skip every error; one that cannot run in a transaction (`LOCK TABLES`,
   `VACUUM`, MySQL DDL) asks before running without one. *Run Script Ignoring
   Errors* runs everything with no transaction and lists what failed — handy

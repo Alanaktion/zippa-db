@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
-use super::ConnectionConfig;
+use super::{ConnectionConfig, Credentials, SshAuth};
 
 #[cfg_attr(test, allow(dead_code))]
 const SERVICE: &str = "zippa-db";
@@ -170,6 +170,116 @@ pub fn delete_password(id: &Uuid) -> Result<()> {
     #[cfg(not(test))]
     {
         match entry(id)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+    #[cfg(test)]
+    {
+        let _ = id;
+        Ok(())
+    }
+}
+
+/// What the connection editor's secret boxes mean for the keychain: `None`
+/// for a box the user never touched (keep what is stored), `Some("")` for one
+/// they emptied (forget it), anything else a new secret.
+#[derive(Clone, Default)]
+pub struct SecretEdits {
+    pub password: Option<String>,
+    pub ssh: Option<String>,
+}
+
+impl SecretEdits {
+    /// Write the boxes the user touched to the keychain, leaving the rest.
+    pub fn save(&self, id: &Uuid) -> Result<()> {
+        if let Some(password) = &self.password {
+            set_password(id, password)?;
+        }
+        if let Some(secret) = &self.ssh {
+            set_ssh_secret(id, secret)?;
+        }
+        Ok(())
+    }
+}
+
+/// The secrets to open `config` with: what the user typed, or for a box left
+/// untouched on a `saved` connection, what the keychain holds. Only the
+/// secrets the connection can use are looked up, since asking the keychain for
+/// one it never stored can prompt the user for nothing.
+///
+/// Blocking: the keychain can prompt, so call it off the UI thread.
+pub fn credentials(
+    config: &ConnectionConfig,
+    edits: &SecretEdits,
+    saved: bool,
+) -> Result<Credentials> {
+    let typed = |secret: &str| Some(secret.to_string()).filter(|secret| !secret.is_empty());
+    let server = !config.engine.is_file_based();
+
+    let password = match &edits.password {
+        Some(password) => typed(password),
+        None if saved && server => password(&config.id)?,
+        None => None,
+    };
+    let ssh = if server && config.ssh.enabled && config.ssh.auth != SshAuth::Agent {
+        match &edits.ssh {
+            Some(secret) => typed(secret),
+            None if saved => ssh_secret(&config.id)?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    Ok(Credentials { password, ssh })
+}
+
+/// The keychain account an SSH tunnel's password or key passphrase is kept
+/// under: beside the database password, under the same connection id.
+#[cfg(not(test))]
+fn ssh_entry(id: &Uuid) -> Result<keyring::Entry> {
+    keyring::Entry::new(SERVICE, &format!("{id}/ssh")).context("no OS credential store available")
+}
+
+/// The stored SSH password or key passphrase for a connection, if any.
+pub fn ssh_secret(id: &Uuid) -> Result<Option<String>> {
+    #[cfg(not(test))]
+    {
+        match ssh_entry(id)?.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+    #[cfg(test)]
+    {
+        let _ = id;
+        Ok(None)
+    }
+}
+
+/// Store the SSH password or key passphrase; an empty one forgets it.
+pub fn set_ssh_secret(id: &Uuid, secret: &str) -> Result<()> {
+    #[cfg(not(test))]
+    {
+        if secret.is_empty() {
+            return delete_ssh_secret(id);
+        }
+        ssh_entry(id)?
+            .set_password(secret)
+            .context("could not save the SSH secret to the OS credential store")
+    }
+    #[cfg(test)]
+    {
+        let _ = (id, secret);
+        Ok(())
+    }
+}
+
+pub fn delete_ssh_secret(id: &Uuid) -> Result<()> {
+    #[cfg(not(test))]
+    {
+        match ssh_entry(id)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(error.into()),
         }
