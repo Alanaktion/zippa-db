@@ -69,7 +69,8 @@ pub fn blob(bytes: &[u8]) -> Cell {
 /// Angle brackets alone are not enough to go on: a real value can be wrapped
 /// in them too, `<a>hi</a>` from an `xml` column being the everyday case. A
 /// stand-in holds one type name, or a byte count, and so never brackets
-/// anything of its own.
+/// anything of its own — nor holds a parenthesis or a comma, which is what
+/// tells a Postgres `circle`, `<(1,2),3>`, apart from one.
 pub fn is_placeholder(cell: &Cell) -> bool {
     let Some(value) = cell else {
         return false;
@@ -77,7 +78,7 @@ pub fn is_placeholder(cell: &Cell) -> bool {
     let Some(inner) = value.strip_prefix('<').and_then(|v| v.strip_suffix('>')) else {
         return false;
     };
-    if inner.contains(['<', '>']) {
+    if inner.contains(['<', '>', '(', ')', ',']) {
         return false;
     }
     match inner.split_once(' ') {
@@ -113,6 +114,8 @@ mod tests {
         // An `xml` document is a value, not a description of one.
         assert!(!is_placeholder(&Some("<a>hi</a>".into())));
         assert!(!is_placeholder(&Some("<>".into())));
+        // Nor is a Postgres `circle`.
+        assert!(!is_placeholder(&Some("<(1,2),3>".into())));
     }
 
     #[test]
