@@ -3,12 +3,14 @@
 
 use std::sync::Arc;
 
+use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::button::ButtonVariants as _;
+use gpui_kit::component::button::{ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, px};
+use gpui_kit::{Context, Entity, Window, px};
 
 use crate::db::{Catalog, CatalogEntry, Connection, runtime};
 
@@ -111,6 +113,58 @@ impl Session {
 
     pub(crate) fn catalog_error(&self) -> Option<&str> {
         self.catalog_error.as_deref()
+    }
+
+    /// Switch to `database` for the user, asking first when a tab has a
+    /// transaction open: each query tab's connection is to the database being
+    /// left, so switching closes it and rolls the transaction back.
+    pub(crate) fn request_switch_database(
+        &mut self,
+        database: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let open = self.open_transactions(cx);
+        if open == 0 || database == self.connection.database() {
+            self.switch_database(database, cx);
+            return;
+        }
+        if window.has_active_dialog(cx) {
+            return;
+        }
+
+        let description = match open {
+            1 => "A tab has an open transaction. Switching database closes its connection, \
+                  which rolls the transaction back."
+                .to_string(),
+            count => format!(
+                "{count} tabs have open transactions. Switching database closes their \
+                 connections, which rolls the transactions back."
+            ),
+        };
+        let session = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let session = session.clone();
+            let database = database.clone();
+            alert
+                .title(format!("Roll back and switch to {database}?"))
+                .description(description.clone())
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Roll Back and Switch")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    if let Some(session) = session.upgrade() {
+                        session.update(cx, |session, cx| {
+                            session.switch_database(database.clone(), cx)
+                        });
+                    }
+                    true
+                })
+        });
     }
 
     /// Reopen the pool against `database` and reload the object list.
@@ -255,11 +309,11 @@ impl Session {
                     menu = menu.item(
                         PopupMenuItem::new(database.clone())
                             .checked(*database == current)
-                            .on_click(move |_, _window, cx| {
+                            .on_click(move |_, window, cx| {
                                 let name = name.clone();
                                 if let Some(session) = weak.upgrade() {
                                     session.update(cx, |session, cx| {
-                                        session.switch_database(name, cx)
+                                        session.request_switch_database(name, window, cx)
                                     });
                                 }
                             }),

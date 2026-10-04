@@ -22,6 +22,8 @@
 //!   transaction, pausing on a failure for the user to answer.
 //! * [`dedicated`] — one connection held for the length of an import or a
 //!   script.
+//! * [`pinned`] — the connection a query tab holds for as long as it is open,
+//!   and whether it has a transaction open.
 //! * [`runtime`] — the Tokio runtime every database call is submitted to.
 //! * [`store`] — connection metadata on disk, passwords in the OS keychain.
 
@@ -33,6 +35,7 @@ pub(crate) mod dedicated;
 pub mod export;
 pub mod import;
 pub mod mysql;
+pub mod pinned;
 pub mod plan;
 pub mod postgres;
 pub mod query;
@@ -51,11 +54,12 @@ pub(crate) mod tests;
 pub use catalog::{Catalog, CatalogEntry, CatalogKind, Query};
 pub(crate) use config::file_name;
 pub use config::{ConnectionConfig, Engine, SafetyMode, TagColor, is_risky_auto_apply};
-pub(crate) use connection::POOL_SIZE;
+pub(crate) use connection::POOL_MAX;
 pub use connection::{
     Connection, DatabaseObject, ObjectKind, QueryDigest, RowKey, StoredKind, StoredObject,
 };
 pub use import::{ImportProgress, ImportRequest, ImportSummary, OnError};
+pub use pinned::{PinnedConnection, TxnState};
 pub use plan::{Explained, Plan, PlanNode};
 pub use query_log::{LoggedQuery, QueryOutcome, QuerySource};
 pub use schema::{

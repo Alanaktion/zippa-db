@@ -6,7 +6,7 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgQueryResult, PgR
 use sqlx::{Row, TypeInfo, ValueRef};
 
 use super::query::{self, Cell};
-use super::{ConnectionConfig, POOL_SIZE, quote_literal};
+use super::{ConnectionConfig, POOL_MAX, quote_literal};
 
 /// Databases on this server the user can connect to.
 pub(crate) const DATABASES_SQL: &str = "SELECT datname FROM pg_database \
@@ -141,7 +141,7 @@ pub(crate) async fn connect(config: &ConnectionConfig, password: Option<&str>) -
     }
 
     let pool = PgPoolOptions::new()
-        .max_connections(POOL_SIZE)
+        .max_connections(POOL_MAX)
         .connect_with(options)
         .await?;
     Ok(pool)

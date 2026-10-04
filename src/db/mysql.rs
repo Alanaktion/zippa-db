@@ -7,7 +7,7 @@ use sqlx::{Executor, Row, TypeInfo, ValueRef};
 use super::config::Engine;
 use super::query::{self, Cell};
 use super::sql::quote_literal_for;
-use super::{ConnectionConfig, POOL_SIZE, decode};
+use super::{ConnectionConfig, POOL_MAX, decode};
 
 /// Schemas double as databases in MySQL; the server's own are hidden.
 pub(crate) const DATABASES_SQL: &str = "SELECT schema_name FROM information_schema.schemata \
@@ -108,7 +108,7 @@ pub(crate) async fn connect(
         options = options.password(password);
     }
 
-    let mut pool_options = MySqlPoolOptions::new().max_connections(POOL_SIZE);
+    let mut pool_options = MySqlPoolOptions::new().max_connections(POOL_MAX);
 
     // A read-only connection is read-only at the server too: the client-side
     // check in `Connection::refuse_write` only speaks for statements it can

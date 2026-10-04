@@ -9643,6 +9643,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "keyring",
+ "libsqlite3-sys",
  "regex",
  "serde",
  "serde_json",

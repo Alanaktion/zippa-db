@@ -6,6 +6,7 @@
 //! lists databases and objects, decoding a row cell — lives in the sibling
 //! `postgres` / `mysql` / `sqlite` modules.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -26,8 +27,18 @@ use super::query::{Cell, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
 use super::{mysql, postgres, sqlite, statement, typed_placeholder};
 
-/// Connections opened per saved connection.
+/// Connections kept for the app's own reads and writes — the sidebar, table
+/// views, the structure tab — however many query tabs hold one of their own.
 pub(crate) const POOL_SIZE: u32 = 5;
+
+/// How many query tabs of one connection can each hold a pinned connection
+/// (see [`PinnedConnection`](super::PinnedConnection)). The pool is opened
+/// with room for these on top of [`POOL_SIZE`], so query tabs can never take
+/// the connections the rest of the app needs.
+pub(crate) const PINNED_MAX: u32 = 8;
+
+/// The most connections one pool opens.
+pub(crate) const POOL_MAX: u32 = POOL_SIZE + PINNED_MAX;
 
 /// An engine-specific connection pool.
 #[derive(Debug)]
@@ -146,6 +157,8 @@ pub struct Connection {
     /// console pane. `import_dump`/`rebuild_table` run on a dedicated
     /// connection outside it and are not recorded here.
     query_log: QueryLog,
+    /// One permit per query tab allowed to hold a pinned connection.
+    pinned: Arc<tokio::sync::Semaphore>,
 }
 
 impl Connection {
@@ -167,7 +180,42 @@ impl Connection {
             pool,
             money_scale,
             query_log: QueryLog::default(),
+            pinned: Arc::new(tokio::sync::Semaphore::new(PINNED_MAX as usize)),
         })
+    }
+
+    /// A slot for one more query tab to hold a connection of its own, or an
+    /// error that says how to free one rather than a run that waits for one.
+    pub(crate) fn pinned_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
+        self.pinned.clone().try_acquire_owned().map_err(|_| {
+            anyhow::anyhow!(
+                "too many query tabs are holding connections ({PINNED_MAX}). Close one to \
+                 open another."
+            )
+        })
+    }
+
+    /// Ask the server to stop the statement session `backend` is running —
+    /// `pg_cancel_backend` or `KILL QUERY` — for a query tab cancelling its
+    /// own run. Not a write, so a read-only connection may send it too.
+    pub(crate) async fn cancel_backend(&self, backend: u64) -> Result<()> {
+        match &self.pool {
+            Pool::Postgres(pool) => {
+                sqlx::query("SELECT pg_cancel_backend($1)")
+                    .bind(backend as i64)
+                    .execute(pool)
+                    .await?;
+            }
+            // `KILL` takes no bound parameter (see `kill_process`); the id is
+            // a number the server gave us.
+            Pool::MySql(pool) => {
+                sqlx::raw_sql(AssertSqlSafe(format!("KILL QUERY {backend}")))
+                    .execute(pool)
+                    .await?;
+            }
+            Pool::Sqlite(_) => {}
+        }
+        Ok(())
     }
 
     /// Every statement this connection has sent through its own pool, oldest
@@ -383,14 +431,6 @@ impl Connection {
     /// value the user typed stays a value rather than becoming SQL.
     pub async fn run_query_with(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
         self.run_query_tagged(sql, params, QuerySource::Internal)
-            .await
-    }
-
-    /// The same as [`Self::run_query`], logged as the statement a query tab's
-    /// editor itself sent — the one thing a console's "User" column means —
-    /// rather than as one of the app's own reads.
-    pub async fn run_query_as_user(&self, sql: &str) -> Result<QueryResult> {
-        self.run_query_tagged(sql, Vec::new(), QuerySource::User)
             .await
     }
 

@@ -28,8 +28,10 @@ features you'd expect from a modern database client.
   skip every error; one that cannot run in a transaction (`LOCK TABLES`,
   `VACUUM`, MySQL DDL) asks before running without one. *Run Script Ignoring
   Errors* runs everything with no transaction and lists what failed — handy
-  for re-running a half-applied migration. `EXPLAIN` and `EXPLAIN ANALYZE`
-  show up as a readable plan tree.
+  for re-running a half-applied migration. Each query tab keeps a connection
+  of its own, so a `BEGIN` stays open across runs (the status bar says so,
+  with Commit and Roll Back), and `SET`, `USE`, and temporary tables last too.
+  `EXPLAIN` and `EXPLAIN ANALYZE` show up as a readable plan tree.
 * **Tables.** Open a table to page, sort, and filter it. Edit cells, add rows,
   and mark rows for deletion; pending changes are marked in the grid and
   written together when you apply them.

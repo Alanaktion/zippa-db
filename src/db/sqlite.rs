@@ -7,7 +7,7 @@ use sqlx::sqlite::{
 use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
 
 use super::query::{self, Cell};
-use super::{ConnectionConfig, POOL_SIZE, decode, quote_literal};
+use super::{ConnectionConfig, POOL_MAX, decode, quote_literal};
 
 /// A SQLite connection has one main database plus any attached ones.
 pub(crate) const DATABASES_SQL: &str = "SELECT name FROM pragma_database_list ORDER BY seq";
@@ -62,7 +62,7 @@ pub(crate) async fn connect(config: &ConnectionConfig) -> Result<SqlitePool> {
         .read_only(config.safety.is_read_only());
 
     let pool = SqlitePoolOptions::new()
-        .max_connections(POOL_SIZE)
+        .max_connections(POOL_MAX)
         .connect_with(options)
         .await
         .with_context(|| format!("could not open {}", config.database))?;

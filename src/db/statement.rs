@@ -10,8 +10,9 @@
 
 /// Statements that are allowed to run on a read-only connection.
 ///
-/// Everything else, including transaction control and `SET`, is a write as
-/// far as this module is concerned.
+/// Transaction control is allowed as well (see [`transaction_control`]);
+/// everything else, `SET` included, is a write as far as this module is
+/// concerned.
 const READING: [&str; 8] = [
     "SELECT", "VALUES", "TABLE", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "PRAGMA",
 ];
@@ -188,12 +189,39 @@ pub fn leading_words(sql: &str, limit: usize) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Whether one statement, already reduced to its words, only opens, ends, or
+/// marks a point in a transaction.
+///
+/// None of these write data themselves, so a read-only connection can run
+/// them (the server keeps the transaction read-only) and a careful one does
+/// not ask about them: a `COMMIT` only keeps writes that were confirmed when
+/// they ran. Two forms are left out on purpose. `READ WRITE` would lift the
+/// read-only session a read-only connection is opened with, and `PREPARED`
+/// (`COMMIT PREPARED 'x'`, `PREPARE TRANSACTION`) acts on a two-phase
+/// transaction this tab never saw the writes of.
+fn transaction_control(words: &[String]) -> bool {
+    let word = |index: usize| words.get(index).map(String::as_str).unwrap_or("");
+    let control = match word(0) {
+        "BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT" | "RELEASE" => true,
+        "START" | "SET" => word(1) == "TRANSACTION",
+        _ => false,
+    };
+    control
+        && !words
+            .iter()
+            .any(|word| word == "WRITE" || word == "PREPARED" || WRITING.contains(&word.as_str()))
+}
+
 /// Whether one statement, already reduced to its words, only reads.
 fn reads(words: &[String]) -> bool {
     let Some(first) = words.first() else {
         // An empty statement — a stray semicolon — runs nothing.
         return true;
     };
+
+    if transaction_control(words) {
+        return true;
+    }
 
     if !READING.contains(&first.as_str()) {
         return false;
@@ -520,6 +548,43 @@ mod tests {
     }
 
     #[test]
+    fn transaction_control_is_not_a_write() {
+        for sql in [
+            "begin",
+            "BEGIN TRANSACTION",
+            "begin immediate",
+            "begin isolation level serializable",
+            "start transaction",
+            "START TRANSACTION READ ONLY",
+            "start transaction with consistent snapshot",
+            "commit",
+            "commit work",
+            "end",
+            "rollback",
+            "abort",
+            "rollback to savepoint a",
+            "savepoint a",
+            "release savepoint a",
+            "release a",
+            "set transaction isolation level repeatable read",
+        ] {
+            assert_eq!(first_write(sql), None, "{sql} should not write");
+        }
+    }
+
+    #[test]
+    fn transaction_control_that_could_write_still_counts() {
+        // `READ WRITE` lifts a read-only session's guard for the transaction.
+        assert_eq!(first_write("begin read write").as_deref(), Some("BEGIN"));
+        assert!(first_write("start transaction read write").is_some());
+        assert!(first_write("set transaction read write").is_some());
+        // Two-phase commit acts on writes this statement did not make.
+        assert!(first_write("commit prepared 'x'").is_some());
+        assert!(first_write("set session characteristics as transaction read only").is_some());
+        assert!(first_write("set search_path = app").is_some());
+    }
+
+    #[test]
     fn a_write_hiding_behind_a_reading_keyword_is_found() {
         // A CTE can carry the write, and `explain analyze` runs what it
         // explains, so neither first word settles it.
@@ -617,6 +682,6 @@ mod tests {
         // Better to refuse something harmless than to run something that is
         // not: the user can always switch the connection's mode.
         assert!(first_write("call do_something()").is_some());
-        assert!(first_write("begin").is_some());
+        assert!(first_write("lock tables items write").is_some());
     }
 }
