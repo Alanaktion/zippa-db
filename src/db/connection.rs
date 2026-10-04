@@ -24,10 +24,18 @@ use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary}
 use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
-use super::{mysql, postgres, sqlite, statement, typed_placeholder};
+use super::{health, mysql, postgres, sqlite, statement, typed_placeholder};
 
 /// Connections opened per saved connection.
 pub(crate) const POOL_SIZE: u32 = 5;
+
+/// Pool settings every engine shares: the size, and how long a statement
+/// waits for a free connection (see [`health::ACQUIRE_TIMEOUT`]).
+pub(crate) fn pool_options<DB: Database>() -> sqlx::pool::PoolOptions<DB> {
+    sqlx::pool::PoolOptions::new()
+        .max_connections(POOL_SIZE)
+        .acquire_timeout(health::ACQUIRE_TIMEOUT)
+}
 
 /// An engine-specific connection pool.
 #[derive(Debug)]
@@ -436,7 +444,7 @@ impl Connection {
     /// read-only connection run `EXPLAIN ANALYZE`, which the classifier would
     /// otherwise refuse for the `ANALYZE` word alone.
     async fn fetch(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
-        match &self.pool {
+        let result = match &self.pool {
             Pool::Postgres(pool) => {
                 let scale = self.money_scale;
                 fetch_all(
@@ -454,7 +462,8 @@ impl Connection {
             Pool::Sqlite(pool) => {
                 fetch_all(pool, sql, params, sqlite::cell, sqlite::rows_affected).await
             }
-        }
+        };
+        result.map_err(health::plain)
     }
 
     /// The raw bytes behind one binary cell, read fresh for a value preview.
@@ -466,13 +475,14 @@ impl Connection {
     /// previewed; `None` covers both "no such row" and "the value is NULL".
     pub async fn fetch_binary(&self, sql: &str, params: Vec<Cell>) -> Result<Option<Vec<u8>>> {
         self.refuse_write(sql)?;
-        match &self.pool {
+        let result = match &self.pool {
             Pool::Postgres(pool) => {
                 fetch_binary_column(pool, sql, params, postgres::raw_bytes).await
             }
             Pool::MySql(pool) => fetch_binary_column(pool, sql, params, mysql::raw_bytes).await,
             Pool::Sqlite(pool) => fetch_binary_column(pool, sql, params, sqlite::raw_bytes).await,
-        }
+        };
+        result.map_err(health::plain)
     }
 
     /// Read the plan for one statement.
@@ -598,11 +608,12 @@ impl Connection {
     /// Check one connection out of the pool for a job that needs its session
     /// state to last — an import, or a script run.
     pub(crate) async fn dedicated(&self) -> Result<Dedicated> {
-        match &self.pool {
+        let dedicated = match &self.pool {
             Pool::Postgres(pool) => Dedicated::postgres(pool, self.money_scale).await,
             Pool::MySql(pool) => Dedicated::mysql(pool).await,
             Pool::Sqlite(pool) => Dedicated::sqlite(pool).await,
-        }
+        };
+        dedicated.map_err(health::plain)
     }
 
     /// Run a SQL dump against this connection.
@@ -823,7 +834,8 @@ impl Connection {
             Pool::Postgres(pool) => execute_with(pool, sql, params, postgres::rows_affected).await,
             Pool::MySql(pool) => execute_with(pool, sql, params, mysql::rows_affected).await,
             Pool::Sqlite(pool) => execute_with(pool, sql, params, sqlite::rows_affected).await,
-        };
+        }
+        .map_err(health::plain);
         let outcome = match &result {
             Ok(affected) => QueryOutcome::Affected(*affected),
             Err(error) => QueryOutcome::Error(format!("{error:#}")),
@@ -852,13 +864,17 @@ impl Connection {
             // instead.
             Pool::Postgres(pool) => {
                 let started = Instant::now();
-                let result = execute_script_transactional(pool, statements).await;
+                let result = execute_script_transactional(pool, statements)
+                    .await
+                    .map_err(health::plain);
                 self.log_script(statements, started.elapsed(), &result);
                 result
             }
             Pool::Sqlite(pool) => {
                 let started = Instant::now();
-                let result = execute_script_transactional(pool, statements).await;
+                let result = execute_script_transactional(pool, statements)
+                    .await
+                    .map_err(health::plain);
                 self.log_script(statements, started.elapsed(), &result);
                 result
             }

@@ -1762,6 +1762,84 @@ async fn live_mysql_processes_lists_and_kills_another_connection() {
     watcher.close().await;
 }
 
+/// A statement timeout is set on every connection the pool opens, and the
+/// server cancels a statement that runs past it.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_statement_timeout_cancels_a_long_statement() {
+    let connection = live_postgres_with("ZIPPA_TEST_POSTGRES_URL", "app", |config| {
+        config.statement_timeout = Some(1);
+    })
+    .await;
+
+    let shown = connection
+        .run_query("SHOW statement_timeout")
+        .await
+        .expect("could not read the setting");
+    assert_eq!(shown.rows[0][0].as_deref(), Some("1s"));
+
+    let error = connection
+        .run_query("SELECT pg_sleep(5)")
+        .await
+        .expect_err("the server should cancel a statement past the timeout");
+    assert!(
+        format!("{error:#}").contains("statement timeout"),
+        "{error:#}"
+    );
+
+    connection.close().await;
+}
+
+/// The same, for MySQL's `max_execution_time` (milliseconds, reads only).
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_statement_timeout_is_set_on_the_session() {
+    let (connection, _pool) = live_mysql_with(|config| config.statement_timeout = Some(2)).await;
+
+    let shown = connection
+        .run_query("SELECT @@SESSION.max_execution_time")
+        .await
+        .expect("could not read the setting");
+    assert_eq!(shown.rows[0][0].as_deref(), Some("2000"));
+
+    connection.close().await;
+}
+
+/// A backend the server ends mid-statement reads as a lost connection in
+/// words, not as the driver's own text.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_a_terminated_backend_reads_as_a_lost_connection() {
+    let watcher = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    let victim = Arc::new(live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await);
+
+    let sleeper = {
+        let victim = victim.clone();
+        tokio::spawn(async move { victim.run_query("SELECT pg_sleep(30)").await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    watcher
+        .run_query(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE query = 'SELECT pg_sleep(30)' AND pid <> pg_backend_pid()",
+        )
+        .await
+        .expect("could not end the sleeping backend");
+
+    let error = sleeper
+        .await
+        .expect("the task itself should not panic")
+        .expect_err("the ended backend's query should fail");
+    assert_eq!(
+        crate::db::health::ConnectionTrouble::of(&error),
+        Some(crate::db::health::ConnectionTrouble::Lost),
+        "{error:#}"
+    );
+
+    watcher.close().await;
+    victim.close().await;
+}
+
 /// `server_variables` reads `pg_settings`, with `max_connections` (a
 /// `postmaster`-context setting every server has) standing in for "the list
 /// actually came back shaped the way `VARIABLES_SQL` assumes."
@@ -2053,6 +2131,15 @@ async fn live_mysql_a_mysqldump_file_imports_with_its_table_locks() {
 /// test that needs a second real database to switch to, since the fast
 /// SQLite-backed suite has no such thing.
 pub(crate) async fn live_postgres(var: &str, database: &str) -> Connection {
+    live_postgres_with(var, database, |_| {}).await
+}
+
+/// The same, with the saved config adjusted by `adjust` before it is opened.
+async fn live_postgres_with(
+    var: &str,
+    database: &str,
+    adjust: impl FnOnce(&mut ConnectionConfig),
+) -> Connection {
     let url = env::var(var)
         .unwrap_or_else(|_| format!("postgres://postgres:secret@127.0.0.1:5433/{database}"));
     let rest = url.strip_prefix("postgres://").expect("a postgres:// URL");
@@ -2062,13 +2149,14 @@ pub(crate) async fn live_postgres(var: &str, database: &str) -> Connection {
     let (host, port) = authority.split_once(':').expect("host:port");
     let port: u16 = port.parse().expect("a port");
 
-    let config = ConnectionConfig {
+    let mut config = ConnectionConfig {
         host: host.to_string(),
         port,
         username: username.to_string(),
         database: database.to_string(),
         ..ConnectionConfig::new(Engine::Postgres)
     };
+    adjust(&mut config);
     Connection::open(config, Some(password.to_string()))
         .await
         .expect("could not open the live Postgres connection")
@@ -2077,6 +2165,13 @@ pub(crate) async fn live_postgres(var: &str, database: &str) -> Connection {
 /// Open the MySQL server a live test runs against, and a pool onto the same
 /// database for fixtures that need the text protocol.
 async fn live_mysql() -> (Connection, sqlx::MySqlPool) {
+    live_mysql_with(|_| {}).await
+}
+
+/// The same, with the saved config adjusted by `adjust` before it is opened.
+async fn live_mysql_with(
+    adjust: impl FnOnce(&mut ConnectionConfig),
+) -> (Connection, sqlx::MySqlPool) {
     use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 
     let url = env::var("ZIPPA_TEST_MYSQL_URL")
@@ -2099,13 +2194,14 @@ async fn live_mysql() -> (Connection, sqlx::MySqlPool) {
         .await
         .expect("could not open the live MySQL server");
 
-    let config = ConnectionConfig {
+    let mut config = ConnectionConfig {
         host: host.to_string(),
         port,
         username: username.to_string(),
         database: database.to_string(),
         ..ConnectionConfig::new(Engine::MySql)
     };
+    adjust(&mut config);
     let connection = Connection::open(config, Some(password.to_string()))
         .await
         .expect("could not open the live MySQL connection");

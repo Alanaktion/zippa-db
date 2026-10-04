@@ -17,7 +17,7 @@ use sqlx::pool::PoolConnection;
 use super::config::Engine;
 use super::connection::fetch_on;
 use super::query::QueryResult;
-use super::{mysql, postgres, sqlite};
+use super::{health, mysql, postgres, sqlite};
 
 /// A dedicated connection to one engine.
 pub(crate) enum Dedicated {
@@ -56,6 +56,10 @@ impl Dedicated {
     /// `SAVEPOINT` form, `LOCK TABLES`, and `USE` (error 1295), which are
     /// exactly what a script's transaction and a `mysqldump` file send.
     pub(crate) async fn execute(&mut self, sql: &str) -> Result<()> {
+        self.execute_raw(sql).await.map_err(health::plain)
+    }
+
+    async fn execute_raw(&mut self, sql: &str) -> Result<()> {
         // The statement is either the user's own or one of the job's fixed
         // transaction-control statements; nothing in it is bound.
         let statement = AssertSqlSafe(sql.to_string());
@@ -76,6 +80,10 @@ impl Dedicated {
     /// Run one statement and read back its rows, the way a query tab shows
     /// them.
     pub(crate) async fn fetch(&mut self, sql: &str) -> Result<QueryResult> {
+        self.fetch_raw(sql).await.map_err(health::plain)
+    }
+
+    async fn fetch_raw(&mut self, sql: &str) -> Result<QueryResult> {
         match self {
             Dedicated::Postgres(connection, scale) => {
                 let scale = *scale;

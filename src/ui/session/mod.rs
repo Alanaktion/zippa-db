@@ -54,6 +54,7 @@ actions!(
         CancelQuery,
         QuickSwitcher,
         Disconnect,
+        Reconnect,
         ImportSqlDump,
         SearchSchema,
         OpenConsole,
@@ -112,6 +113,9 @@ pub struct Session {
     /// finds names but not columns, indexes or triggers.
     catalog_error: Option<String>,
     switching: bool,
+    /// Whether that reopen is a [`Reconnect`] to the same database rather
+    /// than a switch, so the picker can say which.
+    reconnecting: bool,
     /// The next panel's stable key. See `SessionPanel`'s `key` field.
     next_key: usize,
     /// The import dialog, while one is open over the window.
@@ -159,6 +163,7 @@ impl Session {
             catalog_loading: true,
             catalog_error: None,
             switching: false,
+            reconnecting: false,
             next_key: 0,
             import: None,
         };
@@ -437,6 +442,10 @@ impl Session {
         cx.emit(SessionEvent::Disconnected);
     }
 
+    fn on_reconnect(&mut self, _: &Reconnect, _window: &mut Window, cx: &mut Context<Self>) {
+        self.reconnect(cx);
+    }
+
     /// Open what a schema search result is about.
     ///
     /// A table or view opens its rows; a column opens its table's rows with
@@ -551,6 +560,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_open_query_digest))
             .on_action(cx.listener(Self::on_open_maintenance))
             .on_action(cx.listener(Self::on_disconnect))
+            .on_action(cx.listener(Self::on_reconnect))
             .child(
                 h_resizable("session-columns")
                     .with_state(&self.columns)
