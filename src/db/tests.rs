@@ -1950,6 +1950,102 @@ async fn live_mysql_a_script_of_row_changes_rolls_back() {
     connection.close().await;
 }
 
+/// A script run without a transaction can hold the statements MySQL's
+/// prepared protocol refuses, which is what that mode is for. Runs against
+/// `compose.yaml`'s MySQL:
+///
+/// ```text
+/// ./script/test-db up
+/// cargo test -- --ignored live_mysql_an_autocommit
+/// ```
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_an_autocommit_script_can_lock_tables() {
+    let (connection, pool) = live_mysql().await;
+    let connection = Arc::new(connection);
+
+    pool.execute("DROP TABLE IF EXISTS zippa_script_locks")
+        .await
+        .expect("could not clear the fixture");
+    pool.execute("CREATE TABLE zippa_script_locks (id int PRIMARY KEY) ENGINE=InnoDB")
+        .await
+        .expect("could not create the fixture");
+
+    let outcome = finished(
+        ScriptRun::start(
+            connection.clone(),
+            "LOCK TABLES zippa_script_locks WRITE;\n\
+             INSERT INTO zippa_script_locks VALUES (1);\n\
+             UNLOCK TABLES;\n\
+             SELECT COUNT(*) FROM zippa_script_locks;",
+            ScriptMode::Autocommit,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+    assert_eq!(
+        outcome.results.last().map(|result| result.rows.clone()),
+        Some(vec![vec![Some("1".to_string())]]),
+    );
+
+    pool.execute("DROP TABLE zippa_script_locks").await.ok();
+    connection.close().await;
+}
+
+/// A `mysqldump` file imports, `LOCK TABLES` and all — statements MySQL's
+/// prepared protocol refuses. Runs against `compose.yaml`'s MySQL:
+///
+/// ```text
+/// ./script/test-db up
+/// cargo test -- --ignored live_mysql_a_mysqldump
+/// ```
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_a_mysqldump_file_imports_with_its_table_locks() {
+    use super::{ImportRequest, OnError};
+
+    let (connection, pool) = live_mysql().await;
+    pool.execute("DROP TABLE IF EXISTS zippa_import_locks")
+        .await
+        .expect("could not clear the fixture");
+
+    let path = env::temp_dir().join(format!("zippa-dump-{}.sql", Uuid::new_v4()));
+    std::fs::write(
+        &path,
+        "CREATE TABLE `zippa_import_locks` (`id` int NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;\n\
+         LOCK TABLES `zippa_import_locks` WRITE;\n\
+         /*!40000 ALTER TABLE `zippa_import_locks` DISABLE KEYS */;\n\
+         INSERT INTO `zippa_import_locks` VALUES (1),(2);\n\
+         /*!40000 ALTER TABLE `zippa_import_locks` ENABLE KEYS */;\n\
+         UNLOCK TABLES;\n",
+    )
+    .expect("could not write the dump");
+
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let summary = connection
+        .import_dump(
+            ImportRequest {
+                path: path.clone(),
+                on_error: OnError::Stop,
+            },
+            sender,
+        )
+        .await;
+    std::fs::remove_file(&path).ok();
+    let summary = summary.expect("the dump should import");
+    assert!(summary.errors.is_empty(), "{:?}", summary.errors);
+
+    let count = connection
+        .run_query("SELECT COUNT(*) FROM zippa_import_locks")
+        .await
+        .expect("the count failed");
+    assert_eq!(count.rows, [[Some("2".to_string())]]);
+
+    pool.execute("DROP TABLE zippa_import_locks").await.ok();
+    connection.close().await;
+}
+
 /// Open a Postgres connection for a live test, against the database named by
 /// `var` (falling back to `127.0.0.1:5433`/`database` when unset).
 ///

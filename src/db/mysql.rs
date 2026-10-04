@@ -202,6 +202,17 @@ pub(crate) fn rows_affected(result: &MySqlQueryResult) -> u64 {
     result.rows_affected()
 }
 
+/// Whether `error` is MySQL refusing a statement over the prepared protocol
+/// (error 1295) — `BEGIN`, `SAVEPOINT`, `LOCK TABLES`, `USE`, and the like,
+/// which only the text protocol accepts.
+pub(crate) fn unpreparable(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<sqlx::Error>()
+        .and_then(|error| error.as_database_error())
+        .and_then(|error| error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>())
+        .is_some_and(|error| error.number() == 1295)
+}
+
 pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {
     let Ok(raw) = row.try_get_raw(index) else {
         return None;
