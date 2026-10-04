@@ -1,7 +1,10 @@
 //! PostgreSQL driver (also covers CockroachDB / Redshift).
 
 use anyhow::Result;
-use sqlx::postgres::types::{Oid, PgInterval, PgMoney, PgTimeTz};
+use sqlx::postgres::types::{
+    Oid, PgBox, PgCircle, PgHstore, PgInterval, PgLSeg, PgLine, PgMoney, PgPath, PgPoint,
+    PgPolygon, PgRange, PgTimeTz,
+};
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgQueryResult, PgRow};
 use sqlx::{Row, TypeInfo, ValueRef};
 
@@ -298,6 +301,44 @@ pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
         };
     }
 
+    /// Decode the cell as a range of `$ty`, with each bound rendered by
+    /// `$format`. sqlx reads an empty range as one unbounded at both ends,
+    /// which is the opposite value, so the range's own flags byte is asked
+    /// first. An array of ranges would lose its empty elements the same way,
+    /// so it stays a stand-in.
+    macro_rules! range {
+        ($ty:ty) => {
+            range!($ty, |value: $ty| value.to_string())
+        };
+        // Each bound handed to `$format` alongside its own raw encoding.
+        ($ty:ty, $format:expr, $bounds:expr) => {
+            if is_array {
+                None
+            } else if raw
+                .as_bytes()
+                .is_ok_and(|bytes| bytes.first().is_some_and(|flags| flags & RANGE_EMPTY != 0))
+            {
+                Some("empty".to_string())
+            } else {
+                let [lower, upper] = $bounds;
+                row.try_get::<PgRange<$ty>, _>(index).ok().map(|range| {
+                    let range = PgRange {
+                        start: range.start.map(|value| (value, lower)),
+                        end: range.end.map(|value| (value, upper)),
+                    };
+                    format_range(range, $format)
+                })
+            }
+        };
+        ($ty:ty, $format:expr) => {
+            range!(
+                $ty,
+                |(value, _): ($ty, Option<&[u8]>)| ($format)(value),
+                [None, None]
+            )
+        };
+    }
+
     let value = match base {
         "BOOL" => value!(bool, query::boolean),
         "INT2" => value!(i16),
@@ -306,6 +347,12 @@ pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
         "OID" => value!(Oid, |value: Oid| value.0.to_string()),
         "FLOAT4" => value!(f32),
         "FLOAT8" => value!(f64),
+        // sqlx widens a `numeric` to whole base-10000 digits, so `1.5` would
+        // read `1.5000`; the value's own display scale says how many it had.
+        "NUMERIC" if !is_array => row
+            .try_get::<sqlx::types::BigDecimal, _>(index)
+            .ok()
+            .map(|value| format_numeric(value, raw.as_bytes().ok())),
         "NUMERIC" => value!(sqlx::types::BigDecimal),
         "MONEY" => value!(PgMoney, |value: PgMoney| format_money(value, money_scale)),
         "UUID" => value!(sqlx::types::Uuid),
@@ -329,6 +376,62 @@ pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
             format_ip(value, base == "INET")
         }),
         "MACADDR" => value!(sqlx::types::mac_address::MacAddress),
+        // No Rust mapping either, but the binary encoding is just the eight
+        // bytes of the address.
+        "MACADDR8" if !is_array => raw.as_bytes().ok().and_then(format_macaddr8),
+        "POINT" => value!(PgPoint, format_point),
+        "LINE" => value!(PgLine, |line: PgLine| format!(
+            "{{{},{},{}}}",
+            line.a, line.b, line.c
+        )),
+        "LSEG" => value!(PgLSeg, |segment: PgLSeg| format!(
+            "[({},{}),({},{})]",
+            segment.start_x, segment.start_y, segment.end_x, segment.end_y
+        )),
+        // A `box[]` separates its elements with `;` rather than the `,` every
+        // other array uses, which `array_literal` does not write.
+        "BOX" if !is_array => value!(PgBox, |shape: PgBox| format!(
+            "({},{}),({},{})",
+            shape.upper_right_x, shape.upper_right_y, shape.lower_left_x, shape.lower_left_y
+        )),
+        "PATH" => value!(PgPath, |path: PgPath| {
+            let points = format_points(&path.points);
+            if path.closed {
+                format!("({points})")
+            } else {
+                format!("[{points}]")
+            }
+        }),
+        "POLYGON" => value!(PgPolygon, |polygon: PgPolygon| format!(
+            "({})",
+            format_points(&polygon.points)
+        )),
+        "CIRCLE" => value!(PgCircle, |circle: PgCircle| format!(
+            "<({},{}),{}>",
+            circle.x, circle.y, circle.radius
+        )),
+        "INT4RANGE" => range!(i32),
+        "INT8RANGE" => range!(i64),
+        "NUMRANGE" => {
+            let bounds = raw.as_bytes().ok().map(range_bounds).unwrap_or_default();
+            range!(
+                sqlx::types::BigDecimal,
+                |value: (sqlx::types::BigDecimal, Option<&[u8]>)| {
+                    format_numeric(value.0, value.1)
+                },
+                bounds
+            )
+        }
+        "DATERANGE" => range!(chrono::NaiveDate),
+        "TSRANGE" => range!(chrono::NaiveDateTime),
+        "TSTZRANGE" => range!(
+            chrono::DateTime<chrono::Local>,
+            |value: chrono::DateTime<chrono::Local>| {
+                value.format("%Y-%m-%d %H:%M:%S%.f%:z").to_string()
+            }
+        ),
+        // An extension type, so sqlx knows it by its lowercase name.
+        "hstore" => value!(PgHstore, format_hstore),
         "BIT" | "VARBIT" => value!(sqlx::types::BitVec, format_bits),
         "BYTEA" => value!(Vec<u8>, |bytes: Vec<u8>| format!("<{} bytes>", bytes.len())),
         // `xml` has no Rust mapping in sqlx, but its binary encoding is the
@@ -347,6 +450,126 @@ pub(crate) fn raw_bytes(row: &PgRow, index: usize) -> Option<Vec<u8>> {
     row.try_get::<Option<Vec<u8>>, _>(index).ok().flatten()
 }
 
+/// The flag a range's binary encoding sets in its first byte for `empty`.
+const RANGE_EMPTY: u8 = 0x01;
+
+/// `[1,10)`, `(,2024-01-01]`: a range the way Postgres prints one, quoting a
+/// bound only where it would not read back bare.
+fn format_range<T>(range: PgRange<T>, format: impl Fn(T) -> String) -> String {
+    use std::ops::Bound;
+
+    let bound = |value: T| {
+        let text = format(value);
+        let needs_quoting = text.is_empty()
+            || text.contains(|c: char| c.is_whitespace() || "()[],\"\\".contains(c));
+        if needs_quoting {
+            quote_element(&text)
+        } else {
+            text
+        }
+    };
+    let (open, lower) = match range.start {
+        Bound::Included(value) => ('[', bound(value)),
+        Bound::Excluded(value) => ('(', bound(value)),
+        Bound::Unbounded => ('(', String::new()),
+    };
+    let (upper, close) = match range.end {
+        Bound::Included(value) => (bound(value), ']'),
+        Bound::Excluded(value) => (bound(value), ')'),
+        Bound::Unbounded => (String::new(), ')'),
+    };
+    format!("{open}{lower},{upper}{close}")
+}
+
+/// A `numeric` written to the display scale in its binary header (`ndigits`,
+/// `weight`, `sign`, then `dscale`), which is how Postgres prints it — `1.50`
+/// stays `1.50` and `1.5` stays `1.5`.
+fn format_numeric(value: sqlx::types::BigDecimal, raw: Option<&[u8]>) -> String {
+    match raw.and_then(|bytes| bytes.get(6..8)) {
+        Some(scale) => value
+            .with_scale(i64::from(u16::from_be_bytes([scale[0], scale[1]])))
+            .to_string(),
+        None => value.to_string(),
+    }
+}
+
+/// The raw encoding of each finite bound of a range, lower then upper: after
+/// the flags byte, each one present is a 4-byte length and that many bytes.
+fn range_bounds(bytes: &[u8]) -> [Option<&[u8]>; 2] {
+    const LOWER_INFINITE: u8 = 0x08;
+    const UPPER_INFINITE: u8 = 0x10;
+
+    let Some((&flags, mut rest)) = bytes.split_first() else {
+        return [None, None];
+    };
+    let mut next = |infinite: bool| -> Option<&[u8]> {
+        if infinite {
+            return None;
+        }
+        let (length, tail) = rest.split_first_chunk::<4>()?;
+        let length = usize::try_from(i32::from_be_bytes(*length)).ok()?;
+        let (bound, tail) = tail.split_at_checked(length)?;
+        rest = tail;
+        Some(bound)
+    };
+    let lower = next(flags & LOWER_INFINITE != 0);
+    let upper = next(flags & UPPER_INFINITE != 0);
+    [lower, upper]
+}
+
+/// `"a"=>"1", "b"=>NULL`, which is how Postgres prints an `hstore`.
+fn format_hstore(hstore: PgHstore) -> String {
+    hstore
+        .0
+        .into_iter()
+        .map(|(key, value)| {
+            let value = value.map_or_else(|| "NULL".to_string(), |value| quote_element(&value));
+            format!("{}=>{value}", quote_element(&key))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `08:00:2b:01:02:03:04:05`, from the eight bytes of a `macaddr8`.
+fn format_macaddr8(bytes: &[u8]) -> Option<String> {
+    (bytes.len() == 8).then(|| {
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    })
+}
+
+/// `(1,2)`.
+fn format_point(point: PgPoint) -> String {
+    format!("({},{})", point.x, point.y)
+}
+
+/// `(1,2),(3,4)`, the points of a path or polygon without its brackets.
+fn format_points(points: &[PgPoint]) -> String {
+    points
+        .iter()
+        .map(|point| format!("({},{})", point.x, point.y))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// `"text"`, with any `"` or `\` escaped by a backslash — the quoting arrays,
+/// ranges, and `hstore` all share.
+fn quote_element(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for character in value.chars() {
+        if character == '"' || character == '\\' {
+            out.push('\\');
+        }
+        out.push(character);
+    }
+    out.push('"');
+    out
+}
+
 /// `{a,b,NULL}`, quoting the elements that need it.
 fn array_literal(elements: impl Iterator<Item = Option<String>>) -> String {
     let mut out = String::from("{");
@@ -356,16 +579,7 @@ fn array_literal(elements: impl Iterator<Item = Option<String>>) -> String {
         }
         match element {
             None => out.push_str("NULL"),
-            Some(value) if needs_quoting(&value) => {
-                out.push('"');
-                for character in value.chars() {
-                    if character == '"' || character == '\\' {
-                        out.push('\\');
-                    }
-                    out.push(character);
-                }
-                out.push('"');
-            }
+            Some(value) if needs_quoting(&value) => out.push_str(&quote_element(&value)),
             Some(value) => out.push_str(&value),
         }
     }

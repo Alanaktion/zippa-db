@@ -1677,6 +1677,99 @@ async fn live_postgres_money_scales_by_the_servers_locale_not_always_by_100() {
     yen.close().await;
 }
 
+/// The types `postgres::cell` decodes field by field — geometry, ranges,
+/// `hstore`, `macaddr8` — read back as the text Postgres itself prints, and
+/// that text casts back to the same value, which is what makes them
+/// editable rather than `<POINT>`-style stand-ins.
+///
+/// Ignored by default because it needs a server; see
+/// `live_postgres_money_scales_by_the_servers_locale_not_always_by_100` for
+/// how to start one. `cargo test -- --ignored live_postgres_geometry`.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_geometry_ranges_hstore_and_macaddr8_read_back_as_text() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    connection
+        .execute("CREATE EXTENSION IF NOT EXISTS hstore", vec![])
+        .await
+        .expect("could not install hstore");
+
+    let cases = [
+        ("'(1.5,-2)'::point", "(1.5,-2)"),
+        ("'{1,-1,0}'::line", "{1,-1,0}"),
+        ("'[(0,0),(1,1)]'::lseg", "[(0,0),(1,1)]"),
+        ("'((0,0),(2,2))'::box", "(2,2),(0,0)"),
+        ("'((0,0),(1,1),(2,0))'::path", "((0,0),(1,1),(2,0))"),
+        ("'[(0,0),(1,1)]'::path", "[(0,0),(1,1)]"),
+        ("'((0,0),(1,1),(2,0))'::polygon", "((0,0),(1,1),(2,0))"),
+        ("'<(1,2),3>'::circle", "<(1,2),3>"),
+        ("ARRAY['(1,2)'::point, NULL]", "{\"(1,2)\",NULL}"),
+        ("'[1,10)'::int4range", "[1,10)"),
+        ("'(,5]'::int8range", "(,6)"),
+        ("'empty'::int4range", "empty"),
+        ("'1.5'::numeric", "1.5"),
+        ("'1.50'::numeric", "1.50"),
+        ("'[1.50,)'::numrange", "[1.50,)"),
+        ("'[1.5,2.5]'::numrange", "[1.5,2.5]"),
+        (
+            "'[2024-01-01,2024-02-01)'::daterange",
+            "[2024-01-01,2024-02-01)",
+        ),
+        (
+            "'[2024-01-01 10:00,2024-01-02)'::tsrange",
+            "[\"2024-01-01 10:00:00\",\"2024-01-02 00:00:00\")",
+        ),
+        (
+            "'a=>1, \"b c\"=>NULL, q=>\"say \\\"hi\\\"\"'::hstore",
+            "\"a\"=>\"1\", \"b c\"=>NULL, \"q\"=>\"say \\\"hi\\\"\"",
+        ),
+        (
+            "'08:00:2b:01:02:03:04:05'::macaddr8",
+            "08:00:2b:01:02:03:04:05",
+        ),
+    ];
+    for (expression, expected) in cases {
+        let result = connection
+            .run_query(&format!("SELECT {expression}"))
+            .await
+            .unwrap_or_else(|error| panic!("could not read {expression}: {error}"));
+        let shown = result.rows[0][0].clone();
+        assert_eq!(shown.as_deref(), Some(expected), "{expression}");
+
+        // What the grid shows is what an edit binds back, through the same
+        // cast `typed_placeholder` writes, and it should come out as the
+        // value it was read from.
+        let type_name = &result.column_types[0];
+        let round_trip = connection
+            .run_query_with(
+                &format!(
+                    "SELECT {}::text, ({expression})::text",
+                    crate::db::sql::typed_placeholder(Engine::Postgres, 1, type_name)
+                ),
+                vec![shown],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("could not cast {expected} back: {error}"));
+        assert_eq!(
+            round_trip.rows[0][0], round_trip.rows[0][1],
+            "{expected} should read back as {expression}"
+        );
+    }
+
+    // `tstzrange` is shown in the local zone, so only its shape is pinned.
+    let result = connection
+        .run_query("SELECT '[2024-01-01 00:00+00,)'::tstzrange")
+        .await
+        .expect("could not read a tstzrange");
+    let shown = result.rows[0][0].clone().unwrap_or_default();
+    assert!(
+        shown.starts_with("[\"2024-") && shown.ends_with("\",)"),
+        "{shown}"
+    );
+
+    connection.close().await;
+}
+
 /// `processes` reads every other connection's activity and `kill_process` can
 /// end one of them — the live half of the process list, since SQLite (the
 /// only engine the rest of this file exercises) has no server activity to
