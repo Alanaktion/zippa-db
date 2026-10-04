@@ -26,7 +26,11 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   buffers come back on the next launch.
 - **SQL editor:** run the statement under the caret, the selection, or the
   whole buffer; one result per statement; cancel a run; open and save `.sql`
-  files. A script runs in one transaction on every engine and pauses on each
+  files. Typing offers completions from the schema: tables after `FROM` and
+  `JOIN`, the columns of the tables the statement names (`u.` after
+  `FROM users u`), schemas, and SQL keywords in the case being typed; Enter
+  or Tab (a setting) takes a suggestion. A
+  script runs in one transaction on every engine and pauses on each
   error to roll back, skip it, or skip every error; a script holding a
   statement no transaction can (`LOCK TABLES`, `VACUUM`, MySQL DDL, its own
   `BEGIN`/`COMMIT`) is flagged in the toolbar and asks before running without

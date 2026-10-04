@@ -22,9 +22,10 @@ features you'd expect from a modern database client.
 * **Safety modes.** Each connection is *read-only*, *confirm writes*, *staged*
   (the default: edits wait until you apply them), or *auto-apply*. Read-only is
   enforced by the server and by a client-side check of your SQL.
-* **SQL editor.** Highlighted SQL, run the current statement, the selection, or
-  the whole script, with one result tab per statement. A script runs in one
-  transaction and stops on each error to ask whether to roll back, skip it, or
+* **SQL editor.** Highlighted SQL with completion of tables, columns (including
+  through an alias), schemas, and keywords as you type. Run the current
+  statement, the selection, or the whole script, with one result tab per
+  statement. A script runs in one transaction and stops on each error to ask whether to roll back, skip it, or
   skip every error; one that cannot run in a transaction (`LOCK TABLES`,
   `VACUUM`, MySQL DDL) asks before running without one. *Run Script Ignoring
   Errors* runs everything with no transaction and lists what failed — handy

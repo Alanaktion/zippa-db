@@ -18,7 +18,8 @@ use gpui_kit::{
 
 use regex::Regex;
 
-use crate::db::{Catalog, CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObject};
+use crate::db::{CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObject};
+use crate::ui::completion::SharedCatalog;
 use crate::ui::import_dialog::ImportView;
 
 mod files;
@@ -103,10 +104,12 @@ pub struct Session {
     objects_tree: Entity<TreeState>,
     /// Set when the schema could not be read; queries still work.
     metadata_error: Option<String>,
-    /// The whole schema, for [`SearchSchema`]. Read once in the background as
-    /// the session opens and again on refresh, so a keystroke never waits on
-    /// the server. Holds only names until the read lands.
-    catalog: Arc<Catalog>,
+    /// The whole schema, for [`SearchSchema`] and the query editors'
+    /// completions. Read once in the background as the session opens and
+    /// again on refresh, so a keystroke never waits on the server. Holds only
+    /// names until the read lands. Shared with every query tab's editor, which
+    /// reads whichever snapshot is current.
+    catalog: SharedCatalog,
     /// Whether that read is still in flight, so the dialog can say so.
     catalog_loading: bool,
     /// Why the full catalog could not be read, when it could not; search then
@@ -159,7 +162,7 @@ impl Session {
             sidebar_tab: SidebarTab::Schema,
             objects_tree: cx.new(|cx| TreeState::new(cx)),
             metadata_error: None,
-            catalog: Arc::new(Catalog::default()),
+            catalog: SharedCatalog::default(),
             catalog_loading: true,
             catalog_error: None,
             switching: false,

@@ -81,7 +81,7 @@ impl Session {
         self.catalog_loading = false;
         match catalog {
             Ok(catalog) => {
-                self.catalog = Arc::new(catalog);
+                self.catalog.set(Arc::new(catalog));
                 self.catalog_error = None;
             }
             Err(error) => {
@@ -94,7 +94,7 @@ impl Session {
                     .chain(self.stored.iter().cloned().map(CatalogEntry::routine))
                     .collect();
                 fallback.total = fallback.entries.len();
-                self.catalog = Arc::new(fallback);
+                self.catalog.set(Arc::new(fallback));
                 self.catalog_error = Some(format!("{error:#}"));
             }
         }
@@ -102,7 +102,7 @@ impl Session {
 
     /// The whole schema, for [`SearchSchema`].
     pub(crate) fn catalog(&self) -> Arc<Catalog> {
-        self.catalog.clone()
+        self.catalog.get()
     }
 
     pub(crate) fn catalog_loading(&self) -> bool {
@@ -215,7 +215,7 @@ impl Session {
 
         self.objects.clear();
         self.stored.clear();
-        self.catalog = Arc::new(Catalog::default());
+        self.catalog.set(Arc::new(Catalog::default()));
         self.catalog_loading = true;
         self.catalog_error = None;
         self.rebuild_tree(cx);
