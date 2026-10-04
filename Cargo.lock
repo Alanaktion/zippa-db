@@ -10525,6 +10525,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "keyring",
+ "lsp-types",
  "regex",
  "russh",
  "serde",

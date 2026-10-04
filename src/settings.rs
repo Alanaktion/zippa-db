@@ -77,6 +77,44 @@ impl Appearance {
     }
 }
 
+/// Which key takes the highlighted suggestion from the SQL editor's
+/// completion menu. The other one keeps its usual job — a new line, or an
+/// indent — even while the menu is open.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompletionKey {
+    #[default]
+    Enter,
+    Tab,
+}
+
+impl CompletionKey {
+    pub const ALL: [Self; 2] = [Self::Enter, Self::Tab];
+
+    /// Stable name, used as the dropdown's value and in the JSON file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Enter => "enter",
+            Self::Tab => "tab",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Enter => "Enter",
+            Self::Tab => "Tab",
+        }
+    }
+
+    /// The key a dropdown value names.
+    pub fn from_key(key: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|choice| choice.key() == key)
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 // Every field defaulted, so a file written by an older build still loads.
 #[serde(default)]
@@ -103,6 +141,8 @@ pub struct Settings {
     /// scrollbar, and a bar that is only there while it is already moving
     /// cannot be grabbed with a mouse.
     pub always_show_scrollbars: bool,
+    /// The key that takes a completion suggestion in the SQL editor.
+    pub accept_completion: CompletionKey,
 }
 
 impl Default for Settings {
@@ -117,6 +157,7 @@ impl Default for Settings {
             coerce_null_literal: true,
             stripe_rows: true,
             always_show_scrollbars: true,
+            accept_completion: CompletionKey::default(),
         }
     }
 }

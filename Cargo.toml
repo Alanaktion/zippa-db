@@ -36,6 +36,9 @@ futures = "0.3.34"
 # component library, and the default icon set.
 gpui-kit = { version = "0.7", features = ["tree-sitter-sql"] }
 keyring = "4"
+# The completion types the editor's completion provider answers in; the same
+# version gpui-kit's editor is built against.
+lsp-types = { version = "0.97", features = ["proposed"] }
 regex = "1"
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
 serde = { version = "1", features = ["derive"] }

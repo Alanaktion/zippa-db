@@ -29,6 +29,7 @@ use crate::db::query::QueryResult;
 use crate::db::runtime;
 use crate::db::{ScriptMode, ScriptRun};
 use crate::ui::busy::busy_label;
+use crate::ui::completion::SharedCatalog;
 use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::{Copied, DataGrid};
 use crate::ui::plan_view::PlanView;
@@ -120,10 +121,11 @@ impl SessionPanel {
         title: impl Into<SharedString>,
         sql: String,
         engine: Engine,
+        catalog: SharedCatalog,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let editor = cx.new(|cx| QueryEditor::with_text(sql.clone(), engine, window, cx));
+        let editor = cx.new(|cx| QueryEditor::with_text(sql.clone(), engine, catalog, window, cx));
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
 

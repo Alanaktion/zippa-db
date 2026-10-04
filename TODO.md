@@ -26,7 +26,7 @@ known defects and risks in the shipped code are tracked in
 
 ## 3. SQL editor
 
-* Auto-complete for tables, columns, keywords, and schemas from live introspection
+* Auto-complete: a key to open the menu without typing, and context beyond the statement's own `FROM` (CTE names, subquery aliases)
 * Engine-specific highlighting (today one SQL grammar serves all three)
 * Format SQL ([plan](.agents/plans/format-sql.md))
 * A pinned connection per query tab, so `BEGIN`/`COMMIT`, `SET`, and temp tables persist between runs ([plan](.agents/plans/pinned-connections-transactions.md))
