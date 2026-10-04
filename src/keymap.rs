@@ -17,7 +17,7 @@ use crate::ui::query_editor::{
 use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
     OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, PreviousTab,
-    QuickSwitcher, Refresh, SaveFile, SaveFileAs, SearchSchema,
+    QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs, SearchSchema,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -122,6 +122,9 @@ pub fn bind(cx: &mut App) {
         // fresh manager into it, so another connection can be opened from where
         // this one was. Closing the tab outright is the key above.
         KeyBinding::new("secondary-d", Disconnect, Some("Session")),
+        // Open a fresh pool after the server dropped the connection or
+        // stopped answering, keeping every tab where it is.
+        KeyBinding::new("secondary-shift-r", Reconnect, Some("Session")),
         // Reloads the schema, and the active table's rows; never re-runs a
         // query tab's buffer, so it is safe even if that buffer is a write.
         KeyBinding::new("secondary-r", Refresh, Some("Session")),

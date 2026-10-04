@@ -1,13 +1,13 @@
 //! MySQL / MariaDB driver.
 
 use anyhow::Result;
-use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlQueryResult, MySqlRow};
-use sqlx::{Executor, Row, TypeInfo, ValueRef};
+use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlQueryResult, MySqlRow};
+use sqlx::{AssertSqlSafe, Executor, Row, TypeInfo, ValueRef};
 
 use super::config::Engine;
 use super::query::{self, Cell};
 use super::sql::quote_literal_for;
-use super::{ConnectionConfig, POOL_SIZE, decode};
+use super::{ConnectionConfig, decode, pool_options};
 
 /// Schemas double as databases in MySQL; the server's own are hidden.
 pub(crate) const DATABASES_SQL: &str = "SELECT schema_name FROM information_schema.schemata \
@@ -108,25 +108,60 @@ pub(crate) async fn connect(
         options = options.password(password);
     }
 
-    let mut pool_options = MySqlPoolOptions::new().max_connections(POOL_SIZE);
+    let mut pool_options = pool_options();
 
+    // MySQL has no connect option for either setting, so every connection the
+    // pool opens is told as it comes up.
+    //
     // A read-only connection is read-only at the server too: the client-side
     // check in `Connection::refuse_write` only speaks for statements it can
-    // recognise. MySQL has no connect option for it, so every connection the
-    // pool opens is told as it comes up.
-    if config.safety.is_read_only() {
-        pool_options = pool_options.after_connect(|connection, _| {
-            Box::pin(async move {
-                connection
-                    .execute("SET SESSION TRANSACTION READ ONLY")
-                    .await?;
-                Ok(())
-            })
-        });
+    // recognise.
+    let read_only = config.safety.is_read_only();
+    let timeout = config.statement_timeout.filter(|&seconds| seconds > 0);
+    if read_only || timeout.is_some() {
+        pool_options =
+            pool_options.after_connect(move |connection: &mut sqlx::MySqlConnection, _| {
+                Box::pin(async move {
+                    if read_only {
+                        connection
+                            .execute("SET SESSION TRANSACTION READ ONLY")
+                            .await?;
+                    }
+                    if let Some(seconds) = timeout {
+                        set_statement_timeout(connection, seconds).await;
+                    }
+                    Ok(())
+                })
+            });
     }
 
     let pool = pool_options.connect_with(options).await?;
     Ok(pool)
+}
+
+/// Limit how long one statement may run on `connection`.
+///
+/// MySQL spells it `max_execution_time`, in milliseconds, and applies it to
+/// `SELECT` only; MariaDB has no such variable and spells it
+/// `max_statement_time`, in seconds, for every statement. A server with
+/// neither (MySQL before 5.7.8) is left without a limit rather than refused
+/// a connection over a setting that is only a guard.
+async fn set_statement_timeout(connection: &mut sqlx::MySqlConnection, seconds: u32) {
+    let mysql = format!(
+        "SET SESSION max_execution_time = {}",
+        u64::from(seconds) * 1000
+    );
+    if sqlx::raw_sql(AssertSqlSafe(mysql))
+        .execute(&mut *connection)
+        .await
+        .is_ok()
+    {
+        return;
+    }
+    let mariadb = format!("SET SESSION max_statement_time = {seconds}");
+    let _ = sqlx::raw_sql(AssertSqlSafe(mariadb))
+        .execute(&mut *connection)
+        .await;
 }
 
 /// Primary key columns of a table in the current database, in key order.

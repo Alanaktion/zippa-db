@@ -5,11 +5,11 @@ use sqlx::postgres::types::{
     Oid, PgBox, PgCircle, PgHstore, PgInterval, PgLSeg, PgLine, PgMoney, PgPath, PgPoint,
     PgPolygon, PgRange, PgTimeTz,
 };
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgQueryResult, PgRow};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgQueryResult, PgRow};
 use sqlx::{Row, TypeInfo, ValueRef};
 
 use super::query::{self, Cell};
-use super::{ConnectionConfig, POOL_SIZE, quote_literal};
+use super::{ConnectionConfig, pool_options, quote_literal};
 
 /// Databases on this server the user can connect to.
 pub(crate) const DATABASES_SQL: &str = "SELECT datname FROM pg_database \
@@ -142,11 +142,13 @@ pub(crate) async fn connect(config: &ConnectionConfig, password: Option<&str>) -
     if config.safety.is_read_only() {
         options = options.options([("default_transaction_read_only", "on")]);
     }
+    // In milliseconds, set as the session starts so every connection the
+    // pool opens has it, dedicated ones included.
+    if let Some(seconds) = config.statement_timeout.filter(|&seconds| seconds > 0) {
+        options = options.options([("statement_timeout", u64::from(seconds) * 1000)]);
+    }
 
-    let pool = PgPoolOptions::new()
-        .max_connections(POOL_SIZE)
-        .connect_with(options)
-        .await?;
+    let pool = pool_options().connect_with(options).await?;
     Ok(pool)
 }
 

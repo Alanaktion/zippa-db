@@ -14,6 +14,12 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   the OS keychain, an optional per-connection colour, and several connections
   open at once in tabs. The connection editor tests a connection without
   closing, and Connect saves first (its menu connects without saving).
+- **Connection health:** a dropped connection or an unresponsive server is
+  told in words rather than as the driver's error, a statement gives up
+  waiting for a free connection after 10 seconds, and Reconnect
+  (`Cmd`/`Ctrl`+`Shift`+`R`, the File menu, or the database picker) opens a
+  fresh connection while keeping every tab. Postgres and MySQL connections
+  take an optional statement timeout.
 - **Safety modes:** read-only (enforced on the server and client side),
   confirm writes, staged (the default), and auto-apply.
 - **Workspace restore:** open connections, their tabs, and unsaved query
