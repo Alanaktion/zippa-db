@@ -2,8 +2,8 @@
 //!
 //! A code editor with SQL highlighting that hands the statement under the
 //! caret, the selection, or the whole buffer to the session, which runs it and
-//! can cancel it. Completion from live introspection is still ahead (TODO.md
-//! section 3).
+//! can cancel it. Typing offers completions from the session's catalog and a
+//! list of SQL keywords (see [`crate::ui::completion`]).
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, EditorState};
@@ -16,9 +16,11 @@ use gpui_kit::assets::IconName as AssetIcon;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 use crate::db::{Blocker, Engine, statement, transaction_blocker};
 use crate::settings;
+use crate::ui::completion::{SharedCatalog, SqlCompletions};
 use crate::ui::session::{OpenFile, SaveFile};
 
 actions!(
@@ -51,6 +53,9 @@ pub enum QueryEditorEvent {
 
 pub struct QueryEditor {
     state: Entity<EditorState>,
+    /// The provider the editor asks, kept so a test can ask it too.
+    #[cfg(test)]
+    completions: Rc<SqlCompletions>,
     running: bool,
     /// The engine this buffer runs against, so the analyze button can say when
     /// the server has no `EXPLAIN ANALYZE`.
@@ -75,23 +80,30 @@ impl EventEmitter<QueryEditorEvent> for QueryEditor {}
 
 impl QueryEditor {
     /// Open an editor that already holds `sql`, as when a table is opened from
-    /// the sidebar.
+    /// the sidebar. `catalog` is the session's, which completions are read
+    /// from.
     pub fn with_text(
         sql: impl Into<String>,
         engine: Engine,
+        catalog: SharedCatalog,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let sql = sql.into();
+        let completions = Rc::new(SqlCompletions { catalog, engine });
         let state = cx.new(|cx| {
-            EditorState::new(window, cx)
+            let mut state = EditorState::new(window, cx)
                 .language("sql")
                 .placeholder("SELECT * FROM …")
-                .default_value(sql)
+                .default_value(sql);
+            state.lsp_mut().completion_provider = Some(completions.clone());
+            state
         });
 
         Self {
             state,
+            #[cfg(test)]
+            completions,
             running: false,
             engine,
             statement_cache: RefCell::new(None),
@@ -132,6 +144,16 @@ impl QueryEditor {
     pub(crate) fn select_for_test(&self, range: std::ops::Range<usize>, cx: &mut Context<Self>) {
         self.state
             .update(cx, |state, cx| state.set_selected_range(range, cx));
+    }
+
+    /// The labels the completion menu would offer with the caret where it is.
+    #[cfg(test)]
+    pub(crate) fn completions_for_test(&self, cx: &gpui_kit::App) -> Vec<String> {
+        let state = self.state.read(cx);
+        self.completions
+            .complete(state.text(), state.cursor())
+            .map(|completions| completions.items.into_iter().map(|s| s.label).collect())
+            .unwrap_or_default()
     }
 
     /// The statement a run would send, for a test to read.

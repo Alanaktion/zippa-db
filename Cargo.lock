@@ -9643,6 +9643,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "keyring",
+ "lsp-types",
  "regex",
  "serde",
  "serde_json",

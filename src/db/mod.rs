@@ -11,6 +11,7 @@
 //! * [`query_log`] — the bounded record of every statement a connection has
 //!   sent, for the console pane.
 //! * [`catalog`] — the whole schema once per session, and the search over it.
+//! * [`completion`] — what the SQL editor offers for the word under the caret.
 //! * [`schema`] — a table's own definition: columns, indexes, foreign keys.
 //! * [`sql`] — quoting and placing bind parameters in generated statements.
 //! * [`statement`] — splitting and classifying the user's own SQL.
@@ -27,6 +28,7 @@
 
 pub mod binary;
 pub mod catalog;
+pub mod completion;
 pub mod config;
 pub mod connection;
 pub(crate) mod dedicated;
