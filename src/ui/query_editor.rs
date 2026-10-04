@@ -9,7 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, EditorState, Enter, IndentInline};
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, EventEmitter, Window, actions, div, px};
+use gpui_kit::{Context, Entity, EventEmitter, KeyDownEvent, Window, actions, div, px};
 
 use gpui_kit::assets::IconName as AssetIcon;
 
@@ -228,6 +228,24 @@ impl QueryEditor {
         self.state.read(cx).completion_menu_state().open
     }
 
+    /// Every keystroke, seen before the editor: with the menu closed, start
+    /// the next completion where the caret is now.
+    ///
+    /// `gpui-kit` remembers where the first completion started and never
+    /// forgets it; a later keystroke before that offset — the caret moved
+    /// back to an earlier line, say to finish a `SELECT` list after writing
+    /// its `FROM` — is then ignored and the menu never opens. Setting the
+    /// start afresh while nothing is showing keeps it at or before the caret.
+    fn restart_completion(&mut self, _: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.completion_open(cx) {
+            return;
+        }
+        self.state.update(cx, |state, cx| {
+            let cursor = state.cursor();
+            state.present_completion_items(cursor, "", Vec::new(), cx);
+        });
+    }
+
     /// `Tab`, seen before the editor indents: with Tab chosen to accept a
     /// suggestion and the menu open, it takes the highlighted one instead.
     fn accept_with_tab(&mut self, _: &IndentInline, window: &mut Window, cx: &mut Context<Self>) {
@@ -412,6 +430,7 @@ impl Render for QueryEditor {
             .on_action(cx.listener(Self::run_script_ignoring_errors))
             .on_action(cx.listener(Self::explain))
             .on_action(cx.listener(Self::explain_analyze))
+            .capture_key_down(cx.listener(Self::restart_completion))
             .capture_action(cx.listener(Self::accept_with_tab))
             .capture_action(cx.listener(Self::enter_with_menu_open))
             .size_full()

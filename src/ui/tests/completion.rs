@@ -129,3 +129,35 @@ fn tab_indents_when_enter_takes_the_suggestion(cx: &mut TestAppContext) {
     let sql = active_sql(cx, handle);
     assert!(!sql.contains("score"), "Tab took a suggestion: {sql:?}");
 }
+
+/// Press each of `keys` in the active editor, letting the menu answer.
+fn press_keys(cx: &mut TestAppContext, handle: WindowHandle<Session>, keys: &[&str]) {
+    for key in keys {
+        press(cx, handle, key);
+        cx.run_until_parked();
+    }
+}
+
+#[gpui_kit::test]
+fn completion_works_back_on_an_earlier_line(cx: &mut TestAppContext) {
+    let (_database, handle) = session_accepting_with(cx, settings::CompletionKey::Enter);
+
+    // Write the FROM first, completing in it, then go back to the SELECT
+    // list: the menu must still open there.
+    prepare_editor(cx, handle, "select \nfrom ", "select \nfrom ".len());
+    press_keys(cx, handle, &["i", "t", "enter"]);
+    assert_eq!(active_sql(cx, handle), "select \nfrom items");
+
+    handle
+        .update(cx, |session, _, cx| {
+            if let Some(editor) = session.active_editor_for_test(cx) {
+                editor.update(cx, |editor, cx| {
+                    editor.set_cursor_for_test("select ".len(), cx)
+                });
+            }
+        })
+        .unwrap();
+    press_keys(cx, handle, &["s", "c", "enter"]);
+
+    assert_eq!(active_sql(cx, handle), "select score\nfrom items");
+}
