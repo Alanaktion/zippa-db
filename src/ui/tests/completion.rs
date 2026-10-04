@@ -41,14 +41,19 @@ fn the_catalog_reaches_an_editor_opened_before_it_loaded(cx: &mut TestAppContext
 
 #[gpui_kit::test]
 fn typing_opens_the_menu_and_enter_takes_the_suggestion(cx: &mut TestAppContext) {
-    let (_database, handle) = session_with_objects(cx);
-    handle
-        .update(cx, |session, _, cx| session.refresh(cx))
-        .unwrap();
-    cx.run_until_parked();
+    let (_database, handle) = session_accepting_with(cx, settings::CompletionKey::Enter);
 
     prepare_editor(cx, handle, "select  from items", "select ".len());
-    for letter in ["s", "c"] {
+    type_letters(cx, handle, &["s", "c"]);
+    press(cx, handle, "enter");
+    cx.run_until_parked();
+
+    assert_eq!(active_sql(cx, handle), "select score from items");
+}
+
+/// Type each of `letters` into the active editor, letting the menu answer.
+fn type_letters(cx: &mut TestAppContext, handle: WindowHandle<Session>, letters: &[&str]) {
+    for letter in letters {
         cx.update_window(handle.into(), |_, window, cx| {
             window.draw(cx).clear(cx);
             window.input(letter, cx);
@@ -56,10 +61,10 @@ fn typing_opens_the_menu_and_enter_takes_the_suggestion(cx: &mut TestAppContext)
         .unwrap();
         cx.run_until_parked();
     }
-    press(cx, handle, "enter");
-    cx.run_until_parked();
+}
 
-    let sql = handle
+fn active_sql(cx: &mut TestAppContext, handle: WindowHandle<Session>) -> String {
+    handle
         .update(cx, |session, _, cx| {
             session
                 .active_editor_for_test(cx)
@@ -67,6 +72,60 @@ fn typing_opens_the_menu_and_enter_takes_the_suggestion(cx: &mut TestAppContext)
                 .read(cx)
                 .sql(cx)
         })
+        .unwrap()
+}
+
+/// A session with its catalog loaded and suggestions taken with `key`.
+fn session_accepting_with(
+    cx: &mut TestAppContext,
+    key: settings::CompletionKey,
+) -> (TempDatabase, WindowHandle<Session>) {
+    let (database, handle) = session_with_objects(cx);
+    cx.update(|cx| settings::update(cx, |settings| settings.accept_completion = key));
+    handle
+        .update(cx, |session, _, cx| session.refresh(cx))
         .unwrap();
-    assert_eq!(sql, "select score from items");
+    cx.run_until_parked();
+    (database, handle)
+}
+
+#[gpui_kit::test]
+fn tab_takes_the_suggestion_when_the_setting_says_so(cx: &mut TestAppContext) {
+    let (_database, handle) = session_accepting_with(cx, settings::CompletionKey::Tab);
+
+    prepare_editor(cx, handle, "select  from items", "select ".len());
+    type_letters(cx, handle, &["s", "c"]);
+    press(cx, handle, "tab");
+    cx.run_until_parked();
+
+    assert_eq!(active_sql(cx, handle), "select score from items");
+}
+
+#[gpui_kit::test]
+fn enter_starts_a_line_when_tab_takes_the_suggestion(cx: &mut TestAppContext) {
+    let (_database, handle) = session_accepting_with(cx, settings::CompletionKey::Tab);
+
+    prepare_editor(cx, handle, "select  from items", "select ".len());
+    type_letters(cx, handle, &["s", "c"]);
+    press(cx, handle, "enter");
+    cx.run_until_parked();
+
+    let sql = active_sql(cx, handle);
+    assert!(
+        sql.starts_with("select sc\n"),
+        "Enter took a suggestion: {sql:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn tab_indents_when_enter_takes_the_suggestion(cx: &mut TestAppContext) {
+    let (_database, handle) = session_accepting_with(cx, settings::CompletionKey::Enter);
+
+    prepare_editor(cx, handle, "select  from items", "select ".len());
+    type_letters(cx, handle, &["s", "c"]);
+    press(cx, handle, "tab");
+    cx.run_until_parked();
+
+    let sql = active_sql(cx, handle);
+    assert!(!sql.contains("score"), "Tab took a suggestion: {sql:?}");
 }

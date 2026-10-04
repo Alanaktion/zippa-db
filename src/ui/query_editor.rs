@@ -6,10 +6,10 @@
 //! list of SQL keywords (see [`crate::ui::completion`]).
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::input::{Editor, EditorState, Enter, IndentInline};
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, EventEmitter, Window, actions, div};
+use gpui_kit::{Context, Entity, EventEmitter, Window, actions, div, px};
 
 use gpui_kit::assets::IconName as AssetIcon;
 
@@ -19,7 +19,7 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::db::{Blocker, Engine, statement, transaction_blocker};
-use crate::settings;
+use crate::settings::{self, CompletionKey, Settings};
 use crate::ui::completion::{SharedCatalog, SqlCompletions};
 use crate::ui::session::{OpenFile, SaveFile};
 
@@ -33,6 +33,10 @@ actions!(
         ExplainAnalyze
     ]
 );
+
+/// The widest the completion menu grows, in pixels. `gpui-kit`'s default of
+/// 320 cuts off a long column name once its type and table are beside it.
+const COMPLETION_MENU_WIDTH: f32 = 480.;
 
 pub enum QueryEditorEvent {
     /// The user asked to run one statement: what is selected, or the one the
@@ -96,7 +100,10 @@ impl QueryEditor {
                 .language("sql")
                 .placeholder("SELECT * FROM …")
                 .default_value(sql);
-            state.lsp_mut().completion_provider = Some(completions.clone());
+            let lsp = state.lsp_mut();
+            lsp.completion_provider = Some(completions.clone());
+            // Wide enough for a long column name beside its type and table.
+            lsp.completion_menu.max_width = px(COMPLETION_MENU_WIDTH);
             state
         });
 
@@ -214,6 +221,42 @@ impl QueryEditor {
         cx: &mut Context<Self>,
     ) {
         self.emit_explain(true, cx);
+    }
+
+    /// Whether the completion menu is on screen.
+    fn completion_open(&self, cx: &gpui_kit::App) -> bool {
+        self.state.read(cx).completion_menu_state().open
+    }
+
+    /// `Tab`, seen before the editor indents: with Tab chosen to accept a
+    /// suggestion and the menu open, it takes the highlighted one instead.
+    fn accept_with_tab(&mut self, _: &IndentInline, window: &mut Window, cx: &mut Context<Self>) {
+        if Settings::global(cx).accept_completion != CompletionKey::Tab || !self.completion_open(cx)
+        {
+            return;
+        }
+        // The menu answers `Enter` by taking the highlighted suggestion.
+        let accept = Box::new(Enter {
+            secondary: false,
+            shift: false,
+        });
+        self.state.update(cx, |state, cx| {
+            state.route_overlay_action(accept, window, cx)
+        });
+        cx.stop_propagation();
+    }
+
+    /// `Enter`, seen before the menu: with Tab chosen to accept, Enter closes
+    /// the menu and goes on to start a new line.
+    fn enter_with_menu_open(&mut self, action: &Enter, _: &mut Window, cx: &mut Context<Self>) {
+        if action.secondary
+            || Settings::global(cx).accept_completion != CompletionKey::Tab
+            || !self.completion_open(cx)
+        {
+            return;
+        }
+        self.state
+            .update(cx, |state, cx| state.dismiss_lsp_overlays(cx));
     }
 
     /// Run what is selected, or the statement the caret is in.
@@ -369,6 +412,8 @@ impl Render for QueryEditor {
             .on_action(cx.listener(Self::run_script_ignoring_errors))
             .on_action(cx.listener(Self::explain))
             .on_action(cx.listener(Self::explain_analyze))
+            .capture_action(cx.listener(Self::accept_with_tab))
+            .capture_action(cx.listener(Self::enter_with_menu_open))
             .size_full()
             .border_b_1()
             .border_color(cx.theme().border)
