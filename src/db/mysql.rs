@@ -1,13 +1,15 @@
 //! MySQL / MariaDB driver.
 
 use anyhow::Result;
-use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlQueryResult, MySqlRow};
+use sqlx::mysql::{
+    MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlQueryResult, MySqlRow, MySqlSslMode,
+};
 use sqlx::{Executor, Row, TypeInfo, ValueRef};
 
 use super::config::Engine;
 use super::query::{self, Cell};
 use super::sql::quote_literal_for;
-use super::{ConnectionConfig, POOL_SIZE, decode};
+use super::{ConnectionConfig, POOL_SIZE, SslConfig, SslMode, decode};
 
 /// Schemas double as databases in MySQL; the server's own are hidden.
 pub(crate) const DATABASES_SQL: &str = "SELECT schema_name FROM information_schema.schemata \
@@ -96,17 +98,7 @@ pub(crate) async fn connect(
     config: &ConnectionConfig,
     password: Option<&str>,
 ) -> Result<MySqlPool> {
-    let mut options = MySqlConnectOptions::new()
-        .host(&config.host)
-        .port(config.port)
-        .username(&config.username);
-
-    if !config.database.is_empty() {
-        options = options.database(&config.database);
-    }
-    if let Some(password) = password {
-        options = options.password(password);
-    }
+    let options = options(config, password);
 
     let mut pool_options = MySqlPoolOptions::new().max_connections(POOL_SIZE);
 
@@ -127,6 +119,49 @@ pub(crate) async fn connect(
 
     let pool = pool_options.connect_with(options).await?;
     Ok(pool)
+}
+
+/// The driver's mode for one of ours. MySQL names the last one "verify
+/// identity", which is what `VerifyFull` means.
+fn ssl_mode(mode: SslMode) -> MySqlSslMode {
+    match mode {
+        SslMode::Disable => MySqlSslMode::Disabled,
+        SslMode::Prefer => MySqlSslMode::Preferred,
+        SslMode::Require => MySqlSslMode::Required,
+        SslMode::VerifyCa => MySqlSslMode::VerifyCa,
+        SslMode::VerifyFull => MySqlSslMode::VerifyIdentity,
+    }
+}
+
+/// What `connect` hands the driver, apart from the pool, so the mapping from
+/// a saved connection can be checked without a server.
+fn options(config: &ConnectionConfig, password: Option<&str>) -> MySqlConnectOptions {
+    let mut options = MySqlConnectOptions::new()
+        .host(&config.host)
+        .port(config.port)
+        .username(&config.username);
+
+    if !config.database.is_empty() {
+        options = options.database(&config.database);
+    }
+    if let Some(password) = password {
+        options = options.password(password);
+    }
+
+    let ssl = &config.ssl;
+    options = options.ssl_mode(ssl_mode(ssl.mode));
+    if ssl.mode.uses_files() {
+        if let Some(path) = SslConfig::path(&ssl.ca_cert) {
+            options = options.ssl_ca(path);
+        }
+        if let Some(path) = SslConfig::path(&ssl.client_cert) {
+            options = options.ssl_client_cert(path);
+        }
+        if let Some(path) = SslConfig::path(&ssl.client_key) {
+            options = options.ssl_client_key(path);
+        }
+    }
+    options
 }
 
 /// Primary key columns of a table in the current database, in key order.
@@ -284,4 +319,47 @@ pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {
 /// apart from an empty value, so the target is `Option<Vec<u8>>`.
 pub(crate) fn raw_bytes(row: &MySqlRow, index: usize) -> Option<Vec<u8>> {
     row.try_get::<Option<Vec<u8>>, _>(index).ok().flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ssl(mode: SslMode) -> ConnectionConfig {
+        ConnectionConfig {
+            ssl: SslConfig {
+                mode,
+                ca_cert: "/etc/zippa/ca.pem".into(),
+                client_cert: "/etc/zippa/client.pem".into(),
+                client_key: "/etc/zippa/client.key".into(),
+            },
+            ..ConnectionConfig::new(Engine::MySql)
+        }
+    }
+
+    #[test]
+    fn every_ssl_mode_reaches_the_driver() {
+        for (mode, expected) in [
+            (SslMode::Disable, "Disabled"),
+            (SslMode::Prefer, "Preferred"),
+            (SslMode::Require, "Required"),
+            (SslMode::VerifyCa, "VerifyCa"),
+            (SslMode::VerifyFull, "VerifyIdentity"),
+        ] {
+            let options = options(&ssl(mode), None);
+            assert_eq!(format!("{:?}", options.get_ssl_mode()), expected);
+        }
+    }
+
+    #[test]
+    fn certificate_files_are_passed_only_when_encrypting() {
+        let verify = format!("{:?}", options(&ssl(SslMode::VerifyCa), None));
+        for file in ["ca.pem", "client.pem", "client.key"] {
+            assert!(verify.contains(file), "{file} missing from {verify}");
+        }
+        for mode in [SslMode::Disable, SslMode::Prefer] {
+            let plain = format!("{:?}", options(&ssl(mode), None));
+            assert!(!plain.contains("/etc/zippa"), "{plain}");
+        }
+    }
 }

@@ -13,7 +13,8 @@ use super::query::Cell;
 use super::schema::ReferentialAction;
 use super::{
     CatalogKind, Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, QueryDigest,
-    RowKey, SafetyMode, TagColor, keyword_literal, quote_identifier, typed_placeholder,
+    RowKey, SafetyMode, SslConfig, SslMode, TagColor, keyword_literal, quote_identifier,
+    typed_placeholder,
 };
 use super::{
     Decision, OnFailure, QueryOutcome, QuerySource, ScriptFailure, ScriptMode, ScriptOutcome,
@@ -1677,6 +1678,63 @@ async fn live_postgres_money_scales_by_the_servers_locale_not_always_by_100() {
     yen.close().await;
 }
 
+/// The SSL mode reaches the server: the compose Postgres runs without SSL, so
+/// `Require` must be refused rather than quietly falling back to a plain
+/// connection, while `Disable` and the default `Prefer` still connect.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_ssl_require_is_refused_by_a_server_without_ssl() {
+    for mode in [SslMode::Disable, SslMode::Prefer] {
+        let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+        config.ssl.mode = mode;
+        let connection = Connection::open(config, Some(password))
+            .await
+            .unwrap_or_else(|error| panic!("{mode:?} should connect: {error:#}"));
+        connection.close().await;
+    }
+
+    let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+    config.ssl.mode = SslMode::Require;
+    assert!(
+        Connection::open(config, Some(password)).await.is_err(),
+        "Require should refuse a server that does not offer SSL"
+    );
+}
+
+/// MySQL 8 generates a self-signed certificate on first start, so the compose
+/// server takes `Require` (and the session really is encrypted) but fails
+/// `VerifyCa`, whose whole point is to refuse an authority nobody trusts.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_ssl_require_encrypts_and_verify_refuses_a_self_signed_server() {
+    let (mut config, password) = live_mysql_config();
+    config.ssl = SslConfig {
+        mode: SslMode::Require,
+        ..SslConfig::default()
+    };
+    let encrypted = Connection::open(config.clone(), Some(password.clone()))
+        .await
+        .expect("Require should connect to a server with SSL");
+    let cipher = encrypted
+        .run_query("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
+        .await
+        .expect("could not read the session's cipher");
+    assert!(
+        cipher.rows[0][1]
+            .as_deref()
+            .is_some_and(|cipher| !cipher.is_empty()),
+        "a Require session should be encrypted: {:?}",
+        cipher.rows
+    );
+    encrypted.close().await;
+
+    config.ssl.mode = SslMode::VerifyCa;
+    assert!(
+        Connection::open(config, Some(password)).await.is_err(),
+        "VerifyCa should refuse a self-signed certificate"
+    );
+}
+
 /// `processes` reads every other connection's activity and `kill_process` can
 /// end one of them — the live half of the process list, since SQLite (the
 /// only engine the rest of this file exercises) has no server activity to
@@ -2053,6 +2111,15 @@ async fn live_mysql_a_mysqldump_file_imports_with_its_table_locks() {
 /// test that needs a second real database to switch to, since the fast
 /// SQLite-backed suite has no such thing.
 pub(crate) async fn live_postgres(var: &str, database: &str) -> Connection {
+    let (config, password) = live_postgres_config(var, database);
+    Connection::open(config, Some(password))
+        .await
+        .expect("could not open the live Postgres connection")
+}
+
+/// The saved connection and password `live_postgres` opens, for a test that
+/// changes a setting before connecting.
+fn live_postgres_config(var: &str, database: &str) -> (ConnectionConfig, String) {
     let url = env::var(var)
         .unwrap_or_else(|_| format!("postgres://postgres:secret@127.0.0.1:5433/{database}"));
     let rest = url.strip_prefix("postgres://").expect("a postgres:// URL");
@@ -2069,16 +2136,12 @@ pub(crate) async fn live_postgres(var: &str, database: &str) -> Connection {
         database: database.to_string(),
         ..ConnectionConfig::new(Engine::Postgres)
     };
-    Connection::open(config, Some(password.to_string()))
-        .await
-        .expect("could not open the live Postgres connection")
+    (config, password.to_string())
 }
 
-/// Open the MySQL server a live test runs against, and a pool onto the same
-/// database for fixtures that need the text protocol.
-async fn live_mysql() -> (Connection, sqlx::MySqlPool) {
-    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
-
+/// The saved connection and password `live_mysql` opens, for a test that
+/// changes a setting before connecting.
+fn live_mysql_config() -> (ConnectionConfig, String) {
     let url = env::var("ZIPPA_TEST_MYSQL_URL")
         .unwrap_or_else(|_| "mysql://root:secret@127.0.0.1:3307/app".to_string());
     let rest = url.strip_prefix("mysql://").expect("a mysql:// URL");
@@ -2088,17 +2151,6 @@ async fn live_mysql() -> (Connection, sqlx::MySqlPool) {
     let (host, port) = authority.split_once(':').expect("host:port");
     let port: u16 = port.parse().expect("a port");
 
-    let options = MySqlConnectOptions::new()
-        .host(host)
-        .port(port)
-        .username(username)
-        .password(password)
-        .database(database);
-    let pool = MySqlPoolOptions::new()
-        .connect_with(options)
-        .await
-        .expect("could not open the live MySQL server");
-
     let config = ConnectionConfig {
         host: host.to_string(),
         port,
@@ -2106,7 +2158,27 @@ async fn live_mysql() -> (Connection, sqlx::MySqlPool) {
         database: database.to_string(),
         ..ConnectionConfig::new(Engine::MySql)
     };
-    let connection = Connection::open(config, Some(password.to_string()))
+    (config, password.to_string())
+}
+
+/// Open the MySQL server a live test runs against, and a pool onto the same
+/// database for fixtures that need the text protocol.
+async fn live_mysql() -> (Connection, sqlx::MySqlPool) {
+    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
+
+    let (config, password) = live_mysql_config();
+    let options = MySqlConnectOptions::new()
+        .host(&config.host)
+        .port(config.port)
+        .username(&config.username)
+        .password(&password)
+        .database(&config.database);
+    let pool = MySqlPoolOptions::new()
+        .connect_with(options)
+        .await
+        .expect("could not open the live MySQL server");
+
+    let connection = Connection::open(config, Some(password))
         .await
         .expect("could not open the live MySQL connection");
 

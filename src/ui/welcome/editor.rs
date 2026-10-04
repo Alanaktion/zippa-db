@@ -18,7 +18,8 @@ use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Task, Window, a
 use uuid::Uuid;
 
 use crate::db::{
-    Connection, ConnectionConfig, Engine, SafetyMode, TagColor, is_risky_auto_apply, runtime, store,
+    Connection, ConnectionConfig, Engine, SafetyMode, SslConfig, SslMode, TagColor,
+    is_risky_auto_apply, runtime, store,
 };
 use crate::ui::busy::spinner;
 
@@ -59,6 +60,12 @@ pub struct ConnectionEditor {
     username: Entity<InputState>,
     password: Entity<InputState>,
     database: Entity<InputState>,
+    ssl_mode: SslMode,
+    /// The certificate files encryption may need: an authority to trust, and
+    /// the client's own certificate and key.
+    ssl_ca: Entity<InputState>,
+    ssl_cert: Entity<InputState>,
+    ssl_key: Entity<InputState>,
     /// Whether the user has typed in the password box since the dialog opened.
     /// The stored password is never loaded into it, so an untouched box has to
     /// mean "leave it alone" rather than "no password".
@@ -130,6 +137,12 @@ impl ConnectionEditor {
                 }
             }),
             database: cx.new(|cx| InputState::new(window, cx)),
+            ssl_mode: SslMode::default(),
+            ssl_ca: cx.new(|cx| {
+                InputState::new(window, cx).placeholder("Optional: the system's authorities")
+            }),
+            ssl_cert: cx.new(|cx| InputState::new(window, cx).placeholder("Optional")),
+            ssl_key: cx.new(|cx| InputState::new(window, cx).placeholder("Optional")),
             password_edited: false,
             status: Status::None,
             test: None,
@@ -153,7 +166,7 @@ impl ConnectionEditor {
         editor
     }
 
-    fn fields(&self) -> [Entity<InputState>; 6] {
+    fn fields(&self) -> [Entity<InputState>; 9] {
         [
             self.name.clone(),
             self.host.clone(),
@@ -161,6 +174,9 @@ impl ConnectionEditor {
             self.username.clone(),
             self.password.clone(),
             self.database.clone(),
+            self.ssl_ca.clone(),
+            self.ssl_cert.clone(),
+            self.ssl_key.clone(),
         ]
     }
 
@@ -239,6 +255,10 @@ impl ConnectionEditor {
         self.set_field(&self.username.clone(), &config.username, window, cx);
         self.set_field(&self.database.clone(), &config.database, window, cx);
         self.set_field(&self.password.clone(), "", window, cx);
+        self.ssl_mode = config.ssl.mode;
+        self.set_field(&self.ssl_ca.clone(), &config.ssl.ca_cert, window, cx);
+        self.set_field(&self.ssl_cert.clone(), &config.ssl.client_cert, window, cx);
+        self.set_field(&self.ssl_key.clone(), &config.ssl.client_key, window, cx);
     }
 
     /// Put the caret in the first field the user is about to fill in.
@@ -267,7 +287,26 @@ impl ConnectionEditor {
             safety: self.safety,
             color: self.color,
             last_connected: None,
+            ssl: self.ssl(cx),
         }
+    }
+
+    /// Read the encryption settings. The paths are kept whatever the mode, so
+    /// stepping down to `Prefer` and back does not lose them.
+    fn ssl(&self, cx: &App) -> SslConfig {
+        let path = |input: &Entity<InputState>| input.read(cx).value().trim().to_string();
+        SslConfig {
+            mode: self.ssl_mode,
+            ca_cert: path(&self.ssl_ca),
+            client_cert: path(&self.ssl_cert),
+            client_key: path(&self.ssl_key),
+        }
+    }
+
+    fn set_ssl_mode(&mut self, mode: SslMode, cx: &mut Context<Self>) {
+        self.ssl_mode = mode;
+        self.clear_status(cx);
+        cx.notify();
     }
 
     fn set_engine(&mut self, engine: Engine, window: &mut Window, cx: &mut Context<Self>) {
@@ -315,7 +354,7 @@ impl ConnectionEditor {
         if !port.is_empty() && !port.parse::<u16>().is_ok_and(|port| port > 0) {
             return Some("The port must be a number from 1 to 65535.");
         }
-        None
+        self.ssl(cx).invalid()
     }
 
     /// Report invalid inputs below the form; `true` when there were any.
@@ -548,6 +587,58 @@ impl ConnectionEditor {
             )
     }
 
+    /// Pick how the connection is encrypted, with the certificate files once
+    /// the mode insists on encryption (`SslMode::uses_files`); below that they
+    /// are neither shown nor sent.
+    fn render_ssl(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let files = self.ssl_mode.uses_files();
+
+        v_flex()
+            .gap_3()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("SSL"),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .children(SslMode::ALL.map(|mode| {
+                                let button =
+                                    Button::new(SharedString::from(format!("ssl-{mode:?}")))
+                                        .label(mode.label())
+                                        .tooltip(mode.description())
+                                        .on_click(cx.listener(move |this, _, _window, cx| {
+                                            this.set_ssl_mode(mode, cx)
+                                        }));
+
+                                if self.ssl_mode == mode {
+                                    button.primary()
+                                } else {
+                                    button.outline()
+                                }
+                            })),
+                    ),
+            )
+            .when(files, |this| {
+                this.child(field("CA certificate", &self.ssl_ca, cx)).child(
+                    h_flex()
+                        .gap_3()
+                        .child(div().flex_1().child(field(
+                            "Client certificate",
+                            &self.ssl_cert,
+                            cx,
+                        )))
+                        .child(div().flex_1().child(field("Client key", &self.ssl_key, cx))),
+                )
+            })
+    }
+
     fn render_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let file_based = self.engine.is_file_based();
 
@@ -572,6 +663,7 @@ impl ConnectionEditor {
                         .child(div().flex_1().child(field("Password", &self.password, cx))),
                 )
                 .child(field("Database", &self.database, cx))
+                .child(self.render_ssl(cx))
             })
             .child(self.render_colors(cx))
             .child(self.render_safety(cx))
@@ -663,6 +755,31 @@ impl ConnectionEditor {
     ) {
         self.set_engine(engine, window, cx);
         self.set_field(&self.database.clone(), database, window, cx);
+    }
+
+    /// Pick an SSL mode the way its button does.
+    #[cfg(test)]
+    pub(crate) fn set_ssl_mode_for_test(&mut self, mode: SslMode, cx: &mut Context<Self>) {
+        self.set_ssl_mode(mode, cx);
+    }
+
+    /// Type into the CA, client certificate, and client key boxes.
+    #[cfg(test)]
+    pub(crate) fn set_ssl_files_for_test(
+        &self,
+        [ca, cert, key]: [&str; 3],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.set_field(&self.ssl_ca, ca, window, cx);
+        self.set_field(&self.ssl_cert, cert, window, cx);
+        self.set_field(&self.ssl_key, key, window, cx);
+    }
+
+    /// The config the form would save or connect with.
+    #[cfg(test)]
+    pub(crate) fn config_for_test(&self, cx: &App) -> ConnectionConfig {
+        self.config(cx)
     }
 
     /// Type `value` over the port box's contents.

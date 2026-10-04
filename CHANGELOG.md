@@ -14,6 +14,9 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   the OS keychain, an optional per-connection colour, and several connections
   open at once in tabs. The connection editor tests a connection without
   closing, and Connect saves first (its menu connects without saving).
+  PostgreSQL and MySQL connections choose an SSL mode (disable, prefer — the
+  default — require, verify CA, or verify full) and can name a CA certificate
+  and a client certificate and key.
 - **Safety modes:** read-only (enforced on the server and client side),
   confirm writes, staged (the default), and auto-apply.
 - **Workspace restore:** open connections, their tabs, and unsaved query

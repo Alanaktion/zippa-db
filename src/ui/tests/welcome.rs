@@ -664,3 +664,78 @@ fn the_editor_leaves_room_for_the_focus_ring(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn the_editor_round_trips_ssl_settings(cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+
+    let handle = workspace(cx);
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("the active tab should be showing the connection manager");
+
+    let saved = ConnectionConfig {
+        ssl: SslConfig {
+            mode: SslMode::VerifyFull,
+            ca_cert: "/etc/ssl/ca.pem".into(),
+            client_cert: "/etc/ssl/client.pem".into(),
+            client_key: "/etc/ssl/client.key".into(),
+        },
+        ..ConnectionConfig::new(Engine::Postgres)
+    };
+    let id = saved.id;
+    welcome.update(cx, |welcome, cx| {
+        welcome.set_connections_for_test(vec![saved.clone()], cx)
+    });
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| welcome.edit_for_test(id, window, cx));
+    })
+    .unwrap();
+
+    let read = welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.config_for_test(cx))
+    });
+    assert_eq!(read.ssl, saved.ssl, "the editor should load what was saved");
+
+    // Stepping down to Prefer hides the files but keeps them, so stepping
+    // back up does not mean typing them again.
+    let read = welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| {
+            editor.set_ssl_mode_for_test(SslMode::Prefer, cx);
+            editor.config_for_test(cx)
+        })
+    });
+    assert_eq!(read.ssl.mode, SslMode::Prefer);
+    assert_eq!(read.ssl.ca_cert, "/etc/ssl/ca.pem");
+}
+
+#[gpui_kit::test]
+fn a_client_certificate_without_its_key_is_refused(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| {
+                editor.set_ssl_mode_for_test(SslMode::Require, cx);
+                editor.set_ssl_files_for_test(["", "client.pem", ""], window, cx)
+            })
+        });
+    })
+    .unwrap();
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.connect_for_test(true, cx))
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        editor_status(cx, &welcome),
+        "Error: A client certificate needs its private key too."
+    );
+    assert!(
+        welcome.update(cx, |welcome, _| welcome.editor_open_for_test()),
+        "a refused connect should leave the dialog open"
+    );
+}
