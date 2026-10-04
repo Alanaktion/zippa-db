@@ -9,8 +9,6 @@ known defects and risks in the shipped code are tracked in
 
 ## 1. Connections & security
 
-* SSH tunneling (password and private key / agent)
-* SSL/TLS connection modes (`disable`, `prefer`, `require`, `verify-full`)
 * Paste a connection URL (`postgres://user@host/db`) to fill the form; read `DATABASE_URL`, `~/.pgpass`, `~/.my.cnf`
 * Connection keepalive: a periodic ping while idle, so a dropped connection is noticed before the next query rather than by it
 

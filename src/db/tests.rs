@@ -12,8 +12,9 @@ use uuid::Uuid;
 use super::query::Cell;
 use super::schema::ReferentialAction;
 use super::{
-    CatalogKind, Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, QueryDigest,
-    RowKey, SafetyMode, TagColor, keyword_literal, quote_identifier, typed_placeholder,
+    CatalogKind, Connection, ConnectionConfig, Credentials, DatabaseObject, Engine, ObjectKind,
+    QueryDigest, RowKey, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode, TagColor,
+    keyword_literal, quote_identifier, typed_placeholder,
 };
 use super::{
     Decision, OnFailure, QueryOutcome, QuerySource, ScriptFailure, ScriptMode, ScriptOutcome,
@@ -1677,6 +1678,160 @@ async fn live_postgres_money_scales_by_the_servers_locale_not_always_by_100() {
     yen.close().await;
 }
 
+/// The SSL mode reaches the server: the compose Postgres runs without SSL, so
+/// `Require` must be refused rather than quietly falling back to a plain
+/// connection, while `Disable` and the default `Prefer` still connect.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_ssl_require_is_refused_by_a_server_without_ssl() {
+    for mode in [SslMode::Disable, SslMode::Prefer] {
+        let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+        config.ssl.mode = mode;
+        let connection = Connection::open(config, Some(password))
+            .await
+            .unwrap_or_else(|error| panic!("{mode:?} should connect: {error:#}"));
+        connection.close().await;
+    }
+
+    let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+    config.ssl.mode = SslMode::Require;
+    assert!(
+        Connection::open(config, Some(password)).await.is_err(),
+        "Require should refuse a server that does not offer SSL"
+    );
+}
+
+/// MySQL 8 generates a self-signed certificate on first start, so the compose
+/// server takes `Require` (and the session really is encrypted) but fails
+/// `VerifyCa`, whose whole point is to refuse an authority nobody trusts.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_ssl_require_encrypts_and_verify_refuses_a_self_signed_server() {
+    let (mut config, password) = live_mysql_config();
+    config.ssl = SslConfig {
+        mode: SslMode::Require,
+        ..SslConfig::default()
+    };
+    let encrypted = Connection::open(config.clone(), Some(password.clone()))
+        .await
+        .expect("Require should connect to a server with SSL");
+    let cipher = encrypted
+        .run_query("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
+        .await
+        .expect("could not read the session's cipher");
+    assert!(
+        cipher.rows[0][1]
+            .as_deref()
+            .is_some_and(|cipher| !cipher.is_empty()),
+        "a Require session should be encrypted: {:?}",
+        cipher.rows
+    );
+    encrypted.close().await;
+
+    config.ssl.mode = SslMode::VerifyCa;
+    assert!(
+        Connection::open(config, Some(password)).await.is_err(),
+        "VerifyCa should refuse a self-signed certificate"
+    );
+}
+
+/// The jump host the SSH tunnel live tests sign in to, and the Postgres server
+/// as that host sees it. The defaults are the compose `ssh` service, which
+/// reaches the compose `postgres` service by name; `ZIPPA_TEST_SSH_URL`
+/// (`ssh://user:password@host:port`) and `ZIPPA_TEST_SSH_TARGET` (`host:port`)
+/// point them elsewhere, such as a local `sshd` that reaches Postgres as
+/// `127.0.0.1:5433`.
+fn live_ssh() -> (SshConfig, String, String, u16) {
+    let url = env::var("ZIPPA_TEST_SSH_URL")
+        .unwrap_or_else(|_| "ssh://tunnel:secret@127.0.0.1:2222".to_string());
+    let rest = url.strip_prefix("ssh://").expect("an ssh:// URL");
+    let (credentials, authority) = rest.split_once('@').expect("user:pass@host:port");
+    let (username, password) = credentials.split_once(':').expect("user:pass");
+    let (host, port) = authority.split_once(':').expect("host:port");
+    let ssh = SshConfig {
+        enabled: true,
+        host: host.to_string(),
+        port: port.parse().expect("a port"),
+        username: username.to_string(),
+        auth: SshAuth::Password,
+        key_path: String::new(),
+    };
+
+    let target = env::var("ZIPPA_TEST_SSH_TARGET").unwrap_or_else(|_| "postgres:5432".to_string());
+    let (target_host, target_port) = target.split_once(':').expect("host:port");
+    (
+        ssh,
+        password.to_string(),
+        target_host.to_string(),
+        target_port.parse().expect("a port"),
+    )
+}
+
+/// A connection through an SSH tunnel reaches Postgres, keeps the host the
+/// user saved rather than the tunnel's end, and switching database reuses the
+/// tunnel rather than signing in again.
+///
+/// Needs the compose `ssh` service besides `postgres`; see `live_ssh`.
+#[tokio::test]
+#[ignore = "needs a live Postgres server and SSH jump host; see the doc comment"]
+async fn live_postgres_connects_through_an_ssh_tunnel() {
+    let (ssh, ssh_password, target_host, target_port) = live_ssh();
+    let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+    config.host = target_host.clone();
+    config.port = target_port;
+    config.ssh = ssh;
+
+    let connection = Connection::open_with(
+        config,
+        Credentials {
+            password: Some(password),
+            ssh: Some(ssh_password),
+        },
+    )
+    .await
+    .expect("should connect through the tunnel");
+    let result = connection
+        .run_query("SELECT 1 + 1")
+        .await
+        .expect("should query through the tunnel");
+    assert_eq!(result.rows[0][0].as_deref(), Some("2"));
+    assert_eq!(connection.config.host, target_host);
+
+    let other = connection
+        .with_database("postgres")
+        .await
+        .expect("switching database should reuse the tunnel");
+    other.run_query("SELECT 1").await.expect("query");
+    other.close().await;
+    connection.close().await;
+}
+
+/// A wrong SSH password is refused with a message that says so, before the
+/// database is ever asked.
+#[tokio::test]
+#[ignore = "needs a live SSH jump host; see `live_ssh`"]
+async fn live_ssh_tunnel_reports_a_refused_password() {
+    let (ssh, _, target_host, target_port) = live_ssh();
+    let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+    config.host = target_host;
+    config.port = target_port;
+    config.ssh = ssh;
+
+    let error = Connection::open_with(
+        config,
+        Credentials {
+            password: Some(password),
+            ssh: Some("not-the-password".into()),
+        },
+    )
+    .await
+    .expect_err("a wrong SSH password should be refused");
+    assert!(
+        format!("{error:#}").contains("refused the password"),
+        "{error:#}"
+    );
+}
+
 /// The types `postgres::cell` decodes field by field — geometry, ranges,
 /// `hstore`, `macaddr8` — read back as the text Postgres itself prints, and
 /// that text casts back to the same value, which is what makes them
@@ -2245,6 +2400,16 @@ async fn live_postgres_with(
     database: &str,
     adjust: impl FnOnce(&mut ConnectionConfig),
 ) -> Connection {
+    let (mut config, password) = live_postgres_config(var, database);
+    adjust(&mut config);
+    Connection::open(config, Some(password))
+        .await
+        .expect("could not open the live Postgres connection")
+}
+
+/// The saved connection and password `live_postgres` opens, for a test that
+/// opens it some other way.
+fn live_postgres_config(var: &str, database: &str) -> (ConnectionConfig, String) {
     let url = env::var(var)
         .unwrap_or_else(|_| format!("postgres://postgres:secret@127.0.0.1:5433/{database}"));
     let rest = url.strip_prefix("postgres://").expect("a postgres:// URL");
@@ -2254,17 +2419,36 @@ async fn live_postgres_with(
     let (host, port) = authority.split_once(':').expect("host:port");
     let port: u16 = port.parse().expect("a port");
 
-    let mut config = ConnectionConfig {
+    let config = ConnectionConfig {
         host: host.to_string(),
         port,
         username: username.to_string(),
         database: database.to_string(),
         ..ConnectionConfig::new(Engine::Postgres)
     };
-    adjust(&mut config);
-    Connection::open(config, Some(password.to_string()))
-        .await
-        .expect("could not open the live Postgres connection")
+    (config, password.to_string())
+}
+
+/// The saved connection and password `live_mysql` opens, for a test that
+/// opens it some other way.
+fn live_mysql_config() -> (ConnectionConfig, String) {
+    let url = env::var("ZIPPA_TEST_MYSQL_URL")
+        .unwrap_or_else(|_| "mysql://root:secret@127.0.0.1:3307/app".to_string());
+    let rest = url.strip_prefix("mysql://").expect("a mysql:// URL");
+    let (credentials, rest) = rest.split_once('@').expect("user:pass@host:port/db");
+    let (username, password) = credentials.split_once(':').expect("user:pass");
+    let (authority, database) = rest.split_once('/').expect("host:port/db");
+    let (host, port) = authority.split_once(':').expect("host:port");
+    let port: u16 = port.parse().expect("a port");
+
+    let config = ConnectionConfig {
+        host: host.to_string(),
+        port,
+        username: username.to_string(),
+        database: database.to_string(),
+        ..ConnectionConfig::new(Engine::MySql)
+    };
+    (config, password.to_string())
 }
 
 /// Open the MySQL server a live test runs against, and a pool onto the same
@@ -2279,35 +2463,20 @@ async fn live_mysql_with(
 ) -> (Connection, sqlx::MySqlPool) {
     use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 
-    let url = env::var("ZIPPA_TEST_MYSQL_URL")
-        .unwrap_or_else(|_| "mysql://root:secret@127.0.0.1:3307/app".to_string());
-    let rest = url.strip_prefix("mysql://").expect("a mysql:// URL");
-    let (credentials, rest) = rest.split_once('@').expect("user:pass@host:port/db");
-    let (username, password) = credentials.split_once(':').expect("user:pass");
-    let (authority, database) = rest.split_once('/').expect("host:port/db");
-    let (host, port) = authority.split_once(':').expect("host:port");
-    let port: u16 = port.parse().expect("a port");
-
+    let (mut config, password) = live_mysql_config();
     let options = MySqlConnectOptions::new()
-        .host(host)
-        .port(port)
-        .username(username)
-        .password(password)
-        .database(database);
+        .host(&config.host)
+        .port(config.port)
+        .username(&config.username)
+        .password(&password)
+        .database(&config.database);
     let pool = MySqlPoolOptions::new()
         .connect_with(options)
         .await
         .expect("could not open the live MySQL server");
 
-    let mut config = ConnectionConfig {
-        host: host.to_string(),
-        port,
-        username: username.to_string(),
-        database: database.to_string(),
-        ..ConnectionConfig::new(Engine::MySql)
-    };
     adjust(&mut config);
-    let connection = Connection::open(config, Some(password.to_string()))
+    let connection = Connection::open(config, Some(password))
         .await
         .expect("could not open the live MySQL connection");
 

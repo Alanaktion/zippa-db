@@ -23,7 +23,8 @@ use gpui_kit::{Context, Entity, EventEmitter, FocusHandle, Window, div, px};
 use uuid::Uuid;
 
 use crate::app::NewConnection;
-use crate::db::{Connection, ConnectionConfig, Engine, runtime, store};
+use crate::db::store::SecretEdits;
+use crate::db::{Connection, ConnectionConfig, Credentials, Engine, runtime, store};
 use crate::ui::{notify_error, sql_file};
 
 mod card;
@@ -168,38 +169,28 @@ impl Welcome {
         cx: &mut Context<Self>,
     ) {
         match event {
-            EditorEvent::Saved { config, password } => {
-                self.save(config.clone(), password.clone(), window, cx);
+            EditorEvent::Saved { config, secrets } => {
+                self.save(config.clone(), secrets.clone(), window, cx);
                 self.close_editor(window, cx);
             }
             EditorEvent::Connect {
                 config,
-                password,
+                secrets,
                 save,
             } => {
-                // Whether the keychain can hold a password for it is decided
+                // Whether the keychain can hold a secret for it is decided
                 // before this save, which would make a new connection look
                 // saved without having stored one.
                 let saved = self.connections.iter().any(|saved| saved.id == config.id);
                 if *save {
-                    self.save(config.clone(), password.clone(), window, cx);
+                    self.save(config.clone(), secrets.clone(), window, cx);
                 }
                 self.close_editor(window, cx);
-                // An untouched box reports no password; a saved connection then
+                // An untouched box reports no secret; a saved connection then
                 // connects with whatever the keychain holds, the way a card
-                // click does. A file database has no password to look up, and a
-                // connection that was never saved has nothing stored. A box
-                // the user emptied is no password at all.
-                match password {
-                    Some(password) if !password.is_empty() => {
-                        self.connect(config.clone(), Some(password.clone()), window, cx)
-                    }
-                    Some(_) => self.connect(config.clone(), None, window, cx),
-                    None if saved && !config.engine.is_file_based() => {
-                        self.connect_using_stored_password(config.clone(), cx)
-                    }
-                    None => self.connect(config.clone(), None, window, cx),
-                }
+                // click does (`store::credentials` decides). A box the user
+                // emptied is no secret at all.
+                self.connect_resolving(config.clone(), secrets.clone(), saved, cx);
             }
             EditorEvent::Dismissed => self.close_editor(window, cx),
         }
@@ -216,13 +207,13 @@ impl Welcome {
 
     /// Save the editor's config into the list and the store.
     ///
-    /// `password` is `None` when the user never touched the password box, which
+    /// Each of `secrets` is `None` when the user never touched its box, which
     /// leaves whatever the keychain already holds alone; an empty string means
-    /// they emptied the box on purpose, which forgets the password.
+    /// they emptied the box on purpose, which forgets it.
     fn save(
         &mut self,
         config: ConnectionConfig,
-        password: Option<String>,
+        secrets: SecretEdits,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -249,10 +240,7 @@ impl Welcome {
         store_in_background(
             move || {
                 store::save(&connections)?;
-                if let Some(password) = password {
-                    store::set_password(&id, &password)?;
-                }
-                Ok(())
+                secrets.save(&id)
             },
             cx,
         );
@@ -313,34 +301,37 @@ impl Welcome {
         });
     }
 
-    /// Connect to a saved connection, looking its password up on demand.
+    /// Connect to a saved connection, looking its secrets up on demand.
     fn connect_saved(
         &mut self,
         config: ConnectionConfig,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A file database has no password to look up, and asking the keychain
-        // for one it never stored can prompt the user for nothing.
-        if config.engine.is_file_based() {
-            self.connect(config, None, window, cx);
-            return;
-        }
-
-        self.connect_using_stored_password(config, cx);
+        self.connect_resolving(config, SecretEdits::default(), true, cx);
     }
 
-    /// Look the connection's password up off the UI thread and connect with it.
+    /// Work out the secrets to connect with off the UI thread, then connect.
     ///
     /// The credential store can prompt, or simply be slow, so it is not read on
-    /// the UI thread; the connect starts when the password comes back.
-    fn connect_using_stored_password(&mut self, config: ConnectionConfig, cx: &mut Context<Self>) {
-        let id = config.id;
-        let password = cx.background_spawn(async move { store::password(&id) });
+    /// the UI thread; the connect starts when the secrets come back. Only the
+    /// secrets the connection can use are asked for (`store::credentials`), so
+    /// a file database never touches the keychain at all.
+    fn connect_resolving(
+        &mut self,
+        config: ConnectionConfig,
+        secrets: SecretEdits,
+        saved: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let credentials = {
+            let config = config.clone();
+            cx.background_spawn(async move { store::credentials(&config, &secrets, saved) })
+        };
         cx.spawn(async move |this, cx| {
-            let password = password.await;
-            this.update_in(cx, |this, window, cx| match password {
-                Ok(password) => this.connect(config, password, window, cx),
+            let credentials = credentials.await;
+            this.update_in(cx, |this, window, cx| match credentials {
+                Ok(credentials) => this.connect(config, credentials, window, cx),
                 Err(error) => {
                     this.error = Some(format!("{error:#}"));
                     cx.notify();
@@ -368,11 +359,11 @@ impl Welcome {
         self.connect_saved(config, window, cx);
     }
 
-    /// Open `config` with `password`, and hand the live connection on.
+    /// Open `config` with `credentials`, and hand the live connection on.
     fn connect(
         &mut self,
         config: ConnectionConfig,
-        password: Option<String>,
+        credentials: Credentials,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -387,7 +378,8 @@ impl Welcome {
         self.error = None;
         cx.notify();
 
-        let task = runtime::spawn(async move { Connection::open(config.clone(), password).await });
+        let task =
+            runtime::spawn(async move { Connection::open_with(config.clone(), credentials).await });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -509,7 +501,8 @@ impl Welcome {
         store_in_background(
             move || {
                 store::save(&connections)?;
-                store::delete_password(&id)
+                store::delete_password(&id)?;
+                store::delete_ssh_secret(&id)
             },
             cx,
         );
@@ -707,7 +700,11 @@ impl Welcome {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.save(config, password.map(str::to_string), window, cx);
+        let secrets = SecretEdits {
+            password: password.map(str::to_string),
+            ssh: None,
+        };
+        self.save(config, secrets, window, cx);
     }
 
     /// Open the editor pre-filled from a saved connection, as its card does.

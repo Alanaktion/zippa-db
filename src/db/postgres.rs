@@ -5,11 +5,11 @@ use sqlx::postgres::types::{
     Oid, PgBox, PgCircle, PgHstore, PgInterval, PgLSeg, PgLine, PgMoney, PgPath, PgPoint,
     PgPolygon, PgRange, PgTimeTz,
 };
-use sqlx::postgres::{PgConnectOptions, PgPool, PgQueryResult, PgRow};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgQueryResult, PgRow, PgSslMode};
 use sqlx::{Row, TypeInfo, ValueRef};
 
 use super::query::{self, Cell};
-use super::{ConnectionConfig, pool_options, quote_literal};
+use super::{ConnectionConfig, SslConfig, SslMode, pool_options, quote_literal};
 
 /// Databases on this server the user can connect to.
 pub(crate) const DATABASES_SQL: &str = "SELECT datname FROM pg_database \
@@ -124,6 +124,27 @@ pub(crate) const CATALOG_TRIGGERS_SQL: &str = "SELECT n.nspname, c.relname, \
      ORDER BY n.nspname, c.relname, t.tgname";
 
 pub(crate) async fn connect(config: &ConnectionConfig, password: Option<&str>) -> Result<PgPool> {
+    let pool = pool_options()
+        .connect_with(options(config, password))
+        .await?;
+    Ok(pool)
+}
+
+/// The driver's mode for one of ours: the names are libpq's, so they map one
+/// to one.
+fn ssl_mode(mode: SslMode) -> PgSslMode {
+    match mode {
+        SslMode::Disable => PgSslMode::Disable,
+        SslMode::Prefer => PgSslMode::Prefer,
+        SslMode::Require => PgSslMode::Require,
+        SslMode::VerifyCa => PgSslMode::VerifyCa,
+        SslMode::VerifyFull => PgSslMode::VerifyFull,
+    }
+}
+
+/// What `connect` hands the driver, apart from the pool, so the mapping from
+/// a saved connection can be checked without a server.
+fn options(config: &ConnectionConfig, password: Option<&str>) -> PgConnectOptions {
     let mut options = PgConnectOptions::new()
         .host(&config.host)
         .port(config.port)
@@ -148,8 +169,23 @@ pub(crate) async fn connect(config: &ConnectionConfig, password: Option<&str>) -
         options = options.options([("statement_timeout", u64::from(seconds) * 1000)]);
     }
 
-    let pool = pool_options().connect_with(options).await?;
-    Ok(pool)
+    // Left unsaid, the driver would read `PGSSLMODE` and friends from the
+    // environment, so the same saved connection could behave differently
+    // depending on how the app was launched; the mode is always set.
+    let ssl = &config.ssl;
+    options = options.ssl_mode(ssl_mode(ssl.mode));
+    if ssl.mode.uses_files() {
+        if let Some(path) = SslConfig::path(&ssl.ca_cert) {
+            options = options.ssl_root_cert(path);
+        }
+        if let Some(path) = SslConfig::path(&ssl.client_cert) {
+            options = options.ssl_client_cert(path);
+        }
+        if let Some(path) = SslConfig::path(&ssl.client_key) {
+            options = options.ssl_client_key(path);
+        }
+    }
+    options
 }
 
 /// How many raw units of `money` make up one whole one — `100` for a
@@ -690,6 +726,41 @@ fn format_bits(bits: sqlx::types::BitVec) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ssl(mode: SslMode) -> ConnectionConfig {
+        ConnectionConfig {
+            ssl: SslConfig {
+                mode,
+                ca_cert: " /etc/zippa/ca.pem ".into(),
+                ..SslConfig::default()
+            },
+            ..ConnectionConfig::new(super::super::Engine::Postgres)
+        }
+    }
+
+    #[test]
+    fn every_ssl_mode_reaches_the_driver() {
+        for (mode, expected) in [
+            (SslMode::Disable, "Disable"),
+            (SslMode::Prefer, "Prefer"),
+            (SslMode::Require, "Require"),
+            (SslMode::VerifyCa, "VerifyCa"),
+            (SslMode::VerifyFull, "VerifyFull"),
+        ] {
+            let options = options(&ssl(mode), None);
+            assert_eq!(format!("{:?}", options.get_ssl_mode()), expected);
+        }
+    }
+
+    #[test]
+    fn a_ca_file_is_passed_trimmed_and_only_when_encrypting() {
+        let verify = format!("{:?}", options(&ssl(SslMode::VerifyFull), None));
+        assert!(verify.contains("\"/etc/zippa/ca.pem\""), "{verify}");
+        for mode in [SslMode::Disable, SslMode::Prefer] {
+            let plain = format!("{:?}", options(&ssl(mode), None));
+            assert!(!plain.contains("ca.pem"), "{plain}");
+        }
+    }
 
     fn interval(months: i32, days: i32, microseconds: i64) -> String {
         format_interval(PgInterval {

@@ -6,6 +6,7 @@
 //! lists databases and objects, decoding a row cell — lives in the sibling
 //! `postgres` / `mysql` / `sqlite` modules.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -24,6 +25,7 @@ use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary}
 use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
+use super::tunnel::Tunnel;
 use super::{health, mysql, postgres, sqlite, statement, typed_placeholder};
 
 /// Connections opened per saved connection.
@@ -154,16 +156,83 @@ pub struct Connection {
     /// console pane. `import_dump`/`rebuild_table` run on a dedicated
     /// connection outside it and are not recorded here.
     query_log: QueryLog,
+    /// The SSH tunnel the pool connects through, if the connection has one.
+    /// Shared with a connection [`with_database`](Self::with_database) opens
+    /// on the same server, so switching database does not sign in again;
+    /// the tunnel closes when the last of them goes.
+    tunnel: Option<Arc<Tunnel>>,
+    /// The SSH password or key passphrase, kept in memory (like `password`)
+    /// so a reconnect can open a fresh tunnel when the jump host dropped the
+    /// old one. Never written to disk.
+    ssh_secret: Option<String>,
+}
+
+/// The secrets a connection is opened with: read from the keychain, or typed
+/// into the connection editor. Kept in memory only, and never printed.
+#[derive(Clone, Default)]
+pub struct Credentials {
+    /// The database password.
+    pub password: Option<String>,
+    /// The SSH password or key passphrase, for a connection with a tunnel.
+    pub ssh: Option<String>,
 }
 
 impl Connection {
-    /// Open a pool and verify it by acquiring one connection.
+    /// Open a pool and verify it by acquiring one connection: the shorthand
+    /// tests use for a connection with no tunnel.
+    #[cfg(test)]
     pub async fn open(config: ConnectionConfig, password: Option<String>) -> Result<Self> {
+        Self::open_with(
+            config,
+            Credentials {
+                password,
+                ssh: None,
+            },
+        )
+        .await
+    }
+
+    /// Open a pool and verify it by acquiring one connection, first opening
+    /// the SSH tunnel the connection is configured with, if any.
+    pub async fn open_with(config: ConnectionConfig, credentials: Credentials) -> Result<Self> {
+        let tunnel = Self::tunnel(&config, credentials.ssh.as_deref()).await?;
+        Self::open_through(config, credentials, tunnel).await
+    }
+
+    /// Open the tunnel `config` asks for, or `None` when it asks for none.
+    async fn tunnel(
+        config: &ConnectionConfig,
+        secret: Option<&str>,
+    ) -> Result<Option<Arc<Tunnel>>> {
+        if !config.ssh.enabled || config.engine.is_file_based() {
+            return Ok(None);
+        }
+        let tunnel = Tunnel::open(&config.ssh, secret, &config.host, config.port).await?;
+        Ok(Some(Arc::new(tunnel)))
+    }
+
+    /// Open the pool, pointed at `tunnel`'s loopback port when there is one.
+    async fn open_through(
+        config: ConnectionConfig,
+        credentials: Credentials,
+        tunnel: Option<Arc<Tunnel>>,
+    ) -> Result<Self> {
+        let Credentials {
+            password,
+            ssh: ssh_secret,
+        } = credentials;
+        // The driver is told the tunnel's end; `config` keeps the host as the
+        // jump host sees it, which is what the user saved and what is shown.
+        let mut target = config.clone();
+        if let Some(tunnel) = &tunnel {
+            target.host = "127.0.0.1".into();
+            target.port = tunnel.local_port();
+        }
         let password = password.as_deref();
         let pool = match config.engine {
-            Engine::Postgres => Pool::Postgres(postgres::connect(&config, password).await?),
-            Engine::MySql => Pool::MySql(mysql::connect(&config, password).await?),
-            Engine::Sqlite => Pool::Sqlite(sqlite::connect(&config).await?),
+            Engine::Postgres => Pool::Postgres(postgres::connect(&target, password).await?),
+            Engine::MySql => Pool::MySql(mysql::connect(&target, password).await?),
+            Engine::Sqlite => Pool::Sqlite(sqlite::connect(&target).await?),
         };
         let money_scale = match &pool {
             Pool::Postgres(pool) => postgres::money_scale(pool).await,
@@ -175,6 +244,8 @@ impl Connection {
             pool,
             money_scale,
             query_log: QueryLog::default(),
+            tunnel,
+            ssh_secret,
         })
     }
 
@@ -196,7 +267,18 @@ impl Connection {
     pub async fn with_database(&self, database: &str) -> Result<Self> {
         let mut config = self.config.clone();
         config.database = database.to_string();
-        Self::open(config, self.password.clone()).await
+        // The tunnel is shared while it lives; one the jump host has dropped
+        // is opened afresh, which is what lets Reconnect recover from it.
+        let tunnel = match &self.tunnel {
+            Some(tunnel) if !tunnel.is_closed() => Some(tunnel.clone()),
+            Some(_) => Self::tunnel(&config, self.ssh_secret.as_deref()).await?,
+            None => None,
+        };
+        let credentials = Credentials {
+            password: self.password.clone(),
+            ssh: self.ssh_secret.clone(),
+        };
+        Self::open_through(config, credentials, tunnel).await
     }
 
     /// Databases the user can switch to on this server.

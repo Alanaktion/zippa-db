@@ -100,6 +100,203 @@ impl SafetyMode {
     }
 }
 
+/// Whether, and how strictly, a server connection is encrypted.
+///
+/// One scale for both servers, named the way libpq names it; each engine maps
+/// it onto its own driver's modes (MySQL calls `VerifyFull` "verify identity").
+/// SQLite opens a file and ignores it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SslMode {
+    /// Never encrypt.
+    Disable,
+    /// Encrypt when the server offers it, otherwise connect in the clear. What
+    /// the drivers do when nothing is said, so a connection saved before the
+    /// setting existed behaves as it always did.
+    #[default]
+    Prefer,
+    /// Refuse to connect unencrypted, but trust whatever certificate the
+    /// server presents.
+    Require,
+    /// Encrypt and check the server's certificate against a trusted
+    /// authority.
+    VerifyCa,
+    /// As `VerifyCa`, and check that the certificate names the host.
+    VerifyFull,
+}
+
+impl SslMode {
+    pub const ALL: [SslMode; 5] = [
+        SslMode::Disable,
+        SslMode::Prefer,
+        SslMode::Require,
+        SslMode::VerifyCa,
+        SslMode::VerifyFull,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SslMode::Disable => "Disable",
+            SslMode::Prefer => "Prefer",
+            SslMode::Require => "Require",
+            SslMode::VerifyCa => "Verify CA",
+            SslMode::VerifyFull => "Verify full",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            SslMode::Disable => "Never encrypt the connection",
+            SslMode::Prefer => "Encrypt when the server offers it",
+            SslMode::Require => "Always encrypt, without checking the certificate",
+            SslMode::VerifyCa => "Always encrypt, and check the certificate's authority",
+            SslMode::VerifyFull => "Always encrypt, and check the authority and the host name",
+        }
+    }
+
+    /// Whether the certificate files are used: only once encryption is
+    /// insisted on. Under `Prefer` a connection may well end up in the clear,
+    /// and the editor hides the files, so they are not sent either; a mode
+    /// stepped down to keeps them saved for when it is stepped back up.
+    pub fn uses_files(self) -> bool {
+        matches!(
+            self,
+            SslMode::Require | SslMode::VerifyCa | SslMode::VerifyFull
+        )
+    }
+}
+
+/// How a server connection is encrypted: the mode, plus the certificate files
+/// it may need. Each path is empty when unused; none of them is a secret (a
+/// client key's passphrase is not supported), so they ride along in
+/// `connections.json` like the host does.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SslConfig {
+    pub mode: SslMode,
+    /// A PEM file of the authorities to trust, in place of the system's own.
+    pub ca_cert: String,
+    /// A PEM client certificate, for a server that asks the client to prove
+    /// who it is.
+    pub client_cert: String,
+    /// The PEM private key that goes with `client_cert`.
+    pub client_key: String,
+}
+
+impl SslConfig {
+    /// Why these settings cannot be used, in words for the user.
+    ///
+    /// A client certificate is only half of an identity without its key, and
+    /// the other way round; the drivers would otherwise ignore the half given
+    /// without a word.
+    pub fn invalid(&self) -> Option<&'static str> {
+        if !self.mode.uses_files() {
+            return None;
+        }
+        match (
+            self.client_cert.trim().is_empty(),
+            self.client_key.trim().is_empty(),
+        ) {
+            (false, true) => Some("A client certificate needs its private key too."),
+            (true, false) => Some("A client key needs its certificate too."),
+            _ => None,
+        }
+    }
+
+    /// A path the user filled in, or `None` for an empty box.
+    pub(crate) fn path(value: &str) -> Option<&str> {
+        Some(value.trim()).filter(|value| !value.is_empty())
+    }
+}
+
+/// How an SSH tunnel proves who it is to the jump host.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SshAuth {
+    /// Whatever keys the running SSH agent holds (`SSH_AUTH_SOCK`, or the
+    /// OpenSSH agent's pipe on Windows): nothing to store.
+    #[default]
+    Agent,
+    /// A private key file, with its passphrase in the keychain if it has one.
+    PrivateKey,
+    /// A password, kept in the keychain.
+    Password,
+}
+
+impl SshAuth {
+    pub const ALL: [SshAuth; 3] = [SshAuth::Agent, SshAuth::PrivateKey, SshAuth::Password];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SshAuth::Agent => "SSH agent",
+            SshAuth::PrivateKey => "Key file",
+            SshAuth::Password => "Password",
+        }
+    }
+
+    /// What the secret stored for this method is called, or `None` when it
+    /// has none.
+    pub fn secret_label(self) -> Option<&'static str> {
+        match self {
+            SshAuth::Agent => None,
+            SshAuth::PrivateKey => Some("Key passphrase"),
+            SshAuth::Password => Some("SSH password"),
+        }
+    }
+}
+
+/// An SSH tunnel a server connection is opened through: the database is
+/// reached from the jump host, so `host`/`port` on the connection are as the
+/// jump host sees them. The password or key passphrase is not here; it lives
+/// in the keychain beside the database password.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SshConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth: SshAuth,
+    /// The private key file, for [`SshAuth::PrivateKey`]. A leading `~/` is
+    /// the home directory.
+    pub key_path: String,
+}
+
+impl Default for SshConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: String::new(),
+            port: 22,
+            username: String::new(),
+            auth: SshAuth::default(),
+            key_path: String::new(),
+        }
+    }
+}
+
+impl SshConfig {
+    /// Why these settings cannot be used, in words for the user.
+    pub fn invalid(&self) -> Option<&'static str> {
+        if !self.enabled {
+            return None;
+        }
+        if self.host.trim().is_empty() {
+            return Some("Enter the SSH host to tunnel through.");
+        }
+        if self.port == 0 {
+            return Some("The SSH port must be a number from 1 to 65535.");
+        }
+        if self.username.trim().is_empty() {
+            return Some("Enter the SSH user.");
+        }
+        if self.auth == SshAuth::PrivateKey && self.key_path.trim().is_empty() {
+            return Some("Enter the path to the SSH private key.");
+        }
+        None
+    }
+}
+
 /// A fixed palette a connection can be coloured with.
 ///
 /// A palette rather than arbitrary hex: a colour is resolved against the theme
@@ -190,6 +387,15 @@ pub struct ConnectionConfig {
     /// When this connection was last opened, for most-recent-first ordering.
     #[serde(default)]
     pub last_connected: Option<DateTime<Utc>>,
+    /// How a server connection is encrypted. Absent in files written before
+    /// the setting existed, which read back as `Prefer`: what the drivers did
+    /// all along.
+    #[serde(default)]
+    pub ssl: SslConfig,
+    /// The SSH tunnel to connect through, if any. Absent in files written
+    /// before tunnels existed, which read back as off.
+    #[serde(default)]
+    pub ssh: SshConfig,
     /// How long, in seconds, the server lets one statement run before it
     /// cancels it; `None` (and files written before the setting existed) for
     /// no limit. Enforced by the server — `statement_timeout` on Postgres,
@@ -213,6 +419,8 @@ impl ConnectionConfig {
             safety: SafetyMode::default(),
             color: None,
             last_connected: None,
+            ssl: SslConfig::default(),
+            ssh: SshConfig::default(),
             statement_timeout: None,
         }
     }
@@ -275,6 +483,107 @@ pub(crate) fn file_name(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_client_certificate_needs_its_key() {
+        let half = |cert: &str, key: &str| SslConfig {
+            mode: SslMode::Require,
+            client_cert: cert.into(),
+            client_key: key.into(),
+            ..SslConfig::default()
+        };
+        assert!(half("client.crt", "").invalid().is_some());
+        assert!(half("", "client.key").invalid().is_some());
+        assert_eq!(half("client.crt", "client.key").invalid(), None);
+        assert_eq!(half("", "").invalid(), None);
+        // Below `Require` the files are never read, so a half-filled pair
+        // left over from an earlier mode is no reason to refuse.
+        for mode in [SslMode::Disable, SslMode::Prefer] {
+            assert_eq!(
+                SslConfig {
+                    mode,
+                    ..half("client.crt", "")
+                }
+                .invalid(),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn a_connection_saved_before_ssl_settings_reads_back_as_prefer() {
+        let config: ConnectionConfig = serde_json::from_str(
+            r#"{"id":"6f1c1f0e-8a5c-4d36-9a49-1b1f3c0f2a10","name":"","engine":"Postgres",
+                "host":"localhost","port":5432,"username":"","database":""}"#,
+        )
+        .unwrap();
+        assert_eq!(config.ssl, SslConfig::default());
+        assert_eq!(config.ssl.mode, SslMode::Prefer);
+    }
+
+    #[test]
+    fn an_ssh_tunnel_needs_a_host_a_user_and_a_key_file_for_key_auth() {
+        let tunnel = SshConfig {
+            enabled: true,
+            host: "bastion".into(),
+            username: "deploy".into(),
+            ..SshConfig::default()
+        };
+        assert_eq!(tunnel.invalid(), None);
+        assert!(
+            SshConfig {
+                host: " ".into(),
+                ..tunnel.clone()
+            }
+            .invalid()
+            .is_some()
+        );
+        assert!(
+            SshConfig {
+                username: String::new(),
+                ..tunnel.clone()
+            }
+            .invalid()
+            .is_some()
+        );
+        assert!(
+            SshConfig {
+                auth: SshAuth::PrivateKey,
+                ..tunnel.clone()
+            }
+            .invalid()
+            .is_some()
+        );
+        // A tunnel that is off is never checked.
+        assert_eq!(SshConfig::default().invalid(), None);
+    }
+
+    #[test]
+    fn a_connection_saved_before_tunnels_reads_back_without_one() {
+        let config: ConnectionConfig = serde_json::from_str(
+            r#"{"id":"6f1c1f0e-8a5c-4d36-9a49-1b1f3c0f2a10","name":"","engine":"MySql",
+                "host":"localhost","port":3306,"username":"","database":""}"#,
+        )
+        .unwrap();
+        assert!(!config.ssh.enabled);
+        assert_eq!(config.ssh.port, 22);
+    }
+
+    #[test]
+    fn ssl_settings_round_trip_through_json() {
+        let config = ConnectionConfig {
+            ssl: SslConfig {
+                mode: SslMode::VerifyFull,
+                ca_cert: "/etc/ssl/ca.pem".into(),
+                ..SslConfig::default()
+            },
+            ..ConnectionConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains(r#""mode":"verify-full""#), "{json}");
+        let read: ConnectionConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(read.ssl, config.ssl);
+    }
 
     #[test]
     fn a_production_connection_with_auto_apply_is_risky() {

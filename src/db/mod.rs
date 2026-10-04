@@ -49,16 +49,21 @@ pub mod sql;
 pub mod sqlite;
 pub mod statement;
 pub mod store;
+pub(crate) mod tunnel;
 
 #[cfg(test)]
 pub(crate) mod tests;
 
 pub use catalog::{Catalog, CatalogEntry, CatalogKind, Query};
 pub(crate) use config::file_name;
-pub use config::{ConnectionConfig, Engine, SafetyMode, TagColor, is_risky_auto_apply};
+pub use config::{
+    ConnectionConfig, Engine, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode, TagColor,
+    is_risky_auto_apply,
+};
 pub(crate) use connection::pool_options;
 pub use connection::{
-    Connection, DatabaseObject, ObjectKind, QueryDigest, RowKey, StoredKind, StoredObject,
+    Connection, Credentials, DatabaseObject, ObjectKind, QueryDigest, RowKey, StoredKind,
+    StoredObject,
 };
 pub use import::{ImportProgress, ImportRequest, ImportSummary, OnError};
 pub use plan::{Explained, Plan, PlanNode};

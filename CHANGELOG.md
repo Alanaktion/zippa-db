@@ -14,6 +14,11 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   the OS keychain, an optional per-connection colour, and several connections
   open at once in tabs. The connection editor tests a connection without
   closing, and Connect saves first (its menu connects without saving).
+  PostgreSQL and MySQL connections choose an SSL mode (disable, prefer — the
+  default — require, verify CA, or verify full) and can name a CA certificate
+  and a client certificate and key. They can also connect through an SSH
+  tunnel, signing in with the SSH agent, a private key file, or a password,
+  and checking the jump host against `~/.ssh/known_hosts`.
 - **Connection health:** a dropped connection or an unresponsive server is
   told in words rather than as the driver's error, a statement gives up
   waiting for a free connection after 10 seconds, and Reconnect

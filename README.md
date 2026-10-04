@@ -17,7 +17,10 @@ features you'd expect from a modern database client.
 * **Connections.** Save connections and open several at once, each in its own
   tab. Passwords live in the OS keychain, never on disk. An optional colour (say,
   red for production) marks a connection's tab and title bar, so you always
-  know where you are. Your open connections, tabs, and query buffers come back on
+  know where you are. Each server connection picks an SSL mode (*disable*,
+  *prefer*, *require*, *verify CA*, *verify full*) with optional CA and client
+  certificate files, and can connect through an SSH tunnel (agent, key file, or
+  password; the SSH secret lives in the keychain too). Your open connections, tabs, and query buffers come back on
   the next launch.
 * **Safety modes.** Each connection is *read-only*, *confirm writes*, *staged*
   (the default: edits wait until you apply them), or *auto-apply*. Read-only is
