@@ -387,9 +387,9 @@ impl Workspace {
         }
 
         if let TabContent::Session(session) = &self.tabs[index]
-            && session.read(cx).has_unsaved_changes(cx)
+            && let Some(warning) = session.read(cx).leave_warning(cx)
         {
-            self.confirm_close_tab(session.clone(), window, cx);
+            self.confirm_close_tab(session.clone(), warning, window, cx);
             return;
         }
 
@@ -401,23 +401,21 @@ impl Workspace {
     fn confirm_close_tab(
         &mut self,
         session: Entity<Session>,
+        (title, warning): (&'static str, String),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let name = session.read(cx).display_name();
         let workspace = cx.entity().downgrade();
 
         window.open_alert_dialog(cx, move |alert, _, _| {
             let workspace = workspace.clone();
             let session = session.clone();
             alert
-                .title("Unsaved Changes")
-                .description(format!(
-                    "\"{name}\" has tabs with unsaved changes. Close it anyway?"
-                ))
+                .title(title)
+                .description(format!("{warning} Close it anyway?"))
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Close Without Saving")
+                        .ok_text("Close Anyway")
                         .ok_variant(ButtonVariant::Danger)
                         .cancel_text("Keep Open")
                         .show_cancel(true),
@@ -466,23 +464,21 @@ impl Workspace {
     fn confirm_disconnect(
         &mut self,
         session: Entity<Session>,
+        (title, warning): (&'static str, String),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let name = session.read(cx).display_name();
         let workspace = cx.entity().downgrade();
 
         window.open_alert_dialog(cx, move |alert, _, _| {
             let workspace = workspace.clone();
             let session = session.clone();
             alert
-                .title("Unsaved Changes")
-                .description(format!(
-                    "\"{name}\" has tabs with unsaved changes. Disconnect anyway?"
-                ))
+                .title(title)
+                .description(format!("{warning} Disconnect anyway?"))
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Disconnect Without Saving")
+                        .ok_text("Disconnect Anyway")
                         .ok_variant(ButtonVariant::Danger)
                         .cancel_text("Keep Connected")
                         .show_cancel(true),
@@ -601,8 +597,8 @@ impl Workspace {
                 // Disconnecting drops the session and every tab in it, so ask
                 // first when any of them holds work that was never written —
                 // the same guard closing the tab uses.
-                if session.read(cx).has_unsaved_changes(cx) {
-                    self.confirm_disconnect(session.clone(), window, cx);
+                if let Some(warning) = session.read(cx).leave_warning(cx) {
+                    self.confirm_disconnect(session.clone(), warning, window, cx);
                     return;
                 }
                 self.disconnect(session.clone(), window, cx);

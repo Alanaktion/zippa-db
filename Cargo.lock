@@ -10525,6 +10525,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "keyring",
+ "libsqlite3-sys",
  "lsp-types",
  "regex",
  "russh",

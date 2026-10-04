@@ -346,6 +346,7 @@ impl Session {
             SessionPanelEvent::RunScriptIgnoringErrors(sql) => {
                 self.run_script(panel, sql.clone(), true, window, cx)
             }
+            SessionPanelEvent::EndTransaction(commit) => self.end_transaction(panel, *commit, cx),
             SessionPanelEvent::Explain { sql, analyze } => {
                 self.explain(panel, sql.clone(), *analyze, window, cx)
             }

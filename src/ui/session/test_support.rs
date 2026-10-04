@@ -400,6 +400,14 @@ impl Session {
         self.active_panel()
     }
 
+    /// Whether the active tab has a transaction open on its connection.
+    #[cfg(test)]
+    pub(crate) fn active_transaction_for_test(&self, cx: &App) -> crate::db::TxnState {
+        self.active_panel()
+            .map(|panel| panel.read(cx).transaction())
+            .unwrap_or_default()
+    }
+
     /// The panel at `index` in creation order, for a test to drive.
     #[cfg(test)]
     pub(crate) fn panel_for_test(&self, index: usize) -> Entity<SessionPanel> {

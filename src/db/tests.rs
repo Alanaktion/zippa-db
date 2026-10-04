@@ -17,8 +17,8 @@ use super::{
     keyword_literal, quote_identifier, typed_placeholder,
 };
 use super::{
-    Decision, OnFailure, QueryOutcome, QuerySource, ScriptFailure, ScriptMode, ScriptOutcome,
-    ScriptRun, Step,
+    Decision, OnFailure, PinnedConnection, QueryOutcome, QuerySource, ScriptFailure, ScriptMode,
+    ScriptOutcome, ScriptRun, Step, TxnState,
 };
 
 pub(crate) struct TempDatabase {
@@ -619,7 +619,7 @@ async fn a_script_runs_every_statement_in_one_transaction() {
 
     let outcome = finished(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             "INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
              SELECT name FROM items WHERE id = 3;",
             ScriptMode::Transaction,
@@ -642,7 +642,7 @@ async fn a_failure_pauses_the_script_and_rolling_back_undoes_it() {
 
     let (run, failure) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Transaction,
             OnFailure::Ask,
@@ -674,7 +674,7 @@ async fn skipping_a_failure_keeps_the_rest_of_the_transaction() {
 
     let (run, _) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Transaction,
             OnFailure::Ask,
@@ -701,7 +701,7 @@ async fn skipping_every_error_stops_asking() {
 
     let (run, _) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             "INSERT INTO not_a_table VALUES (1);\n\
              INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
              INSERT INTO nor_this VALUES (1);",
@@ -735,7 +735,7 @@ async fn ignoring_errors_without_a_transaction_keeps_what_worked() {
 
     let outcome = finished(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Autocommit,
             OnFailure::Skip,
@@ -755,7 +755,7 @@ async fn stopping_without_a_transaction_keeps_what_ran_before() {
 
     let (run, _) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Autocommit,
             OnFailure::Ask,
@@ -776,7 +776,7 @@ async fn closing_a_paused_script_rolls_its_transaction_back() {
 
     let (run, _) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Transaction,
             OnFailure::Ask,
@@ -797,7 +797,7 @@ async fn a_scripts_statements_are_logged_one_by_one() {
 
     finished(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Transaction,
             OnFailure::Skip,
@@ -834,7 +834,7 @@ async fn a_read_only_connection_refuses_a_script_before_it_runs() {
     );
 
     let error = match ScriptRun::start(
-        connection.clone(),
+        PinnedConnection::new(connection.clone()),
         "SELECT 1; DELETE FROM items",
         ScriptMode::Transaction,
         OnFailure::Ask,
@@ -849,6 +849,247 @@ async fn a_read_only_connection_refuses_a_script_before_it_runs() {
         "{error}"
     );
 
+    connection.close().await;
+}
+
+/// A transaction opened in one run is still open in the next, on a query
+/// tab's pinned connection, and only that tab sees what it has not committed.
+#[tokio::test]
+async fn a_pinned_connection_keeps_a_transaction_between_runs() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    let pinned = PinnedConnection::new(connection.clone());
+    assert_eq!(pinned.state(), TxnState::Idle, "nothing is checked out yet");
+
+    pinned.run_query("BEGIN").await.expect("begin");
+    assert_eq!(pinned.state(), TxnState::Open);
+    pinned
+        .run_query("INSERT INTO items VALUES (3, 'gamma', 3.0, NULL)")
+        .await
+        .expect("insert");
+    assert_eq!(pinned.state(), TxnState::Open);
+    let inside = pinned
+        .run_query("SELECT COUNT(*) FROM items")
+        .await
+        .expect("count");
+    assert_eq!(
+        inside.rows[0][0].as_deref(),
+        Some("3"),
+        "the tab sees its own insert"
+    );
+
+    pinned.run_query("ROLLBACK").await.expect("rollback");
+    assert_eq!(pinned.state(), TxnState::Idle);
+    assert_eq!(
+        item_count(&connection).await,
+        "2",
+        "the insert was rolled back"
+    );
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_pinned_connection_keeps_session_state_between_runs() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    let pinned = PinnedConnection::new(connection.clone());
+
+    pinned
+        .run_query("CREATE TEMP TABLE scratch (a)")
+        .await
+        .expect("create temp");
+    pinned
+        .run_query("INSERT INTO scratch VALUES (1)")
+        .await
+        .expect("insert temp");
+    pinned
+        .run_query("PRAGMA foreign_keys = ON")
+        .await
+        .expect("pragma");
+
+    let rows = pinned
+        .run_query("SELECT a FROM scratch")
+        .await
+        .expect("read temp");
+    assert_eq!(rows.rows, [[Some("1".to_string())]]);
+    let keys = pinned
+        .run_query("PRAGMA foreign_keys")
+        .await
+        .expect("read pragma");
+    assert_eq!(keys.rows[0][0].as_deref(), Some("1"));
+
+    // The pool's connections never saw the temporary table.
+    assert!(connection.run_query("SELECT a FROM scratch").await.is_err());
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_committed_transaction_is_visible_to_the_pool() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    let pinned = PinnedConnection::new(connection.clone());
+
+    pinned.run_query("BEGIN").await.expect("begin");
+    pinned
+        .run_query("DELETE FROM items WHERE id = 2")
+        .await
+        .expect("delete");
+    pinned.run_query("COMMIT").await.expect("commit");
+    assert_eq!(pinned.state(), TxnState::Idle);
+    assert_eq!(item_count(&connection).await, "1");
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_read_only_pin_runs_transaction_control_but_refuses_writes() {
+    let database = TempDatabase::new().await;
+    let connection = Arc::new(
+        Connection::open(
+            ConnectionConfig {
+                safety: SafetyMode::ReadOnly,
+                ..database.config()
+            },
+            None,
+        )
+        .await
+        .expect("could not open the test database"),
+    );
+    let pinned = PinnedConnection::new(connection.clone());
+
+    pinned
+        .run_query("BEGIN")
+        .await
+        .expect("begin is not a write");
+    assert_eq!(pinned.state(), TxnState::Open);
+    let error = pinned
+        .run_query("DELETE FROM items")
+        .await
+        .expect_err("a read-only connection refuses a delete");
+    assert!(format!("{error:#}").contains("DELETE"), "{error:#}");
+    pinned.run_query("ROLLBACK").await.expect("rollback");
+    assert_eq!(pinned.state(), TxnState::Idle);
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+/// A script run inside a transaction the tab already has open is a savepoint
+/// in it: rolling the script back leaves the tab's own work, and the tab's
+/// transaction, as they were.
+#[tokio::test]
+async fn a_script_inside_an_open_transaction_rolls_back_only_itself() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    let pinned = PinnedConnection::new(connection.clone());
+
+    pinned.run_query("BEGIN").await.expect("begin");
+    pinned
+        .run_query("INSERT INTO items VALUES (10, 'mine', 1.0, NULL)")
+        .await
+        .expect("insert");
+
+    let (run, _) = paused(
+        ScriptRun::start(
+            pinned.clone(),
+            FAILS_IN_THE_MIDDLE,
+            ScriptMode::Transaction,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    let outcome = finished(run.resume(Decision::Abort).await);
+    assert!(outcome.rolled_back);
+    assert_eq!(
+        pinned.state(),
+        TxnState::Open,
+        "the tab's transaction is still open"
+    );
+
+    let count = pinned
+        .run_query("SELECT COUNT(*) FROM items")
+        .await
+        .expect("count");
+    assert_eq!(
+        count.rows[0][0].as_deref(),
+        Some("3"),
+        "only the tab's insert is left"
+    );
+    pinned.run_query("COMMIT").await.expect("commit");
+    assert_eq!(item_count(&connection).await, "3");
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_scripts_own_begin_leaves_the_tab_in_a_transaction() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    let pinned = PinnedConnection::new(connection.clone());
+
+    finished(
+        ScriptRun::start(
+            pinned.clone(),
+            "BEGIN;\nINSERT INTO items VALUES (3, 'gamma', 3.0, NULL);",
+            ScriptMode::Autocommit,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    assert_eq!(pinned.state(), TxnState::Open);
+    pinned.run_query("ROLLBACK").await.expect("rollback");
+    assert_eq!(item_count(&connection).await, "2");
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+/// Query tabs share a fixed number of connections of their own, so they can
+/// never take the ones the sidebar and table views need; one past the cap is
+/// told how to free one rather than left waiting.
+#[tokio::test]
+async fn pinned_connections_are_capped_per_connection() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+
+    let mut pins = Vec::new();
+    for _ in 0..super::connection::PINNED_MAX {
+        let pinned = PinnedConnection::new(connection.clone());
+        pinned.run_query("SELECT 1").await.expect("within the cap");
+        pins.push(pinned);
+    }
+    let one_more = PinnedConnection::new(connection.clone());
+    let error = one_more
+        .run_query("SELECT 1")
+        .await
+        .expect_err("past the cap");
+    assert!(
+        format!("{error:#}").contains("too many query tabs"),
+        "{error:#}"
+    );
+    // The pool still answers the app's own reads.
+    assert_eq!(item_count(&connection).await, "2");
+
+    // Letting one tab go frees its slot.
+    drop(pins.pop());
+    one_more
+        .run_query("SELECT 1")
+        .await
+        .expect("a slot was freed");
+
+    drop((pins, one_more));
     connection.close().await;
 }
 
@@ -2222,7 +2463,7 @@ async fn live_postgres_a_script_carries_on_past_a_skipped_failure() {
     // A temporary table lives on the script's own connection and goes with it.
     let (run, failure) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             "CREATE TEMPORARY TABLE zippa_script_skip (id int PRIMARY KEY);\n\
              INSERT INTO zippa_script_skip VALUES (1);\n\
              INSERT INTO zippa_script_skip VALUES (1);\n\
@@ -2267,7 +2508,7 @@ async fn live_mysql_a_script_of_row_changes_rolls_back() {
 
     let (run, _) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             "INSERT INTO zippa_script_rollback VALUES (1);\n\
              INSERT INTO not_a_table VALUES (1);",
             ScriptMode::Transaction,
@@ -2311,7 +2552,7 @@ async fn live_mysql_an_autocommit_script_can_lock_tables() {
 
     let outcome = finished(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             "LOCK TABLES zippa_script_locks WRITE;\n\
              INSERT INTO zippa_script_locks VALUES (1);\n\
              UNLOCK TABLES;\n\
@@ -2328,6 +2569,108 @@ async fn live_mysql_an_autocommit_script_can_lock_tables() {
     );
 
     pool.execute("DROP TABLE zippa_script_locks").await.ok();
+    connection.close().await;
+}
+
+/// A query tab on MySQL can run `BEGIN`, `USE`, and `LOCK TABLES` — statements
+/// the prepared protocol refuses — and they last from one run to the next on
+/// its pinned connection, which follows the transaction from the statements
+/// themselves. Runs against `compose.yaml`'s MySQL:
+///
+/// ```text
+/// ./script/test-db up
+/// cargo test -- --ignored live_mysql_a_pinned
+/// ```
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_a_pinned_tab_holds_a_transaction_and_its_locks() {
+    let (connection, pool) = live_mysql().await;
+    let connection = Arc::new(connection);
+
+    pool.execute("DROP TABLE IF EXISTS zippa_pinned")
+        .await
+        .expect("could not clear the fixture");
+    pool.execute("CREATE TABLE zippa_pinned (id int PRIMARY KEY) ENGINE=InnoDB")
+        .await
+        .expect("could not create the fixture");
+
+    let pinned = PinnedConnection::new(connection.clone());
+    pinned.run_query("BEGIN").await.expect("begin");
+    assert_eq!(pinned.state(), TxnState::Open);
+    pinned
+        .run_query("INSERT INTO zippa_pinned VALUES (1)")
+        .await
+        .expect("insert");
+    let elsewhere = connection
+        .run_query("SELECT COUNT(*) FROM zippa_pinned")
+        .await
+        .expect("count from the pool");
+    assert_eq!(
+        elsewhere.rows,
+        [[Some("0".to_string())]],
+        "not committed yet"
+    );
+    pinned.run_query("ROLLBACK").await.expect("rollback");
+    assert_eq!(pinned.state(), TxnState::Idle);
+
+    pinned.run_query("USE app").await.expect("use");
+    pinned
+        .run_query("LOCK TABLES zippa_pinned WRITE")
+        .await
+        .expect("lock tables");
+    pinned
+        .run_query("INSERT INTO zippa_pinned VALUES (2)")
+        .await
+        .expect("insert under the lock, on the same connection");
+    pinned.run_query("UNLOCK TABLES").await.expect("unlock");
+
+    let count = connection
+        .run_query("SELECT COUNT(*) FROM zippa_pinned")
+        .await
+        .expect("the count failed");
+    assert_eq!(count.rows, [[Some("1".to_string())]]);
+
+    drop(pinned);
+    pool.execute("DROP TABLE zippa_pinned").await.ok();
+    connection.close().await;
+}
+
+/// Postgres reports a transaction an error has aborted, and a pinned tab
+/// reads that back as failed until it is rolled back. Runs against
+/// `compose.yaml`'s Postgres:
+///
+/// ```text
+/// ./script/test-db up
+/// cargo test -- --ignored live_postgres_a_pinned
+/// ```
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_a_pinned_tab_reports_a_failed_transaction() {
+    let connection = Arc::new(live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await);
+    let pinned = PinnedConnection::new(connection.clone());
+
+    pinned
+        .run_query("SET search_path = pg_catalog")
+        .await
+        .expect("set");
+    let path = pinned.run_query("SHOW search_path").await.expect("show");
+    assert_eq!(
+        path.rows,
+        [[Some("pg_catalog".to_string())]],
+        "SET lasts between runs"
+    );
+
+    pinned.run_query("BEGIN").await.expect("begin");
+    assert_eq!(pinned.state(), TxnState::Open);
+    pinned
+        .run_query("SELECT * FROM zippa_not_a_table")
+        .await
+        .expect_err("no such table");
+    assert_eq!(pinned.state(), TxnState::Failed);
+    pinned.run_query("ROLLBACK").await.expect("rollback");
+    assert_eq!(pinned.state(), TxnState::Idle);
+
+    drop(pinned);
     connection.close().await;
 }
 

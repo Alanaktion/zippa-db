@@ -8,14 +8,19 @@
 //! to the next caller: the server rolls it back when the connection goes.
 //!
 //! Dropping one closes the connection on the Tokio runtime, so a [`Dedicated`]
-//! must be dropped there — see `ScriptRun::close`.
+//! must be dropped there — see `ScriptRun::close` and `pinned::let_go`.
+//!
+//! A query tab holds one for as long as it is open, behind a
+//! [`PinnedConnection`](super::PinnedConnection), so a `BEGIN` in one run and
+//! the `COMMIT` in the next reach the same server session.
 
 use anyhow::Result;
-use sqlx::AssertSqlSafe;
 use sqlx::pool::PoolConnection;
+use sqlx::{AssertSqlSafe, Row as _};
 
 use super::config::Engine;
 use super::connection::fetch_on;
+use super::pinned::TxnState;
 use super::query::QueryResult;
 use super::{health, mysql, postgres, sqlite};
 
@@ -131,6 +136,79 @@ impl Dedicated {
                     sqlite::rows_affected,
                 )
                 .await
+            }
+        }
+    }
+}
+
+impl Dedicated {
+    /// The server's own id for this session — `pg_backend_pid()` or
+    /// `CONNECTION_ID()` — which is what a cancel from another connection
+    /// names. `None` on SQLite, which has no server to ask.
+    pub(crate) async fn backend_id(&mut self) -> Result<Option<u64>> {
+        let sql = match self {
+            Dedicated::Postgres(..) => "SELECT pg_backend_pid()",
+            Dedicated::MySql(_) => "SELECT CONNECTION_ID()",
+            Dedicated::Sqlite(_) => return Ok(None),
+        };
+        let result = self.fetch(sql).await?;
+        Ok(result
+            .rows
+            .first()
+            .and_then(|row| row.first())
+            .and_then(|cell| cell.as_deref())
+            .and_then(|id| id.parse().ok()))
+    }
+
+    /// Whether the session is inside a transaction, as the server itself
+    /// sees it — `None` where it cannot be asked and the caller has to work
+    /// it out from the statements that ran (MySQL).
+    ///
+    /// Postgres has no function that answers this directly, but inside a
+    /// transaction block `now()` is fixed at the transaction's start while
+    /// `statement_timestamp()` moves on with each statement, and outside one
+    /// the two are the same instant. A transaction an error has aborted
+    /// refuses the question itself with `25P02`, which is the answer too.
+    /// SQLite answers through `sqlite3_get_autocommit`.
+    pub(crate) async fn transaction_status(&mut self) -> Result<Option<TxnState>> {
+        match self {
+            Dedicated::Postgres(connection, _) => {
+                // The simple protocol, so the probe is one message: over the
+                // extended protocol the statement's clock starts at a later
+                // message than its implicit transaction's, and the two never
+                // match even outside a transaction block.
+                let probe = sqlx::raw_sql("SELECT now() <> statement_timestamp()")
+                    .fetch_one(&mut **connection)
+                    .await
+                    .and_then(|row| row.try_get::<bool, _>(0));
+                match probe {
+                    Ok(true) => Ok(Some(TxnState::Open)),
+                    Ok(false) => Ok(Some(TxnState::Idle)),
+                    Err(error)
+                        if error
+                            .as_database_error()
+                            .and_then(|error| error.code())
+                            .is_some_and(|code| code == "25P02") =>
+                    {
+                        Ok(Some(TxnState::Failed))
+                    }
+                    Err(error) => Err(error.into()),
+                }
+            }
+            Dedicated::MySql(_) => Ok(None),
+            Dedicated::Sqlite(connection) => {
+                let mut handle = connection.lock_handle().await?;
+                // SAFETY: the handle is locked for the length of the call, so
+                // nothing else is using the connection, and
+                // `sqlite3_get_autocommit` only reads a flag off it.
+                let autocommit = unsafe {
+                    libsqlite3_sys::sqlite3_get_autocommit(handle.as_raw_handle().as_ptr())
+                };
+                Ok(Some(if autocommit == 0 {
+                    TxnState::Open
+                } else {
+                    TxnState::Idle
+                }))
             }
         }
     }

@@ -29,7 +29,7 @@ known defects and risks in the shipped code are tracked in
 * Auto-complete: a key to open the menu without typing, and context beyond the statement's own `FROM` (CTE names, subquery aliases)
 * Engine-specific highlighting (today one SQL grammar serves all three)
 * Format SQL ([plan](.agents/plans/format-sql.md))
-* A pinned connection per query tab, so `BEGIN`/`COMMIT`, `SET`, and temp tables persist between runs ([plan](.agents/plans/pinned-connections-transactions.md))
+* Pinned query tabs, the follow-ups ([plan](.agents/plans/pinned-connections-transactions.md)): run `EXPLAIN` on the tab's own connection so it sees its `SET`/temp tables; ask before quitting with a transaction open; a cancel that leaves the transaction (Postgres: failed) rather than closing the connection; a manual-commit toggle and auto-savepoints
 * Messages tab: Postgres `NOTICE`, MySQL warnings
 * Query parameters (`:name`, `$1`) prompted for and bound
 * A row-limit guard on unbounded `SELECT`s, with a "Fetched first N rows" banner

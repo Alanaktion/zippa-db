@@ -205,11 +205,11 @@ impl Session {
         // Reads change nothing the sidebar shows, so only a script that
         // writes asks for the schema to be read again afterwards.
         let writes = statement::first_write(&sql).is_some();
-        let connection = self.connection.clone();
+        let Some(pinned) = panel.update(cx, |panel, _| panel.pin(&self.connection)) else {
+            return;
+        };
         let task =
-            runtime::spawn(
-                async move { ScriptRun::start(connection, &sql, mode, on_failure).await },
-            );
+            runtime::spawn(async move { ScriptRun::start(pinned, &sql, mode, on_failure).await });
         self.follow_script(panel, task, writes, cx);
     }
 
@@ -491,13 +491,13 @@ impl Session {
         });
         editor.update(cx, |editor, cx| editor.set_running(true, cx));
 
-        let connection = self.connection.clone();
-        let task = runtime::spawn(async move {
-            connection
-                .run_query_as_user(&sql)
-                .await
-                .map(|result| vec![result])
-        });
+        // The tab's own connection, so what one run opens — a transaction,
+        // a `SET`, a temporary table — is still there for the next.
+        let Some(pinned) = panel.update(cx, |panel, _| panel.pin(&self.connection)) else {
+            return;
+        };
+        let task =
+            runtime::spawn(async move { pinned.run_query(&sql).await.map(|result| vec![result]) });
         panel.update(cx, |panel, _| panel.set_running(task.abort_handle()));
 
         let weak = panel.downgrade();
@@ -531,6 +531,22 @@ impl Session {
             .ok();
         })
         .detach();
+    }
+
+    /// Commit or roll back the transaction open in `panel`, for the status
+    /// bar's buttons.
+    ///
+    /// Sent as the statement itself, so it shows in the console and the
+    /// status bar like one the user typed; neither asks first, since neither
+    /// writes anything a confirmation did not already cover.
+    pub(super) fn end_transaction(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        commit: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let sql = if commit { "COMMIT" } else { "ROLLBACK" };
+        self.send(panel, sql.to_string(), cx);
     }
 
     /// Read one statement's plan for `panel`.

@@ -321,7 +321,7 @@ impl Session {
             return;
         }
 
-        if panel.read(cx).is_dirty(cx) {
+        if panel.read(cx).is_dirty(cx) || panel.read(cx).transaction().is_open() {
             self.confirm_close(panel, window, cx);
             return;
         }
@@ -341,19 +341,23 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         let title = panel.read(cx).title();
+        let dirty = panel.read(cx).is_dirty(cx);
+        let transaction = panel.read(cx).transaction().is_open();
         let session = cx.entity().downgrade();
         let panel = panel.clone();
+        let (heading, description, ok) =
+            close_question(&title, 1, dirty as usize, transaction as usize);
 
         window.open_alert_dialog(cx, move |alert, _, _| {
             let session = session.clone();
             let panel = panel.clone();
 
             alert
-                .title(format!("Close \"{title}\" without saving?"))
-                .description("The tab has unsaved changes.")
+                .title(heading.clone())
+                .description(description.clone())
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Close Without Saving")
+                        .ok_text(ok)
                         .ok_variant(ButtonVariant::Danger)
                         .cancel_text("Keep Open")
                         .show_cancel(true),
@@ -514,12 +518,16 @@ impl Session {
             .iter()
             .filter(|panel| panel.read(cx).is_dirty(cx))
             .count();
-        if dirty == 0 {
+        let transactions = targets
+            .iter()
+            .filter(|panel| panel.read(cx).transaction().is_open())
+            .count();
+        if dirty == 0 && transactions == 0 {
             self.close_tabs_now(&targets, window, cx);
             return;
         }
 
-        self.confirm_close_tabs(targets, dirty, window, cx);
+        self.confirm_close_tabs(targets, dirty, transactions, window, cx);
     }
 
     /// Ask before throwing away several tabs' unsaved buffers at once.
@@ -532,6 +540,7 @@ impl Session {
         &mut self,
         targets: Vec<Entity<SessionPanel>>,
         dirty: usize,
+        transactions: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -541,23 +550,18 @@ impl Session {
             .map(|panel| panel.read(cx).title())
             .unwrap_or_default();
         let session = cx.entity().downgrade();
+        let (heading, description, ok) = close_question(&title, count, dirty, transactions);
 
         window.open_alert_dialog(cx, move |alert, _, _| {
             let session = session.clone();
             let targets = targets.clone();
 
             alert
-                .title(match count {
-                    1 => format!("Close \"{title}\" without saving?"),
-                    _ => format!("Close {count} tabs without saving?"),
-                })
-                .description(match count {
-                    1 => "The tab has unsaved changes.".to_string(),
-                    _ => format!("{dirty} of them have unsaved changes."),
-                })
+                .title(heading.clone())
+                .description(description.clone())
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Close Without Saving")
+                        .ok_text(ok)
                         .ok_variant(ButtonVariant::Danger)
                         .cancel_text("Keep Open")
                         .show_cancel(true),
@@ -625,6 +629,41 @@ impl Session {
         self.panels.iter().any(|panel| panel.read(cx).is_dirty(cx))
     }
 
+    /// How many tabs have a transaction open — work that closing the
+    /// connection, or switching it to another database, would roll back.
+    pub(crate) fn open_transactions(&self, cx: &App) -> usize {
+        self.panels
+            .iter()
+            .filter(|panel| panel.read(cx).transaction().is_open())
+            .count()
+    }
+
+    /// What leaving this connection would throw away — `(title, sentence)`
+    /// for the workspace's question — or `None` when nothing would be lost.
+    pub(crate) fn leave_warning(&self, cx: &App) -> Option<(&'static str, String)> {
+        let name = self.display_name();
+        let unsaved = self.has_unsaved_changes(cx);
+        let open = match self.open_transactions(cx) {
+            0 => None,
+            1 => Some("a tab with an open transaction, which will be rolled back".to_string()),
+            count => Some(format!(
+                "{count} tabs with open transactions, which will be rolled back"
+            )),
+        };
+        match (unsaved, open) {
+            (false, None) => None,
+            (true, None) => Some((
+                "Unsaved Changes",
+                format!("\"{name}\" has tabs with unsaved changes."),
+            )),
+            (false, Some(open)) => Some(("Open Transaction", format!("\"{name}\" has {open}."))),
+            (true, Some(open)) => Some((
+                "Unsaved Changes",
+                format!("\"{name}\" has tabs with unsaved changes, and {open}."),
+            )),
+        }
+    }
+
     pub(crate) fn active_tab_index(&self) -> usize {
         let Some(active) = self.active.as_ref() else {
             return 0;
@@ -675,5 +714,55 @@ impl Session {
         if let Some(panel) = self.active_panel() {
             self.close_tab(&panel, window, cx);
         }
+    }
+}
+
+/// The question asked before closing tabs that hold something closing would
+/// lose: `(title, description, button)`. `count` tabs are closing, `dirty` of
+/// them hold unsaved changes and `transactions` an open transaction.
+pub(super) fn close_question(
+    title: &str,
+    count: usize,
+    dirty: usize,
+    transactions: usize,
+) -> (String, String, &'static str) {
+    let what = match count {
+        1 => format!("\"{title}\""),
+        _ => format!("{count} tabs"),
+    };
+    let unsaved = match (count, dirty) {
+        (_, 0) => None,
+        (1, _) => Some("The tab has unsaved changes.".to_string()),
+        (_, dirty) => Some(format!("{dirty} of them have unsaved changes.")),
+    };
+    let open = match (count, transactions) {
+        (_, 0) => None,
+        (1, _) => Some(
+            "The tab has an open transaction; closing it rolls back everything since it began."
+                .to_string(),
+        ),
+        (_, 1) => Some("1 of them has an open transaction, which closing rolls back.".to_string()),
+        (_, open) => Some(format!(
+            "{open} of them have open transactions, which closing rolls back."
+        )),
+    };
+
+    match (unsaved, open) {
+        (Some(unsaved), None) => (
+            format!("Close {what} without saving?"),
+            unsaved,
+            "Close Without Saving",
+        ),
+        (None, Some(open)) => (
+            format!("Roll back and close {what}?"),
+            open,
+            "Roll Back and Close",
+        ),
+        (Some(unsaved), Some(open)) => (
+            format!("Close {what} without saving?"),
+            format!("{unsaved} {open}"),
+            "Roll Back and Close",
+        ),
+        (None, None) => (format!("Close {what}?"), String::new(), "Close"),
     }
 }

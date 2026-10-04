@@ -186,6 +186,6 @@ Prompted by the nightly live tests failing since `4c5cfe5`. sqlx sends every `sq
 - **[H] A `mysqldump` file could not be imported**: its `LOCK TABLES … WRITE` was the first refused statement, so the import stopped (or, with Continue, skipped every lock and unlock).
 - **[M] A script run without a transaction could not hold `LOCK TABLES` or `USE`**, which is the very case the "run without a transaction" question exists for.
 
-**Still open:**
+**Fixed later:**
 
-- **[M] A query tab on MySQL refuses the same statements** (`fetch_all` in `src/db/connection.rs`, through the pool). `BEGIN`, `LOCK TABLES`, or `USE other_db` run with `Cmd+Enter` fail with error 1295. Not changed here on purpose: on a pooled connection each would leave session state (an open transaction, held locks, a different default database) on whichever connection ran it, which the next statement may not get, so the right answer is a refusal that says why, or a dedicated connection per query tab, rather than a text-protocol fallback.
+- **[M] A query tab on MySQL refused the same statements** (`fetch_all` in `src/db/connection.rs`, through the pool). `BEGIN`, `LOCK TABLES`, or `USE other_db` run with `Cmd+Enter` failed with error 1295, and on Postgres and SQLite a `BEGIN` succeeded but left its transaction on whichever pooled connection ran it. A query tab now runs on a connection of its own (`db::pinned`), through `Dedicated::fetch` and its text-protocol fallback, so the session state each statement sets up stays with the tab; pinned by `live_mysql_a_pinned_tab_holds_a_transaction_and_its_locks`.

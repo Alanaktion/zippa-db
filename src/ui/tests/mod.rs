@@ -31,7 +31,7 @@ use crate::db::query::QueryResult;
 use crate::db::tests::TempDatabase;
 use crate::db::{
     Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, SafetyMode, SshAuth,
-    SshConfig, SslConfig, SslMode, TagColor, runtime,
+    SshConfig, SslConfig, SslMode, TagColor, TxnState, runtime,
 };
 use crate::ui::filter_bar::{FilterSpec, Operator};
 use crate::ui::session::{CloseScope, Session};
@@ -62,6 +62,7 @@ mod server_variables;
 mod session;
 mod sorting;
 mod sqlite_maintenance;
+mod transactions;
 mod value_dialog;
 mod welcome;
 mod workspace;
@@ -441,6 +442,24 @@ fn close_workspace_tab(
     })
     .unwrap();
     cx.run_until_parked();
+}
+
+/// Run `sql` in the active tab of a workspace session, the way the run
+/// shortcut does, and leave the buffer empty again so the tab is not dirty.
+fn run_in_tab(
+    cx: &mut TestAppContext,
+    handle: &WorkspaceWindow,
+    session: &Entity<Session>,
+    sql: &str,
+) {
+    prepare_workspace_editor(cx, handle, session, sql);
+    press_workspace(cx, handle, "secondary-enter");
+    prepare_workspace_editor(cx, handle, session, "");
+}
+
+/// Whether a workspace session's active tab has a transaction open.
+fn transaction(cx: &mut TestAppContext, session: &Entity<Session>) -> TxnState {
+    session.read_with(cx, |session, cx| session.active_transaction_for_test(cx))
 }
 
 fn press_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, keystroke: &str) {

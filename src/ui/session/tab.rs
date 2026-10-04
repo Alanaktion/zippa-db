@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use gpui_kit::Entity;
 
-use crate::db::ScriptRun;
 use crate::db::query::QueryResult;
+use crate::db::{PinnedConnection, ScriptRun};
 use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::plan_view::PlanView;
@@ -73,6 +73,11 @@ pub(crate) enum TabContent {
         running: Option<tokio::task::AbortHandle>,
         /// A script paused on a failure, waiting for the user's answer.
         script: Option<Box<ScriptRun>>,
+        /// The connection this tab's runs go to, checked out on the first
+        /// one and kept until the tab closes or the session changes
+        /// database — so a transaction, `SET`, or `USE` lasts from one run to
+        /// the next.
+        pinned: Option<PinnedConnection>,
         /// The buffer's content as last opened or saved, to tell dirty from
         /// clean.
         baseline: String,

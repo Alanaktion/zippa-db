@@ -36,6 +36,9 @@ futures = "0.3.34"
 # component library, and the default icon set.
 gpui-kit = { version = "0.7", features = ["tree-sitter-sql"] }
 keyring = "4"
+# Only for `sqlite3_get_autocommit`, which sqlx does not expose; the version
+# range matches sqlx-sqlite's own so both link the same library.
+libsqlite3-sys = "0.37"
 # The completion types the editor's completion provider answers in; the same
 # version gpui-kit's editor is built against.
 lsp-types = { version = "0.97", features = ["proposed"] }

@@ -41,6 +41,11 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   `BEGIN`/`COMMIT`) is flagged in the toolbar and asks before running without
   one. Run Script Ignoring Errors (`Cmd`/`Ctrl`+`Alt`+`Shift`+`Enter`) runs
   every statement with no transaction and lists the failures afterwards.
+  Each query tab runs on a connection of its own, so `BEGIN`/`COMMIT`, `SET`,
+  `USE`, temporary tables, and `LOCK TABLES` last between runs; an open
+  transaction is named in the status bar with Commit and Roll Back, and
+  closing the tab, the connection, or switching database asks before rolling
+  it back.
 - **Query plans:** `EXPLAIN` and `EXPLAIN ANALYZE` as a tree with costs, rows,
   timing, and warnings.
 - **Table view:** paging, row limit, sorting, a filter bar, a row panel, and
