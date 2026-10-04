@@ -50,6 +50,11 @@ impl Dedicated {
     }
 
     /// Run one statement, discarding whatever it returns.
+    ///
+    /// MySQL gets the text protocol rather than a prepared statement: the
+    /// prepared protocol refuses `BEGIN`, `START TRANSACTION`, every
+    /// `SAVEPOINT` form, `LOCK TABLES`, and `USE` (error 1295), which are
+    /// exactly what a script's transaction and a `mysqldump` file send.
     pub(crate) async fn execute(&mut self, sql: &str) -> Result<()> {
         // The statement is either the user's own or one of the job's fixed
         // transaction-control statements; nothing in it is bound.
@@ -59,7 +64,7 @@ impl Dedicated {
                 sqlx::query(statement).execute(&mut **connection).await?;
             }
             Dedicated::MySql(connection) => {
-                sqlx::query(statement).execute(&mut **connection).await?;
+                sqlx::raw_sql(statement).execute(&mut **connection).await?;
             }
             Dedicated::Sqlite(connection) => {
                 sqlx::query(statement).execute(&mut **connection).await?;
@@ -83,13 +88,32 @@ impl Dedicated {
                 .await
             }
             Dedicated::MySql(connection) => {
-                fetch_on::<sqlx::MySql, _>(
+                let fetched = fetch_on::<sqlx::MySql, _>(
                     &mut **connection,
                     sql,
                     mysql::cell,
                     mysql::rows_affected,
                 )
-                .await
+                .await;
+                match fetched {
+                    // A statement the prepared protocol refuses (`LOCK
+                    // TABLES`, `USE`, …) is refused before it runs, so it is
+                    // safe to send again as text. None of them return rows.
+                    Err(error) if mysql::unpreparable(&error) => {
+                        let started = std::time::Instant::now();
+                        let done = sqlx::raw_sql(AssertSqlSafe(sql.to_string()))
+                            .execute(&mut **connection)
+                            .await?;
+                        Ok(QueryResult {
+                            columns: Vec::new(),
+                            column_types: Vec::new(),
+                            rows: Vec::new(),
+                            elapsed: started.elapsed(),
+                            affected: Some(mysql::rows_affected(&done)),
+                        })
+                    }
+                    fetched => fetched,
+                }
             }
             Dedicated::Sqlite(connection) => {
                 fetch_on::<sqlx::Sqlite, _>(
