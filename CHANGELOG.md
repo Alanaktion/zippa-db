@@ -16,7 +16,9 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   closing, and Connect saves first (its menu connects without saving).
   PostgreSQL and MySQL connections choose an SSL mode (disable, prefer — the
   default — require, verify CA, or verify full) and can name a CA certificate
-  and a client certificate and key.
+  and a client certificate and key. They can also connect through an SSH
+  tunnel, signing in with the SSH agent, a private key file, or a password,
+  and checking the jump host against `~/.ssh/known_hosts`.
 - **Safety modes:** read-only (enforced on the server and client side),
   confirm writes, staged (the default), and auto-apply.
 - **Workspace restore:** open connections, their tabs, and unsaved query

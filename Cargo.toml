@@ -37,6 +37,7 @@ futures = "0.3.34"
 gpui-kit = { version = "0.7", features = ["tree-sitter-sql"] }
 keyring = "4"
 regex = "1"
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.9", features = [
@@ -53,7 +54,7 @@ sqlx = { version = "0.9", features = [
     "mac_address",
     "bit-vec",
 ] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "net", "io-util", "macros"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zstd = "0.13"
 

@@ -739,3 +739,72 @@ fn a_client_certificate_without_its_key_is_refused(cx: &mut TestAppContext) {
         "a refused connect should leave the dialog open"
     );
 }
+
+#[gpui_kit::test]
+fn the_editor_round_trips_an_ssh_tunnel(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| {
+                editor.fill_ssh_for_test(
+                    SshAuth::Password,
+                    ["bastion.internal", "2200", "deploy"],
+                    window,
+                    cx,
+                )
+            })
+        });
+    })
+    .unwrap();
+
+    let config = welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.config_for_test(cx))
+    });
+    assert_eq!(
+        config.ssh,
+        SshConfig {
+            enabled: true,
+            host: "bastion.internal".into(),
+            port: 2200,
+            username: "deploy".into(),
+            auth: SshAuth::Password,
+            key_path: String::new(),
+        }
+    );
+    // The SSH password box was never typed in, so it claims nothing to write.
+    let secrets = welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.secrets_for_test(cx))
+    });
+    assert_eq!(secrets.ssh, None);
+}
+
+#[gpui_kit::test]
+fn a_key_file_tunnel_without_a_key_is_refused(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| {
+                editor.fill_ssh_for_test(
+                    SshAuth::PrivateKey,
+                    ["bastion.internal", "22", "deploy"],
+                    window,
+                    cx,
+                )
+            })
+        });
+    })
+    .unwrap();
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.connect_for_test(true, cx))
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        editor_status(cx, &welcome),
+        "Error: Enter the path to the SSH private key."
+    );
+}

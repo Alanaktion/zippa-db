@@ -9,7 +9,6 @@ known defects and risks in the shipped code are tracked in
 
 ## 1. Connections & security
 
-* SSH tunneling (password and private key / agent)
 * Paste a connection URL (`postgres://user@host/db`) to fill the form; read `DATABASE_URL`, `~/.pgpass`, `~/.my.cnf`
 * Connection health: detect a dropped connection, offer "Reconnect" rather than a raw driver error, keepalive
 * Optional statement timeout per connection

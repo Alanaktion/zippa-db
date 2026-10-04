@@ -209,6 +209,94 @@ impl SslConfig {
     }
 }
 
+/// How an SSH tunnel proves who it is to the jump host.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SshAuth {
+    /// Whatever keys the running SSH agent holds (`SSH_AUTH_SOCK`, or the
+    /// OpenSSH agent's pipe on Windows): nothing to store.
+    #[default]
+    Agent,
+    /// A private key file, with its passphrase in the keychain if it has one.
+    PrivateKey,
+    /// A password, kept in the keychain.
+    Password,
+}
+
+impl SshAuth {
+    pub const ALL: [SshAuth; 3] = [SshAuth::Agent, SshAuth::PrivateKey, SshAuth::Password];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SshAuth::Agent => "SSH agent",
+            SshAuth::PrivateKey => "Key file",
+            SshAuth::Password => "Password",
+        }
+    }
+
+    /// What the secret stored for this method is called, or `None` when it
+    /// has none.
+    pub fn secret_label(self) -> Option<&'static str> {
+        match self {
+            SshAuth::Agent => None,
+            SshAuth::PrivateKey => Some("Key passphrase"),
+            SshAuth::Password => Some("SSH password"),
+        }
+    }
+}
+
+/// An SSH tunnel a server connection is opened through: the database is
+/// reached from the jump host, so `host`/`port` on the connection are as the
+/// jump host sees them. The password or key passphrase is not here; it lives
+/// in the keychain beside the database password.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SshConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth: SshAuth,
+    /// The private key file, for [`SshAuth::PrivateKey`]. A leading `~/` is
+    /// the home directory.
+    pub key_path: String,
+}
+
+impl Default for SshConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: String::new(),
+            port: 22,
+            username: String::new(),
+            auth: SshAuth::default(),
+            key_path: String::new(),
+        }
+    }
+}
+
+impl SshConfig {
+    /// Why these settings cannot be used, in words for the user.
+    pub fn invalid(&self) -> Option<&'static str> {
+        if !self.enabled {
+            return None;
+        }
+        if self.host.trim().is_empty() {
+            return Some("Enter the SSH host to tunnel through.");
+        }
+        if self.port == 0 {
+            return Some("The SSH port must be a number from 1 to 65535.");
+        }
+        if self.username.trim().is_empty() {
+            return Some("Enter the SSH user.");
+        }
+        if self.auth == SshAuth::PrivateKey && self.key_path.trim().is_empty() {
+            return Some("Enter the path to the SSH private key.");
+        }
+        None
+    }
+}
+
 /// A fixed palette a connection can be coloured with.
 ///
 /// A palette rather than arbitrary hex: a colour is resolved against the theme
@@ -304,6 +392,10 @@ pub struct ConnectionConfig {
     /// all along.
     #[serde(default)]
     pub ssl: SslConfig,
+    /// The SSH tunnel to connect through, if any. Absent in files written
+    /// before tunnels existed, which read back as off.
+    #[serde(default)]
+    pub ssh: SshConfig,
 }
 
 impl ConnectionConfig {
@@ -320,6 +412,7 @@ impl ConnectionConfig {
             color: None,
             last_connected: None,
             ssl: SslConfig::default(),
+            ssh: SshConfig::default(),
         }
     }
 
@@ -417,6 +510,54 @@ mod tests {
         .unwrap();
         assert_eq!(config.ssl, SslConfig::default());
         assert_eq!(config.ssl.mode, SslMode::Prefer);
+    }
+
+    #[test]
+    fn an_ssh_tunnel_needs_a_host_a_user_and_a_key_file_for_key_auth() {
+        let tunnel = SshConfig {
+            enabled: true,
+            host: "bastion".into(),
+            username: "deploy".into(),
+            ..SshConfig::default()
+        };
+        assert_eq!(tunnel.invalid(), None);
+        assert!(
+            SshConfig {
+                host: " ".into(),
+                ..tunnel.clone()
+            }
+            .invalid()
+            .is_some()
+        );
+        assert!(
+            SshConfig {
+                username: String::new(),
+                ..tunnel.clone()
+            }
+            .invalid()
+            .is_some()
+        );
+        assert!(
+            SshConfig {
+                auth: SshAuth::PrivateKey,
+                ..tunnel.clone()
+            }
+            .invalid()
+            .is_some()
+        );
+        // A tunnel that is off is never checked.
+        assert_eq!(SshConfig::default().invalid(), None);
+    }
+
+    #[test]
+    fn a_connection_saved_before_tunnels_reads_back_without_one() {
+        let config: ConnectionConfig = serde_json::from_str(
+            r#"{"id":"6f1c1f0e-8a5c-4d36-9a49-1b1f3c0f2a10","name":"","engine":"MySql",
+                "host":"localhost","port":3306,"username":"","database":""}"#,
+        )
+        .unwrap();
+        assert!(!config.ssh.enabled);
+        assert_eq!(config.ssh.port, 22);
     }
 
     #[test]

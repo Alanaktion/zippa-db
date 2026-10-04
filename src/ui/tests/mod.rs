@@ -30,8 +30,8 @@ use crate::db::export::Format;
 use crate::db::query::QueryResult;
 use crate::db::tests::TempDatabase;
 use crate::db::{
-    Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, SafetyMode, SslConfig,
-    SslMode, TagColor, runtime,
+    Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, SafetyMode, SshAuth,
+    SshConfig, SslConfig, SslMode, TagColor, runtime,
 };
 use crate::ui::filter_bar::{FilterSpec, Operator};
 use crate::ui::session::{CloseScope, Session};

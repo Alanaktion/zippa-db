@@ -12,9 +12,9 @@ use uuid::Uuid;
 use super::query::Cell;
 use super::schema::ReferentialAction;
 use super::{
-    CatalogKind, Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, QueryDigest,
-    RowKey, SafetyMode, SslConfig, SslMode, TagColor, keyword_literal, quote_identifier,
-    typed_placeholder,
+    CatalogKind, Connection, ConnectionConfig, Credentials, DatabaseObject, Engine, ObjectKind,
+    QueryDigest, RowKey, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode, TagColor,
+    keyword_literal, quote_identifier, typed_placeholder,
 };
 use super::{
     Decision, OnFailure, QueryOutcome, QuerySource, ScriptFailure, ScriptMode, ScriptOutcome,
@@ -1732,6 +1732,103 @@ async fn live_mysql_ssl_require_encrypts_and_verify_refuses_a_self_signed_server
     assert!(
         Connection::open(config, Some(password)).await.is_err(),
         "VerifyCa should refuse a self-signed certificate"
+    );
+}
+
+/// The jump host the SSH tunnel live tests sign in to, and the Postgres server
+/// as that host sees it. The defaults are the compose `ssh` service, which
+/// reaches the compose `postgres` service by name; `ZIPPA_TEST_SSH_URL`
+/// (`ssh://user:password@host:port`) and `ZIPPA_TEST_SSH_TARGET` (`host:port`)
+/// point them elsewhere, such as a local `sshd` that reaches Postgres as
+/// `127.0.0.1:5433`.
+fn live_ssh() -> (SshConfig, String, String, u16) {
+    let url = env::var("ZIPPA_TEST_SSH_URL")
+        .unwrap_or_else(|_| "ssh://tunnel:secret@127.0.0.1:2222".to_string());
+    let rest = url.strip_prefix("ssh://").expect("an ssh:// URL");
+    let (credentials, authority) = rest.split_once('@').expect("user:pass@host:port");
+    let (username, password) = credentials.split_once(':').expect("user:pass");
+    let (host, port) = authority.split_once(':').expect("host:port");
+    let ssh = SshConfig {
+        enabled: true,
+        host: host.to_string(),
+        port: port.parse().expect("a port"),
+        username: username.to_string(),
+        auth: SshAuth::Password,
+        key_path: String::new(),
+    };
+
+    let target = env::var("ZIPPA_TEST_SSH_TARGET").unwrap_or_else(|_| "postgres:5432".to_string());
+    let (target_host, target_port) = target.split_once(':').expect("host:port");
+    (
+        ssh,
+        password.to_string(),
+        target_host.to_string(),
+        target_port.parse().expect("a port"),
+    )
+}
+
+/// A connection through an SSH tunnel reaches Postgres, keeps the host the
+/// user saved rather than the tunnel's end, and switching database reuses the
+/// tunnel rather than signing in again.
+///
+/// Needs the compose `ssh` service besides `postgres`; see `live_ssh`.
+#[tokio::test]
+#[ignore = "needs a live Postgres server and SSH jump host; see the doc comment"]
+async fn live_postgres_connects_through_an_ssh_tunnel() {
+    let (ssh, ssh_password, target_host, target_port) = live_ssh();
+    let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+    config.host = target_host.clone();
+    config.port = target_port;
+    config.ssh = ssh;
+
+    let connection = Connection::open_with(
+        config,
+        Credentials {
+            password: Some(password),
+            ssh: Some(ssh_password),
+        },
+    )
+    .await
+    .expect("should connect through the tunnel");
+    let result = connection
+        .run_query("SELECT 1 + 1")
+        .await
+        .expect("should query through the tunnel");
+    assert_eq!(result.rows[0][0].as_deref(), Some("2"));
+    assert_eq!(connection.config.host, target_host);
+
+    let other = connection
+        .with_database("postgres")
+        .await
+        .expect("switching database should reuse the tunnel");
+    other.run_query("SELECT 1").await.expect("query");
+    other.close().await;
+    connection.close().await;
+}
+
+/// A wrong SSH password is refused with a message that says so, before the
+/// database is ever asked.
+#[tokio::test]
+#[ignore = "needs a live SSH jump host; see `live_ssh`"]
+async fn live_ssh_tunnel_reports_a_refused_password() {
+    let (ssh, _, target_host, target_port) = live_ssh();
+    let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+    config.host = target_host;
+    config.port = target_port;
+    config.ssh = ssh;
+
+    let error = Connection::open_with(
+        config,
+        Credentials {
+            password: Some(password),
+            ssh: Some("not-the-password".into()),
+        },
+    )
+    .await
+    .expect_err("a wrong SSH password should be refused");
+    assert!(
+        format!("{error:#}").contains("refused the password"),
+        "{error:#}"
     );
 }
 

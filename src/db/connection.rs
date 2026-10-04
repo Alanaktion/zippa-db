@@ -6,6 +6,7 @@
 //! lists databases and objects, decoding a row cell — lives in the sibling
 //! `postgres` / `mysql` / `sqlite` modules.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -24,6 +25,7 @@ use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary}
 use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
+use super::tunnel::Tunnel;
 use super::{mysql, postgres, sqlite, statement, typed_placeholder};
 
 /// Connections opened per saved connection.
@@ -146,16 +148,74 @@ pub struct Connection {
     /// console pane. `import_dump`/`rebuild_table` run on a dedicated
     /// connection outside it and are not recorded here.
     query_log: QueryLog,
+    /// The SSH tunnel the pool connects through, if the connection has one.
+    /// Shared with a connection [`with_database`](Self::with_database) opens
+    /// on the same server, so switching database does not sign in again;
+    /// the tunnel closes when the last of them goes.
+    tunnel: Option<Arc<Tunnel>>,
+}
+
+/// The secrets a connection is opened with: read from the keychain, or typed
+/// into the connection editor. Kept in memory only, and never printed.
+#[derive(Clone, Default)]
+pub struct Credentials {
+    /// The database password.
+    pub password: Option<String>,
+    /// The SSH password or key passphrase, for a connection with a tunnel.
+    pub ssh: Option<String>,
 }
 
 impl Connection {
-    /// Open a pool and verify it by acquiring one connection.
+    /// Open a pool and verify it by acquiring one connection: the shorthand
+    /// tests use for a connection with no tunnel.
+    #[cfg(test)]
     pub async fn open(config: ConnectionConfig, password: Option<String>) -> Result<Self> {
+        Self::open_with(
+            config,
+            Credentials {
+                password,
+                ssh: None,
+            },
+        )
+        .await
+    }
+
+    /// Open a pool and verify it by acquiring one connection, first opening
+    /// the SSH tunnel the connection is configured with, if any.
+    pub async fn open_with(config: ConnectionConfig, credentials: Credentials) -> Result<Self> {
+        let tunnel = if config.ssh.enabled && !config.engine.is_file_based() {
+            let tunnel = Tunnel::open(
+                &config.ssh,
+                credentials.ssh.as_deref(),
+                &config.host,
+                config.port,
+            )
+            .await?;
+            Some(Arc::new(tunnel))
+        } else {
+            None
+        };
+        Self::open_through(config, credentials.password, tunnel).await
+    }
+
+    /// Open the pool, pointed at `tunnel`'s loopback port when there is one.
+    async fn open_through(
+        config: ConnectionConfig,
+        password: Option<String>,
+        tunnel: Option<Arc<Tunnel>>,
+    ) -> Result<Self> {
+        // The driver is told the tunnel's end; `config` keeps the host as the
+        // jump host sees it, which is what the user saved and what is shown.
+        let mut target = config.clone();
+        if let Some(tunnel) = &tunnel {
+            target.host = "127.0.0.1".into();
+            target.port = tunnel.local_port();
+        }
         let password = password.as_deref();
         let pool = match config.engine {
-            Engine::Postgres => Pool::Postgres(postgres::connect(&config, password).await?),
-            Engine::MySql => Pool::MySql(mysql::connect(&config, password).await?),
-            Engine::Sqlite => Pool::Sqlite(sqlite::connect(&config).await?),
+            Engine::Postgres => Pool::Postgres(postgres::connect(&target, password).await?),
+            Engine::MySql => Pool::MySql(mysql::connect(&target, password).await?),
+            Engine::Sqlite => Pool::Sqlite(sqlite::connect(&target).await?),
         };
         let money_scale = match &pool {
             Pool::Postgres(pool) => postgres::money_scale(pool).await,
@@ -167,6 +227,7 @@ impl Connection {
             pool,
             money_scale,
             query_log: QueryLog::default(),
+            tunnel,
         })
     }
 
@@ -188,7 +249,7 @@ impl Connection {
     pub async fn with_database(&self, database: &str) -> Result<Self> {
         let mut config = self.config.clone();
         config.database = database.to_string();
-        Self::open(config, self.password.clone()).await
+        Self::open_through(config, self.password.clone(), self.tunnel.clone()).await
     }
 
     /// Databases the user can switch to on this server.

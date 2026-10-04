@@ -19,7 +19,8 @@ features you'd expect from a modern database client.
   red for production) marks a connection's tab and title bar, so you always
   know where you are. Each server connection picks an SSL mode (*disable*,
   *prefer*, *require*, *verify CA*, *verify full*) with optional CA and client
-  certificate files. Your open connections, tabs, and query buffers come back on
+  certificate files, and can connect through an SSH tunnel (agent, key file, or
+  password; the SSH secret lives in the keychain too). Your open connections, tabs, and query buffers come back on
   the next launch.
 * **Safety modes.** Each connection is *read-only*, *confirm writes*, *staged*
   (the default: edits wait until you apply them), or *auto-apply*. Read-only is
