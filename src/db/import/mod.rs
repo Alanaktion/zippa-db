@@ -485,7 +485,7 @@ pub(crate) fn preflight(path: &std::path::Path, engine: Engine) -> Preflight {
                 compression: inspection.compression,
                 total_bytes: inspection.total_bytes,
                 dialect_mismatch,
-                destructive: destructive_count(&inspection.head),
+                destructive: destructive_count(&inspection.head, engine),
                 error: None,
             }
         }
@@ -517,8 +517,8 @@ fn dialect_hint(head: &str) -> Option<Engine> {
 }
 
 /// Count the statements in `head` that would throw data away.
-fn destructive_count(head: &str) -> usize {
-    super::statement::split(head)
+fn destructive_count(head: &str, engine: Engine) -> usize {
+    super::statement::split(head, engine)
         .iter()
         .filter(|statement| {
             let upper = statement.text.to_ascii_uppercase();
@@ -563,7 +563,7 @@ mod tests {
     fn the_destructive_count_names_drop_truncate_and_unbounded_delete() {
         let head =
             "DROP TABLE a;\nTRUNCATE b;\nDELETE FROM c WHERE id = 1;\nDELETE FROM d;\nSELECT 1;";
-        assert_eq!(destructive_count(head), 3);
+        assert_eq!(destructive_count(head, Engine::MySql), 3);
     }
 
     /// A `WHERE` set off by punctuation rather than a bare space either side
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn a_where_clause_with_no_space_before_it_still_bounds_the_delete() {
         let head = "DELETE FROM c WHERE(id > 0);\nDELETE FROM d WHERE\nid = 1;";
-        assert_eq!(destructive_count(head), 0);
+        assert_eq!(destructive_count(head, Engine::MySql), 0);
     }
 
     /// An identifier that merely starts with the same letters as the keyword
@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn an_identifier_starting_with_where_is_not_mistaken_for_the_keyword() {
         let head = "DELETE FROM wherefore;";
-        assert_eq!(destructive_count(head), 1);
+        assert_eq!(destructive_count(head, Engine::MySql), 1);
     }
 
     #[test]

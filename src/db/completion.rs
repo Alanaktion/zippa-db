@@ -219,53 +219,6 @@ const CLAUSE_WORDS: &[&str] = &[
     "WITH",
 ];
 
-/// Names a bare identifier cannot take without quoting on at least one engine
-/// — `order` and `user` are the ones that turn up as real column names.
-const RESERVED: &[&str] = &[
-    "ALL",
-    "AND",
-    "AS",
-    "ASC",
-    "BY",
-    "CASE",
-    "CHECK",
-    "COLUMN",
-    "CONSTRAINT",
-    "CREATE",
-    "DEFAULT",
-    "DESC",
-    "DISTINCT",
-    "ELSE",
-    "END",
-    "FROM",
-    "GROUP",
-    "HAVING",
-    "IN",
-    "INDEX",
-    "IS",
-    "JOIN",
-    "KEY",
-    "LIMIT",
-    "NOT",
-    "NULL",
-    "ON",
-    "OR",
-    "ORDER",
-    "PRIMARY",
-    "REFERENCES",
-    "SELECT",
-    "TABLE",
-    "THEN",
-    "TO",
-    "UNION",
-    "UNIQUE",
-    "USER",
-    "USING",
-    "WHEN",
-    "WHERE",
-    "WITH",
-];
-
 /// What to offer for the word the caret at byte `cursor` ends.
 ///
 /// `None` when there is nothing to complete: the caret is in a string or a
@@ -277,8 +230,8 @@ pub fn complete(
     engine: Engine,
 ) -> Option<Completions> {
     let cursor = floor_char_boundary(sql, cursor.min(sql.len()));
-    let start = statement_start(sql, cursor);
-    let before = lex(&sql[start..cursor], start)?;
+    let start = statement_start(sql, cursor, engine);
+    let before = lex(&sql[start..cursor], start, engine)?;
 
     // The word being typed, if the caret ends one.
     let (prefix, replace, rest) = match before.last() {
@@ -298,8 +251,8 @@ pub fn complete(
 
     // The whole statement, for the tables it names — including those after
     // the caret, since `SELECT | FROM users` is the usual way to write one.
-    let end = statement_end(sql, cursor);
-    let statement = lex(&sql[start..end], start).unwrap_or_default();
+    let end = statement_end(sql, cursor, engine);
+    let statement = lex(&sql[start..end], start, engine).unwrap_or_default();
     let references = references(&statement, &replace);
 
     let in_table_clause = qualifier.is_none() && expects_table(rest);
@@ -386,7 +339,7 @@ impl Token {
 /// `None` when `text` ends inside a string literal or a comment, which is
 /// where a completion menu would only get in the way. A quoted identifier
 /// left open counts the same way.
-fn lex(text: &str, base: usize) -> Option<Vec<Token>> {
+fn lex(text: &str, base: usize, engine: Engine) -> Option<Vec<Token>> {
     let bytes = text.as_bytes();
     let mut tokens = Vec::new();
     let mut index = 0;
@@ -396,18 +349,33 @@ fn lex(text: &str, base: usize) -> Option<Vec<Token>> {
         let next = bytes.get(index + 1).copied();
         match byte {
             b'-' if next == Some(b'-') => index = line_end(bytes, index)?,
-            b'#' => index = line_end(bytes, index)?,
+            // `#` is MySQL's comment; on Postgres it is an operator (`#>>`).
+            b'#' if engine == Engine::MySql => index = line_end(bytes, index)?,
             b'/' if next == Some(b'*') => {
                 index = text[index + 2..].find("*/").map(|at| index + 2 + at + 2)?;
             }
-            b'\'' => index = closing(bytes, index, b'\'')?,
+            b'\'' => {
+                let escapes = match engine {
+                    Engine::MySql => true,
+                    // Only in an `E'…'` string.
+                    Engine::Postgres => {
+                        index > 0
+                            && matches!(bytes[index - 1], b'E' | b'e')
+                            && (index < 2
+                                || !(bytes[index - 2].is_ascii_alphanumeric()
+                                    || bytes[index - 2] == b'_'))
+                    }
+                    Engine::Sqlite => false,
+                };
+                index = closing(bytes, index, b'\'', escapes)?;
+            }
             b'$' if dollar_tag(text, index).is_some() => {
                 let tag = dollar_tag(text, index).expect("checked just above");
                 let body = index + tag.len();
                 index = text[body..].find(&tag).map(|at| body + at + tag.len())?;
             }
             b'"' | b'`' => {
-                let end = closing(bytes, index, byte)?;
+                let end = closing(bytes, index, byte, false)?;
                 let quote = char::from(byte);
                 tokens.push(Token::Word {
                     text: text[index + 1..end - 1]
@@ -462,11 +430,13 @@ fn line_end(bytes: &[u8], index: usize) -> Option<usize> {
 }
 
 /// The index just past the quote closing the one at `index`, with a doubled
-/// quote read as one character of the text. `None` when it is never closed.
-fn closing(bytes: &[u8], index: usize, close: u8) -> Option<usize> {
+/// quote read as one character of the text — and a backslash escaping the
+/// next one where `escapes` says the dialect reads it so. `None` when it is
+/// never closed.
+fn closing(bytes: &[u8], index: usize, close: u8, escapes: bool) -> Option<usize> {
     let mut at = index + 1;
     while at < bytes.len() {
-        if bytes[at] == b'\\' && close == b'\'' {
+        if escapes && bytes[at] == b'\\' {
             at += 2;
             continue;
         }
@@ -521,8 +491,8 @@ fn floor_char_boundary(text: &str, mut index: usize) -> usize {
 
 /// The byte where the statement holding `cursor` begins: just past the last
 /// `;` before it that is not inside a string or comment.
-fn statement_start(sql: &str, cursor: usize) -> usize {
-    super::statement::split(&sql[..cursor])
+fn statement_start(sql: &str, cursor: usize, engine: Engine) -> usize {
+    super::statement::split(&sql[..cursor], engine)
         .last()
         .map_or(cursor, |last| {
             // A `;` between the last statement and the caret ended it, so the
@@ -536,8 +506,8 @@ fn statement_start(sql: &str, cursor: usize) -> usize {
 }
 
 /// The byte where the statement holding `cursor` ends.
-fn statement_end(sql: &str, cursor: usize) -> usize {
-    super::statement::split(&sql[cursor..])
+fn statement_end(sql: &str, cursor: usize, engine: Engine) -> usize {
+    super::statement::split(&sql[cursor..], engine)
         .first()
         .map_or(sql.len(), |first| {
             if sql[cursor..cursor + first.start].contains(';') {
@@ -753,7 +723,9 @@ fn columns_of(out: &mut Collector, catalog: &Catalog, object: &CatalogEntry, own
 /// Every column in the catalog, once per name.
 fn all_columns(out: &mut Collector, catalog: &Catalog) {
     for entry in &catalog.entries {
-        if entry.kind == CatalogKind::Column {
+        // Matched before the detail is built: with no table named yet this
+        // walks every column in the catalog on each keystroke.
+        if entry.kind == CatalogKind::Column && out.matches(&entry.name) {
             let detail = entry
                 .object
                 .as_ref()
@@ -772,6 +744,9 @@ fn objects(out: &mut Collector, catalog: &Catalog, schema: Option<&str>) {
             CatalogKind::View => SuggestionKind::View,
             _ => continue,
         };
+        if !out.matches(&entry.name) {
+            continue;
+        }
         let own_schema = entry.object.as_ref().and_then(|o| o.schema.as_deref());
         if let Some(schema) = schema
             && !own_schema.is_some_and(|own| own.eq_ignore_ascii_case(schema))
@@ -947,14 +922,15 @@ fn quote(name: &str, engine: Engine) -> String {
     let plain = !name.is_empty()
         && !name.starts_with(|c: char| c.is_ascii_digit())
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !RESERVED.contains(&name.to_ascii_uppercase().as_str());
+        && !super::sql::is_reserved(name);
     // Postgres folds a bare name to lower case, so an upper-case letter needs
     // quotes there; MySQL and SQLite match names regardless of case.
     let folds = engine == Engine::Postgres && name.chars().any(|c| c.is_ascii_uppercase());
     if plain && !folds {
         return name.to_string();
     }
-    // Not `sql::quote_identifier`, which leaves a reserved word bare.
+    // Not `sql::quote_identifier`, which leaves a mixed-case name bare on
+    // MySQL and SQLite, where a suggestion keeps the case it was offered in.
     match engine {
         Engine::MySql => format!("`{}`", name.replace('`', "``")),
         Engine::Postgres | Engine::Sqlite => format!("\"{}\"", name.replace('"', "\"\"")),
