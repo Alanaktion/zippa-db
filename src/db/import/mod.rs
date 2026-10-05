@@ -655,6 +655,14 @@ mod database_tests {
             std::fs::write(&path, bytes).expect("could not write the test dump");
             Self { path }
         }
+
+        fn zstd(contents: &str) -> Self {
+            let bytes =
+                zstd::encode_all(contents.as_bytes(), 0).expect("could not compress the test dump");
+            let path = std::env::temp_dir().join(format!("zippa-dump-{}.sql.zst", Uuid::new_v4()));
+            std::fs::write(&path, bytes).expect("could not write the test dump");
+            Self { path }
+        }
     }
 
     impl Drop for Dump {
@@ -827,6 +835,21 @@ mod database_tests {
         let database = TempDatabase::new().await;
         let connection = Connection::open(database.config(), None).await.unwrap();
         let dump = Dump::gzip("CREATE TABLE t (id int);\nINSERT INTO t VALUES (7);\n");
+
+        let summary = import(&connection, &dump.path, OnError::Stop)
+            .await
+            .expect("the dump should import");
+        assert_eq!(summary.statements, 2);
+        assert_eq!(count(&connection, "t").await, Some(1));
+
+        connection.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_zstd_dump_is_decompressed_on_the_way_in() {
+        let database = TempDatabase::new().await;
+        let connection = Connection::open(database.config(), None).await.unwrap();
+        let dump = Dump::zstd("CREATE TABLE t (id int);\nINSERT INTO t VALUES (7);\n");
 
         let summary = import(&connection, &dump.path, OnError::Stop)
             .await
