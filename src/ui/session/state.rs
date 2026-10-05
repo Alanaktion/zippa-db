@@ -14,6 +14,9 @@ impl Session {
     /// This session as it would be restored: the connection it belongs to, the
     /// database it is on, and every tab in creation order.
     pub(crate) fn snapshot(&self, cx: &App) -> SessionState {
+        if let Some(restoring) = &self.restoring {
+            return restoring.clone();
+        }
         SessionState {
             connection: self.connection.config.id,
             database: Some(self.connection.database().to_string()),
@@ -63,6 +66,7 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         self.switching = true;
+        self.restoring = Some(state.clone());
         cx.notify();
 
         let connection = self.connection.clone();
@@ -92,6 +96,7 @@ impl Session {
                         );
                     }
                 }
+                this.restoring = None;
                 this.restore_panels(state, window, cx);
                 cx.notify();
             })

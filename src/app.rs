@@ -26,6 +26,7 @@ use gpui_kit::{
 };
 
 use crate::crash_log;
+use crate::menu::Quit;
 
 use crate::db::{Connection, TagColor, runtime, store};
 use crate::settings;
@@ -33,7 +34,7 @@ use crate::ui::session::{NewTab, QuickSwitcher, Refresh, SearchSchema, Session, 
 use crate::ui::settings_window::{self, OpenSettings};
 use crate::ui::shortcuts_dialog::{self, ShowShortcuts};
 use crate::ui::value_dialog::{self, Dismissed, ValueView};
-use crate::ui::welcome::{Welcome, WelcomeEvent};
+use crate::ui::welcome::{SavedConnections, Welcome, WelcomeEvent};
 use crate::workspace_state::{self, SessionState, WorkspaceState};
 
 /// The value dialog is a reading pane rather than a prompt, so it is wider
@@ -294,10 +295,9 @@ impl Workspace {
         let connections = if state.sessions.is_empty() {
             Vec::new()
         } else {
-            store::load().unwrap_or_else(|error| {
-                eprintln!("could not read the saved connections: {error:#}");
-                Vec::new()
-            })
+            // The launchers' own list, so a file that cannot be read is
+            // reported once, by the first of them.
+            SavedConnections::get(cx).to_vec()
         };
 
         let mut active = 0;
@@ -450,6 +450,7 @@ impl Workspace {
             return;
         };
 
+        session.update(cx, |session, cx| session.stop_runs(cx));
         close(session.read(cx).connection());
         // Disconnecting keeps the tab, so another connection can be opened
         // from where the last one was.
@@ -502,6 +503,7 @@ impl Workspace {
         }
 
         if let TabContent::Session(session) = &self.tabs[index] {
+            session.update(cx, |session, cx| session.stop_runs(cx));
             close(session.read(cx).connection());
         }
         // A connection manager on its way out has nothing left to restore into.
@@ -547,10 +549,16 @@ impl Workspace {
         // tab has been swapped, so a checkpoint taken while the tabs are being
         // rebuilt still records them.
         let pending = self.pending.get(&welcome.entity_id()).cloned();
-        if let Some(state) = pending
-            && state.connection == connection.config.id
-        {
-            session.update(cx, |session, cx| session.restore(state, window, cx));
+        let mut orphaned = None;
+        match pending {
+            Some(state) if state.connection == connection.config.id => {
+                session.update(cx, |session, cx| session.restore(state, window, cx));
+            }
+            // The launcher connected somewhere else: the tabs it was holding
+            // for the connection that failed move to a launcher of their own,
+            // so they are still saved and the user can try that one again.
+            Some(state) => orphaned = Some(state),
+            None => {}
         }
 
         // The tab the connection was opened from becomes the connection. Its
@@ -570,6 +578,11 @@ impl Workspace {
             }
         }
         self.pending.remove(&welcome.entity_id());
+        if let Some(state) = orphaned {
+            let parked = Self::welcome(window, cx);
+            self.pending.insert(parked.entity_id(), state);
+            self.tabs.push(TabContent::Connect(parked));
+        }
 
         self.focus_active(window, cx);
         self.save_state(cx);
@@ -648,9 +661,20 @@ impl Workspace {
         }
         self.last_saved = Some(state.clone());
 
-        cx.background_spawn(async move {
-            if let Err(error) = workspace_state::save(&state) {
+        let ticket = store::ticket();
+        let written = state.clone();
+        let write = cx.background_spawn(async move { workspace_state::save(&written, ticket) });
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = write.await {
                 eprintln!("could not save the workspace: {error:#}");
+                // Forget it was saved, so the next checkpoint tries again
+                // rather than skipping a snapshot that never reached the disk.
+                this.update(cx, |this, _| {
+                    if this.last_saved.as_ref() == Some(&state) {
+                        this.last_saved = None;
+                    }
+                })
+                .ok();
             }
         })
         .detach();
@@ -668,7 +692,7 @@ impl Workspace {
         }
         self.last_saved = Some(state.clone());
 
-        if let Err(error) = workspace_state::save(&state) {
+        if let Err(error) = workspace_state::save(&state, store::ticket()) {
             eprintln!("could not save the workspace: {error:#}");
         }
     }
@@ -762,6 +786,49 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.close_tab(self.active, window, cx);
+    }
+
+    /// Quit, asking first when a tab has a transaction open: the server
+    /// rolls it back when the process goes, which every other way of leaving
+    /// a connection asks about. Unsaved query text needs no question, since
+    /// it is kept for the next launch.
+    fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
+        let open: usize = self
+            .tabs
+            .iter()
+            .filter_map(|tab| match tab {
+                TabContent::Session(session) => Some(session.read(cx).open_transactions(cx)),
+                TabContent::Connect(_) => None,
+            })
+            .sum();
+        if open == 0 {
+            cx.quit();
+            return;
+        }
+        if window.has_active_dialog(cx) {
+            return;
+        }
+
+        let description = match open {
+            1 => "A tab has an open transaction, which will be rolled back.".to_string(),
+            count => format!("{count} tabs have open transactions, which will be rolled back."),
+        };
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            alert
+                .title("Open Transaction")
+                .description(format!("{description} Quit anyway?"))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Quit Anyway")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(|_, _, cx| {
+                    cx.quit();
+                    true
+                })
+        });
     }
 
     fn on_next_connection(
@@ -1029,6 +1096,7 @@ impl Render for Workspace {
             .key_context("Workspace")
             .on_action(cx.listener(Self::on_new_connection))
             .on_action(cx.listener(Self::on_close_connection))
+            .on_action(cx.listener(Self::on_quit))
             .on_action(cx.listener(Self::on_show_shortcuts))
             .on_action(cx.listener(Self::on_next_connection))
             .on_action(cx.listener(Self::on_previous_connection))

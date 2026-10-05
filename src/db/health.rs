@@ -77,6 +77,10 @@ pub(crate) fn plain(error: anyhow::Error) -> anyhow::Error {
     }
 }
 
+/// MySQL's `ER_CLIENT_INTERACTION_TIMEOUT`: the server closed a session that
+/// sat idle past `wait_timeout`.
+const MYSQL_IDLE_DISCONNECT: u16 = 4031;
+
 /// The trouble one sqlx error stands for.
 fn classify(error: &sqlx::Error) -> Option<ConnectionTrouble> {
     match error {
@@ -84,11 +88,20 @@ fn classify(error: &sqlx::Error) -> Option<ConnectionTrouble> {
         sqlx::Error::PoolTimedOut => Some(ConnectionTrouble::TimedOut),
         sqlx::Error::PoolClosed => Some(ConnectionTrouble::Closed),
         // Postgres says so before it hangs up: `admin_shutdown` (the server
-        // is stopping, or the backend was terminated), `crash_shutdown`, and
-        // `cannot_connect_now` (it is still starting up).
+        // is stopping, or the backend was terminated), `crash_shutdown`,
+        // `cannot_connect_now` (it is still starting up), `database_dropped`,
+        // `idle_session_timeout`, and `idle_in_transaction_session_timeout`.
+        // MySQL 8.0.24 and later send 4031 before closing an idle session.
         sqlx::Error::Database(error) => {
-            matches!(error.code().as_deref(), Some("57P01" | "57P02" | "57P03"))
-                .then_some(ConnectionTrouble::Lost)
+            let mysql = error
+                .try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>()
+                .map(|error| error.number());
+            (mysql == Some(MYSQL_IDLE_DISCONNECT)
+                || matches!(
+                    error.code().as_deref(),
+                    Some("57P01" | "57P02" | "57P03" | "57P04" | "57P05" | "25P03")
+                ) && mysql.is_none())
+            .then_some(ConnectionTrouble::Lost)
         }
         _ => None,
     }

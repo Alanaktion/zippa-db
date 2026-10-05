@@ -224,7 +224,14 @@ impl ImportView {
         cx.emit(ImportEvent::Dismissed);
     }
 
+    /// `Escape`: close the dialog, or — while the import runs — stop it the
+    /// way Cancel does, so the run is not left going with nothing on screen
+    /// to follow or stop it. The summary it ends with stays up to be read.
     fn on_close(&mut self, _: &CloseImport, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.state == State::Running {
+            self.cancel(cx);
+            return;
+        }
         self.close(cx);
     }
 

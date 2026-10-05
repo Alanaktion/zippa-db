@@ -32,6 +32,7 @@ use tokio::sync::{OwnedMutexGuard, OwnedSemaphorePermit};
 use super::config::Engine;
 use super::connection::{Connection, query_outcome};
 use super::dedicated::Dedicated;
+use super::health::ConnectionTrouble;
 use super::query::QueryResult;
 use super::query_log::{QueryOutcome, QuerySource};
 use super::{runtime, script, statement};
@@ -151,7 +152,17 @@ impl PinnedConnection {
         let mut guard = self.lock().await?;
         let result = guard.fetch(sql).await;
         guard.note(sql, result.as_ref().err());
-        guard.settle().await;
+        // A connection the server has dropped is let go, so the tab's next run
+        // starts on a fresh one. Postgres would find out in `settle`, but
+        // MySQL is never asked, and every run after would fail the same way.
+        if result
+            .as_ref()
+            .is_err_and(|error| ConnectionTrouble::of(error).is_some())
+        {
+            guard.discard();
+        } else {
+            guard.settle().await;
+        }
         result
     }
 
@@ -354,7 +365,7 @@ const MYSQL_DEADLOCK: u16 = 1213;
 /// the statement then succeeds. With `autocommit` off every statement opens a
 /// transaction if none is open, and a `COMMIT` only ends the current one.
 fn mysql_after(tracker: Tracker, sql: &str, error: Option<u16>) -> Tracker {
-    let words = statement::leading_words(sql, 6);
+    let words = statement::leading_words(sql, 6, Engine::MySql);
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or("");
     let ok = error.is_none();
     let open = Tracker {
@@ -399,15 +410,19 @@ fn mysql_after(tracker: Tracker, sql: &str, error: Option<u16>) -> Tracker {
             };
             match value {
                 // Turning it back on commits what was open.
-                "1" | "ON" => Tracker {
+                "1" | "ON" | "TRUE" => Tracker {
                     state: TxnState::Idle,
                     manual: false,
                 },
-                "0" | "OFF" => Tracker {
+                // `0`, `OFF`, `FALSE`, and anything this cannot read (a quoted
+                // `'OFF'`, a variable): taking it as off is the careful guess,
+                // since the cost is a question on close that turns out not to
+                // be needed, where the other guess loses an open transaction
+                // without one.
+                _ => Tracker {
                     manual: true,
                     ..tracker
                 },
-                _ => tracker,
             }
         }
         _ if script::implicitly_commits(Engine::MySql, &words) => {
@@ -560,6 +575,25 @@ mod tests {
                 ("insert into t values (1)", None),
                 ("set autocommit = 1", None),
                 ("select 1", None),
+            ]),
+            TxnState::Idle
+        );
+    }
+
+    #[test]
+    fn mysql_autocommit_spelled_as_a_boolean_or_quoted_is_followed() {
+        for off in ["set autocommit = false", "set autocommit = 'OFF'"] {
+            assert_eq!(
+                after(&[(off, None), ("insert into t values (1)", None)]),
+                TxnState::Open,
+                "{off}"
+            );
+        }
+        assert_eq!(
+            after(&[
+                ("set autocommit = false", None),
+                ("insert into t values (1)", None),
+                ("set autocommit = true", None),
             ]),
             TxnState::Idle
         );
