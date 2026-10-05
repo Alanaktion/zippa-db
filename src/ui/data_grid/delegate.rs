@@ -684,6 +684,7 @@ impl ResultDelegate {
         // the row itself instead.
         if let Some(draft) = self.draft(row_ix) {
             let table = cx.weak_entity();
+            let report = self.report_change.clone();
             return menu.item(PopupMenuItem::new("Discard new row").on_click(
                 move |_, _window, cx| {
                     let Some(table) = table.upgrade() else {
@@ -693,6 +694,9 @@ impl ResultDelegate {
                         table.delegate_mut().discard_draft(draft);
                         table.refresh(cx);
                     });
+                    // The owner counts staged changes for its footer and the
+                    // row panel; a draft gone is one fewer.
+                    report(cx);
                 },
             ));
         }
@@ -714,7 +718,9 @@ impl ResultDelegate {
             };
             table.update(cx, |table, cx| {
                 table.delegate_mut().set_deleted(!deleted);
-                cx.notify();
+                // Deleting can drop drafts outright, and the table caches its
+                // row count, so it is refreshed rather than only redrawn.
+                table.refresh(cx);
             });
             report(cx);
         }))
@@ -768,6 +774,12 @@ impl ResultDelegate {
         if draft < self.drafts.len() {
             self.drafts.remove(draft);
         }
+        // The rows after it moved up one, and the last row is gone: nothing
+        // picked may point past the end.
+        let rows = self.rows();
+        self.rows_selected.retain(|&row| row < rows);
+        self.anchor = self.anchor.filter(|&row| row < rows);
+        self.focused_row = self.focused_row.filter(|&row| row < rows);
     }
 
     /// Take `row_ix` into the selection if it is outside it, and say how many
@@ -1007,6 +1019,30 @@ impl ResultDelegate {
                 }
             });
         }
+
+        // The picked rows, the anchor, and the keyboard's row are in display
+        // coordinates, so they follow their rows to where the sort put them:
+        // left where they were, they would point at other rows — and the
+        // process list's "End Selected" would end other connections.
+        let rows = self.result.rows.len();
+        let source = |display: usize| self.order.get(display).copied().unwrap_or(display);
+        let mut shown = vec![0; rows];
+        for (display, &row) in order.iter().enumerate() {
+            shown[row] = display;
+        }
+        let follow = |display: usize| {
+            if display < rows {
+                shown[source(display)]
+            } else {
+                // A drafted row sits after the result and does not move.
+                display
+            }
+        };
+        self.rows_selected = self.rows_selected.iter().map(|&row| follow(row)).collect();
+        self.anchor = self.anchor.map(follow);
+        self.focused_row = self.focused_row.map(follow);
+        self.menu_row = None;
+        self.menu_cell = None;
 
         self.order = order;
     }

@@ -31,7 +31,11 @@ pub struct ProcessListView {
 
 impl ProcessListView {
     pub fn new(connection: Arc<Connection>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let grid = cx.new(|cx| DataGrid::new(connection.config.engine, window, cx));
+        let grid = cx.new(|cx| {
+            let mut grid = DataGrid::new(connection.config.engine, window, cx);
+            grid.set_placeholder("No process list to show", cx);
+            grid
+        });
         let mut this = Self {
             connection,
             grid,
@@ -69,7 +73,12 @@ impl ProcessListView {
                     Ok(Ok(result)) => {
                         this.grid.update(cx, |grid, cx| grid.set_result(result, cx));
                     }
-                    Ok(Err(error)) => this.error = Some(format!("{error:#}")),
+                    // Rows from before the failure must not stay pickable:
+                    // "End Selected" would act on a list that is out of date.
+                    Ok(Err(error)) => {
+                        this.error = Some(format!("{error:#}"));
+                        this.grid.update(cx, |grid, cx| grid.clear(cx));
+                    }
                     Err(_) => this.error = Some("loading the process list was cancelled".into()),
                 }
                 cx.notify();
@@ -154,6 +163,9 @@ impl ProcessListView {
         cx.spawn(async move |this, cx| {
             let failed = task.await.unwrap_or(count);
             this.update(cx, |this, cx| {
+                // The list is re-read to show who is left, and the outcome
+                // set after it: a refresh starts by clearing the notice.
+                this.refresh(cx);
                 this.notice = Some(if failed == 0 {
                     format!(
                         "Ended {count} connection{}",
@@ -162,7 +174,6 @@ impl ProcessListView {
                 } else {
                     format!("Ended {}, {failed} failed", count - failed)
                 });
-                this.refresh(cx);
             })
             .ok();
         })

@@ -63,7 +63,10 @@ impl DataGrid {
                         .map(|cell| {
                             let (text, read_back) = cell_text(cell);
                             skipped += usize::from(!read_back);
-                            text
+                            // A tab or a line break inside a value would split
+                            // the row when pasted, so it goes as a space — the
+                            // same as Cmd+Shift+C's copy with headers.
+                            crate::db::export::tsv_field(&text)
                         })
                         .collect::<Vec<String>>()
                         .join("\t")

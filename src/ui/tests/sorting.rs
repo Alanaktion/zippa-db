@@ -189,3 +189,51 @@ fn the_table_view_keeps_its_sort_when_the_page_reloads(cx: &mut TestAppContext) 
          forgetting it restarts the cycle and every click sorts descending"
     );
 }
+
+/// Rows picked before a sort stay picked as the rows they were: "End
+/// Selected" in the process list acts on the picked rows, so a pick left at
+/// its old screen position would end other connections.
+#[gpui_kit::test]
+fn picked_rows_follow_their_rows_through_a_sort(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    handle
+        .update(cx, |session, _, cx| {
+            session.show_result_for_test(
+                QueryResult {
+                    columns: vec!["pid".into()],
+                    rows: vec![
+                        vec![Some("10".into())],
+                        vec![Some("9".into())],
+                        vec![Some("11".into())],
+                        vec![Some("100".into())],
+                    ],
+                    ..QueryResult::default()
+                },
+                cx,
+            );
+        })
+        .unwrap();
+
+    let grid = handle
+        .update(cx, |session, _, cx| session.active_grid(cx))
+        .unwrap()
+        .expect("a query tab should have a grid");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        grid.update(cx, |grid, cx| {
+            grid.pick_row_for_test(0, cx);
+            grid.pick_row_for_test(3, cx);
+            grid.sort_for_test(0, ColumnSort::Ascending, window, cx);
+            // 9, 10, 11, 100: the picked 10 and 100 are now second and last.
+            assert_eq!(grid.rows_selected_for_test(cx), [1, 3]);
+            let picked = grid.snapshot(crate::ui::data_grid::Scope::Picked, cx);
+            assert_eq!(
+                picked.rows,
+                [vec![Some("10".to_string())], vec![Some("100".to_string())]]
+            );
+        });
+    })
+    .unwrap();
+}

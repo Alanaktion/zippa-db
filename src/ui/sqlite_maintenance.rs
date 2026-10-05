@@ -32,7 +32,11 @@ pub struct SqliteMaintenanceView {
 
 impl SqliteMaintenanceView {
     pub fn new(connection: Arc<Connection>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let grid = cx.new(|cx| DataGrid::new(connection.config.engine, window, cx));
+        let grid = cx.new(|cx| {
+            let mut grid = DataGrid::new(connection.config.engine, window, cx);
+            grid.set_placeholder("Run a task to see its result", cx);
+            grid
+        });
         Self {
             connection,
             grid,
