@@ -109,6 +109,14 @@ impl DataGrid {
         delegate.order.len() + delegate.drafts.len()
     }
 
+    /// Pick the row shown at `row_ix`, the way clicking its box does.
+    pub(crate) fn pick_row_for_test(&mut self, row_ix: usize, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().pick(row_ix, false);
+            cx.notify();
+        });
+    }
+
     /// The rows a sweep has picked out, in display order.
     pub(crate) fn rows_selected_for_test(&self, cx: &App) -> Vec<usize> {
         let mut rows: Vec<usize> = self

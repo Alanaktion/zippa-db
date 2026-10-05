@@ -1,13 +1,13 @@
 //! MySQL / MariaDB driver.
 
 use anyhow::Result;
-use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlQueryResult, MySqlRow};
-use sqlx::{Executor, Row, TypeInfo, ValueRef};
+use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlQueryResult, MySqlRow, MySqlSslMode};
+use sqlx::{AssertSqlSafe, Executor, Row, TypeInfo, ValueRef};
 
 use super::config::Engine;
 use super::query::{self, Cell};
 use super::sql::quote_literal_for;
-use super::{ConnectionConfig, POOL_SIZE, decode};
+use super::{ConnectionConfig, SslConfig, SslMode, decode, pool_options};
 
 /// Schemas double as databases in MySQL; the server's own are hidden.
 pub(crate) const DATABASES_SQL: &str = "SELECT schema_name FROM information_schema.schemata \
@@ -96,6 +96,54 @@ pub(crate) async fn connect(
     config: &ConnectionConfig,
     password: Option<&str>,
 ) -> Result<MySqlPool> {
+    let options = options(config, password);
+
+    let mut pool_options = pool_options();
+
+    // MySQL has no connect option for either setting, so every connection the
+    // pool opens is told as it comes up.
+    //
+    // A read-only connection is read-only at the server too: the client-side
+    // check in `Connection::refuse_write` only speaks for statements it can
+    // recognise.
+    let read_only = config.safety.is_read_only();
+    let timeout = config.statement_timeout.filter(|&seconds| seconds > 0);
+    if read_only || timeout.is_some() {
+        pool_options =
+            pool_options.after_connect(move |connection: &mut sqlx::MySqlConnection, _| {
+                Box::pin(async move {
+                    if read_only {
+                        connection
+                            .execute("SET SESSION TRANSACTION READ ONLY")
+                            .await?;
+                    }
+                    if let Some(seconds) = timeout {
+                        set_statement_timeout(connection, seconds).await;
+                    }
+                    Ok(())
+                })
+            });
+    }
+
+    let pool = pool_options.connect_with(options).await?;
+    Ok(pool)
+}
+
+/// The driver's mode for one of ours. MySQL names the last one "verify
+/// identity", which is what `VerifyFull` means.
+fn ssl_mode(mode: SslMode) -> MySqlSslMode {
+    match mode {
+        SslMode::Disable => MySqlSslMode::Disabled,
+        SslMode::Prefer => MySqlSslMode::Preferred,
+        SslMode::Require => MySqlSslMode::Required,
+        SslMode::VerifyCa => MySqlSslMode::VerifyCa,
+        SslMode::VerifyFull => MySqlSslMode::VerifyIdentity,
+    }
+}
+
+/// What `connect` hands the driver, apart from the pool, so the mapping from
+/// a saved connection can be checked without a server.
+fn options(config: &ConnectionConfig, password: Option<&str>) -> MySqlConnectOptions {
     let mut options = MySqlConnectOptions::new()
         .host(&config.host)
         .port(config.port)
@@ -108,25 +156,45 @@ pub(crate) async fn connect(
         options = options.password(password);
     }
 
-    let mut pool_options = MySqlPoolOptions::new().max_connections(POOL_SIZE);
-
-    // A read-only connection is read-only at the server too: the client-side
-    // check in `Connection::refuse_write` only speaks for statements it can
-    // recognise. MySQL has no connect option for it, so every connection the
-    // pool opens is told as it comes up.
-    if config.safety.is_read_only() {
-        pool_options = pool_options.after_connect(|connection, _| {
-            Box::pin(async move {
-                connection
-                    .execute("SET SESSION TRANSACTION READ ONLY")
-                    .await?;
-                Ok(())
-            })
-        });
+    let ssl = &config.ssl;
+    options = options.ssl_mode(ssl_mode(ssl.mode));
+    if ssl.mode.uses_files() {
+        if let Some(path) = SslConfig::path(&ssl.ca_cert) {
+            options = options.ssl_ca(path);
+        }
+        if let Some(path) = SslConfig::path(&ssl.client_cert) {
+            options = options.ssl_client_cert(path);
+        }
+        if let Some(path) = SslConfig::path(&ssl.client_key) {
+            options = options.ssl_client_key(path);
+        }
     }
+    options
+}
 
-    let pool = pool_options.connect_with(options).await?;
-    Ok(pool)
+/// Limit how long one statement may run on `connection`.
+///
+/// MySQL spells it `max_execution_time`, in milliseconds, and applies it to
+/// `SELECT` only; MariaDB has no such variable and spells it
+/// `max_statement_time`, in seconds, for every statement. A server with
+/// neither (MySQL before 5.7.8) is left without a limit rather than refused
+/// a connection over a setting that is only a guard.
+async fn set_statement_timeout(connection: &mut sqlx::MySqlConnection, seconds: u32) {
+    let mysql = format!(
+        "SET SESSION max_execution_time = {}",
+        u64::from(seconds) * 1000
+    );
+    if sqlx::raw_sql(AssertSqlSafe(mysql))
+        .execute(&mut *connection)
+        .await
+        .is_ok()
+    {
+        return;
+    }
+    let mariadb = format!("SET SESSION max_statement_time = {seconds}");
+    let _ = sqlx::raw_sql(AssertSqlSafe(mariadb))
+        .execute(&mut *connection)
+        .await;
 }
 
 /// Primary key columns of a table in the current database, in key order.
@@ -202,6 +270,17 @@ pub(crate) fn rows_affected(result: &MySqlQueryResult) -> u64 {
     result.rows_affected()
 }
 
+/// Whether `error` is MySQL refusing a statement over the prepared protocol
+/// (error 1295) — `BEGIN`, `SAVEPOINT`, `LOCK TABLES`, `USE`, and the like,
+/// which only the text protocol accepts.
+pub(crate) fn unpreparable(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<sqlx::Error>()
+        .and_then(|error| error.as_database_error())
+        .and_then(|error| error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>())
+        .is_some_and(|error| error.number() == 1295)
+}
+
 pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {
     let Ok(raw) = row.try_get_raw(index) else {
         return None;
@@ -273,4 +352,47 @@ pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {
 /// apart from an empty value, so the target is `Option<Vec<u8>>`.
 pub(crate) fn raw_bytes(row: &MySqlRow, index: usize) -> Option<Vec<u8>> {
     row.try_get::<Option<Vec<u8>>, _>(index).ok().flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ssl(mode: SslMode) -> ConnectionConfig {
+        ConnectionConfig {
+            ssl: SslConfig {
+                mode,
+                ca_cert: "/etc/zippa/ca.pem".into(),
+                client_cert: "/etc/zippa/client.pem".into(),
+                client_key: "/etc/zippa/client.key".into(),
+            },
+            ..ConnectionConfig::new(Engine::MySql)
+        }
+    }
+
+    #[test]
+    fn every_ssl_mode_reaches_the_driver() {
+        for (mode, expected) in [
+            (SslMode::Disable, "Disabled"),
+            (SslMode::Prefer, "Preferred"),
+            (SslMode::Require, "Required"),
+            (SslMode::VerifyCa, "VerifyCa"),
+            (SslMode::VerifyFull, "VerifyIdentity"),
+        ] {
+            let options = options(&ssl(mode), None);
+            assert_eq!(format!("{:?}", options.get_ssl_mode()), expected);
+        }
+    }
+
+    #[test]
+    fn certificate_files_are_passed_only_when_encrypting() {
+        let verify = format!("{:?}", options(&ssl(SslMode::VerifyCa), None));
+        for file in ["ca.pem", "client.pem", "client.key"] {
+            assert!(verify.contains(file), "{file} missing from {verify}");
+        }
+        for mode in [SslMode::Disable, SslMode::Prefer] {
+            let plain = format!("{:?}", options(&ssl(mode), None));
+            assert!(!plain.contains("/etc/zippa"), "{plain}");
+        }
+    }
 }

@@ -4,13 +4,15 @@
 //! passwords go to the OS credential store (Keychain on macOS, Credential
 //! Manager on Windows, Secret Service on Linux) keyed by connection id.
 
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
-use super::ConnectionConfig;
+use super::{ConnectionConfig, Credentials, SshAuth};
 
 #[cfg_attr(test, allow(dead_code))]
 const SERVICE: &str = "zippa-db";
@@ -60,17 +62,10 @@ fn config_file() -> Result<PathBuf> {
     Ok(config_dir()?.join(FILE_NAME))
 }
 
-/// Read the saved connections. A missing file means "none saved yet".
+/// Read the saved connections. A missing file means "none saved yet"; an
+/// unreadable one is moved aside (see [`load_json`]).
 pub fn load() -> Result<Vec<ConnectionConfig>> {
-    let path = config_file()?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let contents =
-        fs::read_to_string(&path).with_context(|| format!("could not read {}", path.display()))?;
-    let connections = serde_json::from_str(&contents)
-        .with_context(|| format!("could not parse {}", path.display()))?;
-    Ok(connections)
+    load_json(&config_file()?)
 }
 
 /// Write `contents` to `path`, restricted to the owner where the platform
@@ -104,27 +99,94 @@ pub(crate) fn write_restricted(path: &std::path::Path, contents: &str) -> std::i
 
 /// Replace the saved connections with `connections`.
 ///
-/// Written beside the real file and renamed into place, so a kill part-way
-/// through the write cannot leave a truncated file that `load` would then
-/// refuse to parse — the whole connection list would be lost.
-pub fn save(connections: &[ConnectionConfig]) -> Result<()> {
-    let dir = config_dir()?;
-    fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
-
-    let path = dir.join(FILE_NAME);
+/// `ticket` is taken when the list was decided (see [`ticket`]), so a write
+/// that lands after a newer one is dropped rather than putting the older
+/// list back.
+pub fn save(connections: &[ConnectionConfig], ticket: Ticket) -> Result<()> {
     let contents = serde_json::to_string_pretty(connections)?;
-    let temporary = dir.join(format!("{FILE_NAME}.tmp"));
-    write_restricted(&temporary, &contents)
+    write_atomic(&config_file()?, &contents, ticket)
+}
+
+/// When a write was decided, in the order the app decided them.
+///
+/// Writes go to the background executor, which can run two of them at once
+/// and in either order; taking the ticket on the thread that built the
+/// contents is what keeps "last decided" and "last on disk" the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Ticket(u64);
+
+/// A ticket for a write about to be handed to the background.
+pub(crate) fn ticket() -> Ticket {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    Ticket(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Replace `path` with `contents`, whole or not at all.
+///
+/// Written beside the real file and renamed into place, so a kill part-way
+/// through cannot leave a truncated file the next launch would refuse to
+/// parse. Writes are taken one at a time (two writers sharing the scratch file
+/// could interleave their bytes), and one whose `ticket` is older than the
+/// last write to the same path is skipped: it holds what the app has since
+/// changed its mind about.
+pub(crate) fn write_atomic(path: &Path, contents: &str, ticket: Ticket) -> Result<()> {
+    static WRITTEN: Mutex<BTreeMap<PathBuf, Ticket>> = Mutex::new(BTreeMap::new());
+    let mut written = WRITTEN.lock().unwrap_or_else(PoisonError::into_inner);
+    if written.get(path).is_some_and(|last| *last > ticket) {
+        return Ok(());
+    }
+
+    let dir = path.parent().context("no config directory")?;
+    fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
+    let name = path
+        .file_name()
+        .context("no file name")?
+        .to_string_lossy()
+        .into_owned();
+    let temporary = dir.join(format!("{name}.tmp"));
+    write_restricted(&temporary, contents)
         .with_context(|| format!("could not write {}", temporary.display()))?;
 
-    if let Err(error) = fs::rename(&temporary, &path) {
+    if let Err(error) = fs::rename(&temporary, path) {
         // Windows will not replace an existing file with a rename, so fall back
-        // to writing in place rather than leaving the connections unsaved.
-        write_restricted(&path, &contents)
+        // to writing in place rather than leaving the file unsaved.
+        write_restricted(path, contents)
             .with_context(|| format!("could not write {}: {error:#}", path.display()))?;
         let _ = fs::remove_file(&temporary);
     }
+    written.insert(path.to_path_buf(), ticket);
     Ok(())
+}
+
+/// Parse `path` as JSON, or `T::default()` when there is no file yet.
+///
+/// A file that is there but cannot be parsed — written by a newer build, edited
+/// by hand, or cut short — is moved aside to `<name>.unreadable` before the
+/// error is returned. The caller carries on from the default, and its next
+/// save would otherwise replace the user's only copy with an empty one.
+pub(crate) fn load_json<T>(path: &Path) -> Result<T>
+where
+    T: serde::de::DeserializeOwned + Default,
+{
+    if !path.exists() {
+        return Ok(T::default());
+    }
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("could not read {}", path.display()))?;
+    match serde_json::from_str(&contents) {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            let mut aside = path.as_os_str().to_owned();
+            aside.push(".unreadable");
+            let aside = PathBuf::from(aside);
+            let kept = match fs::rename(path, &aside) {
+                Ok(()) => format!("it was kept as {}", aside.display()),
+                Err(rename) => format!("it could not be moved aside: {rename}"),
+            };
+            Err(anyhow::Error::new(error)
+                .context(format!("could not parse {}; {kept}", path.display())))
+        }
+    }
 }
 
 #[cfg(not(test))]
@@ -181,6 +243,116 @@ pub fn delete_password(id: &Uuid) -> Result<()> {
     }
 }
 
+/// What the connection editor's secret boxes mean for the keychain: `None`
+/// for a box the user never touched (keep what is stored), `Some("")` for one
+/// they emptied (forget it), anything else a new secret.
+#[derive(Clone, Default)]
+pub struct SecretEdits {
+    pub password: Option<String>,
+    pub ssh: Option<String>,
+}
+
+impl SecretEdits {
+    /// Write the boxes the user touched to the keychain, leaving the rest.
+    pub fn save(&self, id: &Uuid) -> Result<()> {
+        if let Some(password) = &self.password {
+            set_password(id, password)?;
+        }
+        if let Some(secret) = &self.ssh {
+            set_ssh_secret(id, secret)?;
+        }
+        Ok(())
+    }
+}
+
+/// The secrets to open `config` with: what the user typed, or for a box left
+/// untouched on a `saved` connection, what the keychain holds. Only the
+/// secrets the connection can use are looked up, since asking the keychain for
+/// one it never stored can prompt the user for nothing.
+///
+/// Blocking: the keychain can prompt, so call it off the UI thread.
+pub fn credentials(
+    config: &ConnectionConfig,
+    edits: &SecretEdits,
+    saved: bool,
+) -> Result<Credentials> {
+    let typed = |secret: &str| Some(secret.to_string()).filter(|secret| !secret.is_empty());
+    let server = !config.engine.is_file_based();
+
+    let password = match &edits.password {
+        Some(password) => typed(password),
+        None if saved && server => password(&config.id)?,
+        None => None,
+    };
+    let ssh = if server && config.ssh.enabled && config.ssh.auth != SshAuth::Agent {
+        match &edits.ssh {
+            Some(secret) => typed(secret),
+            None if saved => ssh_secret(&config.id)?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    Ok(Credentials { password, ssh })
+}
+
+/// The keychain account an SSH tunnel's password or key passphrase is kept
+/// under: beside the database password, under the same connection id.
+#[cfg(not(test))]
+fn ssh_entry(id: &Uuid) -> Result<keyring::Entry> {
+    keyring::Entry::new(SERVICE, &format!("{id}/ssh")).context("no OS credential store available")
+}
+
+/// The stored SSH password or key passphrase for a connection, if any.
+pub fn ssh_secret(id: &Uuid) -> Result<Option<String>> {
+    #[cfg(not(test))]
+    {
+        match ssh_entry(id)?.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+    #[cfg(test)]
+    {
+        let _ = id;
+        Ok(None)
+    }
+}
+
+/// Store the SSH password or key passphrase; an empty one forgets it.
+pub fn set_ssh_secret(id: &Uuid, secret: &str) -> Result<()> {
+    #[cfg(not(test))]
+    {
+        if secret.is_empty() {
+            return delete_ssh_secret(id);
+        }
+        ssh_entry(id)?
+            .set_password(secret)
+            .context("could not save the SSH secret to the OS credential store")
+    }
+    #[cfg(test)]
+    {
+        let _ = (id, secret);
+        Ok(())
+    }
+}
+
+pub fn delete_ssh_secret(id: &Uuid) -> Result<()> {
+    #[cfg(not(test))]
+    {
+        match ssh_entry(id)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+    #[cfg(test)]
+    {
+        let _ = id;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,7 +384,7 @@ mod tests {
         let dir = ScratchDir::new();
         set_config_dir_for_test(dir.0.clone());
 
-        save(&[]).expect("could not save the connections");
+        save(&[], ticket()).expect("could not save the connections");
 
         let mode = fs::metadata(dir.0.join(FILE_NAME))
             .expect("the file should exist")

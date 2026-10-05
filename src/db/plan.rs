@@ -598,7 +598,7 @@ fn mysql_cost(text: &str) -> Option<(f64, f64)> {
     let start = text.find("cost=")? + "cost=".len();
     let value: String = text[start..]
         .chars()
-        .take_while(|character| character.is_ascii_digit() || matches!(character, '.' | '-' | '+'))
+        .take_while(|character| is_number_char(*character))
         .collect();
     match value.split_once("..") {
         Some((from, to)) => Some((from.parse().ok()?, to.parse().ok()?)),
@@ -614,7 +614,7 @@ fn mysql_pair(text: &str, key: &str) -> Option<(f64, f64)> {
     let start = text.find(key)? + key.len();
     let value: String = text[start..]
         .chars()
-        .take_while(|character| character.is_ascii_digit() || matches!(character, '.' | '-' | '+'))
+        .take_while(|character| is_number_char(*character))
         .collect();
     let (from, to) = value.split_once("..")?;
     Some((from.parse().ok()?, to.parse().ok()?))
@@ -625,9 +625,15 @@ fn mysql_value(text: &str, key: &str) -> Option<f64> {
     let start = text.find(key)? + key.len();
     let value: String = text[start..]
         .chars()
-        .take_while(|character| character.is_ascii_digit() || matches!(character, '.' | '-'))
+        .take_while(|character| is_number_char(*character))
         .collect();
     value.parse().ok()
+}
+
+/// A character of a number as MySQL prints one in a tree plan, which turns
+/// to scientific notation from a million up: `cost=1.02e+6 rows=9.96e+6`.
+fn is_number_char(character: char) -> bool {
+    character.is_ascii_digit() || matches!(character, '.' | '-' | '+' | 'e' | 'E')
 }
 
 /// The rows as text, for the raw fallback and for `Copy plan`.
@@ -706,6 +712,14 @@ mod tests {
             all.extend(labels(child));
         }
         all
+    }
+
+    #[test]
+    fn mysql_numbers_in_scientific_notation_keep_their_exponent() {
+        let line = "-> Table scan on t  (cost=1.02e+6 rows=9.96e+6)";
+        assert_eq!(mysql_cost(line), Some((1.02e6, 1.02e6)));
+        assert_eq!(mysql_value(line, "rows="), Some(9.96e6));
+        assert_eq!(mysql_cost("(cost=0.35..2.10 rows=2)"), Some((0.35, 2.10)));
     }
 
     #[test]

@@ -8,10 +8,13 @@
 //! substitute for it: a `select` that calls a function which writes still
 //! reads like a read from here.
 
+use super::config::Engine;
+
 /// Statements that are allowed to run on a read-only connection.
 ///
-/// Everything else, including transaction control and `SET`, is a write as
-/// far as this module is concerned.
+/// Transaction control is allowed as well (see [`transaction_control`]);
+/// everything else, `SET` included, is a write as far as this module is
+/// concerned.
 const READING: [&str; 8] = [
     "SELECT", "VALUES", "TABLE", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "PRAGMA",
 ];
@@ -41,8 +44,8 @@ pub struct Statement {
 ///
 /// Empty statements — a stray semicolon, trailing whitespace — are left out,
 /// so running the result runs exactly what the user wrote.
-pub fn split(sql: &str) -> Vec<Statement> {
-    statements(sql)
+pub fn split(sql: &str, engine: Engine) -> Vec<Statement> {
+    statements(sql, engine)
         .into_iter()
         .filter_map(|(_, start, end)| {
             let text = sql[start..end].trim();
@@ -65,8 +68,8 @@ pub fn split(sql: &str) -> Vec<Statement> {
 ///
 /// A caret sitting between statements — on the blank line after one — belongs
 /// to the statement before it, the way running the line you just typed does.
-pub fn at_cursor(sql: &str, cursor: usize) -> Option<Statement> {
-    let statements = split(sql);
+pub fn at_cursor(sql: &str, cursor: usize, engine: Engine) -> Option<Statement> {
+    let statements = split(sql, engine);
     statements
         .iter()
         .find(|statement| cursor >= statement.start && cursor <= statement.end)
@@ -83,8 +86,9 @@ pub fn at_cursor(sql: &str, cursor: usize) -> Option<Statement> {
 /// Option words an `EXPLAIN` header can carry before the statement it
 /// explains: Postgres' parenthesised options and MySQL's bare ones, with the
 /// words that name their values (`FORMAT TREE`, `FORMAT=JSON`).
-const EXPLAIN_OPTIONS: [&str; 17] = [
+const EXPLAIN_OPTIONS: [&str; 18] = [
     "ANALYZE",
+    "ANALYSE",
     "VERBOSE",
     "COSTS",
     "SETTINGS",
@@ -112,7 +116,7 @@ const EXPLAIN_OPTIONS: [&str; 17] = [
 /// about, and `analyzes` is true when the header asks for `ANALYZE`, so the
 /// inner statement really runs. Both `EXPLAIN ...` and MariaDB's `ANALYZE
 /// FORMAT=JSON ...` spelling are recognised.
-pub fn explained(sql: &str) -> Option<(String, bool)> {
+pub fn explained(sql: &str, engine: Engine) -> Option<(String, bool)> {
     let characters: Vec<char> = sql.chars().collect();
     let offsets: Vec<usize> = sql
         .char_indices()
@@ -121,7 +125,7 @@ pub fn explained(sql: &str) -> Option<(String, bool)> {
         .collect();
     let byte = |index: usize| offsets.get(index).copied().unwrap_or(sql.len());
 
-    let mut index = skip_trivia(&characters, 0);
+    let mut index = skip_trivia(&characters, 0, engine);
     let (word, next) = word_at(&characters, index)?;
     let first = word.to_ascii_uppercase();
     if first != "EXPLAIN" && first != "ANALYZE" {
@@ -132,10 +136,10 @@ pub fn explained(sql: &str) -> Option<(String, bool)> {
     index = next;
 
     loop {
-        index = skip_trivia(&characters, index);
+        index = skip_trivia(&characters, index, engine);
         match characters.get(index) {
             Some('(') => {
-                let (found, next) = skip_parens(&characters, index);
+                let (found, next) = skip_parens(&characters, index, engine);
                 analyzes |= found;
                 index = next;
             }
@@ -144,7 +148,7 @@ pub fn explained(sql: &str) -> Option<(String, bool)> {
                 if let Some((word, next)) = word_at(&characters, index) {
                     let upper = word.to_ascii_uppercase();
                     if EXPLAIN_OPTIONS.contains(&upper.as_str()) {
-                        analyzes |= upper == "ANALYZE";
+                        analyzes |= is_analyze(&upper);
                         index = next;
                         continue;
                     }
@@ -162,30 +166,55 @@ pub fn explained(sql: &str) -> Option<(String, bool)> {
 /// The answer is the word the statement starts with, upper-cased, for a
 /// message that can say what was refused. `None` means every statement in the
 /// buffer reads.
-pub fn first_write(sql: &str) -> Option<String> {
-    statements(sql).into_iter().find_map(|(words, _, _)| {
-        if reads(&words) {
-            return None;
-        }
-        Some(
-            words
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "statement".to_string()),
-        )
-    })
+pub fn first_write(sql: &str, engine: Engine) -> Option<String> {
+    statements(sql, engine)
+        .into_iter()
+        .find_map(|(words, _, _)| {
+            if reads(&words) {
+                return None;
+            }
+            Some(
+                words
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "statement".to_string()),
+            )
+        })
 }
 
 /// The first `limit` words of the first statement in `sql`, upper-cased.
 ///
 /// Comments and quoted text are left out the way [`first_write`] leaves them
 /// out, so `/* note */ lock tables` starts with `LOCK`.
-pub fn leading_words(sql: &str, limit: usize) -> Vec<String> {
-    statements(sql)
+pub fn leading_words(sql: &str, limit: usize, engine: Engine) -> Vec<String> {
+    statements(sql, engine)
         .into_iter()
         .next()
         .map(|(words, _, _)| words.into_iter().take(limit).collect())
         .unwrap_or_default()
+}
+
+/// Whether one statement, already reduced to its words, only opens, ends, or
+/// marks a point in a transaction.
+///
+/// None of these write data themselves, so a read-only connection can run
+/// them (the server keeps the transaction read-only) and a careful one does
+/// not ask about them: a `COMMIT` only keeps writes that were confirmed when
+/// they ran. Two forms are left out on purpose. `READ WRITE` would lift the
+/// read-only session a read-only connection is opened with, and `PREPARED`
+/// (`COMMIT PREPARED 'x'`, `PREPARE TRANSACTION`) acts on a two-phase
+/// transaction this tab never saw the writes of.
+fn transaction_control(words: &[String]) -> bool {
+    let word = |index: usize| words.get(index).map(String::as_str).unwrap_or("");
+    let control = match word(0) {
+        "BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT" | "RELEASE" => true,
+        "START" | "SET" => word(1) == "TRANSACTION",
+        _ => false,
+    };
+    control
+        && !words
+            .iter()
+            .any(|word| word == "WRITE" || word == "PREPARED" || WRITING.contains(&word.as_str()))
 }
 
 /// Whether one statement, already reduced to its words, only reads.
@@ -195,26 +224,62 @@ fn reads(words: &[String]) -> bool {
         return true;
     };
 
+    if transaction_control(words) {
+        return true;
+    }
+
     if !READING.contains(&first.as_str()) {
         return false;
     }
 
-    // `EXPLAIN ANALYZE` runs the statement it explains, and `WITH` can carry a
-    // write in a branch, so a reading first word is not the whole answer.
+    // `EXPLAIN ANALYZE` (or Postgres' `ANALYSE`) runs the statement it
+    // explains, and `WITH` can carry a write in a branch, so a reading first
+    // word is not the whole answer.
     if words
         .iter()
-        .any(|word| WRITING.contains(&word.as_str()) || word == "ANALYZE")
+        .any(|word| WRITING.contains(&word.as_str()) || is_analyze(word))
     {
         return false;
     }
 
-    // `PRAGMA foo = bar` sets it; `PRAGMA table_info(items)` reads it.
-    if first == "PRAGMA" && words.iter().any(|word| word == "=") {
-        return false;
+    // `PRAGMA foo = bar` sets it, and so does `PRAGMA foo(bar)` — unless
+    // `foo` is one of the pragmas whose argument says what to read:
+    // `PRAGMA table_info(items)`.
+    if first == "PRAGMA" {
+        if words.iter().any(|word| word == "=") {
+            return false;
+        }
+        if let Some(paren) = words.iter().position(|word| word == "(") {
+            let name = paren
+                .checked_sub(1)
+                .and_then(|index| words.get(index))
+                .map(String::as_str)
+                .unwrap_or("");
+            return READING_PRAGMAS.contains(&name);
+        }
     }
 
     true
 }
+
+/// `ANALYZE`, either spelling: Postgres takes the British one too.
+fn is_analyze(word: &str) -> bool {
+    word.eq_ignore_ascii_case("ANALYZE") || word.eq_ignore_ascii_case("ANALYSE")
+}
+
+/// The SQLite pragmas whose parenthesised argument names what to read rather
+/// than a value to set.
+const READING_PRAGMAS: [&str; 9] = [
+    "TABLE_INFO",
+    "TABLE_XINFO",
+    "TABLE_LIST",
+    "INDEX_LIST",
+    "INDEX_INFO",
+    "INDEX_XINFO",
+    "FOREIGN_KEY_LIST",
+    "FOREIGN_KEY_CHECK",
+    "INTEGRITY_CHECK",
+];
 
 /// Split `sql` into statements: the words each one is made of, upper-cased,
 /// and the byte range it covers.
@@ -223,7 +288,12 @@ fn reads(words: &[String]) -> bool {
 /// the way through, so neither a semicolon nor a keyword hiding in one can
 /// change the answer. Words keep only the characters an identifier can have;
 /// `=` is the one piece of punctuation kept, for `PRAGMA`.
-fn statements(sql: &str) -> Vec<(Vec<String>, usize, usize)> {
+/// `engine` decides the two places the dialects part ways: `#` starts a
+/// comment only on MySQL (on Postgres it is an operator: `#>>`), and a
+/// backslash escapes a quote only on MySQL or inside a Postgres `E'…'` string
+/// — read everywhere, `'C:\'` on SQLite would swallow the statements after
+/// it into one.
+fn statements(sql: &str, engine: Engine) -> Vec<(Vec<String>, usize, usize)> {
     let mut statements = Vec::new();
     let mut words = Vec::new();
     let mut word = String::new();
@@ -257,7 +327,7 @@ fn statements(sql: &str) -> Vec<(Vec<String>, usize, usize)> {
                 end_word!();
                 index = skip_until(&characters, index, "\n");
             }
-            '#' => {
+            '#' if engine == Engine::MySql => {
                 end_word!();
                 index = skip_until(&characters, index, "\n");
             }
@@ -269,7 +339,7 @@ fn statements(sql: &str) -> Vec<(Vec<String>, usize, usize)> {
             // a keyword, and it can hold anything at all.
             '\'' | '"' | '`' => {
                 end_word!();
-                index = skip_quoted(&characters, index, character);
+                index = skip_quoted(&characters, index, character, engine);
             }
             // Postgres dollar quoting: `$tag$ ... $tag$`.
             '$' if dollar_tag(&characters, index).is_some() => {
@@ -286,6 +356,12 @@ fn statements(sql: &str) -> Vec<(Vec<String>, usize, usize)> {
             '=' => {
                 end_word!();
                 words.push("=".to_string());
+                index += 1;
+            }
+            // Kept for `PRAGMA name(value)`, which sets as surely as `=` does.
+            '(' if words.first().is_some_and(|first| first == "PRAGMA") => {
+                end_word!();
+                words.push("(".to_string());
                 index += 1;
             }
             character if character.is_alphanumeric() || character == '_' => {
@@ -310,7 +386,7 @@ fn statements(sql: &str) -> Vec<(Vec<String>, usize, usize)> {
 
 /// Index of the first character that is not whitespace, a comment, or blank
 /// space left by one.
-fn skip_trivia(characters: &[char], mut index: usize) -> usize {
+fn skip_trivia(characters: &[char], mut index: usize, engine: Engine) -> usize {
     loop {
         while index < characters.len() && characters[index].is_whitespace() {
             index += 1;
@@ -323,7 +399,9 @@ fn skip_trivia(characters: &[char], mut index: usize) -> usize {
             Some(('-', '-')) => index = skip_until(characters, index, "\n"),
             Some(('/', '*')) => index = skip_until(characters, index + 2, "*/"),
             // MySQL's `#` comment.
-            Some(('#', _)) => index = skip_until(characters, index, "\n"),
+            Some(('#', _)) if engine == Engine::MySql => {
+                index = skip_until(characters, index, "\n")
+            }
             _ => return index,
         }
     }
@@ -351,7 +429,7 @@ fn word_at(characters: &[char], start: usize) -> Option<(String, usize)> {
 
 /// Skip a parenthesised option list, answering whether it asked for `ANALYZE`,
 /// and the index just past its closing `)`.
-fn skip_parens(characters: &[char], start: usize) -> (bool, usize) {
+fn skip_parens(characters: &[char], start: usize, engine: Engine) -> (bool, usize) {
     let mut depth = 0usize;
     let mut analyzes = false;
     let mut index = start;
@@ -365,12 +443,12 @@ fn skip_parens(characters: &[char], start: usize) -> (bool, usize) {
                 }
             }
             quote @ ('\'' | '"' | '`') => {
-                index = skip_quoted(characters, index, quote);
+                index = skip_quoted(characters, index, quote, engine);
                 continue;
             }
             character if character.is_alphanumeric() || character == '_' => {
                 let (word, next) = word_at(characters, index).expect("a word starts here");
-                analyzes |= word.eq_ignore_ascii_case("analyze");
+                analyzes |= is_analyze(&word);
                 index = next;
                 continue;
             }
@@ -379,6 +457,32 @@ fn skip_parens(characters: &[char], start: usize) -> (bool, usize) {
         index += 1;
     }
     (analyzes, index)
+}
+
+/// Whether a backslash escapes the next character in the quoted text opening
+/// at `from`: in any MySQL string, and in a Postgres string written `E'…'`.
+/// Postgres and SQLite otherwise take a backslash as it is.
+pub(crate) fn backslash_escapes(
+    characters: &[char],
+    from: usize,
+    quote: char,
+    engine: Engine,
+) -> bool {
+    match engine {
+        Engine::MySql => quote != '`',
+        Engine::Postgres => {
+            quote == '\''
+                && from
+                    .checked_sub(1)
+                    .and_then(|index| characters.get(index))
+                    .is_some_and(|prefix| matches!(prefix, 'E' | 'e'))
+                && from
+                    .checked_sub(2)
+                    .and_then(|index| characters.get(index))
+                    .is_none_or(|before| !(before.is_alphanumeric() || *before == '_'))
+        }
+        Engine::Sqlite => false,
+    }
 }
 
 /// Index just past the next `terminator` at or after `from`, or the end.
@@ -394,14 +498,13 @@ fn skip_until(characters: &[char], from: usize, terminator: &str) -> usize {
     characters.len()
 }
 
-/// Index just past the closing `quote`, treating a doubled quote as an escape.
-fn skip_quoted(characters: &[char], from: usize, quote: char) -> usize {
+/// Index just past the closing `quote`, treating a doubled quote as an escape
+/// — and a backslash too, where `engine` reads one (see [`backslash_escapes`]).
+fn skip_quoted(characters: &[char], from: usize, quote: char, engine: Engine) -> usize {
+    let escapes = backslash_escapes(characters, from, quote, engine);
     let mut index = from + 1;
     while index < characters.len() {
-        if characters[index] == '\\' {
-            // MySQL escapes with a backslash; Postgres and SQLite do not, and
-            // skipping the next character is harmless either way inside a
-            // string whose contents are thrown away.
+        if escapes && characters[index] == '\\' {
             index += 2;
             continue;
         }
@@ -436,6 +539,97 @@ fn dollar_tag(characters: &[char], index: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The tests below were written before the scanner took an engine, and
+    // read the buffer the way MySQL does — the dialect with the most to skip.
+    // The ones that tell the dialects apart name their engine.
+    fn split(sql: &str) -> Vec<Statement> {
+        super::split(sql, Engine::MySql)
+    }
+
+    fn at_cursor(sql: &str, cursor: usize) -> Option<Statement> {
+        super::at_cursor(sql, cursor, Engine::MySql)
+    }
+
+    fn explained(sql: &str) -> Option<(String, bool)> {
+        super::explained(sql, Engine::MySql)
+    }
+
+    fn first_write(sql: &str) -> Option<String> {
+        super::first_write(sql, Engine::MySql)
+    }
+
+    fn leading_words(sql: &str, limit: usize) -> Vec<String> {
+        super::leading_words(sql, limit, Engine::MySql)
+    }
+
+    #[test]
+    fn a_backslash_ends_nothing_on_sqlite_or_postgres() {
+        let sql = "select * from files where dir = 'C:\\';\ndelete from files where id = 3;";
+        for engine in [Engine::Sqlite, Engine::Postgres] {
+            let statements = super::split(sql, engine);
+            assert_eq!(statements.len(), 2, "{engine:?}");
+            let first = super::at_cursor(sql, 3, engine).unwrap();
+            assert_eq!(super::first_write(&first.text, engine), None, "{engine:?}");
+            assert_eq!(
+                super::first_write(sql, engine).as_deref(),
+                Some("DELETE"),
+                "{engine:?}"
+            );
+        }
+        // MySQL does read it as an escape, and Postgres does inside `E''`.
+        assert_eq!(super::split(sql, Engine::MySql).len(), 1);
+        let escaped = "select E'it\\'s';\nselect 2;";
+        assert_eq!(super::split(escaped, Engine::Postgres).len(), 2);
+        let named = "select date 'x\\';\nselect 2;";
+        assert_eq!(super::split(named, Engine::Postgres).len(), 2);
+    }
+
+    #[test]
+    fn a_hash_is_a_comment_only_on_mysql() {
+        let sql = "select data #>> '{a}' from t;\nselect 2;";
+        assert_eq!(super::split(sql, Engine::Postgres).len(), 2);
+        let into = "select d #>> '{a}' as x into t2 from t";
+        assert_eq!(
+            super::first_write(into, Engine::Postgres).as_deref(),
+            Some("SELECT")
+        );
+        assert_eq!(
+            super::split("select 1; # note; select 2", Engine::MySql).len(),
+            2
+        );
+    }
+
+    #[test]
+    fn analyse_is_analyze() {
+        assert_eq!(
+            explained("explain analyse delete from items"),
+            Some(("delete from items".to_string(), true))
+        );
+        assert_eq!(
+            explained("explain (analyse) delete from items"),
+            Some(("delete from items".to_string(), true))
+        );
+        assert!(first_write("explain analyse create table t as select 1").is_some());
+    }
+
+    #[test]
+    fn a_pragma_set_with_parentheses_is_a_write() {
+        for sql in [
+            "PRAGMA user_version(5)",
+            "pragma journal_mode(delete)",
+            "PRAGMA main.writable_schema(1)",
+        ] {
+            assert_eq!(first_write(sql).as_deref(), Some("PRAGMA"), "{sql}");
+        }
+        for sql in [
+            "PRAGMA table_info(items)",
+            "pragma main.index_list('items')",
+            "PRAGMA journal_mode",
+        ] {
+            assert_eq!(first_write(sql), None, "{sql}");
+        }
+    }
 
     #[test]
     fn a_buffer_splits_into_its_statements() {
@@ -517,6 +711,43 @@ mod tests {
             Some("ALTER")
         );
         assert_eq!(first_write("truncate items").as_deref(), Some("TRUNCATE"));
+    }
+
+    #[test]
+    fn transaction_control_is_not_a_write() {
+        for sql in [
+            "begin",
+            "BEGIN TRANSACTION",
+            "begin immediate",
+            "begin isolation level serializable",
+            "start transaction",
+            "START TRANSACTION READ ONLY",
+            "start transaction with consistent snapshot",
+            "commit",
+            "commit work",
+            "end",
+            "rollback",
+            "abort",
+            "rollback to savepoint a",
+            "savepoint a",
+            "release savepoint a",
+            "release a",
+            "set transaction isolation level repeatable read",
+        ] {
+            assert_eq!(first_write(sql), None, "{sql} should not write");
+        }
+    }
+
+    #[test]
+    fn transaction_control_that_could_write_still_counts() {
+        // `READ WRITE` lifts a read-only session's guard for the transaction.
+        assert_eq!(first_write("begin read write").as_deref(), Some("BEGIN"));
+        assert!(first_write("start transaction read write").is_some());
+        assert!(first_write("set transaction read write").is_some());
+        // Two-phase commit acts on writes this statement did not make.
+        assert!(first_write("commit prepared 'x'").is_some());
+        assert!(first_write("set session characteristics as transaction read only").is_some());
+        assert!(first_write("set search_path = app").is_some());
     }
 
     #[test]
@@ -617,6 +848,6 @@ mod tests {
         // Better to refuse something harmless than to run something that is
         // not: the user can always switch the connection's mode.
         assert!(first_write("call do_something()").is_some());
-        assert!(first_write("begin").is_some());
+        assert!(first_write("lock tables items write").is_some());
     }
 }

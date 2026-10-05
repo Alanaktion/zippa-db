@@ -18,8 +18,10 @@ use gpui_kit::{
 
 use regex::Regex;
 
-use crate::db::{Catalog, CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObject};
+use crate::db::{CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObject};
+use crate::ui::completion::SharedCatalog;
 use crate::ui::import_dialog::ImportView;
+use crate::workspace_state::SessionState;
 
 mod files;
 mod metadata;
@@ -54,6 +56,7 @@ actions!(
         CancelQuery,
         QuickSwitcher,
         Disconnect,
+        Reconnect,
         ImportSqlDump,
         SearchSchema,
         OpenConsole,
@@ -102,16 +105,25 @@ pub struct Session {
     objects_tree: Entity<TreeState>,
     /// Set when the schema could not be read; queries still work.
     metadata_error: Option<String>,
-    /// The whole schema, for [`SearchSchema`]. Read once in the background as
-    /// the session opens and again on refresh, so a keystroke never waits on
-    /// the server. Holds only names until the read lands.
-    catalog: Arc<Catalog>,
+    /// The whole schema, for [`SearchSchema`] and the query editors'
+    /// completions. Read once in the background as the session opens and
+    /// again on refresh, so a keystroke never waits on the server. Holds only
+    /// names until the read lands. Shared with every query tab's editor, which
+    /// reads whichever snapshot is current.
+    catalog: SharedCatalog,
     /// Whether that read is still in flight, so the dialog can say so.
     catalog_loading: bool,
     /// Why the full catalog could not be read, when it could not; search then
     /// finds names but not columns, indexes or triggers.
     catalog_error: Option<String>,
     switching: bool,
+    /// The saved tabs a restore is holding while it switches to their
+    /// database. Until they are built, they are what this session records,
+    /// so a checkpoint or quit in the meantime does not save them away.
+    restoring: Option<SessionState>,
+    /// Whether that reopen is a [`Reconnect`] to the same database rather
+    /// than a switch, so the picker can say which.
+    reconnecting: bool,
     /// The next panel's stable key. See `SessionPanel`'s `key` field.
     next_key: usize,
     /// The import dialog, while one is open over the window.
@@ -155,10 +167,12 @@ impl Session {
             sidebar_tab: SidebarTab::Schema,
             objects_tree: cx.new(|cx| TreeState::new(cx)),
             metadata_error: None,
-            catalog: Arc::new(Catalog::default()),
+            catalog: SharedCatalog::default(),
             catalog_loading: true,
             catalog_error: None,
             switching: false,
+            restoring: None,
+            reconnecting: false,
             next_key: 0,
             import: None,
         };
@@ -338,6 +352,7 @@ impl Session {
             SessionPanelEvent::RunScriptIgnoringErrors(sql) => {
                 self.run_script(panel, sql.clone(), true, window, cx)
             }
+            SessionPanelEvent::EndTransaction(commit) => self.end_transaction(panel, *commit, cx),
             SessionPanelEvent::Explain { sql, analyze } => {
                 self.explain(panel, sql.clone(), *analyze, window, cx)
             }
@@ -435,6 +450,10 @@ impl Session {
     /// workspace asks first when a tab holds unsaved work.
     fn on_disconnect(&mut self, _: &Disconnect, _window: &mut Window, cx: &mut Context<Self>) {
         cx.emit(SessionEvent::Disconnected);
+    }
+
+    fn on_reconnect(&mut self, _: &Reconnect, window: &mut Window, cx: &mut Context<Self>) {
+        self.request_reconnect(window, cx);
     }
 
     /// Open what a schema search result is about.
@@ -551,6 +570,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_open_query_digest))
             .on_action(cx.listener(Self::on_open_maintenance))
             .on_action(cx.listener(Self::on_disconnect))
+            .on_action(cx.listener(Self::on_reconnect))
             .child(
                 h_resizable("session-columns")
                     .with_state(&self.columns)

@@ -6,6 +6,7 @@
 //! lists databases and objects, decoding a row cell — lives in the sibling
 //! `postgres` / `mysql` / `sqlite` modules.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -24,10 +25,29 @@ use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary}
 use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
-use super::{mysql, postgres, sqlite, statement, typed_placeholder};
+use super::tunnel::Tunnel;
+use super::{health, mysql, postgres, sqlite, statement, typed_placeholder};
 
-/// Connections opened per saved connection.
+/// Connections kept for the app's own reads and writes — the sidebar, table
+/// views, the structure tab — however many query tabs hold one of their own.
 pub(crate) const POOL_SIZE: u32 = 5;
+
+/// How many query tabs of one connection can each hold a pinned connection
+/// (see [`PinnedConnection`](super::PinnedConnection)). The pool is opened
+/// with room for these on top of [`POOL_SIZE`], so query tabs can never take
+/// the connections the rest of the app needs.
+pub(crate) const PINNED_MAX: u32 = 8;
+
+/// The most connections one pool opens.
+pub(crate) const POOL_MAX: u32 = POOL_SIZE + PINNED_MAX;
+
+/// Pool settings every engine shares: the size, and how long a statement
+/// waits for a free connection (see [`health::ACQUIRE_TIMEOUT`]).
+pub(crate) fn pool_options<DB: Database>() -> sqlx::pool::PoolOptions<DB> {
+    sqlx::pool::PoolOptions::new()
+        .max_connections(POOL_MAX)
+        .acquire_timeout(health::ACQUIRE_TIMEOUT)
+}
 
 /// An engine-specific connection pool.
 #[derive(Debug)]
@@ -146,16 +166,85 @@ pub struct Connection {
     /// console pane. `import_dump`/`rebuild_table` run on a dedicated
     /// connection outside it and are not recorded here.
     query_log: QueryLog,
+    /// One permit per query tab allowed to hold a pinned connection.
+    pinned: Arc<tokio::sync::Semaphore>,
+    /// The SSH tunnel the pool connects through, if the connection has one.
+    /// Shared with a connection [`with_database`](Self::with_database) opens
+    /// on the same server, so switching database does not sign in again;
+    /// the tunnel closes when the last of them goes.
+    tunnel: Option<Arc<Tunnel>>,
+    /// The SSH password or key passphrase, kept in memory (like `password`)
+    /// so a reconnect can open a fresh tunnel when the jump host dropped the
+    /// old one. Never written to disk.
+    ssh_secret: Option<String>,
+}
+
+/// The secrets a connection is opened with: read from the keychain, or typed
+/// into the connection editor. Kept in memory only, and never printed.
+#[derive(Clone, Default)]
+pub struct Credentials {
+    /// The database password.
+    pub password: Option<String>,
+    /// The SSH password or key passphrase, for a connection with a tunnel.
+    pub ssh: Option<String>,
 }
 
 impl Connection {
-    /// Open a pool and verify it by acquiring one connection.
+    /// Open a pool and verify it by acquiring one connection: the shorthand
+    /// tests use for a connection with no tunnel.
+    #[cfg(test)]
     pub async fn open(config: ConnectionConfig, password: Option<String>) -> Result<Self> {
+        Self::open_with(
+            config,
+            Credentials {
+                password,
+                ssh: None,
+            },
+        )
+        .await
+    }
+
+    /// Open a pool and verify it by acquiring one connection, first opening
+    /// the SSH tunnel the connection is configured with, if any.
+    pub async fn open_with(config: ConnectionConfig, credentials: Credentials) -> Result<Self> {
+        let tunnel = Self::tunnel(&config, credentials.ssh.as_deref()).await?;
+        Self::open_through(config, credentials, tunnel).await
+    }
+
+    /// Open the tunnel `config` asks for, or `None` when it asks for none.
+    async fn tunnel(
+        config: &ConnectionConfig,
+        secret: Option<&str>,
+    ) -> Result<Option<Arc<Tunnel>>> {
+        if !config.ssh.enabled || config.engine.is_file_based() {
+            return Ok(None);
+        }
+        let tunnel = Tunnel::open(&config.ssh, secret, &config.host, config.port).await?;
+        Ok(Some(Arc::new(tunnel)))
+    }
+
+    /// Open the pool, pointed at `tunnel`'s loopback port when there is one.
+    async fn open_through(
+        config: ConnectionConfig,
+        credentials: Credentials,
+        tunnel: Option<Arc<Tunnel>>,
+    ) -> Result<Self> {
+        let Credentials {
+            password,
+            ssh: ssh_secret,
+        } = credentials;
+        // The driver is told the tunnel's end; `config` keeps the host as the
+        // jump host sees it, which is what the user saved and what is shown.
+        let mut target = config.clone();
+        if let Some(tunnel) = &tunnel {
+            target.host = "127.0.0.1".into();
+            target.port = tunnel.local_port();
+        }
         let password = password.as_deref();
         let pool = match config.engine {
-            Engine::Postgres => Pool::Postgres(postgres::connect(&config, password).await?),
-            Engine::MySql => Pool::MySql(mysql::connect(&config, password).await?),
-            Engine::Sqlite => Pool::Sqlite(sqlite::connect(&config).await?),
+            Engine::Postgres => Pool::Postgres(postgres::connect(&target, password).await?),
+            Engine::MySql => Pool::MySql(mysql::connect(&target, password).await?),
+            Engine::Sqlite => Pool::Sqlite(sqlite::connect(&target).await?),
         };
         let money_scale = match &pool {
             Pool::Postgres(pool) => postgres::money_scale(pool).await,
@@ -167,7 +256,44 @@ impl Connection {
             pool,
             money_scale,
             query_log: QueryLog::default(),
+            pinned: Arc::new(tokio::sync::Semaphore::new(PINNED_MAX as usize)),
+            tunnel,
+            ssh_secret,
         })
+    }
+
+    /// A slot for one more query tab to hold a connection of its own, or an
+    /// error that says how to free one rather than a run that waits for one.
+    pub(crate) fn pinned_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
+        self.pinned.clone().try_acquire_owned().map_err(|_| {
+            anyhow::anyhow!(
+                "too many query tabs are holding connections ({PINNED_MAX}). Close one to \
+                 open another."
+            )
+        })
+    }
+
+    /// Ask the server to stop the statement session `backend` is running —
+    /// `pg_cancel_backend` or `KILL QUERY` — for a query tab cancelling its
+    /// own run. Not a write, so a read-only connection may send it too.
+    pub(crate) async fn cancel_backend(&self, backend: u64) -> Result<()> {
+        match &self.pool {
+            Pool::Postgres(pool) => {
+                sqlx::query("SELECT pg_cancel_backend($1)")
+                    .bind(backend as i64)
+                    .execute(pool)
+                    .await?;
+            }
+            // `KILL` takes no bound parameter (see `kill_process`); the id is
+            // a number the server gave us.
+            Pool::MySql(pool) => {
+                sqlx::raw_sql(AssertSqlSafe(format!("KILL QUERY {backend}")))
+                    .execute(pool)
+                    .await?;
+            }
+            Pool::Sqlite(_) => {}
+        }
+        Ok(())
     }
 
     /// Every statement this connection has sent through its own pool, oldest
@@ -188,7 +314,18 @@ impl Connection {
     pub async fn with_database(&self, database: &str) -> Result<Self> {
         let mut config = self.config.clone();
         config.database = database.to_string();
-        Self::open(config, self.password.clone()).await
+        // The tunnel is shared while it lives; one the jump host has dropped
+        // is opened afresh, which is what lets Reconnect recover from it.
+        let tunnel = match &self.tunnel {
+            Some(tunnel) if !tunnel.is_closed() => Some(tunnel.clone()),
+            Some(_) => Self::tunnel(&config, self.ssh_secret.as_deref()).await?,
+            None => None,
+        };
+        let credentials = Credentials {
+            password: self.password.clone(),
+            ssh: self.ssh_secret.clone(),
+        };
+        Self::open_through(config, credentials, tunnel).await
     }
 
     /// Databases the user can switch to on this server.
@@ -386,14 +523,6 @@ impl Connection {
             .await
     }
 
-    /// The same as [`Self::run_query`], logged as the statement a query tab's
-    /// editor itself sent — the one thing a console's "User" column means —
-    /// rather than as one of the app's own reads.
-    pub async fn run_query_as_user(&self, sql: &str) -> Result<QueryResult> {
-        self.run_query_tagged(sql, Vec::new(), QuerySource::User)
-            .await
-    }
-
     async fn run_query_tagged(
         &self,
         sql: &str,
@@ -436,7 +565,7 @@ impl Connection {
     /// read-only connection run `EXPLAIN ANALYZE`, which the classifier would
     /// otherwise refuse for the `ANALYZE` word alone.
     async fn fetch(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
-        match &self.pool {
+        let result = match &self.pool {
             Pool::Postgres(pool) => {
                 let scale = self.money_scale;
                 fetch_all(
@@ -454,7 +583,8 @@ impl Connection {
             Pool::Sqlite(pool) => {
                 fetch_all(pool, sql, params, sqlite::cell, sqlite::rows_affected).await
             }
-        }
+        };
+        result.map_err(health::plain)
     }
 
     /// The raw bytes behind one binary cell, read fresh for a value preview.
@@ -466,13 +596,14 @@ impl Connection {
     /// previewed; `None` covers both "no such row" and "the value is NULL".
     pub async fn fetch_binary(&self, sql: &str, params: Vec<Cell>) -> Result<Option<Vec<u8>>> {
         self.refuse_write(sql)?;
-        match &self.pool {
+        let result = match &self.pool {
             Pool::Postgres(pool) => {
                 fetch_binary_column(pool, sql, params, postgres::raw_bytes).await
             }
             Pool::MySql(pool) => fetch_binary_column(pool, sql, params, mysql::raw_bytes).await,
             Pool::Sqlite(pool) => fetch_binary_column(pool, sql, params, sqlite::raw_bytes).await,
-        }
+        };
+        result.map_err(health::plain)
     }
 
     /// Read the plan for one statement.
@@ -504,19 +635,19 @@ impl Connection {
         let statement = sql.trim().trim_end_matches(';').trim();
         // One statement is what a plan describes; a script has no single plan
         // to draw, and the caller's buffer may be a selection of many.
-        if statement.is_empty() || statement::split(statement).len() != 1 {
+        if statement.is_empty() || statement::split(statement, self.config.engine).len() != 1 {
             anyhow::bail!("Select one statement to explain.");
         }
 
         // What is being explained, and whether this request runs it: the
         // caller's flag, or an `ANALYZE` the user already wrote into a header
         // of their own.
-        let header = statement::explained(statement);
+        let header = statement::explained(statement, self.config.engine);
         let (inner, runs) = match &header {
             Some((inner, analyzes)) => (inner.clone(), analyze || *analyzes),
             None => (statement.to_string(), analyze),
         };
-        if runs && let Some(word) = statement::first_write(&inner) {
+        if runs && let Some(word) = statement::first_write(&inner, self.config.engine) {
             anyhow::bail!("EXPLAIN ANALYZE would run this statement; it changes data ({word}).");
         }
 
@@ -598,11 +729,12 @@ impl Connection {
     /// Check one connection out of the pool for a job that needs its session
     /// state to last — an import, or a script run.
     pub(crate) async fn dedicated(&self) -> Result<Dedicated> {
-        match &self.pool {
+        let dedicated = match &self.pool {
             Pool::Postgres(pool) => Dedicated::postgres(pool, self.money_scale).await,
             Pool::MySql(pool) => Dedicated::mysql(pool).await,
             Pool::Sqlite(pool) => Dedicated::sqlite(pool).await,
-        }
+        };
+        dedicated.map_err(health::plain)
     }
 
     /// Run a SQL dump against this connection.
@@ -804,7 +936,7 @@ impl Connection {
         if !self.config.safety.is_read_only() {
             return Ok(());
         }
-        if let Some(word) = statement::first_write(sql) {
+        if let Some(word) = statement::first_write(sql, self.config.engine) {
             anyhow::bail!("this connection is read-only, so the {word} statement was not run");
         }
         Ok(())
@@ -823,7 +955,8 @@ impl Connection {
             Pool::Postgres(pool) => execute_with(pool, sql, params, postgres::rows_affected).await,
             Pool::MySql(pool) => execute_with(pool, sql, params, mysql::rows_affected).await,
             Pool::Sqlite(pool) => execute_with(pool, sql, params, sqlite::rows_affected).await,
-        };
+        }
+        .map_err(health::plain);
         let outcome = match &result {
             Ok(affected) => QueryOutcome::Affected(*affected),
             Err(error) => QueryOutcome::Error(format!("{error:#}")),
@@ -852,13 +985,17 @@ impl Connection {
             // instead.
             Pool::Postgres(pool) => {
                 let started = Instant::now();
-                let result = execute_script_transactional(pool, statements).await;
+                let result = execute_script_transactional(pool, statements)
+                    .await
+                    .map_err(health::plain);
                 self.log_script(statements, started.elapsed(), &result);
                 result
             }
             Pool::Sqlite(pool) => {
                 let started = Instant::now();
-                let result = execute_script_transactional(pool, statements).await;
+                let result = execute_script_transactional(pool, statements)
+                    .await
+                    .map_err(health::plain);
                 self.log_script(statements, started.elapsed(), &result);
                 result
             }

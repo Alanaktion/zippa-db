@@ -64,9 +64,9 @@ impl QuickSwitcherView {
             SwitcherTarget::Object(object) => session.update(cx, |session, cx| {
                 session.open_object(&object, ObjectViewMode::Data, window, cx)
             }),
-            SwitcherTarget::SwitchDatabase(database) => {
-                session.update(cx, |session, cx| session.switch_database(database, cx))
-            }
+            SwitcherTarget::SwitchDatabase(database) => session.update(cx, |session, cx| {
+                session.request_switch_database(database, window, cx)
+            }),
             SwitcherTarget::NewTab => {
                 session.update(cx, |session, cx| session.new_query_tab(window, cx))
             }

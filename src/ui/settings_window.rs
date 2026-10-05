@@ -21,7 +21,7 @@ use gpui_kit::{
     WindowHandle, WindowOptions, actions, div, px, size,
 };
 
-use crate::settings::{self, Appearance, Settings};
+use crate::settings::{self, Appearance, CompletionKey, Settings};
 
 actions!(zippa_db, [OpenSettings, CloseSettings]);
 
@@ -96,7 +96,11 @@ impl Render for SettingsView {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(SettingsElement::new("settings-pages").pages([appearance_page(cx), data_page()]))
+            .child(SettingsElement::new("settings-pages").pages([
+                appearance_page(cx),
+                editor_page(),
+                data_page(),
+            ]))
     }
 }
 
@@ -182,6 +186,35 @@ fn appearance_page(cx: &App) -> SettingPage {
                          to follow the system instead.",
                     ),
                 ),
+        )
+}
+
+fn editor_page() -> SettingPage {
+    SettingPage::new("Editor")
+        .icon(IconName::SquareTerminal)
+        .group(
+            SettingGroup::new().title("Completion").item(
+                SettingItem::new(
+                    "Accept a suggestion with",
+                    SettingField::dropdown(
+                        CompletionKey::ALL
+                            .map(|choice| (choice.key().into(), choice.label().into()))
+                            .to_vec(),
+                        |cx| Settings::global(cx).accept_completion.key().into(),
+                        |value, cx| {
+                            settings::update(cx, |settings| {
+                                settings.accept_completion = CompletionKey::from_key(&value)
+                            })
+                        },
+                    )
+                    .default_value(CompletionKey::default().key()),
+                )
+                .description(
+                    "The key that takes the highlighted suggestion from the completion menu. \
+                 The other one keeps its usual job while the menu is open: Enter starts a \
+                 new line, Tab indents.",
+                ),
+            ),
         )
 }
 

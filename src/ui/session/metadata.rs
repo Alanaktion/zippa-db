@@ -3,12 +3,14 @@
 
 use std::sync::Arc;
 
+use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::button::ButtonVariants as _;
+use gpui_kit::component::button::{ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, px};
+use gpui_kit::{Context, Entity, Window, px};
 
 use crate::db::{Catalog, CatalogEntry, Connection, runtime};
 
@@ -81,7 +83,7 @@ impl Session {
         self.catalog_loading = false;
         match catalog {
             Ok(catalog) => {
-                self.catalog = Arc::new(catalog);
+                self.catalog.set(Arc::new(catalog));
                 self.catalog_error = None;
             }
             Err(error) => {
@@ -94,7 +96,7 @@ impl Session {
                     .chain(self.stored.iter().cloned().map(CatalogEntry::routine))
                     .collect();
                 fallback.total = fallback.entries.len();
-                self.catalog = Arc::new(fallback);
+                self.catalog.set(Arc::new(fallback));
                 self.catalog_error = Some(format!("{error:#}"));
             }
         }
@@ -102,7 +104,7 @@ impl Session {
 
     /// The whole schema, for [`SearchSchema`].
     pub(crate) fn catalog(&self) -> Arc<Catalog> {
-        self.catalog.clone()
+        self.catalog.get()
     }
 
     pub(crate) fn catalog_loading(&self) -> bool {
@@ -111,6 +113,77 @@ impl Session {
 
     pub(crate) fn catalog_error(&self) -> Option<&str> {
         self.catalog_error.as_deref()
+    }
+
+    /// Switch to `database` for the user, asking first when a tab has a
+    /// transaction open: each query tab's connection is to the database being
+    /// left, so switching closes it and rolls the transaction back.
+    pub(crate) fn request_switch_database(
+        &mut self,
+        database: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let open = self.open_transactions(cx);
+        let unapplied = self.unapplied_changes(cx);
+        if (open == 0 && unapplied == 0) || database == self.connection.database() {
+            self.switch_database(database, cx);
+            return;
+        }
+        if window.has_active_dialog(cx) {
+            return;
+        }
+
+        let mut description = match open {
+            0 => String::new(),
+            1 => "A tab has an open transaction. Switching database closes its connection, \
+                  which rolls the transaction back."
+                .to_string(),
+            count => format!(
+                "{count} tabs have open transactions. Switching database closes their \
+                 connections, which rolls the transactions back."
+            ),
+        };
+        if unapplied > 0 {
+            if !description.is_empty() {
+                description.push(' ');
+            }
+            description.push_str(&unapplied_sentence(unapplied, "Switching database"));
+        }
+        let (title, ok) = if open > 0 {
+            (
+                format!("Roll back and switch to {database}?"),
+                "Roll Back and Switch",
+            )
+        } else {
+            (
+                format!("Discard changes and switch to {database}?"),
+                "Discard and Switch",
+            )
+        };
+        let session = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let session = session.clone();
+            let database = database.clone();
+            alert
+                .title(title.clone())
+                .description(description.clone())
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(ok)
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    if let Some(session) = session.upgrade() {
+                        session.update(cx, |session, cx| {
+                            session.switch_database(database.clone(), cx)
+                        });
+                    }
+                    true
+                })
+        });
     }
 
     /// Reopen the pool against `database` and reload the object list.
@@ -123,11 +196,65 @@ impl Session {
         if self.connection.config.engine.is_file_based() {
             return;
         }
-        if self.switching || database == self.connection.database() {
+        if database == self.connection.database() {
+            return;
+        }
+        self.reopen(database, false, cx);
+    }
+
+    /// Throw the pool away and open a fresh one to the same database, for a
+    /// connection the server dropped or that stopped answering. The tabs, the
+    /// console history, and anything typed stay as they are.
+    /// Reconnect for the user, asking first when a tab holds staged rows or
+    /// structure edits: the tabs are re-read from the new connection, which
+    /// drops them. An open transaction is not asked about — a reconnect is
+    /// for a connection the server has already dropped, taking it along.
+    pub(crate) fn request_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let unapplied = self.unapplied_changes(cx);
+        if unapplied == 0 {
+            self.reconnect(cx);
+            return;
+        }
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let description = unapplied_sentence(unapplied, "Reconnecting");
+        let session = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let session = session.clone();
+            alert
+                .title("Discard changes and reconnect?")
+                .description(description.clone())
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Discard and Reconnect")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    if let Some(session) = session.upgrade() {
+                        session.update(cx, |session, cx| session.reconnect(cx));
+                    }
+                    true
+                })
+        });
+    }
+
+    pub(crate) fn reconnect(&mut self, cx: &mut Context<Self>) {
+        let database = self.connection.database().to_string();
+        self.reopen(database, true, cx);
+    }
+
+    /// Open a new pool to `database` and adopt it in place of the current
+    /// one: a database switch, or (`reconnect`) a reconnect to the same one.
+    fn reopen(&mut self, database: String, reconnect: bool, cx: &mut Context<Self>) {
+        if self.switching {
             return;
         }
 
         self.switching = true;
+        self.reconnecting = reconnect;
         cx.notify();
 
         let connection = self.connection.clone();
@@ -137,10 +264,14 @@ impl Session {
             let opened = task.await;
             this.update_in(cx, |this, window, cx| {
                 this.switching = false;
+                this.reconnecting = false;
                 match opened {
                     Ok(Ok(connection)) => {
                         this.adopt_connection(connection, cx);
                         cx.emit(SessionEvent::Changed);
+                        if reconnect {
+                            crate::ui::notify_info(window, cx, "Reconnected.");
+                        }
                     }
                     Ok(Err(error)) => {
                         let message = format!("{error:#}");
@@ -152,7 +283,11 @@ impl Session {
                         crate::ui::notify_error(window, cx, format!("Error: {message}"));
                     }
                     Err(_) => {
-                        let message = "switching database was cancelled";
+                        let message = if reconnect {
+                            "reconnecting was cancelled"
+                        } else {
+                            "switching database was cancelled"
+                        };
                         if let Some(panel) = this.active_panel() {
                             panel.update(cx, |panel, _| {
                                 panel.set_status(Status::Error(message.into()))
@@ -189,7 +324,7 @@ impl Session {
 
         self.objects.clear();
         self.stored.clear();
-        self.catalog = Arc::new(Catalog::default());
+        self.catalog.set(Arc::new(Catalog::default()));
         self.catalog_loading = true;
         self.catalog_error = None;
         self.rebuild_tree(cx);
@@ -229,7 +364,9 @@ impl Session {
         let databases = this.databases.clone();
         let weak = session.downgrade();
 
-        let label = if this.switching {
+        let label = if this.reconnecting {
+            "Reconnecting…".to_string()
+        } else if this.switching {
             "Switching…".to_string()
         } else if current.is_empty() {
             "No database".to_string()
@@ -244,6 +381,24 @@ impl Session {
             .icon(gpui_kit::assets::IconName::Database)
             .label(label)
             .dropdown_menu(move |mut menu, _window, _cx| {
+                // First, so it is there however long the list below runs,
+                // and even when the list could not be read because the
+                // connection is what failed.
+                // A click rather than the `Reconnect` action: the picker sits
+                // in the workspace's title bar, outside the session's own
+                // element, so the action would never reach it.
+                let reconnect = weak.clone();
+                menu = menu
+                    .item(
+                        PopupMenuItem::new("Reconnect").on_click(move |_, window, cx| {
+                            if let Some(session) = reconnect.upgrade() {
+                                session.update(cx, |session, cx| {
+                                    session.request_reconnect(window, cx)
+                                });
+                            }
+                        }),
+                    )
+                    .separator();
                 if databases.is_empty() {
                     return menu.label("No databases");
                 }
@@ -255,11 +410,11 @@ impl Session {
                     menu = menu.item(
                         PopupMenuItem::new(database.clone())
                             .checked(*database == current)
-                            .on_click(move |_, _window, cx| {
+                            .on_click(move |_, window, cx| {
                                 let name = name.clone();
                                 if let Some(session) = weak.upgrade() {
                                     session.update(cx, |session, cx| {
-                                        session.switch_database(name, cx)
+                                        session.request_switch_database(name, window, cx)
                                     });
                                 }
                             }),
@@ -269,5 +424,20 @@ impl Session {
                 menu.scrollable(true).max_h(px(420.))
             })
             .into_any_element()
+    }
+}
+
+/// What re-reading `count` tabs from a new connection throws away, for
+/// `doing` ("Switching database", "Reconnecting").
+fn unapplied_sentence(count: usize, doing: &str) -> String {
+    match count {
+        1 => format!(
+            "A tab has changes that have not been applied. {doing} reads it again, \
+             which discards them."
+        ),
+        count => format!(
+            "{count} tabs have changes that have not been applied. {doing} reads them \
+             again, which discards them."
+        ),
     }
 }

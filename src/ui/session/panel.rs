@@ -27,8 +27,9 @@ use crate::db::Engine;
 use crate::db::Plan;
 use crate::db::query::QueryResult;
 use crate::db::runtime;
-use crate::db::{ScriptMode, ScriptRun};
+use crate::db::{PinnedConnection, ScriptMode, ScriptRun, TxnState};
 use crate::ui::busy::busy_label;
+use crate::ui::completion::SharedCatalog;
 use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::{Copied, DataGrid};
 use crate::ui::plan_view::PlanView;
@@ -84,6 +85,9 @@ pub(crate) enum SessionPanelEvent {
     Run(String),
     RunScript(String),
     RunScriptIgnoringErrors(String),
+    /// The status bar's Commit (`true`) or Roll Back (`false`), for the
+    /// tab's open transaction.
+    EndTransaction(bool),
     /// The user asked for a statement's plan.
     Explain {
         sql: String,
@@ -120,10 +124,11 @@ impl SessionPanel {
         title: impl Into<SharedString>,
         sql: String,
         engine: Engine,
+        catalog: SharedCatalog,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let editor = cx.new(|cx| QueryEditor::with_text(sql.clone(), engine, window, cx));
+        let editor = cx.new(|cx| QueryEditor::with_text(sql.clone(), engine, catalog, window, cx));
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
 
@@ -143,6 +148,7 @@ impl SessionPanel {
                 result: 0,
                 running: None,
                 script: None,
+                pinned: None,
                 baseline: sql,
                 plan: None,
                 show_plan: false,
@@ -498,6 +504,18 @@ impl SessionPanel {
         }
     }
 
+    /// Whether this tab holds changes that only exist on screen — staged
+    /// rows in a table, a structure edit not yet applied — which re-reading
+    /// it from a new connection throws away. A query buffer is not one: it
+    /// survives a database switch.
+    pub(crate) fn has_unapplied_changes(&self, cx: &App) -> bool {
+        match &self.content {
+            TabContent::Table { view } => view.read(cx).has_staged_edits(cx),
+            TabContent::Schema { view } => view.read(cx).is_dirty(cx),
+            _ => false,
+        }
+    }
+
     pub(crate) fn table_view(&self) -> Option<Entity<TableView>> {
         match &self.content {
             TabContent::Table { view } => Some(view.clone()),
@@ -752,6 +770,17 @@ impl SessionPanel {
         }
     }
 
+    /// Say a run was cancelled, unless whatever cancelled it has already
+    /// said more: the sender is dropped when the run is given up on, so this
+    /// arrives after `cancel_running` has said what was rolled back.
+    pub(crate) fn note_cancelled(&mut self) {
+        if let TabContent::Query { status, .. } = &mut self.content
+            && matches!(status, Status::Running)
+        {
+            *status = Status::Done("Cancelled".into());
+        }
+    }
+
     pub(crate) fn set_status(&mut self, status: Status) {
         if let TabContent::Query { status: slot, .. } = &mut self.content {
             *slot = status;
@@ -778,6 +807,34 @@ impl SessionPanel {
                 ..
             }
         )
+    }
+
+    /// The connection this query tab runs on, checked out of `connection`'s
+    /// pool on first use. `None` for a tab that is not a query tab.
+    ///
+    /// A pin left over from another connection — the session switched
+    /// database — is let go and replaced.
+    pub(crate) fn pin(&mut self, connection: &Arc<Connection>) -> Option<PinnedConnection> {
+        let TabContent::Query { pinned, .. } = &mut self.content else {
+            return None;
+        };
+        if pinned
+            .as_ref()
+            .is_none_or(|pin| !Arc::ptr_eq(pin.connection(), connection))
+        {
+            *pinned = Some(PinnedConnection::new(connection.clone()));
+        }
+        pinned.clone()
+    }
+
+    /// Whether this tab has a transaction open on its connection.
+    pub(crate) fn transaction(&self) -> TxnState {
+        match &self.content {
+            TabContent::Query {
+                pinned: Some(pin), ..
+            } => pin.state(),
+            _ => TxnState::Idle,
+        }
     }
 
     /// Hold a script paused on a failure until the user answers.
@@ -907,10 +964,12 @@ impl SessionPanel {
     /// Stop the run in flight, if there is one. Answers whether there
     /// was something to cancel.
     pub(crate) fn cancel_running(&mut self, cx: &mut Context<Self>) -> bool {
+        let open = self.transaction().is_open();
         let TabContent::Query {
             editor,
             running,
             status,
+            pinned,
             ..
         } = &mut self.content
         else {
@@ -922,11 +981,26 @@ impl SessionPanel {
         }
 
         let editor = editor.clone();
+        *status = Status::Done("Cancelled".into());
         if let Some(running) = running.take() {
+            // A run on the tab's own connection (not a plan, which is read
+            // from the pool) leaves it in a state nothing can vouch for, so
+            // the tab lets it go: the server is asked to stop the statement,
+            // and the connection closes once the run is dropped, rolling back
+            // whatever was open. The next run checks out a fresh one.
+            if pinned.as_ref().is_some_and(PinnedConnection::is_busy)
+                && let Some(pin) = pinned.take()
+            {
+                pin.cancel();
+                if open {
+                    *status = Status::Done(
+                        "Cancelled; the tab's open transaction was rolled back".into(),
+                    );
+                }
+            }
             running.abort();
         }
 
-        *status = Status::Done("Cancelled".into());
         if let Some(run) = self.take_script() {
             let message = match run.mode() {
                 ScriptMode::Transaction => "Cancelled; the script's transaction was rolled back",
@@ -941,11 +1015,23 @@ impl SessionPanel {
     }
 
     /// Stop the run in flight without touching the editor or status —
-    /// the panel is on its way out of the dock either way.
-    fn abort_running(&mut self) {
-        if let TabContent::Query { running, .. } = &mut self.content
+    /// the panel is on its way out of the dock, or its connection is closing,
+    /// either way.
+    ///
+    /// The server is asked to stop the statement too: dropping the socket
+    /// alone does not, and an `UPDATE` left running would still commit after
+    /// the user had closed the tab it was started from.
+    pub(crate) fn abort_running(&mut self) {
+        if let TabContent::Query {
+            running, pinned, ..
+        } = &mut self.content
             && let Some(running) = running.take()
         {
+            if pinned.as_ref().is_some_and(PinnedConnection::is_busy)
+                && let Some(pin) = pinned.take()
+            {
+                pin.cancel();
+            }
             running.abort();
         }
         if let Some(run) = self.take_script() {
@@ -956,13 +1042,29 @@ impl SessionPanel {
     /// Point this tab at `connection`: a query tab clears its grid, a table
     /// or structure tab re-reads from the new connection.
     pub(crate) fn set_connection(&mut self, connection: Arc<Connection>, cx: &mut Context<Self>) {
+        // A run still going belongs to the connection being left: stop it
+        // (on the server too) and give the Run button back, or the tab would
+        // say Idle while refusing every run until the old one ended — which a
+        // statement on a dead socket may never do. A paused script goes the
+        // same way.
+        self.cancel_running(cx);
+        if let Some(run) = self.take_script() {
+            close_script(run);
+            if let TabContent::Query { editor, .. } = &self.content {
+                editor.update(cx, |editor, cx| editor.set_running(false, cx));
+            }
+        }
         match &mut self.content {
             TabContent::Query {
                 grid,
                 plan,
                 show_plan,
+                pinned,
                 ..
             } => {
+                // The tab's connection was to the database being left; the
+                // next run checks one out of the new pool.
+                *pinned = None;
                 let grid = grid.clone();
                 grid.update(cx, |grid, cx| grid.clear(cx));
                 // A plan belongs to the connection it was read from.
@@ -1078,6 +1180,8 @@ impl SessionPanel {
             _ => cx.theme().muted_foreground,
         };
         let message = status.message();
+        let transaction = self.transaction();
+        let running = matches!(status, Status::Running);
 
         h_flex()
             .px_3()
@@ -1102,6 +1206,66 @@ impl SessionPanel {
                     } else {
                         message.into_any_element()
                     }),
+            )
+            .when(transaction.is_open(), |this| {
+                this.child(self.render_transaction(transaction, running, cx))
+            })
+    }
+
+    /// The open transaction, said in words beside the status — never by
+    /// colour alone — with the two ways out of it.
+    ///
+    /// A failed transaction (Postgres) offers only Roll Back: the server
+    /// refuses everything else, and a `COMMIT` there only rolls back anyway.
+    fn render_transaction(
+        &self,
+        transaction: TxnState,
+        running: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let failed = transaction == TxnState::Failed;
+        let (label, color) = if failed {
+            ("Transaction failed: roll back", cx.theme().danger)
+        } else {
+            ("Transaction open", cx.theme().info)
+        };
+
+        h_flex()
+            .flex_none()
+            .gap_1()
+            .child(
+                div()
+                    .id("transaction-state")
+                    .text_xs()
+                    .text_color(color)
+                    .child(label)
+                    .tooltip(|window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(
+                            "Changes since BEGIN are not visible to the sidebar, table \
+                             views, or other tabs until they are committed.",
+                        )
+                        .build(window, cx)
+                    }),
+            )
+            .when(!failed, |this| {
+                this.child(
+                    Button::new("transaction-commit")
+                        .xsmall()
+                        .label("Commit")
+                        .disabled(running)
+                        .on_click(cx.listener(|_this, _, _window, cx| {
+                            cx.emit(SessionPanelEvent::EndTransaction(true));
+                        })),
+                )
+            })
+            .child(
+                Button::new("transaction-rollback")
+                    .xsmall()
+                    .label("Roll Back")
+                    .disabled(running)
+                    .on_click(cx.listener(|_this, _, _window, cx| {
+                        cx.emit(SessionPanelEvent::EndTransaction(false));
+                    })),
             )
     }
 
@@ -1247,6 +1411,7 @@ impl Panel for SessionPanel {
         let title = self.title.clone();
         let kind = self.kind();
         let icon = self.icon();
+        let transaction = self.transaction().is_open();
 
         h_flex()
             .id(("session-panel-title", key))
@@ -1274,15 +1439,34 @@ impl Panel for SessionPanel {
                     .text_color(cx.theme().muted_foreground),
             )
             .child(div().child(label))
+            // A transaction left open in a tab out of sight is easy to
+            // forget, and closing the tab would roll it back.
+            .when(transaction, |this| {
+                this.child(
+                    div()
+                        .id(("open-transaction", key))
+                        .flex_none()
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(cx.theme().info)
+                        .tooltip(|window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new("Open transaction")
+                                .build(window, cx)
+                        }),
+                )
+            })
             .child(
                 Button::new(SharedString::from(format!("close-tab-{key}")))
                     .ghost()
                     .xsmall()
                     .icon(IconName::Close)
-                    .accessibility_label(if dirty {
-                        format!("Close the {kind} tab {title} (unsaved changes)")
-                    } else {
-                        format!("Close the {kind} tab {title}")
+                    .accessibility_label(match (dirty, transaction) {
+                        (true, true) => format!(
+                            "Close the {kind} tab {title} (unsaved changes, open transaction)"
+                        ),
+                        (true, false) => format!("Close the {kind} tab {title} (unsaved changes)"),
+                        (false, true) => format!("Close the {kind} tab {title} (open transaction)"),
+                        (false, false) => format!("Close the {kind} tab {title}"),
                     })
                     .tooltip_with_action("Close tab", &CloseTab, Some("Session"))
                     .on_click(cx.listener(|_this, _, _window, cx| {

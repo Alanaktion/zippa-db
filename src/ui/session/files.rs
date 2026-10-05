@@ -100,10 +100,15 @@ impl Session {
                 // The dialog's own keys are off so `enter` cannot dismiss it;
                 // `escape` is bound to `CloseImport` on the body instead.
                 .keyboard(false)
+                // Closed from outside its body (the overlay, the close
+                // button): a run still going is stopped rather than left
+                // running with nothing on screen to stop it.
                 .on_close(move |_, _window, cx| {
                     session
                         .update(cx, |this, cx| {
-                            this.import = None;
+                            if let Some(view) = this.import.take() {
+                                view.update(cx, |view, cx| view.cancel(cx));
+                            }
                             cx.notify();
                         })
                         .ok();
@@ -292,14 +297,15 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(panel) = self.nearest_query_panel(cx) else {
-            return;
-        };
         let message = format!("{error:#}");
-        panel.update(cx, |panel, cx| {
-            panel.set_status(Status::Error(message.clone()));
-            cx.notify();
-        });
+        // The toast is raised whether or not there is a status bar to put the
+        // error in too: with no query tab open there is nowhere else to say it.
+        if let Some(panel) = self.nearest_query_panel(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.set_status(Status::Error(message.clone()));
+                cx.notify();
+            });
+        }
         crate::ui::notify_error(window, cx, format!("Error: {message}"));
     }
 

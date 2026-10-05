@@ -34,9 +34,16 @@ flate2 = "1"
 futures = "0.3.34"
 # One dependency pulls in GPUI (Zed's preview channel), gpui-base, the styled
 # component library, and the default icon set.
-gpui-kit = { version = "0.7", features = ["tree-sitter-sql"] }
+gpui-kit = { version = "0.7.1", features = ["tree-sitter-sql"] }
 keyring = "4"
+# Only for `sqlite3_get_autocommit`, which sqlx does not expose; the version
+# range matches sqlx-sqlite's own so both link the same library.
+libsqlite3-sys = "0.37"
+# The completion types the editor's completion provider answers in; the same
+# version gpui-kit's editor is built against.
+lsp-types = { version = "0.97", features = ["proposed"] }
 regex = "1"
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.9", features = [
@@ -53,12 +60,12 @@ sqlx = { version = "0.9", features = [
     "mac_address",
     "bit-vec",
 ] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "net", "io-util", "macros"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-zstd = "0.13"
+zstd = "0.14"
 
 [dev-dependencies]
-gpui-kit = { version = "0.7", features = ["test-support"] }
+gpui-kit = { version = "0.7.1", features = ["test-support"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 # Read by `cargo packager` (https://github.com/crabnebula-dev/cargo-packager)

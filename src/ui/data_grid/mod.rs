@@ -198,6 +198,9 @@ pub struct DataGrid {
     /// The owner is reading a result for this grid, so the empty state shows a
     /// spinner rather than telling the user to run a query.
     loading: bool,
+    /// What the empty grid says before it has a result: a query tab's grid
+    /// waits for a run, but a management view's has nothing to run.
+    placeholder: gpui_kit::SharedString,
     /// The cell editor, shared with the delegate that renders it.
     editor: Entity<InputState>,
 }
@@ -385,6 +388,7 @@ impl DataGrid {
             table,
             has_result: false,
             loading: false,
+            placeholder: "Run a query to see results".into(),
             editor,
         }
     }
@@ -1113,29 +1117,26 @@ impl DataGrid {
         })
     }
 
-    /// Take `rows`' staged edits as written: they become the loaded values.
-    pub fn apply_staged(&mut self, rows: &[usize], cx: &mut Context<Self>) {
+    /// Take the `written` cells as the loaded values: they are what the
+    /// server now holds. A cell typed into again since the write was built
+    /// keeps its newer edit, still staged, rather than being marked written
+    /// with a value that never went out.
+    pub fn apply_staged(&mut self, written: &[StagedRow], cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
-            for row in rows {
-                let columns: Vec<usize> = delegate
-                    .edits
-                    .keys()
-                    .filter(|(staged, _)| staged == row)
-                    .map(|(_, col)| *col)
-                    .collect();
-
-                for col in columns {
-                    let Some(value) = delegate.edits.remove(&(*row, col)) else {
-                        continue;
-                    };
+            for staged in written {
+                for (col, value) in &staged.cells {
+                    let key = (staged.row, *col);
+                    if delegate.edits.get(&key) == Some(value) {
+                        delegate.edits.remove(&key);
+                    }
                     if let Some(cell) = delegate
                         .result
                         .rows
-                        .get_mut(*row)
-                        .and_then(|row| row.get_mut(col))
+                        .get_mut(staged.row)
+                        .and_then(|row| row.get_mut(*col))
                     {
-                        *cell = value;
+                        *cell = value.clone();
                     }
                 }
             }
@@ -1249,6 +1250,17 @@ impl DataGrid {
         cx.notify();
     }
 
+    /// Say `text` in place of "Run a query to see results" while there is
+    /// no result.
+    pub fn set_placeholder(
+        &mut self,
+        text: impl Into<gpui_kit::SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.placeholder = text.into();
+        cx.notify();
+    }
+
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.has_result = false;
         self.table.update(cx, |table, cx| {
@@ -1308,7 +1320,7 @@ impl Render for DataGrid {
             } else if self.has_result {
                 "Statement returned no columns".into_any_element()
             } else {
-                "Run a query to see results".into_any_element()
+                self.placeholder.clone().into_any_element()
             };
 
             return v_flex()

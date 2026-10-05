@@ -7,10 +7,13 @@
 //!
 //! * [`config`] — what the user saves about a connection, before it is opened.
 //! * [`connection`] — the live pool, and the shared read and write paths.
+//! * [`health`] — telling a dropped or unreachable server apart from a SQL
+//!   error, and saying so in words.
 //! * [`binary`] — sniffing and laying out the bytes behind a binary value.
 //! * [`query_log`] — the bounded record of every statement a connection has
 //!   sent, for the console pane.
 //! * [`catalog`] — the whole schema once per session, and the search over it.
+//! * [`completion`] — what the SQL editor offers for the word under the caret.
 //! * [`schema`] — a table's own definition: columns, indexes, foreign keys.
 //! * [`sql`] — quoting and placing bind parameters in generated statements.
 //! * [`statement`] — splitting and classifying the user's own SQL.
@@ -22,17 +25,22 @@
 //!   transaction, pausing on a failure for the user to answer.
 //! * [`dedicated`] — one connection held for the length of an import or a
 //!   script.
+//! * [`pinned`] — the connection a query tab holds for as long as it is open,
+//!   and whether it has a transaction open.
 //! * [`runtime`] — the Tokio runtime every database call is submitted to.
 //! * [`store`] — connection metadata on disk, passwords in the OS keychain.
 
 pub mod binary;
 pub mod catalog;
+pub mod completion;
 pub mod config;
 pub mod connection;
 pub(crate) mod dedicated;
 pub mod export;
+pub mod health;
 pub mod import;
 pub mod mysql;
+pub mod pinned;
 pub mod plan;
 pub mod postgres;
 pub mod query;
@@ -44,18 +52,24 @@ pub mod sql;
 pub mod sqlite;
 pub mod statement;
 pub mod store;
+pub(crate) mod tunnel;
 
 #[cfg(test)]
 pub(crate) mod tests;
 
 pub use catalog::{Catalog, CatalogEntry, CatalogKind, Query};
 pub(crate) use config::file_name;
-pub use config::{ConnectionConfig, Engine, SafetyMode, TagColor, is_risky_auto_apply};
-pub(crate) use connection::POOL_SIZE;
+pub use config::{
+    ConnectionConfig, Engine, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode, TagColor,
+    is_risky_auto_apply,
+};
+pub(crate) use connection::pool_options;
 pub use connection::{
-    Connection, DatabaseObject, ObjectKind, QueryDigest, RowKey, StoredKind, StoredObject,
+    Connection, Credentials, DatabaseObject, ObjectKind, QueryDigest, RowKey, StoredKind,
+    StoredObject,
 };
 pub use import::{ImportProgress, ImportRequest, ImportSummary, OnError};
+pub use pinned::{PinnedConnection, TxnState};
 pub use plan::{Explained, Plan, PlanNode};
 pub use query_log::{LoggedQuery, QueryOutcome, QuerySource};
 pub use schema::{

@@ -12,12 +12,13 @@ use uuid::Uuid;
 use super::query::Cell;
 use super::schema::ReferentialAction;
 use super::{
-    CatalogKind, Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, QueryDigest,
-    RowKey, SafetyMode, TagColor, keyword_literal, quote_identifier, typed_placeholder,
+    CatalogKind, Connection, ConnectionConfig, Credentials, DatabaseObject, Engine, ObjectKind,
+    QueryDigest, RowKey, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode, TagColor,
+    keyword_literal, quote_identifier, typed_placeholder,
 };
 use super::{
-    Decision, OnFailure, QueryOutcome, QuerySource, ScriptFailure, ScriptMode, ScriptOutcome,
-    ScriptRun, Step,
+    Decision, OnFailure, PinnedConnection, QueryOutcome, QuerySource, ScriptFailure, ScriptMode,
+    ScriptOutcome, ScriptRun, Step, TxnState,
 };
 
 pub(crate) struct TempDatabase {
@@ -618,7 +619,7 @@ async fn a_script_runs_every_statement_in_one_transaction() {
 
     let outcome = finished(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             "INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
              SELECT name FROM items WHERE id = 3;",
             ScriptMode::Transaction,
@@ -641,7 +642,7 @@ async fn a_failure_pauses_the_script_and_rolling_back_undoes_it() {
 
     let (run, failure) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Transaction,
             OnFailure::Ask,
@@ -673,7 +674,7 @@ async fn skipping_a_failure_keeps_the_rest_of_the_transaction() {
 
     let (run, _) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Transaction,
             OnFailure::Ask,
@@ -700,7 +701,7 @@ async fn skipping_every_error_stops_asking() {
 
     let (run, _) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             "INSERT INTO not_a_table VALUES (1);\n\
              INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
              INSERT INTO nor_this VALUES (1);",
@@ -734,7 +735,7 @@ async fn ignoring_errors_without_a_transaction_keeps_what_worked() {
 
     let outcome = finished(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Autocommit,
             OnFailure::Skip,
@@ -754,7 +755,7 @@ async fn stopping_without_a_transaction_keeps_what_ran_before() {
 
     let (run, _) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Autocommit,
             OnFailure::Ask,
@@ -775,7 +776,7 @@ async fn closing_a_paused_script_rolls_its_transaction_back() {
 
     let (run, _) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Transaction,
             OnFailure::Ask,
@@ -796,7 +797,7 @@ async fn a_scripts_statements_are_logged_one_by_one() {
 
     finished(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
             ScriptMode::Transaction,
             OnFailure::Skip,
@@ -833,7 +834,7 @@ async fn a_read_only_connection_refuses_a_script_before_it_runs() {
     );
 
     let error = match ScriptRun::start(
-        connection.clone(),
+        PinnedConnection::new(connection.clone()),
         "SELECT 1; DELETE FROM items",
         ScriptMode::Transaction,
         OnFailure::Ask,
@@ -848,6 +849,247 @@ async fn a_read_only_connection_refuses_a_script_before_it_runs() {
         "{error}"
     );
 
+    connection.close().await;
+}
+
+/// A transaction opened in one run is still open in the next, on a query
+/// tab's pinned connection, and only that tab sees what it has not committed.
+#[tokio::test]
+async fn a_pinned_connection_keeps_a_transaction_between_runs() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    let pinned = PinnedConnection::new(connection.clone());
+    assert_eq!(pinned.state(), TxnState::Idle, "nothing is checked out yet");
+
+    pinned.run_query("BEGIN").await.expect("begin");
+    assert_eq!(pinned.state(), TxnState::Open);
+    pinned
+        .run_query("INSERT INTO items VALUES (3, 'gamma', 3.0, NULL)")
+        .await
+        .expect("insert");
+    assert_eq!(pinned.state(), TxnState::Open);
+    let inside = pinned
+        .run_query("SELECT COUNT(*) FROM items")
+        .await
+        .expect("count");
+    assert_eq!(
+        inside.rows[0][0].as_deref(),
+        Some("3"),
+        "the tab sees its own insert"
+    );
+
+    pinned.run_query("ROLLBACK").await.expect("rollback");
+    assert_eq!(pinned.state(), TxnState::Idle);
+    assert_eq!(
+        item_count(&connection).await,
+        "2",
+        "the insert was rolled back"
+    );
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_pinned_connection_keeps_session_state_between_runs() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    let pinned = PinnedConnection::new(connection.clone());
+
+    pinned
+        .run_query("CREATE TEMP TABLE scratch (a)")
+        .await
+        .expect("create temp");
+    pinned
+        .run_query("INSERT INTO scratch VALUES (1)")
+        .await
+        .expect("insert temp");
+    pinned
+        .run_query("PRAGMA foreign_keys = ON")
+        .await
+        .expect("pragma");
+
+    let rows = pinned
+        .run_query("SELECT a FROM scratch")
+        .await
+        .expect("read temp");
+    assert_eq!(rows.rows, [[Some("1".to_string())]]);
+    let keys = pinned
+        .run_query("PRAGMA foreign_keys")
+        .await
+        .expect("read pragma");
+    assert_eq!(keys.rows[0][0].as_deref(), Some("1"));
+
+    // The pool's connections never saw the temporary table.
+    assert!(connection.run_query("SELECT a FROM scratch").await.is_err());
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_committed_transaction_is_visible_to_the_pool() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    let pinned = PinnedConnection::new(connection.clone());
+
+    pinned.run_query("BEGIN").await.expect("begin");
+    pinned
+        .run_query("DELETE FROM items WHERE id = 2")
+        .await
+        .expect("delete");
+    pinned.run_query("COMMIT").await.expect("commit");
+    assert_eq!(pinned.state(), TxnState::Idle);
+    assert_eq!(item_count(&connection).await, "1");
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_read_only_pin_runs_transaction_control_but_refuses_writes() {
+    let database = TempDatabase::new().await;
+    let connection = Arc::new(
+        Connection::open(
+            ConnectionConfig {
+                safety: SafetyMode::ReadOnly,
+                ..database.config()
+            },
+            None,
+        )
+        .await
+        .expect("could not open the test database"),
+    );
+    let pinned = PinnedConnection::new(connection.clone());
+
+    pinned
+        .run_query("BEGIN")
+        .await
+        .expect("begin is not a write");
+    assert_eq!(pinned.state(), TxnState::Open);
+    let error = pinned
+        .run_query("DELETE FROM items")
+        .await
+        .expect_err("a read-only connection refuses a delete");
+    assert!(format!("{error:#}").contains("DELETE"), "{error:#}");
+    pinned.run_query("ROLLBACK").await.expect("rollback");
+    assert_eq!(pinned.state(), TxnState::Idle);
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+/// A script run inside a transaction the tab already has open is a savepoint
+/// in it: rolling the script back leaves the tab's own work, and the tab's
+/// transaction, as they were.
+#[tokio::test]
+async fn a_script_inside_an_open_transaction_rolls_back_only_itself() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    let pinned = PinnedConnection::new(connection.clone());
+
+    pinned.run_query("BEGIN").await.expect("begin");
+    pinned
+        .run_query("INSERT INTO items VALUES (10, 'mine', 1.0, NULL)")
+        .await
+        .expect("insert");
+
+    let (run, _) = paused(
+        ScriptRun::start(
+            pinned.clone(),
+            FAILS_IN_THE_MIDDLE,
+            ScriptMode::Transaction,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    let outcome = finished(run.resume(Decision::Abort).await);
+    assert!(outcome.rolled_back);
+    assert_eq!(
+        pinned.state(),
+        TxnState::Open,
+        "the tab's transaction is still open"
+    );
+
+    let count = pinned
+        .run_query("SELECT COUNT(*) FROM items")
+        .await
+        .expect("count");
+    assert_eq!(
+        count.rows[0][0].as_deref(),
+        Some("3"),
+        "only the tab's insert is left"
+    );
+    pinned.run_query("COMMIT").await.expect("commit");
+    assert_eq!(item_count(&connection).await, "3");
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_scripts_own_begin_leaves_the_tab_in_a_transaction() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    let pinned = PinnedConnection::new(connection.clone());
+
+    finished(
+        ScriptRun::start(
+            pinned.clone(),
+            "BEGIN;\nINSERT INTO items VALUES (3, 'gamma', 3.0, NULL);",
+            ScriptMode::Autocommit,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    assert_eq!(pinned.state(), TxnState::Open);
+    pinned.run_query("ROLLBACK").await.expect("rollback");
+    assert_eq!(item_count(&connection).await, "2");
+
+    // A checked-out connection holds the pool's close open until it goes.
+    drop(pinned);
+    connection.close().await;
+}
+
+/// Query tabs share a fixed number of connections of their own, so they can
+/// never take the ones the sidebar and table views need; one past the cap is
+/// told how to free one rather than left waiting.
+#[tokio::test]
+async fn pinned_connections_are_capped_per_connection() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+
+    let mut pins = Vec::new();
+    for _ in 0..super::connection::PINNED_MAX {
+        let pinned = PinnedConnection::new(connection.clone());
+        pinned.run_query("SELECT 1").await.expect("within the cap");
+        pins.push(pinned);
+    }
+    let one_more = PinnedConnection::new(connection.clone());
+    let error = one_more
+        .run_query("SELECT 1")
+        .await
+        .expect_err("past the cap");
+    assert!(
+        format!("{error:#}").contains("too many query tabs"),
+        "{error:#}"
+    );
+    // The pool still answers the app's own reads.
+    assert_eq!(item_count(&connection).await, "2");
+
+    // Letting one tab go frees its slot.
+    drop(pins.pop());
+    one_more
+        .run_query("SELECT 1")
+        .await
+        .expect("a slot was freed");
+
+    drop((pins, one_more));
     connection.close().await;
 }
 
@@ -1677,6 +1919,253 @@ async fn live_postgres_money_scales_by_the_servers_locale_not_always_by_100() {
     yen.close().await;
 }
 
+/// The SSL mode reaches the server: the compose Postgres runs without SSL, so
+/// `Require` must be refused rather than quietly falling back to a plain
+/// connection, while `Disable` and the default `Prefer` still connect.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_ssl_require_is_refused_by_a_server_without_ssl() {
+    for mode in [SslMode::Disable, SslMode::Prefer] {
+        let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+        config.ssl.mode = mode;
+        let connection = Connection::open(config, Some(password))
+            .await
+            .unwrap_or_else(|error| panic!("{mode:?} should connect: {error:#}"));
+        connection.close().await;
+    }
+
+    let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+    config.ssl.mode = SslMode::Require;
+    assert!(
+        Connection::open(config, Some(password)).await.is_err(),
+        "Require should refuse a server that does not offer SSL"
+    );
+}
+
+/// MySQL 8 generates a self-signed certificate on first start, so the compose
+/// server takes `Require` (and the session really is encrypted) but fails
+/// `VerifyCa`, whose whole point is to refuse an authority nobody trusts.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_ssl_require_encrypts_and_verify_refuses_a_self_signed_server() {
+    let (mut config, password) = live_mysql_config();
+    config.ssl = SslConfig {
+        mode: SslMode::Require,
+        ..SslConfig::default()
+    };
+    let encrypted = Connection::open(config.clone(), Some(password.clone()))
+        .await
+        .expect("Require should connect to a server with SSL");
+    let cipher = encrypted
+        .run_query("SHOW SESSION STATUS LIKE 'Ssl_cipher'")
+        .await
+        .expect("could not read the session's cipher");
+    assert!(
+        cipher.rows[0][1]
+            .as_deref()
+            .is_some_and(|cipher| !cipher.is_empty()),
+        "a Require session should be encrypted: {:?}",
+        cipher.rows
+    );
+    encrypted.close().await;
+
+    config.ssl.mode = SslMode::VerifyCa;
+    assert!(
+        Connection::open(config, Some(password)).await.is_err(),
+        "VerifyCa should refuse a self-signed certificate"
+    );
+}
+
+/// The jump host the SSH tunnel live tests sign in to, and the Postgres server
+/// as that host sees it. The defaults are the compose `ssh` service, which
+/// reaches the compose `postgres` service by name; `ZIPPA_TEST_SSH_URL`
+/// (`ssh://user:password@host:port`) and `ZIPPA_TEST_SSH_TARGET` (`host:port`)
+/// point them elsewhere, such as a local `sshd` that reaches Postgres as
+/// `127.0.0.1:5433`.
+fn live_ssh() -> (SshConfig, String, String, u16) {
+    let url = env::var("ZIPPA_TEST_SSH_URL")
+        .unwrap_or_else(|_| "ssh://tunnel:secret@127.0.0.1:2222".to_string());
+    let rest = url.strip_prefix("ssh://").expect("an ssh:// URL");
+    let (credentials, authority) = rest.split_once('@').expect("user:pass@host:port");
+    let (username, password) = credentials.split_once(':').expect("user:pass");
+    let (host, port) = authority.split_once(':').expect("host:port");
+    let ssh = SshConfig {
+        enabled: true,
+        host: host.to_string(),
+        port: port.parse().expect("a port"),
+        username: username.to_string(),
+        auth: SshAuth::Password,
+        key_path: String::new(),
+    };
+
+    let target = env::var("ZIPPA_TEST_SSH_TARGET").unwrap_or_else(|_| "postgres:5432".to_string());
+    let (target_host, target_port) = target.split_once(':').expect("host:port");
+    (
+        ssh,
+        password.to_string(),
+        target_host.to_string(),
+        target_port.parse().expect("a port"),
+    )
+}
+
+/// A connection through an SSH tunnel reaches Postgres, keeps the host the
+/// user saved rather than the tunnel's end, and switching database reuses the
+/// tunnel rather than signing in again.
+///
+/// Needs the compose `ssh` service besides `postgres`; see `live_ssh`.
+#[tokio::test]
+#[ignore = "needs a live Postgres server and SSH jump host; see the doc comment"]
+async fn live_postgres_connects_through_an_ssh_tunnel() {
+    let (ssh, ssh_password, target_host, target_port) = live_ssh();
+    let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+    config.host = target_host.clone();
+    config.port = target_port;
+    config.ssh = ssh;
+
+    let connection = Connection::open_with(
+        config,
+        Credentials {
+            password: Some(password),
+            ssh: Some(ssh_password),
+        },
+    )
+    .await
+    .expect("should connect through the tunnel");
+    let result = connection
+        .run_query("SELECT 1 + 1")
+        .await
+        .expect("should query through the tunnel");
+    assert_eq!(result.rows[0][0].as_deref(), Some("2"));
+    assert_eq!(connection.config.host, target_host);
+
+    let other = connection
+        .with_database("postgres")
+        .await
+        .expect("switching database should reuse the tunnel");
+    other.run_query("SELECT 1").await.expect("query");
+    other.close().await;
+    connection.close().await;
+}
+
+/// A wrong SSH password is refused with a message that says so, before the
+/// database is ever asked.
+#[tokio::test]
+#[ignore = "needs a live SSH jump host; see `live_ssh`"]
+async fn live_ssh_tunnel_reports_a_refused_password() {
+    let (ssh, _, target_host, target_port) = live_ssh();
+    let (mut config, password) = live_postgres_config("ZIPPA_TEST_POSTGRES_URL", "app");
+    config.host = target_host;
+    config.port = target_port;
+    config.ssh = ssh;
+
+    let error = Connection::open_with(
+        config,
+        Credentials {
+            password: Some(password),
+            ssh: Some("not-the-password".into()),
+        },
+    )
+    .await
+    .expect_err("a wrong SSH password should be refused");
+    assert!(
+        format!("{error:#}").contains("refused the password"),
+        "{error:#}"
+    );
+}
+
+/// The types `postgres::cell` decodes field by field — geometry, ranges,
+/// `hstore`, `macaddr8` — read back as the text Postgres itself prints, and
+/// that text casts back to the same value, which is what makes them
+/// editable rather than `<POINT>`-style stand-ins.
+///
+/// Ignored by default because it needs a server; see
+/// `live_postgres_money_scales_by_the_servers_locale_not_always_by_100` for
+/// how to start one. `cargo test -- --ignored live_postgres_geometry`.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_geometry_ranges_hstore_and_macaddr8_read_back_as_text() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    connection
+        .execute("CREATE EXTENSION IF NOT EXISTS hstore", vec![])
+        .await
+        .expect("could not install hstore");
+
+    let cases = [
+        ("'(1.5,-2)'::point", "(1.5,-2)"),
+        ("'{1,-1,0}'::line", "{1,-1,0}"),
+        ("'[(0,0),(1,1)]'::lseg", "[(0,0),(1,1)]"),
+        ("'((0,0),(2,2))'::box", "(2,2),(0,0)"),
+        ("'((0,0),(1,1),(2,0))'::path", "((0,0),(1,1),(2,0))"),
+        ("'[(0,0),(1,1)]'::path", "[(0,0),(1,1)]"),
+        ("'((0,0),(1,1),(2,0))'::polygon", "((0,0),(1,1),(2,0))"),
+        ("'<(1,2),3>'::circle", "<(1,2),3>"),
+        ("ARRAY['(1,2)'::point, NULL]", "{\"(1,2)\",NULL}"),
+        ("'[1,10)'::int4range", "[1,10)"),
+        ("'(,5]'::int8range", "(,6)"),
+        ("'empty'::int4range", "empty"),
+        ("'1.5'::numeric", "1.5"),
+        ("'1.50'::numeric", "1.50"),
+        ("'[1.50,)'::numrange", "[1.50,)"),
+        ("'[1.5,2.5]'::numrange", "[1.5,2.5]"),
+        (
+            "'[2024-01-01,2024-02-01)'::daterange",
+            "[2024-01-01,2024-02-01)",
+        ),
+        (
+            "'[2024-01-01 10:00,2024-01-02)'::tsrange",
+            "[\"2024-01-01 10:00:00\",\"2024-01-02 00:00:00\")",
+        ),
+        (
+            "'a=>1, \"b c\"=>NULL, q=>\"say \\\"hi\\\"\"'::hstore",
+            "\"a\"=>\"1\", \"b c\"=>NULL, \"q\"=>\"say \\\"hi\\\"\"",
+        ),
+        (
+            "'08:00:2b:01:02:03:04:05'::macaddr8",
+            "08:00:2b:01:02:03:04:05",
+        ),
+    ];
+    for (expression, expected) in cases {
+        let result = connection
+            .run_query(&format!("SELECT {expression}"))
+            .await
+            .unwrap_or_else(|error| panic!("could not read {expression}: {error}"));
+        let shown = result.rows[0][0].clone();
+        assert_eq!(shown.as_deref(), Some(expected), "{expression}");
+
+        // What the grid shows is what an edit binds back, through the same
+        // cast `typed_placeholder` writes, and it should come out as the
+        // value it was read from.
+        let type_name = &result.column_types[0];
+        let round_trip = connection
+            .run_query_with(
+                &format!(
+                    "SELECT {}::text, ({expression})::text",
+                    crate::db::sql::typed_placeholder(Engine::Postgres, 1, type_name)
+                ),
+                vec![shown],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("could not cast {expected} back: {error}"));
+        assert_eq!(
+            round_trip.rows[0][0], round_trip.rows[0][1],
+            "{expected} should read back as {expression}"
+        );
+    }
+
+    // `tstzrange` is shown in the local zone, so only its shape is pinned.
+    let result = connection
+        .run_query("SELECT '[2024-01-01 00:00+00,)'::tstzrange")
+        .await
+        .expect("could not read a tstzrange");
+    let shown = result.rows[0][0].clone().unwrap_or_default();
+    assert!(
+        shown.starts_with("[\"2024-") && shown.ends_with("\",)"),
+        "{shown}"
+    );
+
+    connection.close().await;
+}
+
 /// `processes` reads every other connection's activity and `kill_process` can
 /// end one of them — the live half of the process list, since SQLite (the
 /// only engine the rest of this file exercises) has no server activity to
@@ -1760,6 +2249,96 @@ async fn live_mysql_processes_lists_and_kills_another_connection() {
     );
 
     watcher.close().await;
+}
+
+/// A statement timeout is set on every connection the pool opens, and the
+/// server cancels a statement that runs past it.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_statement_timeout_cancels_a_long_statement() {
+    let connection = live_postgres_with("ZIPPA_TEST_POSTGRES_URL", "app", |config| {
+        config.statement_timeout = Some(1);
+    })
+    .await;
+
+    let shown = connection
+        .run_query("SHOW statement_timeout")
+        .await
+        .expect("could not read the setting");
+    assert_eq!(shown.rows[0][0].as_deref(), Some("1s"));
+
+    // Not `pg_sleep`: the process-list test running alongside ends any
+    // backend whose query mentions it, which would read as a lost connection
+    // rather than a timeout.
+    let error = connection
+        .run_query("SELECT count(*) FROM generate_series(1, 10000000000) AS zippa_timeout_test")
+        .await
+        .expect_err("the server should cancel a statement past the timeout");
+    assert!(
+        format!("{error:#}").contains("statement timeout"),
+        "{error:#}"
+    );
+
+    connection.close().await;
+}
+
+/// The same, for MySQL's `max_execution_time` (milliseconds, reads only).
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_statement_timeout_is_set_on_the_session() {
+    let (connection, _pool) = live_mysql_with(|config| config.statement_timeout = Some(2)).await;
+
+    let shown = connection
+        .run_query("SELECT @@SESSION.max_execution_time")
+        .await
+        .expect("could not read the setting");
+    assert_eq!(shown.rows[0][0].as_deref(), Some("2000"));
+
+    connection.close().await;
+}
+
+/// A backend the server ends mid-statement reads as a lost connection in
+/// words, not as the driver's own text.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_a_terminated_backend_reads_as_a_lost_connection() {
+    let watcher = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    let victim = Arc::new(live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await);
+
+    let sleeper = {
+        let victim = victim.clone();
+        // Named so the query below ends this backend alone, and without
+        // `pg_sleep` in it so the process-list test alongside does not end
+        // it first.
+        tokio::spawn(async move {
+            victim
+                .run_query(
+                    "SELECT count(*) FROM generate_series(1, 10000000000) AS zippa_terminate_test",
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    watcher
+        .run_query(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE query LIKE '%zippa_terminate_test%' AND pid <> pg_backend_pid()",
+        )
+        .await
+        .expect("could not end the sleeping backend");
+
+    let error = sleeper
+        .await
+        .expect("the task itself should not panic")
+        .expect_err("the ended backend's query should fail");
+    assert_eq!(
+        crate::db::health::ConnectionTrouble::of(&error),
+        Some(crate::db::health::ConnectionTrouble::Lost),
+        "{error:#}"
+    );
+
+    watcher.close().await;
+    victim.close().await;
 }
 
 /// `server_variables` reads `pg_settings`, with `max_connections` (a
@@ -1884,7 +2463,7 @@ async fn live_postgres_a_script_carries_on_past_a_skipped_failure() {
     // A temporary table lives on the script's own connection and goes with it.
     let (run, failure) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             "CREATE TEMPORARY TABLE zippa_script_skip (id int PRIMARY KEY);\n\
              INSERT INTO zippa_script_skip VALUES (1);\n\
              INSERT INTO zippa_script_skip VALUES (1);\n\
@@ -1929,7 +2508,7 @@ async fn live_mysql_a_script_of_row_changes_rolls_back() {
 
     let (run, _) = paused(
         ScriptRun::start(
-            connection.clone(),
+            PinnedConnection::new(connection.clone()),
             "INSERT INTO zippa_script_rollback VALUES (1);\n\
              INSERT INTO not_a_table VALUES (1);",
             ScriptMode::Transaction,
@@ -1950,6 +2529,204 @@ async fn live_mysql_a_script_of_row_changes_rolls_back() {
     connection.close().await;
 }
 
+/// A script run without a transaction can hold the statements MySQL's
+/// prepared protocol refuses, which is what that mode is for. Runs against
+/// `compose.yaml`'s MySQL:
+///
+/// ```text
+/// ./script/test-db up
+/// cargo test -- --ignored live_mysql_an_autocommit
+/// ```
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_an_autocommit_script_can_lock_tables() {
+    let (connection, pool) = live_mysql().await;
+    let connection = Arc::new(connection);
+
+    pool.execute("DROP TABLE IF EXISTS zippa_script_locks")
+        .await
+        .expect("could not clear the fixture");
+    pool.execute("CREATE TABLE zippa_script_locks (id int PRIMARY KEY) ENGINE=InnoDB")
+        .await
+        .expect("could not create the fixture");
+
+    let outcome = finished(
+        ScriptRun::start(
+            PinnedConnection::new(connection.clone()),
+            "LOCK TABLES zippa_script_locks WRITE;\n\
+             INSERT INTO zippa_script_locks VALUES (1);\n\
+             UNLOCK TABLES;\n\
+             SELECT COUNT(*) FROM zippa_script_locks;",
+            ScriptMode::Autocommit,
+            OnFailure::Ask,
+        )
+        .await,
+    );
+    assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+    assert_eq!(
+        outcome.results.last().map(|result| result.rows.clone()),
+        Some(vec![vec![Some("1".to_string())]]),
+    );
+
+    pool.execute("DROP TABLE zippa_script_locks").await.ok();
+    connection.close().await;
+}
+
+/// A query tab on MySQL can run `BEGIN`, `USE`, and `LOCK TABLES` — statements
+/// the prepared protocol refuses — and they last from one run to the next on
+/// its pinned connection, which follows the transaction from the statements
+/// themselves. Runs against `compose.yaml`'s MySQL:
+///
+/// ```text
+/// ./script/test-db up
+/// cargo test -- --ignored live_mysql_a_pinned
+/// ```
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_a_pinned_tab_holds_a_transaction_and_its_locks() {
+    let (connection, pool) = live_mysql().await;
+    let connection = Arc::new(connection);
+
+    pool.execute("DROP TABLE IF EXISTS zippa_pinned")
+        .await
+        .expect("could not clear the fixture");
+    pool.execute("CREATE TABLE zippa_pinned (id int PRIMARY KEY) ENGINE=InnoDB")
+        .await
+        .expect("could not create the fixture");
+
+    let pinned = PinnedConnection::new(connection.clone());
+    pinned.run_query("BEGIN").await.expect("begin");
+    assert_eq!(pinned.state(), TxnState::Open);
+    pinned
+        .run_query("INSERT INTO zippa_pinned VALUES (1)")
+        .await
+        .expect("insert");
+    let elsewhere = connection
+        .run_query("SELECT COUNT(*) FROM zippa_pinned")
+        .await
+        .expect("count from the pool");
+    assert_eq!(
+        elsewhere.rows,
+        [[Some("0".to_string())]],
+        "not committed yet"
+    );
+    pinned.run_query("ROLLBACK").await.expect("rollback");
+    assert_eq!(pinned.state(), TxnState::Idle);
+
+    pinned.run_query("USE app").await.expect("use");
+    pinned
+        .run_query("LOCK TABLES zippa_pinned WRITE")
+        .await
+        .expect("lock tables");
+    pinned
+        .run_query("INSERT INTO zippa_pinned VALUES (2)")
+        .await
+        .expect("insert under the lock, on the same connection");
+    pinned.run_query("UNLOCK TABLES").await.expect("unlock");
+
+    let count = connection
+        .run_query("SELECT COUNT(*) FROM zippa_pinned")
+        .await
+        .expect("the count failed");
+    assert_eq!(count.rows, [[Some("1".to_string())]]);
+
+    drop(pinned);
+    pool.execute("DROP TABLE zippa_pinned").await.ok();
+    connection.close().await;
+}
+
+/// Postgres reports a transaction an error has aborted, and a pinned tab
+/// reads that back as failed until it is rolled back. Runs against
+/// `compose.yaml`'s Postgres:
+///
+/// ```text
+/// ./script/test-db up
+/// cargo test -- --ignored live_postgres_a_pinned
+/// ```
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_a_pinned_tab_reports_a_failed_transaction() {
+    let connection = Arc::new(live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await);
+    let pinned = PinnedConnection::new(connection.clone());
+
+    pinned
+        .run_query("SET search_path = pg_catalog")
+        .await
+        .expect("set");
+    let path = pinned.run_query("SHOW search_path").await.expect("show");
+    assert_eq!(
+        path.rows,
+        [[Some("pg_catalog".to_string())]],
+        "SET lasts between runs"
+    );
+
+    pinned.run_query("BEGIN").await.expect("begin");
+    assert_eq!(pinned.state(), TxnState::Open);
+    pinned
+        .run_query("SELECT * FROM zippa_not_a_table")
+        .await
+        .expect_err("no such table");
+    assert_eq!(pinned.state(), TxnState::Failed);
+    pinned.run_query("ROLLBACK").await.expect("rollback");
+    assert_eq!(pinned.state(), TxnState::Idle);
+
+    drop(pinned);
+    connection.close().await;
+}
+
+/// A `mysqldump` file imports, `LOCK TABLES` and all — statements MySQL's
+/// prepared protocol refuses. Runs against `compose.yaml`'s MySQL:
+///
+/// ```text
+/// ./script/test-db up
+/// cargo test -- --ignored live_mysql_a_mysqldump
+/// ```
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_a_mysqldump_file_imports_with_its_table_locks() {
+    use super::{ImportRequest, OnError};
+
+    let (connection, pool) = live_mysql().await;
+    pool.execute("DROP TABLE IF EXISTS zippa_import_locks")
+        .await
+        .expect("could not clear the fixture");
+
+    let path = env::temp_dir().join(format!("zippa-dump-{}.sql", Uuid::new_v4()));
+    std::fs::write(
+        &path,
+        "CREATE TABLE `zippa_import_locks` (`id` int NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;\n\
+         LOCK TABLES `zippa_import_locks` WRITE;\n\
+         /*!40000 ALTER TABLE `zippa_import_locks` DISABLE KEYS */;\n\
+         INSERT INTO `zippa_import_locks` VALUES (1),(2);\n\
+         /*!40000 ALTER TABLE `zippa_import_locks` ENABLE KEYS */;\n\
+         UNLOCK TABLES;\n",
+    )
+    .expect("could not write the dump");
+
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let summary = connection
+        .import_dump(
+            ImportRequest {
+                path: path.clone(),
+                on_error: OnError::Stop,
+            },
+            sender,
+        )
+        .await;
+    std::fs::remove_file(&path).ok();
+    let summary = summary.expect("the dump should import");
+    assert!(summary.errors.is_empty(), "{:?}", summary.errors);
+
+    let count = connection
+        .run_query("SELECT COUNT(*) FROM zippa_import_locks")
+        .await
+        .expect("the count failed");
+    assert_eq!(count.rows, [[Some("2".to_string())]]);
+
+    pool.execute("DROP TABLE zippa_import_locks").await.ok();
+    connection.close().await;
+}
+
 /// Open a Postgres connection for a live test, against the database named by
 /// `var` (falling back to `127.0.0.1:5433`/`database` when unset).
 ///
@@ -1957,6 +2734,25 @@ async fn live_mysql_a_script_of_row_changes_rolls_back() {
 /// test that needs a second real database to switch to, since the fast
 /// SQLite-backed suite has no such thing.
 pub(crate) async fn live_postgres(var: &str, database: &str) -> Connection {
+    live_postgres_with(var, database, |_| {}).await
+}
+
+/// The same, with the saved config adjusted by `adjust` before it is opened.
+async fn live_postgres_with(
+    var: &str,
+    database: &str,
+    adjust: impl FnOnce(&mut ConnectionConfig),
+) -> Connection {
+    let (mut config, password) = live_postgres_config(var, database);
+    adjust(&mut config);
+    Connection::open(config, Some(password))
+        .await
+        .expect("could not open the live Postgres connection")
+}
+
+/// The saved connection and password `live_postgres` opens, for a test that
+/// opens it some other way.
+fn live_postgres_config(var: &str, database: &str) -> (ConnectionConfig, String) {
     let url = env::var(var)
         .unwrap_or_else(|_| format!("postgres://postgres:secret@127.0.0.1:5433/{database}"));
     let rest = url.strip_prefix("postgres://").expect("a postgres:// URL");
@@ -1973,16 +2769,12 @@ pub(crate) async fn live_postgres(var: &str, database: &str) -> Connection {
         database: database.to_string(),
         ..ConnectionConfig::new(Engine::Postgres)
     };
-    Connection::open(config, Some(password.to_string()))
-        .await
-        .expect("could not open the live Postgres connection")
+    (config, password.to_string())
 }
 
-/// Open the MySQL server a live test runs against, and a pool onto the same
-/// database for fixtures that need the text protocol.
-async fn live_mysql() -> (Connection, sqlx::MySqlPool) {
-    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
-
+/// The saved connection and password `live_mysql` opens, for a test that
+/// opens it some other way.
+fn live_mysql_config() -> (ConnectionConfig, String) {
     let url = env::var("ZIPPA_TEST_MYSQL_URL")
         .unwrap_or_else(|_| "mysql://root:secret@127.0.0.1:3307/app".to_string());
     let rest = url.strip_prefix("mysql://").expect("a mysql:// URL");
@@ -1992,17 +2784,6 @@ async fn live_mysql() -> (Connection, sqlx::MySqlPool) {
     let (host, port) = authority.split_once(':').expect("host:port");
     let port: u16 = port.parse().expect("a port");
 
-    let options = MySqlConnectOptions::new()
-        .host(host)
-        .port(port)
-        .username(username)
-        .password(password)
-        .database(database);
-    let pool = MySqlPoolOptions::new()
-        .connect_with(options)
-        .await
-        .expect("could not open the live MySQL server");
-
     let config = ConnectionConfig {
         host: host.to_string(),
         port,
@@ -2010,7 +2791,35 @@ async fn live_mysql() -> (Connection, sqlx::MySqlPool) {
         database: database.to_string(),
         ..ConnectionConfig::new(Engine::MySql)
     };
-    let connection = Connection::open(config, Some(password.to_string()))
+    (config, password.to_string())
+}
+
+/// Open the MySQL server a live test runs against, and a pool onto the same
+/// database for fixtures that need the text protocol.
+async fn live_mysql() -> (Connection, sqlx::MySqlPool) {
+    live_mysql_with(|_| {}).await
+}
+
+/// The same, with the saved config adjusted by `adjust` before it is opened.
+async fn live_mysql_with(
+    adjust: impl FnOnce(&mut ConnectionConfig),
+) -> (Connection, sqlx::MySqlPool) {
+    use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
+
+    let (mut config, password) = live_mysql_config();
+    let options = MySqlConnectOptions::new()
+        .host(&config.host)
+        .port(config.port)
+        .username(&config.username)
+        .password(&password)
+        .database(&config.database);
+    let pool = MySqlPoolOptions::new()
+        .connect_with(options)
+        .await
+        .expect("could not open the live MySQL server");
+
+    adjust(&mut config);
+    let connection = Connection::open(config, Some(password))
         .await
         .expect("could not open the live MySQL connection");
 

@@ -1,5 +1,13 @@
 # Pinned connection per query tab, with transactions
 
+## Status (2026-10-04)
+Implemented in `src/db/pinned.rs`; the follow-ups left are in TODO.md §3. Spike findings, and where the build differs from the design below:
+- sqlx 0.9 tracks transaction status per connection (Postgres `ReadyForQuery`, MySQL `SERVER_STATUS_IN_TRANS`, SQLite `sqlite3_get_autocommit`) but only behind `pub(crate)`; `Connection::is_in_transaction` counts sqlx-managed transactions only. So: Postgres probes `now() <> statement_timestamp()` after each run (`25P02` means failed), SQLite calls `sqlite3_get_autocommit` through `lock_handle` + `libsqlite3-sys`, and MySQL follows its state from the statements (`pinned::mysql_after`).
+- `fetch_all`/`execute_with` were not refactored: `Dedicated` (added for script runs) already runs one connection's statements, including MySQL's text-protocol fallback, so the pin is built on it.
+- Cancel asks the server to stop (`pg_cancel_backend` / `KILL QUERY`) *and* aborts the task, which closes the pinned connection (an open transaction is rolled back, and the status says so). Keeping the connection after a cancel is a follow-up.
+- No `acquire_timeout` here (the connection-health work owns it); the cap is a semaphore that refuses at once. sqlx's SQLite busy timeout already defaults to 5 s.
+- Not built yet: a quit guard (GPUI's quit hook cannot be held), and `EXPLAIN` on the pin.
+
 ## Context
 `Connection::run_query`/`run_script` (`src/db/connection.rs`) run every statement through the sqlx pool, so consecutive statements in one editor tab can land on any of `POOL_SIZE = 5` connections. Consequences today: `BEGIN` in one statement and `COMMIT` in the next are on different connections, `SET search_path`/`USE`/temp tables do not persist between runs. (`run_script` now wraps one script in a transaction on Postgres and SQLite, so this is about *separate* runs in one tab.) The dump import already holds its own one-off connection (`Connection::import_dump`); this plan makes that a shared building block.
 

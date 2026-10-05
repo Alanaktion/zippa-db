@@ -33,6 +33,20 @@ pub struct Task<T> {
     receiver: oneshot::Receiver<T>,
     /// `None` under test, where the work has already run to completion.
     running: Option<tokio::task::JoinHandle<()>>,
+    /// Whether dropping this stops the work. Off by default: plenty of work
+    /// is handed to the runtime and never awaited (a pool closing, a rollback)
+    /// and must finish whether or not anyone waits for it.
+    abort_on_drop: bool,
+}
+
+impl<T> Drop for Task<T> {
+    fn drop(&mut self) {
+        if self.abort_on_drop
+            && let Some(running) = &self.running
+        {
+            running.abort();
+        }
+    }
 }
 
 impl<T> Task<T> {
@@ -42,6 +56,13 @@ impl<T> Task<T> {
     /// `None` under test, where the work has already run.
     pub fn abort_handle(&self) -> Option<tokio::task::AbortHandle> {
         self.running.as_ref().map(|running| running.abort_handle())
+    }
+
+    /// Stop the work when this is dropped unfinished — for work only its
+    /// awaiter wants, like a connection test the user has walked away from.
+    pub fn abort_on_drop(mut self) -> Self {
+        self.abort_on_drop = true;
+        self
     }
 }
 
@@ -80,6 +101,7 @@ where
     Task {
         receiver: rx,
         running: Some(running),
+        abort_on_drop: false,
     }
 }
 
@@ -101,6 +123,7 @@ where
     Task {
         receiver: rx,
         running: None,
+        abort_on_drop: false,
     }
 }
 

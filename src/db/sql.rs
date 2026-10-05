@@ -7,16 +7,268 @@
 
 use super::config::Engine;
 
+/// Words at least one of the three engines reserves, so a name spelled like
+/// one cannot be pasted in bare: `order`, `key`, and `rank` turn up as real
+/// column names, and Postgres reads a bare `user` as `CURRENT_USER` without
+/// a word of complaint. Sorted, for [`is_reserved`]'s binary search.
+const RESERVED: &[&str] = &[
+    "ACCESSIBLE",
+    "ADD",
+    "ALL",
+    "ALTER",
+    "ANALYSE",
+    "ANALYZE",
+    "AND",
+    "ANY",
+    "ARRAY",
+    "AS",
+    "ASC",
+    "ASYMMETRIC",
+    "BETWEEN",
+    "BIGINT",
+    "BINARY",
+    "BLOB",
+    "BOTH",
+    "BY",
+    "CALL",
+    "CASCADE",
+    "CASE",
+    "CAST",
+    "CHANGE",
+    "CHAR",
+    "CHARACTER",
+    "CHECK",
+    "COLLATE",
+    "COLUMN",
+    "CONDITION",
+    "CONSTRAINT",
+    "CONTINUE",
+    "CONVERT",
+    "CREATE",
+    "CROSS",
+    "CUBE",
+    "CURRENT",
+    "CURRENT_CATALOG",
+    "CURRENT_DATE",
+    "CURRENT_ROLE",
+    "CURRENT_TIME",
+    "CURRENT_TIMESTAMP",
+    "CURRENT_USER",
+    "CURSOR",
+    "DATABASE",
+    "DATABASES",
+    "DECIMAL",
+    "DECLARE",
+    "DEFAULT",
+    "DEFERRABLE",
+    "DELAYED",
+    "DELETE",
+    "DENSE_RANK",
+    "DESC",
+    "DESCRIBE",
+    "DISTINCT",
+    "DISTINCTROW",
+    "DIV",
+    "DO",
+    "DOUBLE",
+    "DROP",
+    "DUAL",
+    "EACH",
+    "ELSE",
+    "ELSEIF",
+    "EMPTY",
+    "ENCLOSED",
+    "END",
+    "ESCAPE",
+    "ESCAPED",
+    "EXCEPT",
+    "EXISTS",
+    "EXIT",
+    "EXPLAIN",
+    "FALSE",
+    "FETCH",
+    "FIRST_VALUE",
+    "FLOAT",
+    "FOR",
+    "FORCE",
+    "FOREIGN",
+    "FREEZE",
+    "FROM",
+    "FULL",
+    "FULLTEXT",
+    "FUNCTION",
+    "GENERATED",
+    "GET",
+    "GLOB",
+    "GRANT",
+    "GROUP",
+    "GROUPING",
+    "GROUPS",
+    "HAVING",
+    "IF",
+    "IGNORE",
+    "ILIKE",
+    "IN",
+    "INDEX",
+    "INFILE",
+    "INITIALLY",
+    "INNER",
+    "INOUT",
+    "INSERT",
+    "INT",
+    "INTEGER",
+    "INTERSECT",
+    "INTERVAL",
+    "INTO",
+    "IS",
+    "ISNULL",
+    "ITERATE",
+    "JOIN",
+    "JSON_TABLE",
+    "KEY",
+    "KEYS",
+    "KILL",
+    "LAG",
+    "LAST_VALUE",
+    "LATERAL",
+    "LEAD",
+    "LEADING",
+    "LEAVE",
+    "LEFT",
+    "LIKE",
+    "LIMIT",
+    "LINEAR",
+    "LINES",
+    "LOAD",
+    "LOCALTIME",
+    "LOCALTIMESTAMP",
+    "LOCK",
+    "LONG",
+    "LOOP",
+    "MATCH",
+    "MOD",
+    "MODIFIES",
+    "NATURAL",
+    "NOT",
+    "NOTNULL",
+    "NTILE",
+    "NULL",
+    "NUMERIC",
+    "OF",
+    "OFFSET",
+    "ON",
+    "ONLY",
+    "OPTIMIZE",
+    "OPTION",
+    "OPTIONALLY",
+    "OR",
+    "ORDER",
+    "OUT",
+    "OUTER",
+    "OUTFILE",
+    "OVER",
+    "OVERLAPS",
+    "PARTITION",
+    "PLACING",
+    "PRECISION",
+    "PRIMARY",
+    "PROCEDURE",
+    "PURGE",
+    "RANGE",
+    "RANK",
+    "READ",
+    "READS",
+    "REAL",
+    "RECURSIVE",
+    "REFERENCES",
+    "REGEXP",
+    "RELEASE",
+    "RENAME",
+    "REPEAT",
+    "REPLACE",
+    "REQUIRE",
+    "RESIGNAL",
+    "RESTRICT",
+    "RETURN",
+    "RETURNING",
+    "REVOKE",
+    "RIGHT",
+    "RLIKE",
+    "ROW",
+    "ROWS",
+    "ROW_NUMBER",
+    "SCHEMA",
+    "SCHEMAS",
+    "SELECT",
+    "SENSITIVE",
+    "SEPARATOR",
+    "SESSION_USER",
+    "SET",
+    "SHOW",
+    "SIGNAL",
+    "SIMILAR",
+    "SMALLINT",
+    "SOME",
+    "SPATIAL",
+    "SQL",
+    "STARTING",
+    "STORED",
+    "SYMMETRIC",
+    "SYSTEM",
+    "SYSTEM_USER",
+    "TABLE",
+    "TABLESAMPLE",
+    "TERMINATED",
+    "THEN",
+    "TINYINT",
+    "TO",
+    "TRAILING",
+    "TRIGGER",
+    "TRUE",
+    "UNDO",
+    "UNION",
+    "UNIQUE",
+    "UNLOCK",
+    "UNSIGNED",
+    "UPDATE",
+    "USAGE",
+    "USE",
+    "USER",
+    "USING",
+    "VALUES",
+    "VARCHAR",
+    "VARIADIC",
+    "VERBOSE",
+    "VIRTUAL",
+    "WHEN",
+    "WHERE",
+    "WHILE",
+    "WINDOW",
+    "WITH",
+    "WRITE",
+    "XOR",
+    "YEAR_MONTH",
+    "ZEROFILL",
+];
+
+/// Whether `name`, in any case, is a word [`RESERVED`] lists.
+pub(crate) fn is_reserved(name: &str) -> bool {
+    RESERVED
+        .binary_search(&name.to_ascii_uppercase().as_str())
+        .is_ok()
+}
+
 /// Quote `name` when it would not survive being pasted into a statement bare.
 ///
 /// Plain lower-case identifiers are left alone so the generated SQL reads the
-/// way someone would type it.
+/// way someone would type it — unless the name is a reserved word.
 pub fn quote_identifier(name: &str, engine: Engine) -> String {
     let bare = !name.is_empty()
         && !name.starts_with(|character: char| character.is_ascii_digit())
         && name.chars().all(|character| {
             character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
-        });
+        })
+        && !is_reserved(name);
 
     if bare {
         return name.to_string();
@@ -126,4 +378,24 @@ pub(crate) fn keyword_literal(value: &str) -> Option<&'static str> {
         .iter()
         .find(|keyword| keyword.eq_ignore_ascii_case(trimmed))
         .copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reserved_list_is_sorted_for_its_search() {
+        assert!(RESERVED.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn a_reserved_word_is_quoted_even_in_lower_case() {
+        assert_eq!(quote_identifier("order", Engine::Postgres), "\"order\"");
+        assert_eq!(quote_identifier("user", Engine::Postgres), "\"user\"");
+        assert_eq!(quote_identifier("key", Engine::MySql), "`key`");
+        assert_eq!(quote_identifier("rank", Engine::MySql), "`rank`");
+        assert_eq!(quote_identifier("ordered", Engine::Postgres), "ordered");
+        assert_eq!(quote_identifier("user_id", Engine::Sqlite), "user_id");
+    }
 }

@@ -30,12 +30,14 @@ use crate::db::export::Format;
 use crate::db::query::QueryResult;
 use crate::db::tests::TempDatabase;
 use crate::db::{
-    Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, SafetyMode, TagColor, runtime,
+    Connection, ConnectionConfig, DatabaseObject, Engine, ObjectKind, SafetyMode, SshAuth,
+    SshConfig, SslConfig, SslMode, TagColor, TxnState, runtime,
 };
 use crate::ui::filter_bar::{FilterSpec, Operator};
 use crate::ui::session::{CloseScope, Session};
 use crate::ui::welcome::Welcome;
 
+mod completion;
 mod console;
 mod editing;
 mod explain;
@@ -60,6 +62,7 @@ mod server_variables;
 mod session;
 mod sorting;
 mod sqlite_maintenance;
+mod transactions;
 mod value_dialog;
 mod welcome;
 mod workspace;
@@ -330,7 +333,8 @@ fn restored_workspace(
 ) -> (ScratchDir, WorkspaceWindow) {
     let dir = ScratchDir::new();
     crate::db::store::set_config_dir_for_test(dir.path.clone());
-    crate::db::store::save(&connections).expect("could not save the test connections");
+    crate::db::store::save(&connections, crate::db::store::ticket())
+        .expect("could not save the test connections");
     let handle = workspace_from(cx, state);
     (dir, handle)
 }
@@ -439,6 +443,24 @@ fn close_workspace_tab(
     })
     .unwrap();
     cx.run_until_parked();
+}
+
+/// Run `sql` in the active tab of a workspace session, the way the run
+/// shortcut does, and leave the buffer empty again so the tab is not dirty.
+fn run_in_tab(
+    cx: &mut TestAppContext,
+    handle: &WorkspaceWindow,
+    session: &Entity<Session>,
+    sql: &str,
+) {
+    prepare_workspace_editor(cx, handle, session, sql);
+    press_workspace(cx, handle, "secondary-enter");
+    prepare_workspace_editor(cx, handle, session, "");
+}
+
+/// Whether a workspace session's active tab has a transaction open.
+fn transaction(cx: &mut TestAppContext, session: &Entity<Session>) -> TxnState {
+    session.read_with(cx, |session, cx| session.active_transaction_for_test(cx))
 }
 
 fn press_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, keystroke: &str) {

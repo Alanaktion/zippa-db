@@ -26,7 +26,7 @@ use crate::ui::query_editor::{
 use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
     OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, PreviousTab,
-    QuickSwitcher, Refresh, SaveFile, SaveFileAs, SearchSchema,
+    QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs, SearchSchema,
 };
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -85,6 +85,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Close Tab", CloseTab),
             MenuItem::action("Close Connection", CloseConnection),
+            MenuItem::action("Reconnect", Reconnect),
             MenuItem::action("Disconnect", Disconnect),
         ]),
         // The text boxes' own clipboard and undo, with the native selectors
@@ -194,6 +195,7 @@ mod tests {
             ("Import SQL Dump", TypeId::of::<ImportSqlDump>()),
             ("Close Tab", TypeId::of::<CloseTab>()),
             ("Close Connection", TypeId::of::<CloseConnection>()),
+            ("Reconnect", TypeId::of::<Reconnect>()),
             ("Disconnect", TypeId::of::<Disconnect>()),
             ("Run Query", TypeId::of::<RunQuery>()),
             ("Run Script", TypeId::of::<RunScript>()),

@@ -1,6 +1,6 @@
 //! Running every statement in a query buffer, one at a time.
 //!
-//! A script runs on one [`Dedicated`] connection, either inside a transaction
+//! A script runs on its tab's [`PinnedConnection`], either inside a transaction
 //! ([`ScriptMode::Transaction`]) or with each statement committing on its own
 //! ([`ScriptMode::Autocommit`]). A statement that fails either pauses the run
 //! for the user to answer ([`OnFailure::Ask`]) or is skipped and reported at
@@ -11,8 +11,8 @@
 //! hands back a [`Step::Paused`] holding the run itself. The UI asks the
 //! question and passes the answer to [`ScriptRun::resume`] as another task.
 //! Nothing inside the database runtime ever waits on the UI, so a run left
-//! paused holds a connection and nothing else — and the test runtime, which
-//! runs each task inline, drives it the same way.
+//! paused holds the tab's connection and nothing else — and the test runtime,
+//! which runs each task inline, drives it the same way.
 //!
 //! Inside a transaction every statement runs under a savepoint, so a failed
 //! one can be undone on its own and the rest carried on with: Postgres aborts
@@ -26,14 +26,18 @@ use anyhow::{Context as _, Result};
 
 use super::config::Engine;
 use super::connection::{Connection, query_outcome};
-use super::dedicated::Dedicated;
 use super::import::excerpt;
+use super::pinned::{PinGuard, PinnedConnection, TxnState};
 use super::query::QueryResult;
 use super::query_log::{QueryOutcome, QuerySource};
 use super::statement::{self, Statement};
 
 /// The savepoint each statement runs under inside a transaction.
 const SAVEPOINT: &str = "zippa_script";
+
+/// The savepoint a script's transaction is, inside one the tab already had
+/// open.
+const OUTER_SAVEPOINT: &str = "zippa_script_run";
 
 /// Whether the script is wrapped in one transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,14 +197,20 @@ pub enum Step {
 
 /// A script part-way through.
 ///
-/// Holds a connection checked out of the pool, and — inside a transaction —
-/// everything the script has done so far. Dropping one closes the connection,
-/// which rolls an open transaction back; that has to happen on the database
-/// runtime, so give a paused run up with [`ScriptRun::close`].
+/// Holds the tab's pinned connection for the length of the run, and — inside
+/// a transaction — everything the script has done so far. A run given up on
+/// while paused rolls its transaction back through [`ScriptRun::close`], on
+/// the database runtime; one dropped mid-statement closes the connection,
+/// which rolls back whatever it had open.
 pub struct ScriptRun {
     connection: Arc<Connection>,
     /// `None` once the run is over and the connection has been let go.
-    session: Option<Dedicated>,
+    session: Option<PinGuard>,
+    /// The tab already had a transaction open, so the script's own is a
+    /// savepoint inside it rather than a transaction of its own: a `BEGIN`
+    /// there would be refused (SQLite), ignored with a warning (Postgres), or
+    /// would commit the tab's transaction (MySQL).
+    nested: bool,
     statements: Vec<Statement>,
     lines: Vec<usize>,
     next: usize,
@@ -214,36 +224,60 @@ pub struct ScriptRun {
 }
 
 impl ScriptRun {
-    /// Start running every statement in `sql`.
+    /// Start running every statement in `sql` on a tab's pinned connection.
     ///
     /// A read-only connection refuses the script before anything runs, naming
     /// the first statement that writes.
     pub async fn start(
-        connection: Arc<Connection>,
+        pinned: PinnedConnection,
         sql: &str,
         mode: ScriptMode,
         on_failure: OnFailure,
     ) -> Result<Step> {
-        let statements = statement::split(sql);
+        let connection = pinned.connection().clone();
+        let statements = statement::split(sql, connection.config.engine);
         for statement in &statements {
             connection.refuse_write(&statement.text)?;
         }
+        // Counted forward from the statement before, not from the top each
+        // time, which on a large file made the count quadratic.
+        let mut counted = (0, 1);
         let lines = statements
             .iter()
-            .map(|statement| sql[..statement.start].matches('\n').count() + 1)
+            .map(|statement| {
+                let (from, line) = counted;
+                let line = line + sql[from..statement.start].matches('\n').count();
+                counted = (statement.start, line);
+                line
+            })
             .collect();
 
-        let mut session = connection.dedicated().await?;
+        let mut session = pinned.lock().await?;
+        let nested = mode == ScriptMode::Transaction && session.state().is_open();
         if mode == ScriptMode::Transaction {
+            if session.state() == TxnState::Failed {
+                anyhow::bail!(
+                    "the tab's transaction has failed; roll it back before running a script"
+                );
+            }
+            let begin = if nested {
+                format!("SAVEPOINT {OUTER_SAVEPOINT}")
+            } else {
+                "BEGIN".to_string()
+            };
             session
-                .execute("BEGIN")
+                .execute(&begin)
                 .await
                 .context("could not start the script's transaction")?;
+            // MySQL's transaction state is followed from the statements sent,
+            // so the run's own control has to be told about too.
+            session.note(&begin, None);
         }
 
         let run = ScriptRun {
             connection,
             session: Some(session),
+            nested,
             statements,
             lines,
             next: 0,
@@ -272,22 +306,54 @@ impl ScriptRun {
             Decision::Abort => {
                 let rolled_back = self.mode == ScriptMode::Transaction;
                 if rolled_back {
-                    // Best-effort: a connection that cannot even roll back is
-                    // closed below, which aborts the transaction on its own.
-                    self.session_mut()?.execute("ROLLBACK").await.ok();
+                    self.roll_back().await;
                 }
-                Ok(Step::Finished(self.finish(rolled_back, !rolled_back)))
+                Ok(Step::Finished(self.finish(rolled_back, !rolled_back).await))
             }
         }
     }
 
-    /// Give up on a paused run, rolling back whatever it has open.
-    pub async fn close(self) {
-        drop(self);
+    /// Give up on a paused run, rolling back whatever transaction the script
+    /// opened. Statements that ran outside one stay applied, as they would
+    /// have had the run been stopped.
+    pub async fn close(mut self) {
+        if self.mode == ScriptMode::Transaction {
+            self.roll_back().await;
+        }
+        self.finish(true, true).await;
     }
 
     pub fn mode(&self) -> ScriptMode {
         self.mode
+    }
+
+    /// Undo the script's transaction — or its savepoint, inside the tab's
+    /// own. Best-effort: a connection that cannot even roll back is closed,
+    /// which aborts everything it had open on its own.
+    async fn roll_back(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let undone = if self.nested {
+            match session
+                .execute(&format!("ROLLBACK TO SAVEPOINT {OUTER_SAVEPOINT}"))
+                .await
+            {
+                Ok(()) => {
+                    session
+                        .execute(&format!("RELEASE SAVEPOINT {OUTER_SAVEPOINT}"))
+                        .await
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            session.execute("ROLLBACK").await
+        };
+        match undone {
+            Ok(()) if !self.nested => session.note("ROLLBACK", None),
+            Ok(()) => {}
+            Err(_) => session.discard(),
+        }
     }
 
     /// Run statements until the end, or until one fails and the user is to
@@ -311,6 +377,8 @@ impl ScriptRun {
                         OnFailure::Skip => self.failures.push(failure),
                         OnFailure::Ask => {
                             self.pending = Some(failure.clone());
+                            // The tab shows what is open while it asks.
+                            self.session_mut()?.settle().await;
                             return Ok(Step::Paused(Box::new(self), failure));
                         }
                     }
@@ -319,12 +387,19 @@ impl ScriptRun {
         }
 
         if self.mode == ScriptMode::Transaction {
-            self.session_mut()?
-                .execute("COMMIT")
+            let commit = if self.nested {
+                format!("RELEASE SAVEPOINT {OUTER_SAVEPOINT}")
+            } else {
+                "COMMIT".to_string()
+            };
+            let session = self.session_mut()?;
+            session
+                .execute(&commit)
                 .await
                 .context("could not commit the script")?;
+            session.note(&commit, None);
         }
-        Ok(Step::Finished(self.finish(false, false)))
+        Ok(Step::Finished(self.finish(false, false).await))
     }
 
     /// Run one statement, logging it for the console.
@@ -335,7 +410,7 @@ impl ScriptRun {
     async fn run_one(&mut self, index: usize) -> Result<Result<QueryResult, String>> {
         let transaction = self.mode == ScriptMode::Transaction;
         let sql = self.statements[index].text.clone();
-        let session = self.session_mut()?;
+        let session = self.session.as_mut().context(CLOSED)?;
 
         if transaction {
             session.execute(&format!("SAVEPOINT {SAVEPOINT}")).await?;
@@ -344,6 +419,9 @@ impl ScriptRun {
         let started = Instant::now();
         let result = session.fetch(&sql).await;
         let elapsed = started.elapsed();
+        // Without a transaction of the script's own, the statement may be the
+        // user's own `BEGIN` or `COMMIT`, which the tab carries on with.
+        session.note(&sql, result.as_ref().err());
 
         let outcome = match result {
             Ok(result) => {
@@ -383,17 +461,15 @@ impl ScriptRun {
         Ok(outcome)
     }
 
-    fn session_mut(&mut self) -> Result<&mut Dedicated> {
-        self.session
-            .as_mut()
-            .context("the script's connection has already been closed")
+    fn session_mut(&mut self) -> Result<&mut PinGuard> {
+        self.session.as_mut().context(CLOSED)
     }
 
-    /// Let the connection go and say how the run went.
-    fn finish(&mut self, rolled_back: bool, stopped: bool) -> ScriptOutcome {
-        // Dropped here, on the database runtime, rather than wherever the
-        // finished run ends up.
-        self.session = None;
+    /// Let the connection go back to the tab and say how the run went.
+    async fn finish(&mut self, rolled_back: bool, stopped: bool) -> ScriptOutcome {
+        if let Some(mut session) = self.session.take() {
+            session.settle().await;
+        }
         ScriptOutcome {
             results: std::mem::take(&mut self.results),
             failures: std::mem::take(&mut self.failures),
@@ -405,6 +481,20 @@ impl ScriptRun {
         }
     }
 }
+
+impl Drop for ScriptRun {
+    /// A run dropped part-way — cancelled while a statement was out — closes
+    /// the tab's connection rather than leave the script's transaction open
+    /// on it for the tab's next run to fall into.
+    fn drop(&mut self) {
+        if let Some(mut session) = self.session.take() {
+            session.discard();
+        }
+    }
+}
+
+/// The error a run whose connection is already gone ends with.
+const CLOSED: &str = "the script's connection has already been closed";
 
 /// A statement that cannot run inside the transaction a script would wrap
 /// itself in.
@@ -440,13 +530,24 @@ pub fn transaction_blocker(engine: Engine, statements: &[Statement]) -> Option<B
         .iter()
         .enumerate()
         .find_map(|(index, statement)| {
-            let words = statement::leading_words(&statement.text, 6);
+            let words = statement::leading_words(&statement.text, 6, engine);
             let shown = blocks(engine, &words)?;
             Some(Blocker {
                 index,
                 words: words[..shown.min(words.len())].join(" "),
             })
         })
+}
+
+/// Whether a statement, reduced to its upper-cased words, commits whatever
+/// transaction is open before it runs — MySQL's DDL, `LOCK TABLES`, and the
+/// rest of the list [`blocks`] keeps. Transaction control itself is left out:
+/// it is followed on its own terms by `pinned`.
+pub(crate) fn implicitly_commits(engine: Engine, words: &[String]) -> bool {
+    let word = |index: usize| words.get(index).map(String::as_str).unwrap_or("");
+    let control = matches!(word(0), "BEGIN" | "COMMIT" | "END" | "ABORT" | "ROLLBACK")
+        || (word(0) == "START" && word(1) == "TRANSACTION");
+    engine == Engine::MySql && !control && blocks(engine, words).is_some()
 }
 
 /// How many of `words` name the statement, when it is one a transaction
@@ -507,7 +608,7 @@ mod tests {
     use super::*;
 
     fn blocker(engine: Engine, sql: &str) -> Option<String> {
-        transaction_blocker(engine, &statement::split(sql)).map(|blocker| blocker.message())
+        transaction_blocker(engine, &statement::split(sql, engine)).map(|blocker| blocker.message())
     }
 
     #[test]
