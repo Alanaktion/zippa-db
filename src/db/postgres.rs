@@ -145,17 +145,26 @@ fn ssl_mode(mode: SslMode) -> PgSslMode {
 /// What `connect` hands the driver, apart from the pool, so the mapping from
 /// a saved connection can be checked without a server.
 fn options(config: &ConnectionConfig, password: Option<&str>) -> PgConnectOptions {
-    let mut options = PgConnectOptions::new()
+    // `new()` would also read `~/.pgpass`, looked up before the host, port,
+    // and user below are set — so against `PGHOST` or localhost — and send
+    // whatever password it found to the server this connection names. The
+    // environment's `PGPASSWORD` and `PGDATABASE` are overridden below for
+    // the same reason: a saved connection is what it says, however the app
+    // was launched.
+    let mut options = PgConnectOptions::new_without_pgpass()
         .host(&config.host)
         .port(config.port)
-        .username(&config.username);
+        .username(&config.username)
+        .password(password.unwrap_or_default())
+        .application_name("Zippa DB");
 
-    if !config.database.is_empty() {
-        options = options.database(&config.database);
-    }
-    if let Some(password) = password {
-        options = options.password(password);
-    }
+    // Left blank, the server's own default is a database named after the
+    // user; saying so keeps `PGDATABASE` out of it.
+    options = options.database(if config.database.is_empty() {
+        &config.username
+    } else {
+        &config.database
+    });
 
     // A read-only connection is read-only at the server too: the client-side
     // check in `Connection::refuse_write` only speaks for statements it can
@@ -736,6 +745,16 @@ mod tests {
             },
             ..ConnectionConfig::new(super::super::Engine::Postgres)
         }
+    }
+
+    #[test]
+    fn a_blank_database_is_the_users_own_rather_than_the_environments() {
+        let mut config = ssl(SslMode::Prefer);
+        config.username = "alice".into();
+        config.database = String::new();
+        assert_eq!(options(&config, None).get_database(), Some("alice"));
+        config.database = "app".into();
+        assert_eq!(options(&config, None).get_database(), Some("app"));
     }
 
     #[test]

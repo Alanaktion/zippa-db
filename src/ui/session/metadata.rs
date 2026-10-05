@@ -125,7 +125,8 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         let open = self.open_transactions(cx);
-        if open == 0 || database == self.connection.database() {
+        let unapplied = self.unapplied_changes(cx);
+        if (open == 0 && unapplied == 0) || database == self.connection.database() {
             self.switch_database(database, cx);
             return;
         }
@@ -133,7 +134,8 @@ impl Session {
             return;
         }
 
-        let description = match open {
+        let mut description = match open {
+            0 => String::new(),
             1 => "A tab has an open transaction. Switching database closes its connection, \
                   which rolls the transaction back."
                 .to_string(),
@@ -142,16 +144,33 @@ impl Session {
                  connections, which rolls the transactions back."
             ),
         };
+        if unapplied > 0 {
+            if !description.is_empty() {
+                description.push(' ');
+            }
+            description.push_str(&unapplied_sentence(unapplied, "Switching database"));
+        }
+        let (title, ok) = if open > 0 {
+            (
+                format!("Roll back and switch to {database}?"),
+                "Roll Back and Switch",
+            )
+        } else {
+            (
+                format!("Discard changes and switch to {database}?"),
+                "Discard and Switch",
+            )
+        };
         let session = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let session = session.clone();
             let database = database.clone();
             alert
-                .title(format!("Roll back and switch to {database}?"))
+                .title(title.clone())
                 .description(description.clone())
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Roll Back and Switch")
+                        .ok_text(ok)
                         .ok_variant(ButtonVariant::Danger)
                         .cancel_text("Cancel")
                         .show_cancel(true),
@@ -186,6 +205,42 @@ impl Session {
     /// Throw the pool away and open a fresh one to the same database, for a
     /// connection the server dropped or that stopped answering. The tabs, the
     /// console history, and anything typed stay as they are.
+    /// Reconnect for the user, asking first when a tab holds staged rows or
+    /// structure edits: the tabs are re-read from the new connection, which
+    /// drops them. An open transaction is not asked about — a reconnect is
+    /// for a connection the server has already dropped, taking it along.
+    pub(crate) fn request_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let unapplied = self.unapplied_changes(cx);
+        if unapplied == 0 {
+            self.reconnect(cx);
+            return;
+        }
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let description = unapplied_sentence(unapplied, "Reconnecting");
+        let session = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let session = session.clone();
+            alert
+                .title("Discard changes and reconnect?")
+                .description(description.clone())
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Discard and Reconnect")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    if let Some(session) = session.upgrade() {
+                        session.update(cx, |session, cx| session.reconnect(cx));
+                    }
+                    true
+                })
+        });
+    }
+
     pub(crate) fn reconnect(&mut self, cx: &mut Context<Self>) {
         let database = self.connection.database().to_string();
         self.reopen(database, true, cx);
@@ -335,9 +390,11 @@ impl Session {
                 let reconnect = weak.clone();
                 menu = menu
                     .item(
-                        PopupMenuItem::new("Reconnect").on_click(move |_, _window, cx| {
+                        PopupMenuItem::new("Reconnect").on_click(move |_, window, cx| {
                             if let Some(session) = reconnect.upgrade() {
-                                session.update(cx, |session, cx| session.reconnect(cx));
+                                session.update(cx, |session, cx| {
+                                    session.request_reconnect(window, cx)
+                                });
                             }
                         }),
                     )
@@ -367,5 +424,20 @@ impl Session {
                 menu.scrollable(true).max_h(px(420.))
             })
             .into_any_element()
+    }
+}
+
+/// What re-reading `count` tabs from a new connection throws away, for
+/// `doing` ("Switching database", "Reconnecting").
+fn unapplied_sentence(count: usize, doing: &str) -> String {
+    match count {
+        1 => format!(
+            "A tab has changes that have not been applied. {doing} reads it again, \
+             which discards them."
+        ),
+        count => format!(
+            "{count} tabs have changes that have not been applied. {doing} reads them \
+             again, which discards them."
+        ),
     }
 }

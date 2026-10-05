@@ -635,19 +635,19 @@ impl Connection {
         let statement = sql.trim().trim_end_matches(';').trim();
         // One statement is what a plan describes; a script has no single plan
         // to draw, and the caller's buffer may be a selection of many.
-        if statement.is_empty() || statement::split(statement).len() != 1 {
+        if statement.is_empty() || statement::split(statement, self.config.engine).len() != 1 {
             anyhow::bail!("Select one statement to explain.");
         }
 
         // What is being explained, and whether this request runs it: the
         // caller's flag, or an `ANALYZE` the user already wrote into a header
         // of their own.
-        let header = statement::explained(statement);
+        let header = statement::explained(statement, self.config.engine);
         let (inner, runs) = match &header {
             Some((inner, analyzes)) => (inner.clone(), analyze || *analyzes),
             None => (statement.to_string(), analyze),
         };
-        if runs && let Some(word) = statement::first_write(&inner) {
+        if runs && let Some(word) = statement::first_write(&inner, self.config.engine) {
             anyhow::bail!("EXPLAIN ANALYZE would run this statement; it changes data ({word}).");
         }
 
@@ -936,7 +936,7 @@ impl Connection {
         if !self.config.safety.is_read_only() {
             return Ok(());
         }
-        if let Some(word) = statement::first_write(sql) {
+        if let Some(word) = statement::first_write(sql, self.config.engine) {
             anyhow::bail!("this connection is read-only, so the {word} statement was not run");
         }
         Ok(())

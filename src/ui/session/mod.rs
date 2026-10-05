@@ -21,6 +21,7 @@ use regex::Regex;
 use crate::db::{CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObject};
 use crate::ui::completion::SharedCatalog;
 use crate::ui::import_dialog::ImportView;
+use crate::workspace_state::SessionState;
 
 mod files;
 mod metadata;
@@ -116,6 +117,10 @@ pub struct Session {
     /// finds names but not columns, indexes or triggers.
     catalog_error: Option<String>,
     switching: bool,
+    /// The saved tabs a restore is holding while it switches to their
+    /// database. Until they are built, they are what this session records,
+    /// so a checkpoint or quit in the meantime does not save them away.
+    restoring: Option<SessionState>,
     /// Whether that reopen is a [`Reconnect`] to the same database rather
     /// than a switch, so the picker can say which.
     reconnecting: bool,
@@ -166,6 +171,7 @@ impl Session {
             catalog_loading: true,
             catalog_error: None,
             switching: false,
+            restoring: None,
             reconnecting: false,
             next_key: 0,
             import: None,
@@ -446,8 +452,8 @@ impl Session {
         cx.emit(SessionEvent::Disconnected);
     }
 
-    fn on_reconnect(&mut self, _: &Reconnect, _window: &mut Window, cx: &mut Context<Self>) {
-        self.reconnect(cx);
+    fn on_reconnect(&mut self, _: &Reconnect, window: &mut Window, cx: &mut Context<Self>) {
+        self.request_reconnect(window, cx);
     }
 
     /// Open what a schema search result is about.

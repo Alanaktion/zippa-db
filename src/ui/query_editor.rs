@@ -396,10 +396,10 @@ impl QueryEditor {
         let writes = statement.as_ref().is_some_and(|sql| {
             // A statement with its own `EXPLAIN` header is judged by what it
             // explains, so `EXPLAIN ANALYZE SELECT` still reads as a read.
-            let inner = statement::explained(sql)
+            let inner = statement::explained(sql, self.engine)
                 .map(|(inner, _)| inner)
                 .unwrap_or_else(|| sql.clone());
-            statement::first_write(&inner).is_some()
+            statement::first_write(&inner, self.engine).is_some()
         });
         *self.statement_cache.borrow_mut() = Some(StatementCache {
             key,
@@ -426,7 +426,7 @@ impl QueryEditor {
             return blocker.clone();
         }
         let sql = self.state.read(cx).value().to_string();
-        let blocker = transaction_blocker(self.engine, &statement::split(&sql));
+        let blocker = transaction_blocker(self.engine, &statement::split(&sql, self.engine));
         *self.blocker_cache.borrow_mut() = Some((key, blocker.clone()));
         blocker
     }
@@ -442,7 +442,7 @@ impl QueryEditor {
         }
 
         let sql = state.value().to_string();
-        statement::at_cursor(&sql, state.cursor()).map(|statement| statement.text)
+        statement::at_cursor(&sql, state.cursor(), self.engine).map(|statement| statement.text)
     }
 }
 

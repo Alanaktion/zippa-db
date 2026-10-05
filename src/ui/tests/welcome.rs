@@ -54,9 +54,9 @@ fn saving_a_connection_persists_its_colour(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // The launcher holds it, and the store wrote it to the scratch dir.
-    let color = welcome.update(cx, |welcome, _| {
+    let color = welcome.update(cx, |welcome, cx| {
         let saved = welcome
-            .connections_for_test()
+            .connections_for_test(cx)
             .iter()
             .find(|c| c.id == id)
             .cloned()
@@ -150,9 +150,9 @@ fn duplicating_a_connection_uses_a_new_id(cx: &mut TestAppContext) {
         })
         .unwrap();
 
-    let ids = welcome.update(cx, |welcome, _| {
+    let ids = welcome.update(cx, |welcome, cx| {
         welcome
-            .connections_for_test()
+            .connections_for_test(cx)
             .iter()
             .map(|c| c.id)
             .collect::<Vec<_>>()
@@ -197,7 +197,7 @@ fn deleting_a_connection_removes_it_and_persists(cx: &mut TestAppContext) {
         .unwrap();
 
     assert_eq!(
-        welcome.update(cx, |welcome, _| welcome.connections_for_test().len()),
+        welcome.update(cx, |welcome, cx| welcome.connections_for_test(cx).len()),
         0,
         "deleting should remove the connection"
     );
@@ -312,7 +312,7 @@ fn editing_a_connection_keeps_its_last_connected_stamp(cx: &mut TestAppContext) 
     })
     .unwrap();
 
-    let saved = welcome.read_with(cx, |welcome, _| welcome.connections_for_test().to_vec());
+    let saved = welcome.read_with(cx, |welcome, cx| welcome.connections_for_test(cx).to_vec());
     let saved = saved
         .iter()
         .find(|saved| saved.id == id)
@@ -507,7 +507,9 @@ fn testing_a_connection_reports_in_the_dialog(cx: &mut TestAppContext) {
     assert_eq!(editor_status(cx, &welcome), "succeeded");
     assert!(welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
     assert!(
-        welcome.update(cx, |welcome, _| welcome.connections_for_test().is_empty()),
+        welcome.update(cx, |welcome, cx| welcome
+            .connections_for_test(cx)
+            .is_empty()),
         "testing a connection should not save it"
     );
 }
@@ -807,4 +809,79 @@ fn a_key_file_tunnel_without_a_key_is_refused(cx: &mut TestAppContext) {
         editor_status(cx, &welcome),
         "Error: Enter the path to the SSH private key."
     );
+}
+
+/// Two launchers share one list: a connection saved from one tab is not
+/// written away again when another tab, opened before it, saves next.
+#[gpui_kit::test]
+fn launchers_in_two_tabs_keep_each_others_connections(cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+
+    let handle = workspace(cx);
+    let (first, second) = handle
+        .update(cx, |_, window, cx| {
+            (
+                cx.new(|cx| Welcome::new(window, cx)),
+                cx.new(|cx| Welcome::new(window, cx)),
+            )
+        })
+        .unwrap();
+
+    let staging = ConnectionConfig {
+        name: "Staging".into(),
+        ..ConnectionConfig::new(Engine::Postgres)
+    };
+    let local = ConnectionConfig {
+        name: "Local".into(),
+        ..ConnectionConfig::new(Engine::Postgres)
+    };
+    handle
+        .update(cx, |_, window, cx| {
+            second.update(cx, |welcome, cx| {
+                welcome.save_for_test(staging.clone(), None, window, cx)
+            });
+            first.update(cx, |welcome, cx| {
+                welcome.save_for_test(local.clone(), None, window, cx)
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let shown = first.update(cx, |welcome, cx| {
+        welcome
+            .connections_for_test(cx)
+            .iter()
+            .map(|config| config.id)
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(shown, [staging.id, local.id]);
+    let saved: Vec<_> = crate::db::store::load()
+        .expect("the list should be on disk")
+        .into_iter()
+        .map(|config| config.id)
+        .collect();
+    assert_eq!(saved, [staging.id, local.id]);
+}
+
+/// A file this build cannot read is moved aside before anything can save
+/// over it, and the error says where it went.
+#[gpui_kit::test]
+fn an_unreadable_connections_file_is_kept_aside(_cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+    std::fs::create_dir_all(&dir.path).unwrap();
+    std::fs::write(
+        dir.path.join("connections.json"),
+        "[{\"engine\": \"Oracle\"}]",
+    )
+    .unwrap();
+
+    let error = crate::db::store::load().expect_err("an unknown engine should not parse");
+    assert!(
+        format!("{error:#}").contains("connections.json.unreadable"),
+        "{error:#}"
+    );
+    assert!(dir.path.join("connections.json.unreadable").exists());
+    assert!(!dir.path.join("connections.json").exists());
 }

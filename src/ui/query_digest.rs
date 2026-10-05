@@ -17,7 +17,6 @@ use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, FocusHandle, Focusable, SharedString, Window, div};
 
-use crate::db::query::QueryResult;
 use crate::db::{Connection, QueryDigest, runtime};
 use crate::ui::busy::busy_label;
 use crate::ui::data_grid::DataGrid;
@@ -35,7 +34,11 @@ pub struct QueryDigestView {
 
 impl QueryDigestView {
     pub fn new(connection: Arc<Connection>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let grid = cx.new(|cx| DataGrid::new(connection.config.engine, window, cx));
+        let grid = cx.new(|cx| {
+            let mut grid = DataGrid::new(connection.config.engine, window, cx);
+            grid.set_placeholder("No query digest to show", cx);
+            grid
+        });
         let mut this = Self {
             connection,
             grid,
@@ -74,11 +77,15 @@ impl QueryDigestView {
                         this.grid.update(cx, |grid, cx| grid.set_result(result, cx));
                     }
                     Ok(Ok(QueryDigest::Unavailable(reason))) => {
+                        // Cleared rather than handed an empty result, which the
+                        // grid would call a statement that returned no columns.
                         this.unavailable = Some(reason);
-                        this.grid
-                            .update(cx, |grid, cx| grid.set_result(QueryResult::default(), cx));
+                        this.grid.update(cx, |grid, cx| grid.clear(cx));
                     }
-                    Ok(Err(error)) => this.error = Some(format!("{error:#}")),
+                    Ok(Err(error)) => {
+                        this.error = Some(format!("{error:#}"));
+                        this.grid.update(cx, |grid, cx| grid.clear(cx));
+                    }
                     Err(_) => this.error = Some("loading the query digest was cancelled".into()),
                 }
                 cx.notify();

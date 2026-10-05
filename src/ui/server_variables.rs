@@ -43,7 +43,11 @@ pub struct ServerVariablesView {
 
 impl ServerVariablesView {
     pub fn new(connection: Arc<Connection>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let grid = cx.new(|cx| DataGrid::new(connection.config.engine, window, cx));
+        let grid = cx.new(|cx| {
+            let mut grid = DataGrid::new(connection.config.engine, window, cx);
+            grid.set_placeholder("No server variables to show", cx);
+            grid
+        });
         let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter variables"));
         cx.subscribe_in(&filter_input, window, Self::on_filter_event)
             .detach();
@@ -88,7 +92,11 @@ impl ServerVariablesView {
                         this.all = result;
                         this.apply_filter(cx);
                     }
-                    Ok(Err(error)) => this.error = Some(format!("{error:#}")),
+                    Ok(Err(error)) => {
+                        this.error = Some(format!("{error:#}"));
+                        this.all = Default::default();
+                        this.grid.update(cx, |grid, cx| grid.clear(cx));
+                    }
                     Err(_) => {
                         this.error = Some("loading the server variables was cancelled".into())
                     }

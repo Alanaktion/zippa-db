@@ -504,6 +504,18 @@ impl SessionPanel {
         }
     }
 
+    /// Whether this tab holds changes that only exist on screen — staged
+    /// rows in a table, a structure edit not yet applied — which re-reading
+    /// it from a new connection throws away. A query buffer is not one: it
+    /// survives a database switch.
+    pub(crate) fn has_unapplied_changes(&self, cx: &App) -> bool {
+        match &self.content {
+            TabContent::Table { view } => view.read(cx).has_staged_edits(cx),
+            TabContent::Schema { view } => view.read(cx).is_dirty(cx),
+            _ => false,
+        }
+    }
+
     pub(crate) fn table_view(&self) -> Option<Entity<TableView>> {
         match &self.content {
             TabContent::Table { view } => Some(view.clone()),
@@ -758,6 +770,17 @@ impl SessionPanel {
         }
     }
 
+    /// Say a run was cancelled, unless whatever cancelled it has already
+    /// said more: the sender is dropped when the run is given up on, so this
+    /// arrives after `cancel_running` has said what was rolled back.
+    pub(crate) fn note_cancelled(&mut self) {
+        if let TabContent::Query { status, .. } = &mut self.content
+            && matches!(status, Status::Running)
+        {
+            *status = Status::Done("Cancelled".into());
+        }
+    }
+
     pub(crate) fn set_status(&mut self, status: Status) {
         if let TabContent::Query { status: slot, .. } = &mut self.content {
             *slot = status;
@@ -992,11 +1015,23 @@ impl SessionPanel {
     }
 
     /// Stop the run in flight without touching the editor or status —
-    /// the panel is on its way out of the dock either way.
-    fn abort_running(&mut self) {
-        if let TabContent::Query { running, .. } = &mut self.content
+    /// the panel is on its way out of the dock, or its connection is closing,
+    /// either way.
+    ///
+    /// The server is asked to stop the statement too: dropping the socket
+    /// alone does not, and an `UPDATE` left running would still commit after
+    /// the user had closed the tab it was started from.
+    pub(crate) fn abort_running(&mut self) {
+        if let TabContent::Query {
+            running, pinned, ..
+        } = &mut self.content
             && let Some(running) = running.take()
         {
+            if pinned.as_ref().is_some_and(PinnedConnection::is_busy)
+                && let Some(pin) = pinned.take()
+            {
+                pin.cancel();
+            }
             running.abort();
         }
         if let Some(run) = self.take_script() {
@@ -1007,6 +1042,18 @@ impl SessionPanel {
     /// Point this tab at `connection`: a query tab clears its grid, a table
     /// or structure tab re-reads from the new connection.
     pub(crate) fn set_connection(&mut self, connection: Arc<Connection>, cx: &mut Context<Self>) {
+        // A run still going belongs to the connection being left: stop it
+        // (on the server too) and give the Run button back, or the tab would
+        // say Idle while refusing every run until the old one ended — which a
+        // statement on a dead socket may never do. A paused script goes the
+        // same way.
+        self.cancel_running(cx);
+        if let Some(run) = self.take_script() {
+            close_script(run);
+            if let TabContent::Query { editor, .. } = &self.content {
+                editor.update(cx, |editor, cx| editor.set_running(false, cx));
+            }
+        }
         match &mut self.content {
             TabContent::Query {
                 grid,

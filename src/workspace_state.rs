@@ -10,10 +10,9 @@
 //! final buffer text is flushed on quit. A file that fails to parse is reported
 //! and treated as empty; it must never keep the app from starting.
 
-use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -111,50 +110,29 @@ fn workspace_file() -> Result<PathBuf> {
 
 /// Read the workspace file. A missing file means "nothing to restore".
 pub fn load() -> Result<WorkspaceState> {
-    let path = workspace_file()?;
-    if !path.exists() {
-        return Ok(WorkspaceState::default());
-    }
-
-    let contents =
-        fs::read_to_string(&path).with_context(|| format!("could not read {}", path.display()))?;
-    serde_json::from_str(&contents).with_context(|| format!("could not parse {}", path.display()))
+    store::load_json(&workspace_file()?)
 }
 
-/// Write the workspace file, replacing whatever was there.
-///
-/// Written beside the real file and renamed into place, so a kill part-way
-/// through the write cannot leave a truncated file for the next launch.
+/// Write the workspace file, replacing whatever was there. `ticket` orders it
+/// against the other writes (see [`store::write_atomic`]): a checkpoint that
+/// lands after the quit-time flush must not put the older state back.
 #[cfg(not(test))]
-pub fn save(state: &WorkspaceState) -> Result<()> {
-    let path = workspace_file()?;
-    let dir = path.parent().context("no config directory")?;
-    fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
-
+pub fn save(state: &WorkspaceState, ticket: store::Ticket) -> Result<()> {
     let contents = serde_json::to_string_pretty(state)?;
-    let temporary = dir.join(format!("{FILE_NAME}.tmp"));
-    store::write_restricted(&temporary, &contents)
-        .with_context(|| format!("could not write {}", temporary.display()))?;
-
-    if let Err(error) = fs::rename(&temporary, &path) {
-        // Windows will not replace an existing file with a rename, so fall back
-        // to writing in place rather than leaving the workspace unsaved.
-        store::write_restricted(&path, &contents)
-            .with_context(|| format!("could not write {}: {error:#}", path.display()))?;
-        let _ = fs::remove_file(&temporary);
-    }
-    Ok(())
+    store::write_atomic(&workspace_file()?, &contents, ticket)
 }
 
 /// Under test the file is left alone: it is the developer's own window, and a
 /// test run should not rewrite it.
 #[cfg(test)]
-pub fn save(_state: &WorkspaceState) -> Result<()> {
+pub fn save(_state: &WorkspaceState, _ticket: store::Ticket) -> Result<()> {
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::db::ObjectKind;
     use crate::ui::filter_bar::Operator;

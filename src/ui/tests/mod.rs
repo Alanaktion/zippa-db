@@ -333,7 +333,8 @@ fn restored_workspace(
 ) -> (ScratchDir, WorkspaceWindow) {
     let dir = ScratchDir::new();
     crate::db::store::set_config_dir_for_test(dir.path.clone());
-    crate::db::store::save(&connections).expect("could not save the test connections");
+    crate::db::store::save(&connections, crate::db::store::ticket())
+        .expect("could not save the test connections");
     let handle = workspace_from(cx, state);
     (dir, handle)
 }

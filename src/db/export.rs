@@ -112,7 +112,7 @@ fn render_tsv(columns: &[String], rows: &[Vec<Cell>]) -> Rendered {
 }
 
 /// Tabs and line breaks become spaces so one row stays one line.
-fn tsv_field(value: &str) -> String {
+pub(crate) fn tsv_field(value: &str) -> String {
     value.replace(['\t', '\n', '\r'], " ")
 }
 
@@ -447,12 +447,19 @@ fn is_number(type_name: &str, value: &str) -> bool {
     is_numeric(&base) && as_json_number(value).is_some()
 }
 
-/// A driver type name without its array suffix or its width: `INT4[]` becomes
-/// `INT4`, `numeric(10,2)` becomes `NUMERIC`.
+/// A driver type name without its width: `numeric(10,2)` becomes `NUMERIC`.
+///
+/// An array keeps its `[]`, so `BOOL[]` is not taken for `BOOL`: its value
+/// is the literal `{1,0}`, which no boolean reading of it would keep, and
+/// which goes out as the string it is.
 fn base_type(type_name: &str) -> String {
     let name = type_name.trim_matches('"').trim().to_ascii_uppercase();
-    let name = name.strip_suffix("[]").unwrap_or(&name);
-    name.split(['(', ' ']).next().unwrap_or(name).to_string()
+    let (name, array) = match name.strip_suffix("[]") {
+        Some(element) => (element, "[]"),
+        None => (name.as_str(), ""),
+    };
+    let element = name.split(['(', ' ']).next().unwrap_or(name);
+    format!("{element}{array}")
 }
 
 /// Column types whose values go into JSON as numbers.
@@ -582,6 +589,13 @@ mod tests {
             "[\n  {\n    \"n\": 42,\n    \"t\": \"42\",\n    \"b\": true,\n    \"j\": {\"a\":1}\n  }\n]"
         );
         assert_eq!(rendered.skipped, 0);
+    }
+
+    #[test]
+    fn an_array_of_booleans_or_numbers_is_written_as_its_literal() {
+        assert_eq!(json_value(Some("{1,0}"), "BOOL[]"), "\"{1,0}\"");
+        assert_eq!(json_value(Some("{1,2}"), "INT4[]"), "\"{1,2}\"");
+        assert_eq!(json_value(Some("1"), "BOOL"), "true");
     }
 
     #[test]

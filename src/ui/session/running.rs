@@ -42,7 +42,8 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.connection.config.safety.confirms_writes() && statement::first_write(&sql).is_some()
+        if self.connection.config.safety.confirms_writes()
+            && statement::first_write(&sql, self.connection.config.engine).is_some()
         {
             self.confirm_write(panel.clone(), sql, window, cx);
             return;
@@ -67,12 +68,15 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         let confirm = self.connection.config.safety.confirms_writes()
-            && statement::first_write(&sql).is_some();
+            && statement::first_write(&sql, self.connection.config.engine).is_some();
 
         let (mode, on_failure, blocker) = if ignoring_errors {
             (ScriptMode::Autocommit, OnFailure::Skip, None)
         } else {
-            match transaction_blocker(self.connection.config.engine, &statement::split(&sql)) {
+            match transaction_blocker(
+                self.connection.config.engine,
+                &statement::split(&sql, self.connection.config.engine),
+            ) {
                 Some(blocker) => (ScriptMode::Autocommit, OnFailure::Ask, Some(blocker)),
                 None => (ScriptMode::Transaction, OnFailure::Ask, None),
             }
@@ -117,7 +121,7 @@ impl Session {
             return;
         }
 
-        let statements = statement::split(&sql).len();
+        let statements = statement::split(&sql, self.connection.config.engine).len();
         let mut description = Vec::new();
         if let Some(blocker) = &blocker {
             description.push(format!(
@@ -204,7 +208,7 @@ impl Session {
 
         // Reads change nothing the sidebar shows, so only a script that
         // writes asks for the schema to be read again afterwards.
-        let writes = statement::first_write(&sql).is_some();
+        let writes = statement::first_write(&sql, self.connection.config.engine).is_some();
         let Some(pinned) = panel.update(cx, |panel, _| panel.pin(&self.connection)) else {
             return;
         };
@@ -250,7 +254,7 @@ impl Session {
                     // The sender is dropped when the run is given up on,
                     // which is what cancelling does.
                     Err(_) => panel.update(cx, |panel, cx| {
-                        panel.set_status(Status::Done("Cancelled".into()));
+                        panel.note_cancelled();
                         cx.notify();
                     }),
                 }
@@ -435,13 +439,14 @@ impl Session {
 
         let target = self.display_target();
         let session = cx.entity().downgrade();
+        let engine = self.connection.config.engine;
 
         window.open_alert_dialog(cx, move |alert, _, _| {
             let session = session.clone();
             let panel = panel.clone();
             let sql = sql.clone();
 
-            let description = match statement::first_write(&sql) {
+            let description = match statement::first_write(&sql, engine) {
                 Some(word) => format!("The {word} statement changes data on {target}."),
                 None => format!("This changes data on {target}."),
             };
@@ -523,7 +528,7 @@ impl Session {
                         }
                         // The sender is dropped when the run is given up on,
                         // which is what cancelling does.
-                        Err(_) => panel.set_status(Status::Done("Cancelled".into())),
+                        Err(_) => panel.note_cancelled(),
                     }
                     cx.notify();
                 });
@@ -673,7 +678,7 @@ impl Session {
                         }
                         // The sender is dropped when the read is given up on,
                         // which is what cancelling does.
-                        Err(_) => panel.set_status(Status::Done("Cancelled".into())),
+                        Err(_) => panel.note_cancelled(),
                     }
                     cx.notify();
                 });

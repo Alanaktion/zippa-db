@@ -678,7 +678,8 @@ mod tests {
         assert_eq!(
             statements,
             [
-                "ALTER TABLE items ADD COLUMN rank integer NOT NULL DEFAULT 0",
+                // `rank` is reserved on MySQL, so it is quoted everywhere.
+                "ALTER TABLE items ADD COLUMN \"rank\" integer NOT NULL DEFAULT 0",
                 "ALTER TABLE items DROP COLUMN score",
             ]
         );

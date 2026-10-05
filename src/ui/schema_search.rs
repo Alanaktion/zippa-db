@@ -12,6 +12,7 @@
 //! from the ranked hits on every keystroke.
 
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
@@ -54,6 +55,10 @@ pub struct SchemaSearchView {
     /// typing never stalls the UI; `generation` drops results a newer
     /// keystroke has already superseded.
     hits: Vec<Hit>,
+    /// The catalog `hits` index into. The session's own can be replaced by a
+    /// refresh or a database switch before the re-rank lands, and an index
+    /// into the new one would be out of bounds, or the wrong entry.
+    ranked: Arc<Catalog>,
     matched: usize,
     generation: u64,
 }
@@ -71,6 +76,7 @@ impl SchemaSearchView {
             query: String::new(),
             kinds: Vec::new(),
             hits: Vec::new(),
+            ranked: Arc::default(),
             matched: 0,
             generation: 0,
         };
@@ -111,6 +117,7 @@ impl SchemaSearchView {
             if superseded {
                 return;
             }
+            let ranked = catalog.clone();
             let (hits, matched) = cx
                 .background_spawn(async move { catalog::search(&catalog.entries, &query) })
                 .await;
@@ -119,6 +126,7 @@ impl SchemaSearchView {
                     return;
                 }
                 this.hits = hits;
+                this.ranked = ranked;
                 this.matched = matched;
                 cx.notify();
             })
@@ -213,6 +221,8 @@ impl Render for SchemaSearchView {
         let (catalog, loading, error) = {
             let session = self.session.read(cx);
             (
+                // The session's current catalog, for the empty state and the
+                // notice; the rows come from the one they were ranked in.
                 session.catalog(),
                 session.catalog_loading(),
                 session.catalog_error().map(str::to_string),
@@ -232,7 +242,9 @@ impl Render for SchemaSearchView {
             let mut group = CommandGroup::new().label(heading);
             let mut section = Vec::new();
             for hit in hits {
-                let entry = &catalog.entries[hit.index];
+                let Some(entry) = self.ranked.entries.get(hit.index) else {
+                    continue;
+                };
                 if entry.kind.group() != heading {
                     continue;
                 }

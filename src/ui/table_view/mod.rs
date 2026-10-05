@@ -92,9 +92,11 @@ fn applied_summary(edited: usize, inserted: usize, deleted: usize) -> String {
 struct Confirming {
     /// Statements and the values bound to them, in the order they will run.
     statements: Vec<(String, Vec<Cell>)>,
-    /// Rows the statements write, for the grid once they have run. Empty when
-    /// the page is read again instead.
-    rows: Vec<usize>,
+    /// The cells the statements write, as they were when the write was
+    /// built, for the grid once they have run. Only these become the loaded
+    /// values: anything typed while the question was up, or while the write
+    /// was on its way, is still to be written.
+    written: Vec<StagedRow>,
     /// Whether the page has to be read again afterwards.
     stale: bool,
     /// What the footer says once the statements have run.
@@ -169,6 +171,12 @@ pub struct TableView {
     /// second read while the first may still be in flight; whichever lands
     /// last must not overwrite the answer for the table now on screen.
     row_key_read: u64,
+    /// Counts page reads, so one overtaken by a newer read — a sort or filter
+    /// changed while the first page was still on its way — is dropped
+    /// rather than shown under the newer sort and filters.
+    page_read: u64,
+    /// The same for the foreign keys, which a database switch reads again.
+    foreign_keys_read: u64,
     /// Column names and driver type names of the page in the grid, kept so a
     /// write can quote its columns and cast its parameters.
     columns: Vec<String>,
@@ -273,6 +281,8 @@ impl TableView {
             error: None,
             row_key: None,
             row_key_read: 0,
+            page_read: 0,
+            foreign_keys_read: 0,
             columns: Vec::new(),
             column_types: Vec::new(),
             foreign_keys: None,
@@ -386,10 +396,15 @@ impl TableView {
         let connection = self.connection.clone();
         let object = self.object.clone();
         let task = runtime::spawn(async move { connection.foreign_keys(&object).await });
+        self.foreign_keys_read += 1;
+        let read = self.foreign_keys_read;
 
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
+                if this.foreign_keys_read != read {
+                    return;
+                }
                 this.foreign_keys = Some(match result {
                     Ok(Ok(keys)) => keys,
                     Ok(Err(_)) | Err(_) => Vec::new(),
@@ -467,10 +482,15 @@ impl TableView {
         let (sql, params) = self.query_with_params(cx);
         let connection = self.connection.clone();
         let task = runtime::spawn(async move { connection.run_query_with(&sql, params).await });
+        self.page_read += 1;
+        let read = self.page_read;
 
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
+                if this.page_read != read {
+                    return;
+                }
                 this.loading = false;
                 this.grid.update(cx, |grid, cx| grid.set_loading(false, cx));
                 match result {
@@ -721,7 +741,7 @@ impl TableView {
             return;
         }
 
-        let rows: Vec<usize> = staged.iter().map(|staged| staged.row).collect();
+        let rows = staged.len();
         // Editing a key column changes what addresses the row, and Postgres
         // moves a row's `ctid` when it rewrites it, so either way the page in
         // hand is stale and has to be read again. So is a page that gained or
@@ -732,10 +752,10 @@ impl TableView {
             || staged.iter().any(|staged| self.touches_key(staged));
 
         let write = Confirming {
-            summary: applied_summary(rows.len(), inserted, deletions.len()),
-            question: change_summary(rows.len(), inserted, deletions.len()),
+            summary: applied_summary(rows, inserted, deletions.len()),
+            question: change_summary(rows, inserted, deletions.len()),
             statements,
-            rows,
+            written: staged,
             stale,
         };
 
@@ -756,7 +776,7 @@ impl TableView {
     fn run_write(&mut self, write: Confirming, cx: &mut Context<Self>) {
         let Confirming {
             statements,
-            rows,
+            written,
             stale,
             summary,
             question: _,
@@ -795,7 +815,7 @@ impl TableView {
                             this.reload(cx);
                         } else {
                             this.grid
-                                .update(cx, |grid, cx| grid.apply_staged(&rows, cx));
+                                .update(cx, |grid, cx| grid.apply_staged(&written, cx));
                         }
                     }
                     Ok(Err(error)) => {

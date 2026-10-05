@@ -114,8 +114,11 @@ pub struct Splitter<R> {
     /// Whether this statement mentions `TRIGGER`, so `BEGIN`/`END` in a SQLite
     /// or MySQL body are block structure rather than transaction control.
     saw_trigger: bool,
-    /// SQLite trigger `BEGIN ... END` and the `CASE ... END` inside them.
+    /// SQLite trigger `BEGIN ... END` and the `CASE ... END` inside them, and
+    /// a Postgres `BEGIN ATOMIC ... END` function body.
     blocks: Vec<Block>,
+    /// The identifier before `word`, for `BEGIN ATOMIC`.
+    last_word: String,
     /// Whether a backslash escapes inside the current quoted string.
     escape: bool,
     /// Whether the next data belongs to a `COPY ... FROM stdin`.
@@ -139,6 +142,7 @@ impl<R: BufRead> Splitter<R> {
             word: String::new(),
             saw_trigger: false,
             blocks: Vec::new(),
+            last_word: String::new(),
             escape: false,
             copying: false,
             copy_buffer: Vec::new(),
@@ -459,7 +463,20 @@ impl<R: BufRead> Splitter<R> {
                 }
                 _ => {}
             }
+        } else if self.dialect == Dialect::Postgres {
+            // A SQL-standard function or procedure body (`pg_dump` writes them
+            // for Postgres 14 and later) holds statements of its own, ended by
+            // semicolons, up to its `END`.
+            match word.as_str() {
+                "ATOMIC" if self.last_word == "BEGIN" => self.blocks.push(Block::Trigger),
+                "CASE" if !self.blocks.is_empty() => self.blocks.push(Block::Case),
+                "END" => {
+                    self.blocks.pop();
+                }
+                _ => {}
+            }
         }
+        self.last_word = word;
     }
 
     /// Emit the statement just completed, if it holds anything.
@@ -471,6 +488,7 @@ impl<R: BufRead> Splitter<R> {
         self.word.clear();
         self.saw_trigger = false;
         self.blocks.clear();
+        self.last_word.clear();
         self.escape = false;
 
         if text.is_empty() {
@@ -515,9 +533,14 @@ impl<R: BufRead> Splitter<R> {
         match self.dialect {
             Dialect::MySql => true,
             Dialect::Sqlite => false,
+            // An `E'…'` string: the `E` right against the quote, and not
+            // the last letter of a word like `ESCAPE`, `ELSE`, or `DATE`.
             Dialect::Postgres => {
-                let trimmed = self.statement.trim_end();
-                trimmed.ends_with('E') || trimmed.ends_with('e')
+                let mut before = self.statement.chars().rev();
+                matches!(before.next(), Some('E' | 'e'))
+                    && before
+                        .next()
+                        .is_none_or(|character| !(character.is_alphanumeric() || character == '_'))
             }
         }
     }
@@ -624,6 +647,37 @@ mod tests {
         assert_eq!(
             statements(sql, Dialect::Sqlite),
             ["CREATE TABLE t (id int)", "INSERT INTO t VALUES (1)"]
+        );
+    }
+
+    #[test]
+    fn a_word_ending_in_e_does_not_start_an_escape_string() {
+        let sql = "SELECT 1 WHERE a LIKE 'x\\_%' ESCAPE '\\';\nSELECT CASE WHEN b THEN 1 ELSE '\\' END;\nSELECT E'it\\'s';\nSELECT 2;\n";
+        assert_eq!(
+            statements(sql, Dialect::Postgres),
+            [
+                "SELECT 1 WHERE a LIKE 'x\\_%' ESCAPE '\\'",
+                "SELECT CASE WHEN b THEN 1 ELSE '\\' END",
+                "SELECT E'it\\'s'",
+                "SELECT 2",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_begin_atomic_body_is_one_statement() {
+        let sql = "CREATE FUNCTION f() RETURNS int LANGUAGE sql\nBEGIN ATOMIC\n  SELECT 1;\n  SELECT CASE WHEN true THEN 2 END;\nEND;\nSELECT 3;\n";
+        assert_eq!(
+            statements(sql, Dialect::Postgres),
+            [
+                "CREATE FUNCTION f() RETURNS int LANGUAGE sql\nBEGIN ATOMIC\n  SELECT 1;\n  SELECT CASE WHEN true THEN 2 END;\nEND",
+                "SELECT 3",
+            ]
+        );
+        // A transaction's own `BEGIN` and `END` are still statements.
+        assert_eq!(
+            statements("BEGIN;\nSELECT 1;\nEND;\n", Dialect::Postgres),
+            ["BEGIN", "SELECT 1", "END"]
         );
     }
 

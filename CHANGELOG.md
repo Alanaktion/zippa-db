@@ -95,6 +95,18 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
 - `Cmd`/`Ctrl`+`C` copies a value that was never read back as an empty cell
   and says so, the way `Copy as` already wrote it, rather than putting the
   `<3 bytes>`-style description on the clipboard.
+- A polish pass over crashes, hangs, and inconsistencies (see `AUDIT.md`
+  §11): settings, connections, and the workspace are written atomically and
+  a file that cannot be read is kept aside rather than overwritten; the SSH
+  sign-in times out and keeps the tunnel alive, and `known_hosts` refuses a
+  revoked or re-keyed host; disconnecting, closing, or switching database
+  stops the runs in flight; quitting with an open transaction, and switching
+  database or reconnecting with unapplied edits, ask first; SQL is split and
+  classified per engine, so a backslash or `#` means what that engine reads
+  it as; generated SQL quotes reserved words; picked rows follow a sort.
+- Postgres connections no longer read `~/.pgpass` or `PGDATABASE`, so a saved
+  connection connects the same way on every machine, and they identify
+  themselves to the server as `Zippa DB`.
 - Declared the minimum Rust version (1.95) and package metadata in
   `Cargo.toml`.
 - Brought `README.md`, `AGENTS.md`/`CLAUDE.md`, `TODO.md` (which now absorbs

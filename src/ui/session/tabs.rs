@@ -27,6 +27,15 @@ use super::{
 };
 
 impl Session {
+    /// Stop every tab's run, on the server too, before the connection
+    /// closes: closing only waits for them, and a statement left running
+    /// would still commit after the user had disconnected.
+    pub(crate) fn stop_runs(&mut self, cx: &mut Context<Self>) {
+        for panel in self.panels.clone() {
+            panel.update(cx, |panel, _| panel.abort_running());
+        }
+    }
+
     /// Add a tab and make it active.
     ///
     /// `title` defaults to a running "Query N"; `run` executes `sql` right
@@ -627,6 +636,15 @@ impl Session {
     /// connection.
     pub(crate) fn has_unsaved_changes(&self, cx: &App) -> bool {
         self.panels.iter().any(|panel| panel.read(cx).is_dirty(cx))
+    }
+
+    /// How many tabs hold staged rows or structure edits that a new
+    /// connection — a database switch, a reconnect — would throw away.
+    pub(crate) fn unapplied_changes(&self, cx: &App) -> usize {
+        self.panels
+            .iter()
+            .filter(|panel| panel.read(cx).has_unapplied_changes(cx))
+            .count()
     }
 
     /// How many tabs have a transaction open — work that closing the

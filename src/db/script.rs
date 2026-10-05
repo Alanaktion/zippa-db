@@ -235,13 +235,21 @@ impl ScriptRun {
         on_failure: OnFailure,
     ) -> Result<Step> {
         let connection = pinned.connection().clone();
-        let statements = statement::split(sql);
+        let statements = statement::split(sql, connection.config.engine);
         for statement in &statements {
             connection.refuse_write(&statement.text)?;
         }
+        // Counted forward from the statement before, not from the top each
+        // time, which on a large file made the count quadratic.
+        let mut counted = (0, 1);
         let lines = statements
             .iter()
-            .map(|statement| sql[..statement.start].matches('\n').count() + 1)
+            .map(|statement| {
+                let (from, line) = counted;
+                let line = line + sql[from..statement.start].matches('\n').count();
+                counted = (statement.start, line);
+                line
+            })
             .collect();
 
         let mut session = pinned.lock().await?;
@@ -261,6 +269,9 @@ impl ScriptRun {
                 .execute(&begin)
                 .await
                 .context("could not start the script's transaction")?;
+            // MySQL's transaction state is followed from the statements sent,
+            // so the run's own control has to be told about too.
+            session.note(&begin, None);
         }
 
         let run = ScriptRun {
@@ -338,8 +349,10 @@ impl ScriptRun {
         } else {
             session.execute("ROLLBACK").await
         };
-        if undone.is_err() {
-            session.discard();
+        match undone {
+            Ok(()) if !self.nested => session.note("ROLLBACK", None),
+            Ok(()) => {}
+            Err(_) => session.discard(),
         }
     }
 
@@ -379,10 +392,12 @@ impl ScriptRun {
             } else {
                 "COMMIT".to_string()
             };
-            self.session_mut()?
+            let session = self.session_mut()?;
+            session
                 .execute(&commit)
                 .await
                 .context("could not commit the script")?;
+            session.note(&commit, None);
         }
         Ok(Step::Finished(self.finish(false, false).await))
     }
@@ -515,7 +530,7 @@ pub fn transaction_blocker(engine: Engine, statements: &[Statement]) -> Option<B
         .iter()
         .enumerate()
         .find_map(|(index, statement)| {
-            let words = statement::leading_words(&statement.text, 6);
+            let words = statement::leading_words(&statement.text, 6, engine);
             let shown = blocks(engine, &words)?;
             Some(Blocker {
                 index,
@@ -593,7 +608,7 @@ mod tests {
     use super::*;
 
     fn blocker(engine: Engine, sql: &str) -> Option<String> {
-        transaction_blocker(engine, &statement::split(sql)).map(|blocker| blocker.message())
+        transaction_blocker(engine, &statement::split(sql, engine)).map(|blocker| blocker.message())
     }
 
     #[test]

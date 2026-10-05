@@ -79,6 +79,10 @@ pub struct ConnectionEditor {
     /// untouched box from an emptied one.
     ssh_secret: Entity<InputState>,
     ssh_secret_edited: bool,
+    /// How the saved connection signed in, which is what its stored secret
+    /// is for. A key's passphrase is no password for the jump host (nor the
+    /// other way round), so switching method does not keep the stored one.
+    saved_ssh_auth: Option<SshAuth>,
     /// Seconds the server lets one statement run; blank for no limit.
     statement_timeout: Entity<InputState>,
     /// Whether the user has typed in the password box since the dialog opened.
@@ -173,6 +177,7 @@ impl ConnectionEditor {
                 }
             }),
             ssh_secret_edited: false,
+            saved_ssh_auth: None,
             statement_timeout: cx.new(|cx| InputState::new(window, cx).placeholder("No limit")),
             password_edited: false,
             status: Status::None,
@@ -320,6 +325,7 @@ impl ConnectionEditor {
         self.set_field(&self.ssl_key.clone(), &config.ssl.client_key, window, cx);
         self.ssh_enabled = config.ssh.enabled;
         self.ssh_auth = config.ssh.auth;
+        self.saved_ssh_auth = Some(config.ssh.auth);
         self.set_field(&self.ssh_host.clone(), &config.ssh.host, window, cx);
         self.set_field(
             &self.ssh_port.clone(),
@@ -542,7 +548,11 @@ impl ConnectionEditor {
                         let connection = Connection::open_with(config, credentials).await?;
                         connection.close().await;
                         anyhow::Ok(())
-                    });
+                    })
+                    // A test the editor drops (closed, or a new test started)
+                    // stops trying, rather than waiting out a host that does
+                    // not answer on the runtime.
+                    .abort_on_drop();
                     match task.await {
                         Ok(Ok(())) => Status::Succeeded,
                         Ok(Err(error)) => Status::Failed(format!("{error:#}")),
@@ -574,9 +584,11 @@ impl ConnectionEditor {
     fn secrets(&self, cx: &App) -> SecretEdits {
         SecretEdits {
             password: self.password(cx),
-            ssh: self
-                .ssh_secret_edited
-                .then(|| self.ssh_secret.read(cx).value().to_string()),
+            ssh: (self.ssh_secret_edited
+                || self
+                    .saved_ssh_auth
+                    .is_some_and(|saved| saved != self.ssh_auth))
+            .then(|| self.ssh_secret.read(cx).value().to_string()),
         }
     }
 
