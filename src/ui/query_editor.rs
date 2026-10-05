@@ -230,25 +230,7 @@ impl QueryEditor {
 
     /// Every keystroke, seen before the editor.
     fn on_key_down(&mut self, _: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.restart_completion(cx);
         self.follow_caret(window, cx);
-    }
-
-    /// With the menu closed, start the next completion where the caret is now.
-    ///
-    /// `gpui-kit` remembers where the first completion started and never
-    /// forgets it; a later keystroke before that offset — the caret moved
-    /// back to an earlier line, say to finish a `SELECT` list after writing
-    /// its `FROM` — is then ignored and the menu never opens. Setting the
-    /// start afresh while nothing is showing keeps it at or before the caret.
-    fn restart_completion(&mut self, cx: &mut Context<Self>) {
-        if self.completion_open(cx) {
-            return;
-        }
-        self.state.update(cx, |state, cx| {
-            let cursor = state.cursor();
-            state.present_completion_items(cursor, "", Vec::new(), cx);
-        });
     }
 
     /// Draw the editor once more after the frame that moves the caret, so
