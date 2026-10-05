@@ -107,8 +107,6 @@ The keychain read, the `connections.json`/settings/dump-pre-flight writes, and t
 
 ### Durability and races
 
-- **A checkpoint can interleave with the quit-time flush.** Both write the same `workspace.json.tmp` then rename (`Workspace::save_state`/`flush_state` in `src/app.rs`, `src/workspace_state.rs`); a checkpoint spawned just before quit can write the older snapshot between the flush's write and its rename. ⚠︎ Inferred; the save is a no-op under `#[cfg(test)]`.
-- **`save_state`/`flush_state` record the snapshot as saved before it is written** (`src/app.rs`), so a failed write is never retried. Failure is only an `eprintln!`.
 - **Ignored `Result`s** (all deliberate-looking, listed for completeness): `let _ = tx.send(...)` (`src/db/runtime.rs`), import `ROLLBACK`/`SET FOREIGN_KEY_CHECKS=1`/`SET UNIQUE_CHECKS=1` `.ok()` and `sender.send(...)` (`src/db/import/mod.rs`), SQLite `rollback()`/`PRAGMA foreign_keys = ON` `.ok()` (`src/db/sqlite.rs`), and `update_in(...).ok()` throughout the UI, which hides "the entity is gone" errors.
 - **Errors that reach only stderr.** A failed settings write (`src/settings.rs`) and a failed workspace save (`src/app.rs`) both leave the UI claiming success. (`record_connected`'s failure used to be a third: it now goes through the launcher's own `store_in_background`, the same path `save`/`delete_confirmed` use, which surfaces a failure as a toast — see "Durability" below and the Persistence split section of `AGENTS.md`.)
 
@@ -161,8 +159,8 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 
 1. **Copy byte cap** (§2) — apply `MAX_COPY_BYTES` to every copy.
 2. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations.
-3. **Durability** (§4) — the checkpoint/flush interleaving on `workspace.json` (the `record_connected` race is fixed).
-4. **CI on macOS and Windows** (§6).
+3. **CI on macOS and Windows** (§6).
+4. **The open design calls in §11.**
 
 ## 8. What this audit did and did not cover
 
@@ -189,3 +187,28 @@ Prompted by the nightly live tests failing since `4c5cfe5`. sqlx sends every `sq
 **Fixed later:**
 
 - **[M] A query tab on MySQL refused the same statements** (`fetch_all` in `src/db/connection.rs`, through the pool). `BEGIN`, `LOCK TABLES`, or `USE other_db` run with `Cmd+Enter` failed with error 1295, and on Postgres and SQLite a `BEGIN` succeeded but left its transaction on whichever pooled connection ran it. A query tab now runs on a connection of its own (`db::pinned`), through `Dedicated::fetch` and its text-protocol fallback, so the session state each statement sets up stays with the tab; pinned by `live_mysql_a_pinned_tab_holds_a_transaction_and_its_locks`.
+
+## 11. Polish audit — crashes, hangs, and inconsistencies (2026-10-05, revision `6558db1`)
+
+A second full read of `src/` after #4–#9 landed, looking for panics, work that hangs or outlives what started it, lost data, and places where two paths to the same thing disagree. Fixed in the same change:
+
+- **Persistence.** Each JSON file is written to a temp file and renamed, through one `store::write_atomic` that takes a `store::ticket()` when the snapshot is taken and skips a write older than one already on disk, so a background checkpoint can no longer land after the quit-time flush (this closes the §4 interleave). A failed workspace save is retried at the next checkpoint instead of being marked saved. A file that does not parse is moved aside to `<name>.unreadable` and the error says so, rather than being overwritten with an empty list on the next save. Two launcher tabs share one `SavedConnections` global, so a connection added in one is not dropped by a save from the other.
+- **Connecting.** The SSH sign-in has a 15 s timeout and the tunnel sends keepalives; the accept loop no longer spins on a persistent error; the agent tries every identity. `known_hosts` refuses an `@revoked` key and a host recorded under a different key type, matches the host case-insensitively, and reads tab-separated lines. Postgres ignores `~/.pgpass` and `PGDATABASE`, so a saved connection means the same thing on every machine (a blank database is the user's own, as libpq does), and sets `application_name`. Changing the SSH auth method in the editor saves the new secret rather than keeping the old one. Closing the editor stops a connection test still running.
+- **Query runs and transactions.** Disconnecting, closing a connection, or switching database stops the runs in flight (and asks the server to cancel the pinned statement) instead of leaving a tab spinning. Quitting with an open transaction asks first. Switching database or reconnecting with staged edits or an unsaved structure change asks first. A lost connection on a pinned tab discards it, so the next run checks out a fresh one. A cancelled run says "Cancelled" only if it was still running. Escape on a running import cancels it instead of hiding it. MySQL `autocommit` set as `ON`/`TRUE`/`'1'` is followed, and a script's own `BEGIN`/`COMMIT` update the transaction state. MySQL error 4031 and Postgres `57P04`/`57P05`/`25P03` read as a lost connection.
+- **SQL classification and quoting.** The splitter, classifier, and completion lexer now know the engine: `#` starts a comment only on MySQL, and a backslash escapes a quote only on MySQL and in a Postgres `E'…'` string, so a SQLite or Postgres `'C:\'` no longer swallows the rest of the buffer. `EXPLAIN ANALYSE` is recognised. A `PRAGMA name(arg)` is a read only for the pragmas that only read. The import splitter handles Postgres' `BEGIN ATOMIC` bodies and `e'…'` after a word ending in `e`. Generated SQL quotes reserved words (`rank`, `order`, …) on every engine.
+- **Grid and views.** Picked rows, the anchor, and the focused row follow their rows through a sort. Applying edits keeps an edit typed while the write was in flight. A stale page or foreign-key read no longer replaces a newer one. Schema search no longer indexes a catalog it did not rank (a panic after a refresh). `Cmd+C` escapes tabs and newlines in a cell the way `Copy as` TSV does. Export writes an array of booleans or numbers as its literal. The plan reader accepts `1e+06` costs. The management views clear their grid on an error and say what they will show when empty.
+
+Left open, because each needs a design call:
+
+- **[M] A script run without a transaction, inside an open one** (`script::ScriptRun`, `ScriptMode::Autocommit` on a pinned connection whose `TxnState` is `Open`): the statements join the tab's transaction rather than committing, the question's wording says otherwise, and on Postgres the first failure aborts the whole transaction so every later statement fails with `25P02`. Either refuse the mode while a transaction is open or word the question for it.
+- **[L] Re-running straight after cancelling a paused script** can say "still running something" until the close on the runtime finishes (`panel::close_script`).
+- **[L] `EXPLAIN` runs on the pool, not the tab's pinned connection**, so it cannot see the tab's temporary tables, `SET`s, or `USE`.
+- **[L] Row panel text is lost on `Cmd+S` or a row change** if the field has not been committed by a blur (`src/ui/table_view/row_panel.rs`).
+- **[L] A binary value's preview is dropped while the value dialog is open** over it.
+- **[L] The structure tab cannot be refreshed** from the server without closing and reopening it.
+- **[L] The sidebar filters every object per visible row per frame** (`ui/session/sidebar.rs`); fine at hundreds of objects, noticeable at tens of thousands.
+- **[L] A page reload that lands while edits are being written** still drops the edits typed during the write.
+- **[L] Environment the driver still reads.** `PGOPTIONS` and, in `Prefer` mode, `PGSSLROOTCERT` reach sqlx from the environment; sqlx offers no way to opt out.
+- **[L] `~/.pgpass` is no longer read** (a side effect of the fix above). If it is wanted back, it should be an explicit per-connection option.
+- **[L] Grid commands bound to plain keys are not in the menu bar** (`EditCell` on `Enter`, `ToggleRow` on `Space`, `ExtendSelectionUp`/`Down` on `Shift+↑`/`↓`): on macOS a menu key equivalent fires before the focused view sees the key, so listing them would take `Enter` and `Space` from text boxes. They are listed in the shortcuts dialog.
+- **[L] Smaller notes.** `REINDEX SCHEMA` and `SET SESSION autocommit` are not in `transaction_blocker`; `typed_placeholder` casts a Postgres `"char"` column to `CHAR`; SQLite maintenance confirmations can stack on a double click; the structure tab's per-row checkboxes share one accessible name; the foreign-key jump uses the loaded value rather than a staged edit; the editor still says "Leave blank to keep the saved one" after the SSH auth method changes.
