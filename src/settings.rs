@@ -9,7 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{LazyLock, OnceLock};
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use gpui_kit::component::scroll::ScrollbarMode;
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, AppContext as _, Global, SharedString, Window, WindowAppearance};
@@ -216,8 +216,9 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
     // The file is small, but it is still disk I/O on every change; the write
     // goes to the background so toggling a switch never waits on it.
     let to_save = settings.clone();
+    let ticket = store::ticket();
     cx.background_spawn(async move {
-        if let Err(error) = save(&to_save) {
+        if let Err(error) = save(&to_save, ticket) {
             eprintln!("could not save the settings: {error:#}");
         }
     })
@@ -382,31 +383,19 @@ fn settings_file() -> Result<PathBuf> {
 
 /// Read the settings file. A missing file means "nothing changed yet".
 fn load() -> Result<Settings> {
-    let path = settings_file()?;
-    if !path.exists() {
-        return Ok(Settings::default());
-    }
-
-    let contents =
-        fs::read_to_string(&path).with_context(|| format!("could not read {}", path.display()))?;
-    serde_json::from_str(&contents).with_context(|| format!("could not parse {}", path.display()))
+    store::load_json(&settings_file()?)
 }
 
 #[cfg(not(test))]
-fn save(settings: &Settings) -> Result<()> {
-    let path = settings_file()?;
-    let dir = path.parent().context("no config directory")?;
-    fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
-
+fn save(settings: &Settings, ticket: store::Ticket) -> Result<()> {
     let contents = serde_json::to_string_pretty(settings)?;
-    store::write_restricted(&path, &contents)
-        .with_context(|| format!("could not write {}", path.display()))
+    store::write_atomic(&settings_file()?, &contents, ticket)
 }
 
 /// Under test the file is left alone: the settings the tests change are the
 /// developer's own, and a test run should not rewrite them.
 #[cfg(test)]
-fn save(_settings: &Settings) -> Result<()> {
+fn save(_settings: &Settings, _ticket: store::Ticket) -> Result<()> {
     Ok(())
 }
 

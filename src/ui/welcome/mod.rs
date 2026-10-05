@@ -16,10 +16,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::*;
-// `App` is only named by the test-only reach-in below.
-#[cfg(test)]
-use gpui_kit::App;
-use gpui_kit::{Context, Entity, EventEmitter, FocusHandle, Window, div, px};
+use gpui_kit::{App, Context, Entity, EventEmitter, FocusHandle, Global, Window, div, px};
 use uuid::Uuid;
 
 use crate::app::NewConnection;
@@ -42,8 +39,42 @@ pub enum WelcomeEvent {
     Connected(Arc<Connection>),
 }
 
+/// The saved connections, one copy for the whole app.
+///
+/// Every launcher tab reads and changes this one list rather than a copy of
+/// its own: each change writes the whole list, so a launcher holding a list
+/// read before another tab added or edited a connection would put the old
+/// list back on disk and lose that change.
+pub(crate) struct SavedConnections {
+    list: Vec<ConnectionConfig>,
+    /// Why the file could not be read at startup, for the first launcher.
+    load_error: Option<String>,
+}
+
+impl Global for SavedConnections {}
+
+impl SavedConnections {
+    /// The list, read from disk the first time anything asks.
+    pub(crate) fn get(cx: &mut App) -> &[ConnectionConfig] {
+        if !cx.has_global::<Self>() {
+            let (list, load_error) = match store::load() {
+                Ok(list) => (list, None),
+                Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+            };
+            cx.set_global(Self { list, load_error });
+        }
+        &cx.global::<Self>().list
+    }
+
+    /// The list without loading it: empty before anything has.
+    fn read(cx: &App) -> &[ConnectionConfig] {
+        cx.try_global::<Self>()
+            .map(|saved| saved.list.as_slice())
+            .unwrap_or_default()
+    }
+}
+
 pub struct Welcome {
-    connections: Vec<ConnectionConfig>,
     /// Search text over the saved list.
     query: Entity<InputState>,
     /// The connection being connected to, if any.
@@ -61,17 +92,19 @@ impl EventEmitter<WelcomeEvent> for Welcome {}
 
 impl Welcome {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (connections, error) = match store::load() {
-            Ok(connections) => (connections, None),
-            Err(error) => (Vec::new(), Some(format!("{error:#}"))),
-        };
+        SavedConnections::get(cx);
+        // Shown once, by the first launcher: the file has been moved aside, so
+        // the next one has nothing more to say about it.
+        let error = cx.global_mut::<SavedConnections>().load_error.take();
+        // Another tab's change to the list is this one's to show.
+        cx.observe_global::<SavedConnections>(|_, cx| cx.notify())
+            .detach();
 
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search connections"));
         cx.subscribe_in(&query, window, Self::on_search_event)
             .detach();
 
         Self {
-            connections,
             query,
             connecting: None,
             error,
@@ -95,7 +128,7 @@ impl Welcome {
     /// Put the caret in the search box when there is something to search, or
     /// on the launcher itself so its shortcuts keep working on an empty screen.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.connections.is_empty() {
+        if !SavedConnections::read(cx).is_empty() {
             self.query.update(cx, |input, cx| input.focus(window, cx));
         } else {
             self.focus.focus(window, cx);
@@ -181,7 +214,9 @@ impl Welcome {
                 // Whether the keychain can hold a secret for it is decided
                 // before this save, which would make a new connection look
                 // saved without having stored one.
-                let saved = self.connections.iter().any(|saved| saved.id == config.id);
+                let saved = SavedConnections::read(cx)
+                    .iter()
+                    .any(|saved| saved.id == config.id);
                 if *save {
                     self.save(config.clone(), secrets.clone(), window, cx);
                 }
@@ -217,34 +252,31 @@ impl Welcome {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match self
-            .connections
-            .iter()
-            .position(|saved| saved.id == config.id)
-        {
-            Some(index) => {
-                // Editing a connection is not connecting to it, so its "last
-                // connected" stamp survives the edit: the card keeps its place
-                // in most-recent-first order and its "Connected … ago" line.
-                let mut updated = config.clone();
-                updated.last_connected = self.connections[index].last_connected;
-                self.connections[index] = updated;
+        let (connections, ticket) = change_saved(cx, |list| {
+            match list.iter_mut().find(|saved| saved.id == config.id) {
+                Some(saved) => {
+                    // Editing a connection is not connecting to it, so its
+                    // "last connected" stamp survives the edit: the card keeps
+                    // its place in most-recent-first order and its "Connected
+                    // … ago" line.
+                    let last_connected = saved.last_connected;
+                    *saved = config.clone();
+                    saved.last_connected = last_connected;
+                }
+                None => list.push(config.clone()),
             }
-            None => self.connections.push(config.clone()),
-        }
+        });
 
         // The list is small, but writing it is still disk I/O; the keychain is a
         // second, slower one behind it.
-        let connections = self.connections.clone();
         let id = config.id;
         store_in_background(
             move || {
-                store::save(&connections)?;
+                store::save(&connections, ticket)?;
                 secrets.save(&id)
             },
             cx,
         );
-        cx.notify();
     }
 
     /// Connect to a saved connection the way a card click does, asking first
@@ -348,8 +380,7 @@ impl Welcome {
     /// exactly the way a manual one does: its password comes from the keychain
     /// and the failure is shown on the launcher.
     pub(crate) fn open(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(config) = self
-            .connections
+        let Some(config) = SavedConnections::read(cx)
             .iter()
             .find(|config| config.id == id)
             .cloned()
@@ -408,9 +439,11 @@ impl Welcome {
 
     /// Record that a connection was just opened, for most-recent-first order.
     fn mark_connected(&mut self, id: &Uuid, cx: &mut Context<Self>) {
-        if let Some(config) = self.connections.iter_mut().find(|config| &config.id == id) {
-            config.last_connected = Some(Utc::now());
-        }
+        let (connections, ticket) = change_saved(cx, |list| {
+            if let Some(config) = list.iter_mut().find(|config| &config.id == id) {
+                config.last_connected = Some(Utc::now());
+            }
+        });
 
         // Writes the launcher's own in-memory list, the same path every other
         // mutation goes through (`save`, `delete_confirmed`), rather than a
@@ -419,14 +452,14 @@ impl Welcome {
         // newly added connection whose own write has not landed yet — and
         // overwrite it with a copy that never had the edit. `store_in_background`
         // also surfaces a failed write as a toast rather than only `eprintln!`.
-        let connections = self.connections.clone();
-        store_in_background(move || store::save(&connections), cx);
+        // The list is the app's one copy, so a launcher in another tab writing
+        // it later cannot undo this (see `SavedConnections`).
+        store_in_background(move || store::save(&connections, ticket), cx);
     }
 
     /// Open the editor pre-filled from the saved connection.
     fn edit(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(config) = self
-            .connections
+        let Some(config) = SavedConnections::read(cx)
             .iter()
             .find(|config| config.id == id)
             .cloned()
@@ -438,8 +471,7 @@ impl Welcome {
 
     /// Copy a saved connection under a new id, without its stored password.
     fn duplicate(&mut self, id: Uuid, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(source) = self
-            .connections
+        let Some(source) = SavedConnections::read(cx)
             .iter()
             .find(|config| config.id == id)
             .cloned()
@@ -453,17 +485,13 @@ impl Welcome {
         if !source.name.trim().is_empty() {
             copy.name = format!("{} copy", source.name.trim());
         }
-        self.connections.push(copy);
-
-        let connections = self.connections.clone();
-        store_in_background(move || store::save(&connections), cx);
-        cx.notify();
+        let (connections, ticket) = change_saved(cx, |list| list.push(copy));
+        store_in_background(move || store::save(&connections, ticket), cx);
     }
 
     /// Ask before throwing a saved connection away.
     fn delete(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(config) = self
-            .connections
+        let Some(config) = SavedConnections::read(cx)
             .iter()
             .find(|config| config.id == id)
             .cloned()
@@ -495,18 +523,15 @@ impl Welcome {
     }
 
     fn delete_confirmed(&mut self, id: Uuid, _window: &mut Window, cx: &mut Context<Self>) {
-        self.connections.retain(|config| config.id != id);
-
-        let connections = self.connections.clone();
+        let (connections, ticket) = change_saved(cx, |list| list.retain(|config| config.id != id));
         store_in_background(
             move || {
-                store::save(&connections)?;
+                store::save(&connections, ticket)?;
                 store::delete_password(&id)?;
                 store::delete_ssh_secret(&id)
             },
             cx,
         );
-        cx.notify();
     }
 
     /// Open the platform file picker and start a SQLite connection from it.
@@ -576,12 +601,13 @@ impl Welcome {
 
     /// The search box and the cards it filters, or the empty state.
     fn render_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.connections.is_empty() {
+        let connections = SavedConnections::read(cx).to_vec();
+        if connections.is_empty() {
             return self.render_empty(cx).into_any_element();
         }
 
         let query = self.query.read(cx).value().trim().to_string();
-        let visible: Vec<&ConnectionConfig> = ordered(&self.connections)
+        let visible: Vec<&ConnectionConfig> = ordered(&connections)
             .into_iter()
             .filter(|config| matches_query(config, &query))
             .collect();
@@ -663,8 +689,7 @@ impl Welcome {
         connections: Vec<ConnectionConfig>,
         cx: &mut Context<Self>,
     ) {
-        self.connections = connections;
-        cx.notify();
+        change_saved(cx, |list| *list = connections);
     }
 
     /// Show an error banner without a live connection attempt.
@@ -686,8 +711,8 @@ impl Welcome {
 
     /// The saved connections as the launcher holds them.
     #[cfg(test)]
-    pub(crate) fn connections_for_test(&self) -> &[ConnectionConfig] {
-        &self.connections
+    pub(crate) fn connections_for_test<'a>(&self, cx: &'a App) -> &'a [ConnectionConfig] {
+        SavedConnections::read(cx)
     }
 
     /// Save a connection the way the editor's Save button does. `password` is
@@ -780,6 +805,19 @@ impl Welcome {
 ///
 /// The connection list is small, but writing it is still disk I/O and the UI
 /// thread should not wait on it; the keychain behind it is slower still.
+/// Change the app's one list of saved connections and return what to write,
+/// with the ticket that orders the write after every change made before it.
+/// Every launcher observes the list, so each one redraws.
+fn change_saved(
+    cx: &mut App,
+    change: impl FnOnce(&mut Vec<ConnectionConfig>),
+) -> (Vec<ConnectionConfig>, store::Ticket) {
+    SavedConnections::get(cx);
+    let saved = cx.global_mut::<SavedConnections>();
+    change(&mut saved.list);
+    (saved.list.clone(), store::ticket())
+}
+
 fn store_in_background<F>(work: F, cx: &mut Context<Welcome>)
 where
     F: FnOnce() -> anyhow::Result<()> + Send + 'static,
