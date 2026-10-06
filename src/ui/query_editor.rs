@@ -30,7 +30,8 @@ actions!(
         RunScript,
         RunScriptIgnoringErrors,
         Explain,
-        ExplainAnalyze
+        ExplainAnalyze,
+        ToggleComment
     ]
 );
 
@@ -212,6 +213,30 @@ impl QueryEditor {
 
     fn explain(&mut self, _: &Explain, _window: &mut Window, cx: &mut Context<Self>) {
         self.emit_explain(false, cx);
+    }
+
+    /// Comment out the lines the selection touches, or the caret's line, and
+    /// run it again to take the comments back off.
+    fn toggle_comment(&mut self, _: &ToggleComment, window: &mut Window, cx: &mut Context<Self>) {
+        let (text, selected, scroll) = {
+            let state = self.state.read(cx);
+            (
+                state.value().to_string(),
+                state.selected_range(),
+                state.scroll_offset(),
+            )
+        };
+        let Some((text, selected)) = toggle_comments(&text, selected) else {
+            return;
+        };
+        self.state.update(cx, |state, cx| {
+            // `replace_all` keeps the change on the undo stack, unlike
+            // `set_value`; it clears the selection and jumps the view to the
+            // top, so both are put back.
+            state.replace_all(text, window, cx);
+            state.set_selected_range(selected, cx);
+            state.set_scroll_offset(scroll, cx);
+        });
     }
 
     fn explain_analyze(
@@ -428,6 +453,128 @@ impl QueryEditor {
     }
 }
 
+/// Toggle `-- ` line comments over the lines a selection touches — or the
+/// caret's line — returning the new buffer and where the selection should sit
+/// in it. `None` when there is nothing to change, so a blank caret line is a
+/// no-op rather than an empty edit on the undo stack.
+///
+/// A blank line within the run is left alone; the run is uncommented only when
+/// every non-blank line already carries a comment, and commented as a whole
+/// otherwise. The comment goes in after the line's indentation, so the marker
+/// lines up with the statement rather than the margin. Pure, so the buffer is
+/// reshaped in unit tests without a window.
+fn toggle_comments(
+    text: &str,
+    selected: std::ops::Range<usize>,
+) -> Option<(String, std::ops::Range<usize>)> {
+    let len = text.len();
+    let start = selected.start.min(len);
+    let end = selected.end.min(len);
+    // A selection that ends exactly at the start of a line does not take that
+    // line with it, the way dragging down to the next line's margin does not.
+    let last = if end > start && text[..end].ends_with('\n') {
+        end - 1
+    } else {
+        end
+    };
+
+    // The lines the toggle covers, as byte ranges without their newline.
+    let mut spans = Vec::new();
+    let last_line_end = line_end(text, last);
+    let mut cursor = line_start(text, start);
+    loop {
+        let end_of_line = line_end(text, cursor);
+        spans.push((cursor, end_of_line));
+        if end_of_line == last_line_end {
+            break;
+        }
+        cursor = end_of_line + 1;
+    }
+
+    let blank = |line: &str| line.trim().is_empty();
+    let commented = |line: &str| line.trim_start_matches([' ', '\t']).starts_with("--");
+    let non_blank: Vec<&str> = spans
+        .iter()
+        .map(|&(s, e)| &text[s..e])
+        .filter(|line| !blank(line))
+        .collect();
+    let uncomment = !non_blank.is_empty() && non_blank.iter().all(|line| commented(line));
+
+    let mut out = String::with_capacity(len);
+    // Where the text was changed and by how much, so a caret or selection in
+    // the old buffer can be carried into the new one.
+    let mut edits: Vec<(usize, isize)> = Vec::new();
+    let mut prev = 0;
+    for &(s, e) in &spans {
+        out.push_str(&text[prev..s]);
+        let line = &text[s..e];
+        if blank(line) {
+            out.push_str(line);
+        } else {
+            let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+            let at = s + indent;
+            out.push_str(&line[..indent]);
+            if uncomment {
+                let rest = &line[indent..];
+                // `-- ` is what this writes; a hand-written `--x` comes off
+                // without taking the `x` with it.
+                let marker = if rest.starts_with("-- ") { 3 } else { 2 };
+                out.push_str(&rest[marker..]);
+                edits.push((at, -(marker as isize)));
+            } else {
+                out.push_str("-- ");
+                out.push_str(&line[indent..]);
+                edits.push((at, 3));
+            }
+        }
+        prev = e;
+    }
+    out.push_str(&text[prev..]);
+
+    if out == text {
+        return None;
+    }
+
+    let shift = |offset: usize| -> usize {
+        let mut shifted = offset as isize;
+        for &(at, delta) in &edits {
+            if delta > 0 {
+                // Strictly after the marker: an endpoint on the marker's own
+                // line start keeps to the left of it, so a selection still
+                // covers what it commented.
+                if offset > at {
+                    shifted += delta;
+                }
+            } else {
+                let removed = (-delta) as usize;
+                if offset >= at + removed {
+                    shifted += delta;
+                } else if offset > at {
+                    // Inside the comment marker: land on the new line start.
+                    shifted -= (offset - at) as isize;
+                }
+            }
+        }
+        shifted.clamp(0, out.len() as isize) as usize
+    };
+    let selection = shift(start)..shift(end);
+    Some((out, selection))
+}
+
+/// The byte offset of the first character of the line `offset` is on.
+fn line_start(text: &str, offset: usize) -> usize {
+    text[..offset].rfind('\n').map(|at| at + 1).unwrap_or(0)
+}
+
+/// The byte offset of the newline that ends the line `offset` is on, or the
+/// end of the text when it is the last line.
+fn line_end(text: &str, offset: usize) -> usize {
+    text[offset..]
+        .find('\n')
+        .map(|at| offset + at)
+        .unwrap_or(text.len())
+}
+
 impl Render for QueryEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let writes = self.statement_writes(cx);
@@ -441,6 +588,7 @@ impl Render for QueryEditor {
             .on_action(cx.listener(Self::run_script_ignoring_errors))
             .on_action(cx.listener(Self::explain))
             .on_action(cx.listener(Self::explain_analyze))
+            .on_action(cx.listener(Self::toggle_comment))
             .capture_key_down(cx.listener(Self::on_key_down))
             .capture_action(cx.listener(Self::accept_with_tab))
             .capture_action(cx.listener(Self::enter_with_menu_open))
@@ -605,5 +753,95 @@ impl Render for QueryEditor {
                     // Refines over the editor's own monospace default.
                     .font_family(settings::editor_font(cx)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Toggle over `text` with `selected` as the buffer selection, which must
+    /// change something.
+    fn toggle(text: &str, selected: std::ops::Range<usize>) -> (String, std::ops::Range<usize>) {
+        toggle_comments(text, selected).expect("there should be a change to make")
+    }
+
+    #[test]
+    fn the_caret_line_is_commented() {
+        assert_eq!(toggle("select 1", 3..3), ("-- select 1".to_string(), 6..6));
+    }
+
+    #[test]
+    fn commenting_keeps_the_indentation() {
+        assert_eq!(
+            toggle("    select 1", 6..6),
+            ("    -- select 1".to_string(), 9..9)
+        );
+    }
+
+    #[test]
+    fn a_commented_line_comes_back_off() {
+        assert_eq!(toggle("-- select 1", 3..3), ("select 1".to_string(), 0..0));
+        assert_eq!(
+            toggle("  -- select 1", 5..5),
+            ("  select 1".to_string(), 2..2)
+        );
+    }
+
+    #[test]
+    fn a_marker_with_no_space_comes_off_cleanly() {
+        assert_eq!(toggle("--select 1", 2..2), ("select 1".to_string(), 0..0));
+    }
+
+    #[test]
+    fn a_selection_comments_every_line_it_touches() {
+        let (new, selection) = toggle("select 1\nselect 2\nselect 3", 0..18);
+        assert_eq!(new, "-- select 1\n-- select 2\nselect 3");
+        assert_eq!(
+            selection,
+            0..24,
+            "the selection should still cover the lines it commented"
+        );
+    }
+
+    #[test]
+    fn a_selection_ending_at_the_next_line_does_not_take_it() {
+        let (new, _) = toggle("select 1\nselect 2", 0..9);
+        assert_eq!(new, "-- select 1\nselect 2");
+    }
+
+    #[test]
+    fn a_fully_commented_run_is_uncommented_together() {
+        let text = "-- select 1\n  -- select 2";
+        let (new, selection) = toggle(text, 0..text.len());
+        assert_eq!(new, "select 1\n  select 2");
+        assert_eq!(selection, 0..19);
+    }
+
+    #[test]
+    fn a_mixed_run_is_commented_as_a_whole() {
+        let text = "-- select 1\nselect 2";
+        let (new, _) = toggle(text, 0..text.len());
+        assert_eq!(new, "-- -- select 1\n-- select 2");
+    }
+
+    #[test]
+    fn blank_lines_are_left_alone() {
+        let text = "select 1\n\nselect 2";
+        let (new, _) = toggle(text, 0..text.len());
+        assert_eq!(new, "-- select 1\n\n-- select 2");
+    }
+
+    #[test]
+    fn a_blank_caret_line_is_a_no_op() {
+        assert_eq!(toggle_comments("   \nselect 1", 1..1), None);
+    }
+
+    #[test]
+    fn the_selection_survives_the_comments_coming_off() {
+        let text = "-- select 1\n-- select 2";
+        let (new, selection) = toggle(text, 0..text.len());
+        assert_eq!(new, "select 1\nselect 2");
+        assert_eq!(selection, 0..17);
     }
 }

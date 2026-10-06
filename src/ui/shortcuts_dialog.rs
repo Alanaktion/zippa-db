@@ -101,6 +101,13 @@ const GROUPS: &[Group] = &[
         ],
     },
     Group {
+        title: "Editing SQL",
+        rows: &[(
+            "Comment out the selected lines, or the caret's line",
+            &["secondary-/"],
+        )],
+    },
+    Group {
         title: "Result grid",
         rows: &[
             ("Copy the selected cell or rows", &["secondary-c"]),
