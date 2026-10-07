@@ -246,6 +246,10 @@ fn disconnecting_returns_the_tab_to_the_manager(cx: &mut TestAppContext) {
     click(cx, &handle, "new-connection");
     let _second = connect(cx, &handle);
 
+    // ⌘D disconnects from outside the query editor; inside it, it selects
+    // the next occurrence, so the keystroke is sent with the sidebar filter
+    // holding the focus.
+    click(cx, &handle, "object-filter");
     press_workspace(cx, &handle, "secondary-d");
 
     assert_eq!(
@@ -277,6 +281,10 @@ fn disconnecting_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
         })
         .unwrap();
 
+    // ⌘D disconnects from outside the query editor; inside it, it selects
+    // the next occurrence, so the keystroke is sent with the sidebar filter
+    // holding the focus.
+    click(cx, &handle, "object-filter");
     press_workspace(cx, &handle, "secondary-d");
     assert_eq!(
         titles(cx, &handle),
@@ -289,13 +297,10 @@ fn disconnecting_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
     assert_eq!(titles(cx, &handle), [first.config().display_name()]);
     cx.run_until_parked();
 
-    // The keystroke goes to whatever holds the focus, so put it back in the
-    // session rather than depending on where the closed dialog leaves it.
-    handle
-        .update(cx, |_, window, cx| {
-            session.update(cx, |session, cx| session.focus(window, cx));
-        })
-        .unwrap();
+    // The keystroke goes to whatever holds the focus, so put it somewhere
+    // deterministic — outside the query editor, where ⌘D still disconnects —
+    // rather than depending on where the closed dialog leaves it.
+    click(cx, &handle, "object-filter");
 
     // Saying yes disconnects it, keeping the tab for the next connection.
     press_workspace(cx, &handle, "secondary-d");

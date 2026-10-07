@@ -12,7 +12,9 @@ use crate::ui::data_grid::{
 };
 use crate::ui::import_dialog::CloseImport;
 use crate::ui::query_editor::{
-    Explain, ExplainAnalyze, RunQuery, RunScript, RunScriptIgnoringErrors, ToggleComment,
+    CopyLine, CutLine, DeleteLine, DuplicateLineDown, DuplicateLineUp, Explain, ExplainAnalyze,
+    MoveLineDown, MoveLineUp, RunQuery, RunScript, RunScriptIgnoringErrors, SelectLine,
+    SelectNextOccurrence, SelectPreviousOccurrence, SmartHome, ToggleComment,
 };
 use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
@@ -107,6 +109,54 @@ pub fn bind(cx: &mut App) {
         // Toggle commenting on the caret's line or the selected lines.
         KeyBinding::new("secondary-/", ToggleComment, Some("QueryEditor > Input")),
         KeyBinding::new("secondary-/", ToggleComment, Some("QueryEditor")),
+        // The line operations, with VS Code's shape: with a selection they act
+        // on it, otherwise on the caret's line. Copy and cut take the line
+        // plus its newline, so pasting yields a whole line.
+        KeyBinding::new("secondary-c", CopyLine, Some("QueryEditor > Input")),
+        KeyBinding::new("secondary-c", CopyLine, Some("QueryEditor")),
+        KeyBinding::new("secondary-x", CutLine, Some("QueryEditor > Input")),
+        KeyBinding::new("secondary-x", CutLine, Some("QueryEditor")),
+        KeyBinding::new("secondary-shift-k", DeleteLine, Some("QueryEditor > Input")),
+        KeyBinding::new("secondary-shift-k", DeleteLine, Some("QueryEditor")),
+        KeyBinding::new("alt-up", MoveLineUp, Some("QueryEditor > Input")),
+        KeyBinding::new("alt-up", MoveLineUp, Some("QueryEditor")),
+        KeyBinding::new("alt-down", MoveLineDown, Some("QueryEditor > Input")),
+        KeyBinding::new("alt-down", MoveLineDown, Some("QueryEditor")),
+        KeyBinding::new("alt-shift-up", DuplicateLineUp, Some("QueryEditor > Input")),
+        KeyBinding::new("alt-shift-up", DuplicateLineUp, Some("QueryEditor")),
+        KeyBinding::new(
+            "alt-shift-down",
+            DuplicateLineDown,
+            Some("QueryEditor > Input"),
+        ),
+        KeyBinding::new("alt-shift-down", DuplicateLineDown, Some("QueryEditor")),
+        // Occurrence selection. The editor's narrower context wins over the
+        // session's disconnect and query digest on these keys, the way the
+        // quick switcher already does on its own.
+        KeyBinding::new(
+            "secondary-d",
+            SelectNextOccurrence,
+            Some("QueryEditor > Input"),
+        ),
+        KeyBinding::new("secondary-d", SelectNextOccurrence, Some("QueryEditor")),
+        KeyBinding::new(
+            "secondary-shift-d",
+            SelectPreviousOccurrence,
+            Some("QueryEditor > Input"),
+        ),
+        KeyBinding::new(
+            "secondary-shift-d",
+            SelectPreviousOccurrence,
+            Some("QueryEditor"),
+        ),
+        // The caret's whole line; pressing again extends through the next one.
+        KeyBinding::new("secondary-l", SelectLine, Some("QueryEditor > Input")),
+        KeyBinding::new("secondary-l", SelectLine, Some("QueryEditor")),
+        // Home goes to the first non-blank character first, then the line's
+        // start. ⌘◀ does the same on macOS; elsewhere `cmd` is the Super key,
+        // where the binding is inert, leaving Ctrl+◀ to word movement.
+        KeyBinding::new("home", SmartHome, Some("QueryEditor > Input")),
+        KeyBinding::new("cmd-left", SmartHome, Some("QueryEditor > Input")),
         // Stop a query that is taking too long.
         KeyBinding::new("secondary-.", CancelQuery, Some("Session")),
         // Import a SQL dump into the connection. The table view binds the same
