@@ -59,6 +59,8 @@ impl Session {
                             Err(error) => this.metadata_error = Some(format!("{error:#}")),
                         }
                         this.store_catalog(catalog);
+                        this.catalog
+                            .set_source(this.connection.clone(), this.databases.clone());
                     }
                     Err(_) => {
                         this.metadata_error = Some("reading the schema was cancelled".into());
@@ -325,6 +327,8 @@ impl Session {
         self.objects.clear();
         self.stored.clear();
         self.catalog.set(Arc::new(Catalog::default()));
+        self.catalog
+            .set_source(self.connection.clone(), self.databases.clone());
         self.catalog_loading = true;
         self.catalog_error = None;
         self.rebuild_tree(cx);

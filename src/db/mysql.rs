@@ -17,6 +17,30 @@ pub(crate) const DATABASES_SQL: &str = "SELECT schema_name FROM information_sche
 pub(crate) const OBJECTS_SQL: &str = "SELECT table_schema, table_name, table_type \
      FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name";
 
+/// The object, routine, and column listings scoped to a bound database name
+/// instead of `DATABASE()`, for reading another database's schema without
+/// switching to it. Completion only needs these three: indexes and triggers
+/// never complete anything.
+pub(crate) const OBJECTS_FOR_DB_SQL: &str = "SELECT table_schema, table_name, table_type \
+     FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name";
+
+pub(crate) const ROUTINES_FOR_DB_SQL: &str = "SELECT r.routine_schema, r.routine_name, r.routine_type, \
+     (SELECT GROUP_CONCAT(p.dtd_identifier ORDER BY p.ordinal_position SEPARATOR ', ') \
+      FROM information_schema.parameters p \
+      WHERE p.specific_schema = r.routine_schema \
+        AND p.specific_name = r.specific_name \
+        AND p.ordinal_position > 0) \
+     FROM information_schema.routines r \
+     WHERE r.routine_schema = ? ORDER BY r.routine_name";
+
+pub(crate) const COLUMNS_FOR_DB_SQL: &str = "SELECT c.table_schema, c.table_name, t.table_type, \
+     c.column_name, c.column_type \
+     FROM information_schema.columns c \
+     JOIN information_schema.tables t \
+       ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
+     WHERE c.table_schema = ? \
+     ORDER BY c.table_name, c.ordinal_position";
+
 /// Every other connection to the server, longest-running first — this
 /// connection's own is left out. `info` (the running statement, if any) is
 /// truncated by the server unless `performance_schema` carries the full text,

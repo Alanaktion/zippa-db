@@ -26,7 +26,9 @@ use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
 use super::tunnel::Tunnel;
-use super::{health, mysql, postgres, sqlite, statement, typed_placeholder};
+use super::{
+    health, mysql, postgres, quote_identifier, quote_literal, sqlite, statement, typed_placeholder,
+};
 
 /// Connections kept for the app's own reads and writes — the sidebar, table
 /// views, the structure tab — however many query tabs hold one of their own.
@@ -356,18 +358,22 @@ impl Connection {
         Ok(result
             .rows
             .iter()
-            .filter_map(|row| {
-                let name = row.get(1)?.clone()?;
-                let kind = match row.get(2).and_then(|cell| cell.as_deref()) {
-                    Some(kind) if kind.eq_ignore_ascii_case("VIEW") => ObjectKind::View,
-                    _ => ObjectKind::Table,
-                };
-
-                let schema = self.shown_schema(row.first().cloned().flatten());
-
-                Some(DatabaseObject { schema, name, kind })
-            })
+            .filter_map(|row| self.object_row(row))
             .collect())
+    }
+
+    /// One row of an object listing: `(schema, name, kind)`, the layout every
+    /// engine's `OBJECTS_SQL` shares.
+    fn object_row(&self, row: &[Cell]) -> Option<DatabaseObject> {
+        let name = row.get(1)?.clone()?;
+        let kind = match row.get(2).and_then(|cell| cell.as_deref()) {
+            Some(kind) if kind.eq_ignore_ascii_case("VIEW") => ObjectKind::View,
+            _ => ObjectKind::Table,
+        };
+
+        let schema = self.shown_schema(row.first().cloned().flatten());
+
+        Some(DatabaseObject { schema, name, kind })
     }
 
     /// Functions, procedures and sequences in the current database.
@@ -383,30 +389,34 @@ impl Connection {
         Ok(result
             .rows
             .iter()
-            .filter_map(|row| {
-                let name = row.get(1)?.clone()?;
-                let kind = match row.get(2).and_then(|cell| cell.as_deref())? {
-                    kind if kind.eq_ignore_ascii_case("PROCEDURE") => StoredKind::Procedure,
-                    kind if kind.eq_ignore_ascii_case("SEQUENCE") => StoredKind::Sequence,
-                    _ => StoredKind::Function,
-                };
-                let schema = self.shown_schema(row.first().cloned().flatten());
-                // Both engines give an empty list for a routine of no
-                // arguments (Postgres directly, MySQL as a NULL); the
-                // parentheses still tell it apart from a sequence.
-                let arguments = match kind {
-                    StoredKind::Sequence => None,
-                    _ => Some(row.get(3).cloned().flatten().unwrap_or_default()),
-                };
-
-                Some(StoredObject {
-                    schema,
-                    name,
-                    arguments,
-                    kind,
-                })
-            })
+            .filter_map(|row| self.stored_row(row))
             .collect())
+    }
+
+    /// One row of a routine listing: `(schema, name, kind, arguments)`, the
+    /// layout both engines' `ROUTINES_SQL` share.
+    fn stored_row(&self, row: &[Cell]) -> Option<StoredObject> {
+        let name = row.get(1)?.clone()?;
+        let kind = match row.get(2).and_then(|cell| cell.as_deref())? {
+            kind if kind.eq_ignore_ascii_case("PROCEDURE") => StoredKind::Procedure,
+            kind if kind.eq_ignore_ascii_case("SEQUENCE") => StoredKind::Sequence,
+            _ => StoredKind::Function,
+        };
+        let schema = self.shown_schema(row.first().cloned().flatten());
+        // Both engines give an empty list for a routine of no
+        // arguments (Postgres directly, MySQL as a NULL); the
+        // parentheses still tell it apart from a sequence.
+        let arguments = match kind {
+            StoredKind::Sequence => None,
+            _ => Some(row.get(3).cloned().flatten().unwrap_or_default()),
+        };
+
+        Some(StoredObject {
+            schema,
+            name,
+            arguments,
+            kind,
+        })
     }
 
     /// A snapshot of the whole schema, for schema search.
@@ -470,7 +480,95 @@ impl Connection {
         Ok(Catalog { entries, total })
     }
 
-    /// The schema a name is qualified with, or `None` when it adds nothing the
+    /// A snapshot of `database`'s schema — tables, views, routines, and
+    /// columns — for completing `db.table` references without switching the
+    /// session there. Lighter than [`Self::catalog`]: indexes and triggers
+    /// never complete anything.
+    ///
+    /// MySQL reads `information_schema` for the named schema on this
+    /// connection; SQLite reads the attached database of that name (`main`
+    /// just re-reads the current catalog). Postgres refuses: one connection
+    /// cannot see another database's catalog, and `db.table` is not valid
+    /// Postgres SQL anyway.
+    pub async fn catalog_for_database(&self, database: &str) -> Result<Catalog> {
+        let (objects, stored, columns) = match self.config.engine {
+            Engine::MySql => {
+                let param = vec![Some(database.to_string())];
+                (
+                    self.run_query_with(mysql::OBJECTS_FOR_DB_SQL, param.clone())
+                        .await?,
+                    self.run_query_with(mysql::ROUTINES_FOR_DB_SQL, param.clone())
+                        .await?,
+                    self.run_query_with(mysql::COLUMNS_FOR_DB_SQL, param)
+                        .await?,
+                )
+            }
+            Engine::Sqlite => {
+                if database.eq_ignore_ascii_case("main") {
+                    return self.catalog().await;
+                }
+                // The name is an identifier in one place and a string in the
+                // pragma's second argument in the other; both are quoted here
+                // rather than bound, the way the other metadata queries are.
+                let db = quote_identifier(database, Engine::Sqlite);
+                let name = quote_literal(database);
+                let objects = self
+                    .run_query(&format!(
+                        "SELECT NULL AS table_schema, name, \
+                         CASE type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END AS table_type \
+                         FROM {db}.sqlite_master \
+                         WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' \
+                         ORDER BY name"
+                    ))
+                    .await?;
+                let columns = self
+                    .run_query(&format!(
+                        "SELECT NULL, m.name, m.type, ti.name, ti.type \
+                         FROM {db}.sqlite_master m \
+                         JOIN pragma_table_info(m.name, {name}) ti \
+                         WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%' \
+                         ORDER BY m.name, ti.cid"
+                    ))
+                    .await?;
+                // SQLite has no stored routines and no sequences.
+                (objects, QueryResult::default(), columns)
+            }
+            Engine::Postgres => {
+                anyhow::bail!("cross-database completion is not supported on PostgreSQL")
+            }
+        };
+
+        let total = objects.rows.len() + stored.rows.len() + columns.rows.len();
+        let mut entries: Vec<CatalogEntry> = Vec::with_capacity(total.min(MAX_ENTRIES));
+        entries.extend(
+            objects
+                .rows
+                .iter()
+                .filter_map(|row| self.object_row(row))
+                .map(CatalogEntry::object),
+        );
+        entries.extend(
+            stored
+                .rows
+                .iter()
+                .filter_map(|row| self.stored_row(row))
+                .map(CatalogEntry::routine),
+        );
+        for row in &columns.rows {
+            if entries.len() >= MAX_ENTRIES {
+                break;
+            }
+            let (owner, name, detail) = self.catalog_row(row);
+            entries.push(CatalogEntry::member(
+                CatalogKind::Column,
+                owner,
+                name,
+                detail,
+            ));
+        }
+        entries.truncate(MAX_ENTRIES);
+        Ok(Catalog { entries, total })
+    }
     /// user cannot already see: MySQL's schema is always the current database,
     /// SQLite has one, and Postgres tables usually sit in `public`.
     ///

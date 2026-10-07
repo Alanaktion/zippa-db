@@ -3,8 +3,16 @@
 //! Suggestions come from the session's [`Catalog`] snapshot — tables, views,
 //! columns, and routines — plus a list of SQL keywords, so a keystroke never
 //! costs a round trip. Nothing here touches a window or a database: the editor
-//! hands over the buffer and the caret and gets back the range to replace and
-//! what to offer, which is what lets the ranking be unit-tested on its own.
+//! hands over the buffer, the caret, and the [`Schemas`] it can draw on, and
+//! gets back the range to replace and what to offer, which is what lets the
+//! ranking be unit-tested on its own.
+//!
+//! A qualifier can name a database as well as a schema: `db.table`,
+//! `db.table alias`, and `alias.` all resolve against that database's catalog
+//! once the editor has fetched it, and a qualifier naming the current database
+//! reuses the already-loaded one. Databases the statement names that have no
+//! catalog yet are reported in [`Completions::missing`] so the editor can fetch
+//! them on demand; the next keystroke then offers their tables.
 //!
 //! The reading of the statement is deliberately shallow. It tokenizes the
 //! statement the caret is in, finds the tables it names (`FROM`, `JOIN`,
@@ -13,8 +21,9 @@
 //! and where it cannot tell it offers columns, keywords, and tables together
 //! rather than guessing one.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::Arc;
 
 use super::catalog::{Catalog, CatalogEntry, CatalogKind};
 use super::config::Engine;
@@ -57,6 +66,25 @@ pub struct Completions {
     /// What the user has typed of the word, for the menu to highlight.
     pub prefix: String,
     pub items: Vec<Suggestion>,
+    /// Databases the statement named that have no catalog loaded: the editor
+    /// fetches them on demand, and the next keystroke offers their tables.
+    pub missing: Vec<String>,
+}
+
+/// The schemas one completion request can draw on: the current database's
+/// catalog, already loaded, plus any other databases' catalogs the editor has
+/// fetched on demand.
+pub struct Schemas<'a> {
+    /// The current database's catalog.
+    pub current: &'a Catalog,
+    /// The current database's name (`main` on SQLite), so `db.` naming it
+    /// reuses `current` instead of fetching.
+    pub current_database: Option<&'a str>,
+    /// Catalogs fetched on demand, keyed by lower-cased database name.
+    pub others: &'a HashMap<String, Arc<Catalog>>,
+    /// Database names on the server with no fetched catalog yet: a qualifier
+    /// naming one is reported in [`Completions::missing`].
+    pub databases: &'a [String],
 }
 
 /// Keywords offered everywhere. Kept to the words people type in queries and
@@ -222,11 +250,14 @@ const CLAUSE_WORDS: &[&str] = &[
 /// What to offer for the word the caret at byte `cursor` ends.
 ///
 /// `None` when there is nothing to complete: the caret is in a string or a
-/// comment, or it follows neither a word being typed nor a `.`.
+/// comment, or it follows neither a word being typed nor a `.`. A qualifier
+/// naming a database with no catalog loaded yet still answers `Some` — with
+/// no items, but the database in [`Completions::missing`] so the editor can
+/// fetch it.
 pub fn complete(
     sql: &str,
     cursor: usize,
-    catalog: &Catalog,
+    schemas: &Schemas<'_>,
     engine: Engine,
 ) -> Option<Completions> {
     let cursor = floor_char_boundary(sql, cursor.min(sql.len()));
@@ -243,7 +274,8 @@ pub fn complete(
         _ => (String::new(), cursor..cursor, &before[..]),
     };
 
-    // `a.b.` and `a.` qualify the word: a schema, a table, or an alias.
+    // `a.b.` and `a.` qualify the word: a database, a schema, a table, or an
+    // alias.
     let qualifier = qualifier(rest, replace.start);
     if prefix.is_empty() && qualifier.is_none() {
         return None;
@@ -262,36 +294,77 @@ pub fn complete(
         SuggestionKind::Column
     };
     let mut out = Collector::new(&prefix, engine, lead);
+    let mut missing = Vec::new();
+
+    // Databases the statement names that have no catalog loaded: a real
+    // database with no catalog is fetched on demand. (A schema that resolves
+    // in the current catalog is not one, and neither is a typo.)
+    for reference in &references {
+        if resolve(schemas, reference).is_none() {
+            for name in reference.database.iter().chain(reference.schema.iter()) {
+                if unfetched_database(schemas, name) {
+                    push_missing(&mut missing, name.clone());
+                }
+            }
+        }
+    }
 
     match qualifier {
-        Some(path) => qualified(&mut out, &path, &references, catalog),
+        Some(path) => qualified(&mut out, &mut missing, &path, &references, schemas),
         None if in_table_clause => {
-            objects(&mut out, catalog, None);
-            schemas(&mut out, catalog);
+            objects(&mut out, schemas.current, None);
+            schema_names(&mut out, schemas.current);
+            databases(&mut out, schemas);
             keywords(&mut out);
+            // The database being named, before its dot is typed: fetching its
+            // schema now means the dot usually finds it already loaded.
+            if !prefix.is_empty() && unfetched_database(schemas, &prefix) {
+                push_missing(&mut missing, prefix.clone());
+            }
         }
         None => {
             for reference in &references {
-                if let Some(object) = resolve(catalog, reference) {
-                    columns_of(&mut out, catalog, &object, references.len() > 1);
+                if let Some(resolved) = resolve(schemas, reference) {
+                    columns_of(
+                        &mut out,
+                        resolved.catalog,
+                        &resolved.object,
+                        references.len() > 1,
+                        resolved.database.as_deref(),
+                    );
                 }
             }
             keywords(&mut out);
-            objects(&mut out, catalog, None);
-            routines(&mut out, catalog);
+            objects(&mut out, schemas.current, None);
+            routines(&mut out, schemas.current);
             // Before the `FROM` is written, any column the database has.
             if references.is_empty() {
-                all_columns(&mut out, catalog);
+                all_columns(&mut out, schemas.current);
             }
         }
     }
 
     let items = out.finish();
-    (!items.is_empty()).then_some(Completions {
+    if items.is_empty() && missing.is_empty() {
+        return None;
+    }
+    Some(Completions {
         replace,
         prefix,
         items,
+        missing,
     })
+}
+
+/// A database name for [`Completions::missing`], once: the same qualifier can
+/// surface from several references.
+fn push_missing(missing: &mut Vec<String>, name: String) {
+    if !missing
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(&name))
+    {
+        missing.push(name);
+    }
 }
 
 /// One lexical piece of a statement. Only what the reading above needs is
@@ -562,6 +635,9 @@ fn expects_table(tokens: &[Token]) -> bool {
 /// A table or view the statement names, and what it calls it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Reference {
+    /// The database, when the name is qualified past a schema (`db.t`,
+    /// `db.s.t`).
+    database: Option<String>,
     schema: Option<String>,
     name: String,
     alias: Option<String>,
@@ -596,7 +672,8 @@ fn references(tokens: &[Token], typing: &Range<usize>) -> Vec<Reference> {
     found
 }
 
-/// One `[schema.]name [[AS] alias]` starting at `index`, and the index after it.
+/// One `[database.[schema.]]name [[AS] alias]` starting at `index`, and the
+/// index after it.
 fn reference_at(
     tokens: &[Token],
     mut index: usize,
@@ -619,6 +696,7 @@ fn reference_at(
     }
     let name = path.pop()?;
     let schema = path.pop();
+    let database = path.pop();
 
     let mut alias = None;
     if tokens.get(index).and_then(Token::keyword).as_deref() == Some("AS") {
@@ -635,6 +713,7 @@ fn reference_at(
     }
     Some((
         Reference {
+            database,
             schema,
             name,
             alias,
@@ -643,9 +722,78 @@ fn reference_at(
     ))
 }
 
-/// The table or view `reference` names in the catalog.
-fn resolve(catalog: &Catalog, reference: &Reference) -> Option<CatalogEntry> {
-    find_object(catalog, reference.schema.as_deref(), &reference.name)
+/// The catalog `name` is a database in: the current one by name, or one
+/// fetched on demand. `None` for anything else.
+fn db_catalog<'a>(schemas: &'a Schemas<'a>, name: &str) -> Option<&'a Catalog> {
+    if schemas
+        .current_database
+        .is_some_and(|current| current.eq_ignore_ascii_case(name))
+    {
+        return Some(schemas.current);
+    }
+    schemas.others.get(&name.to_lowercase()).map(Arc::as_ref)
+}
+
+/// Whether `name` is a database on the server with no catalog loaded: one the
+/// editor should fetch on demand.
+fn unfetched_database(schemas: &Schemas<'_>, name: &str) -> bool {
+    db_catalog(schemas, name).is_none()
+        && schemas
+            .databases
+            .iter()
+            .any(|database| database.eq_ignore_ascii_case(name))
+}
+
+/// The table or view `reference` names, and the catalog it was found in.
+struct Resolved<'a> {
+    catalog: &'a Catalog,
+    object: CatalogEntry,
+    /// The database qualifier that led here, when it is not the current
+    /// database — for the detail line.
+    database: Option<String>,
+}
+
+fn resolve<'a>(schemas: &'a Schemas<'a>, reference: &Reference) -> Option<Resolved<'a>> {
+    // An explicit database first: `db.t` and `db.s.t`.
+    if let Some(database) = &reference.database {
+        let catalog = db_catalog(schemas, database)?;
+        let object = find_object(catalog, reference.schema.as_deref(), &reference.name)?;
+        return Some(Resolved {
+            catalog,
+            object,
+            database: other_database(schemas, catalog, database),
+        });
+    }
+    if let Some(schema) = &reference.schema {
+        // A schema in the current database, as before…
+        if let Some(object) = find_object(schemas.current, Some(schema), &reference.name) {
+            return Some(Resolved {
+                catalog: schemas.current,
+                object,
+                database: None,
+            });
+        }
+        // …or the "schema" is a database, MySQL's `db.table`.
+        if let Some(catalog) = db_catalog(schemas, schema) {
+            let object = find_object(catalog, None, &reference.name)?;
+            return Some(Resolved {
+                catalog,
+                object,
+                database: other_database(schemas, catalog, schema),
+            });
+        }
+        return None;
+    }
+    find_object(schemas.current, None, &reference.name).map(|object| Resolved {
+        catalog: schemas.current,
+        object,
+        database: None,
+    })
+}
+
+/// `name` for the detail line when `catalog` is not the current database's.
+fn other_database(schemas: &Schemas<'_>, catalog: &Catalog, name: &str) -> Option<String> {
+    (!std::ptr::eq(catalog, schemas.current)).then(|| name.to_string())
 }
 
 /// A table or view by name, preferring an exact match over one that differs
@@ -673,9 +821,18 @@ fn find_object(catalog: &Catalog, schema: Option<&str>, name: &str) -> Option<Ca
 }
 
 /// Suggestions after `path.`: a reference's columns when the path names an
-/// alias or a table, and a schema's tables when it names a schema. Both, when
-/// a name is both.
-fn qualified(out: &mut Collector, path: &[String], references: &[Reference], catalog: &Catalog) {
+/// alias or a table, a schema's tables when it names a schema, and a
+/// database's tables when it names one. Both, when a name is both.
+///
+/// A database with no catalog loaded yet is reported in `missing` instead, so
+/// the editor can fetch it on demand.
+fn qualified(
+    out: &mut Collector,
+    missing: &mut Vec<String>,
+    path: &[String],
+    references: &[Reference],
+    schemas: &Schemas<'_>,
+) {
     if let [name] = path {
         let aliased = references.iter().find(|reference| {
             reference
@@ -686,35 +843,86 @@ fn qualified(out: &mut Collector, path: &[String], references: &[Reference], cat
         let named = references
             .iter()
             .find(|reference| reference.name.eq_ignore_ascii_case(name));
-        let object = aliased
+        if let Some(resolved) = aliased
             .or(named)
-            .and_then(|reference| resolve(catalog, reference))
-            .or_else(|| find_object(catalog, None, name));
-        if let Some(object) = object {
-            columns_of(out, catalog, &object, false);
+            .and_then(|reference| resolve(schemas, reference))
+        {
+            columns_of(
+                out,
+                resolved.catalog,
+                &resolved.object,
+                false,
+                resolved.database.as_deref(),
+            );
+        } else if let Some(object) = find_object(schemas.current, None, name) {
+            columns_of(out, schemas.current, &object, false, None);
         }
-        objects(out, catalog, Some(name));
-        routines_in(out, catalog, name);
-    } else if let [schema, table] = path
-        && let Some(object) = find_object(catalog, Some(schema), table)
-    {
-        columns_of(out, catalog, &object, false);
+        objects(out, schemas.current, Some(name));
+        routines_in(out, schemas.current, name);
+        if let Some(catalog) = db_catalog(schemas, name) {
+            db_objects(out, name, catalog);
+        } else if unfetched_database(schemas, name) {
+            push_missing(missing, name.clone());
+        }
+    } else if let [schema, table] = path {
+        if let Some(object) = find_object(schemas.current, Some(schema), table) {
+            columns_of(out, schemas.current, &object, false, None);
+        }
+        // …or the "schema" is a database, MySQL's `db.table`.
+        if let Some(catalog) = db_catalog(schemas, schema) {
+            if let Some(object) = find_object(catalog, None, table) {
+                columns_of(
+                    out,
+                    catalog,
+                    &object,
+                    false,
+                    other_database(schemas, catalog, schema).as_deref(),
+                );
+            }
+        } else if unfetched_database(schemas, schema) {
+            push_missing(missing, schema.clone());
+        }
+    } else if let [database, schema, table] = path {
+        if let Some(catalog) = db_catalog(schemas, database) {
+            if let Some(object) = find_object(catalog, Some(schema), table) {
+                columns_of(
+                    out,
+                    catalog,
+                    &object,
+                    false,
+                    other_database(schemas, catalog, database).as_deref(),
+                );
+            }
+        } else if unfetched_database(schemas, database) {
+            push_missing(missing, database.clone());
+        }
     }
 }
 
 /// Columns of one table or view, in their own order. `owned` adds the table's
-/// name to the detail, for a statement that joins several.
-fn columns_of(out: &mut Collector, catalog: &Catalog, object: &CatalogEntry, owned: bool) {
+/// name to the detail, for a statement that joins several; `database` names
+/// the database when it is not the current one.
+fn columns_of(
+    out: &mut Collector,
+    catalog: &Catalog,
+    object: &CatalogEntry,
+    owned: bool,
+    database: Option<&str>,
+) {
     let Some(owner) = object.object.as_ref() else {
         return;
     };
     for entry in &catalog.entries {
         if entry.kind == CatalogKind::Column && entry.object.as_ref() == Some(owner) {
-            let detail = if owned {
+            let mut detail = if owned {
                 format!("{} · {}", entry.detail, owner.name)
             } else {
                 entry.detail.clone()
             };
+            if let Some(database) = database {
+                detail.push_str(" · ");
+                detail.push_str(database);
+            }
             out.name(&entry.name, SuggestionKind::Column, detail);
         }
     }
@@ -762,7 +970,7 @@ fn objects(out: &mut Collector, catalog: &Catalog, schema: Option<&str>) {
 }
 
 /// Every schema an object lives in.
-fn schemas(out: &mut Collector, catalog: &Catalog) {
+fn schema_names(out: &mut Collector, catalog: &Catalog) {
     for entry in &catalog.entries {
         if let Some(schema) = entry
             .object
@@ -771,6 +979,33 @@ fn schemas(out: &mut Collector, catalog: &Catalog) {
             .or_else(|| entry.routine.as_ref().and_then(|r| r.schema.as_deref()))
         {
             out.name(schema, SuggestionKind::Schema, "Schema".into());
+        }
+    }
+}
+
+/// Every database on the server, for `FROM db.|`: picking one and typing `.`
+/// offers its tables, fetching its schema on demand when it has none loaded.
+fn databases(out: &mut Collector, schemas: &Schemas<'_>) {
+    for database in schemas.databases {
+        out.name(database, SuggestionKind::Schema, "Database".into());
+    }
+}
+
+/// The tables, views, and routines of one database's catalog, for `db.|`.
+fn db_objects(out: &mut Collector, database: &str, catalog: &Catalog) {
+    for entry in &catalog.entries {
+        let kind = match entry.kind {
+            CatalogKind::Table => SuggestionKind::Table,
+            CatalogKind::View => SuggestionKind::View,
+            CatalogKind::Routine => SuggestionKind::Routine,
+            _ => continue,
+        };
+        if out.matches(&entry.name) {
+            out.name(
+                &entry.name,
+                kind,
+                format!("{} · {database}", entry.kind_label()),
+            );
         }
     }
 }
@@ -942,6 +1177,8 @@ mod tests {
     use super::*;
     use crate::db::catalog::CatalogEntry;
     use crate::db::{DatabaseObject, ObjectKind, StoredKind, StoredObject};
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn table(schema: Option<&str>, name: &str) -> DatabaseObject {
         DatabaseObject {
@@ -988,17 +1225,78 @@ mod tests {
     }
 
     fn labels_on(sql: &str, engine: Engine) -> Vec<String> {
-        let cursor = sql.find('|').expect("a caret marker");
-        let sql = sql.replacen('|', "", 1);
-        complete(&sql, cursor, &catalog(), engine)
+        let others = HashMap::new();
+        complete_on(sql, engine, &others, &[])
             .map(|completions| completions.items.into_iter().map(|s| s.label).collect())
             .unwrap_or_default()
     }
 
-    fn inserts(sql: &str) -> Vec<String> {
+    /// Complete `sql` against the fixture catalog (the `store` database) plus
+    /// `others`, with `databases` naming every database on the server.
+    fn complete_on(
+        sql: &str,
+        engine: Engine,
+        others: &HashMap<String, Arc<Catalog>>,
+        databases: &[String],
+    ) -> Option<Completions> {
+        let catalog = catalog();
+        let schemas = Schemas {
+            current: &catalog,
+            current_database: Some("store"),
+            others,
+            databases,
+        };
         let cursor = sql.find('|').expect("a caret marker");
         let sql = sql.replacen('|', "", 1);
-        complete(&sql, cursor, &catalog(), Engine::Postgres)
+        complete(&sql, cursor, &schemas, engine)
+    }
+
+    /// Another database's catalog: `otherdb.products`, MySQL-style with no
+    /// schemas.
+    fn other_catalog() -> Catalog {
+        let products = table(None, "products");
+        let column = |owner: &DatabaseObject, name: &str, kind: &str| {
+            CatalogEntry::member(CatalogKind::Column, owner.clone(), name.into(), kind.into())
+        };
+        let entries = vec![
+            CatalogEntry::object(products.clone()),
+            column(&products, "id", "integer"),
+            column(&products, "name", "text"),
+            column(&products, "price", "decimal"),
+        ];
+        Catalog {
+            total: entries.len(),
+            entries,
+        }
+    }
+
+    fn others_with(catalog: Catalog) -> HashMap<String, Arc<Catalog>> {
+        HashMap::from([("otherdb".to_string(), Arc::new(catalog))])
+    }
+
+    fn two_databases() -> Vec<String> {
+        vec!["store".to_string(), "otherdb".to_string()]
+    }
+
+    /// Labels offered by MySQL-flavoured completion with `otherdb` fetched.
+    fn mysql_labels(sql: &str) -> Vec<String> {
+        let others = others_with(other_catalog());
+        complete_on(sql, Engine::MySql, &others, &two_databases())
+            .map(|completions| completions.items.into_iter().map(|s| s.label).collect())
+            .unwrap_or_default()
+    }
+
+    /// Databases reported missing by MySQL-flavoured completion with nothing
+    /// fetched.
+    fn mysql_missing(sql: &str) -> Vec<String> {
+        complete_on(sql, Engine::MySql, &HashMap::new(), &two_databases())
+            .map(|completions| completions.missing)
+            .unwrap_or_default()
+    }
+
+    fn inserts(sql: &str) -> Vec<String> {
+        let others = HashMap::new();
+        complete_on(sql, Engine::Postgres, &others, &[])
             .map(|completions| completions.items.into_iter().map(|s| s.insert).collect())
             .unwrap_or_default()
     }
@@ -1103,12 +1401,21 @@ mod tests {
 
     #[test]
     fn the_replaced_range_is_the_word_being_typed() {
-        let completions = complete("SELECT ema FROM users", 10, &catalog(), Engine::Postgres)
-            .expect("completions");
+        let catalog = catalog();
+        let others = HashMap::new();
+        let databases = Vec::new();
+        let schemas = Schemas {
+            current: &catalog,
+            current_database: Some("store"),
+            others: &others,
+            databases: &databases,
+        };
+        let completions =
+            complete("SELECT ema FROM users", 10, &schemas, Engine::Postgres).expect("completions");
         assert_eq!(completions.replace, 7..10);
         assert_eq!(completions.prefix, "ema");
-        let completions = complete("SELECT u. FROM users u", 9, &catalog(), Engine::Postgres)
-            .expect("completions");
+        let completions =
+            complete("SELECT u. FROM users u", 9, &schemas, Engine::Postgres).expect("completions");
         assert_eq!(completions.replace, 9..9);
     }
 
@@ -1116,5 +1423,109 @@ mod tests {
     fn engine_keywords_are_offered_on_their_engine_only() {
         assert_eq!(labels_on("PRAG|", Engine::Sqlite), ["PRAGMA"]);
         assert!(labels_on("PRAG|", Engine::Postgres).is_empty());
+    }
+
+    #[test]
+    fn a_database_qualifier_offers_its_tables() {
+        assert_eq!(mysql_labels("SELECT * FROM otherdb.|"), ["products"]);
+    }
+
+    #[test]
+    fn a_database_qualified_table_offers_its_columns() {
+        assert_eq!(
+            mysql_labels("SELECT otherdb.products.| FROM otherdb.products"),
+            ["id", "name", "price"]
+        );
+    }
+
+    #[test]
+    fn an_alias_of_another_database_table_offers_its_columns() {
+        assert_eq!(
+            mysql_labels("SELECT p.| FROM otherdb.products p"),
+            ["id", "name", "price"]
+        );
+        // And without the `FROM` naming the database first.
+        assert_eq!(
+            mysql_labels("SELECT p.id FROM otherdb.products AS p WHERE p.|"),
+            ["id", "name", "price"]
+        );
+    }
+
+    #[test]
+    fn the_current_database_name_reuses_the_loaded_schema() {
+        // `store` is the current database: no fetch, the loaded catalog.
+        assert_eq!(
+            mysql_labels("SELECT store.orders.| FROM store.orders"),
+            ["id", "user_id", "order"]
+        );
+        assert_eq!(mysql_missing("SELECT store.|"), Vec::<String>::new());
+        // A bare `db.` also lists the current database's tables.
+        let offered = mysql_labels("SELECT * FROM store.|");
+        assert!(offered.contains(&"users".to_string()));
+        assert!(offered.contains(&"orders".to_string()));
+    }
+
+    #[test]
+    fn an_unfetched_database_is_reported_missing() {
+        assert_eq!(mysql_missing("SELECT * FROM otherdb.|"), ["otherdb"]);
+        assert_eq!(
+            mysql_missing("SELECT otherdb.products.| FROM otherdb.products"),
+            ["otherdb"]
+        );
+        assert_eq!(
+            mysql_missing("SELECT p.| FROM otherdb.products p"),
+            ["otherdb"]
+        );
+        // Once fetched it is no longer missing.
+        let others = others_with(other_catalog());
+        let missing = complete_on(
+            "SELECT * FROM otherdb.|",
+            Engine::MySql,
+            &others,
+            &two_databases(),
+        )
+        .map(|completions| completions.missing)
+        .unwrap_or_default();
+        assert!(missing.is_empty());
+        // A name that is no database at all is not fetched.
+        assert!(mysql_missing("SELECT u.| FROM users u").is_empty());
+    }
+
+    #[test]
+    fn naming_a_database_prefetches_its_schema() {
+        // The exact name, before the dot is typed.
+        assert_eq!(mysql_missing("SELECT * FROM otherdb|"), ["otherdb"]);
+        // A prefix of it does not.
+        assert!(mysql_missing("SELECT * FROM otherd|").is_empty());
+    }
+
+    #[test]
+    fn from_offers_database_names() {
+        let offered = mysql_labels("SELECT * FROM o|");
+        assert!(offered.contains(&"otherdb".to_string()));
+        assert!(offered.contains(&"orders".to_string()));
+    }
+
+    #[test]
+    fn other_database_columns_name_their_database() {
+        let others = others_with(other_catalog());
+        let details = complete_on(
+            "SELECT p.| FROM otherdb.products p",
+            Engine::MySql,
+            &others,
+            &two_databases(),
+        )
+        .map(|completions| {
+            completions
+                .items
+                .into_iter()
+                .map(|s| s.detail)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+        assert_eq!(
+            details,
+            ["integer · otherdb", "text · otherdb", "decimal · otherdb"]
+        );
     }
 }
