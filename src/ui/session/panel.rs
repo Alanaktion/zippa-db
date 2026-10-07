@@ -46,10 +46,12 @@ use crate::workspace_state::PanelState;
 use super::tab::{ObjectViewMode, Status, TabContent};
 use super::{CloseTab, NewTab};
 
-/// Starting height of the editor pane above the grid; the user drags from
-/// here. Per-panel now: a split puts two query panels on screen at once, and
-/// a single shared height would fight between them.
-const EDITOR_HEIGHT: f32 = 220.;
+/// Starting height of the result pane below the editor, as a share of the
+/// window's height; the SQL is the point of a query tab, so the editor takes
+/// the rest and the user drags from here. Per-panel: a split puts two query
+/// panels on screen at once, and a single shared height would fight between
+/// them.
+const RESULTS_SHARE: f32 = 0.25;
 
 /// Which tabs a close command takes along with the tab it was opened from.
 ///
@@ -1525,7 +1527,7 @@ impl Panel for SessionPanel {
 }
 
 impl Render for SessionPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let key = self.key;
         let body = match &self.content {
             TabContent::Query {
@@ -1553,29 +1555,31 @@ impl Render for SessionPanel {
                                 .with_state(&self.panes)
                                 .child(
                                     resizable_panel()
-                                        .size(px(EDITOR_HEIGHT))
-                                        .size_range(px(120.)..px(720.))
+                                        .size_range(px(120.)..px(10_000.))
                                         .child(editor.clone()),
                                 )
                                 .child(
-                                    resizable_panel().child(
-                                        v_flex()
-                                            .size_full()
-                                            // A script leaves one result per
-                                            // statement, and a plan leaves the
-                                            // switch; a lone result alone would
-                                            // make the bar say nothing.
-                                            .when(results.len() > 1 || has_plan, |this| {
-                                                this.child(self.render_view_bar(
-                                                    results.len(),
-                                                    *result,
-                                                    has_plan,
-                                                    showing_plan,
-                                                    cx,
-                                                ))
-                                            })
-                                            .child(div().flex_1().min_h_0().child(content)),
-                                    ),
+                                    resizable_panel()
+                                        .size(window.viewport_size().height * RESULTS_SHARE)
+                                        .size_range(px(80.)..px(10_000.))
+                                        .child(
+                                            v_flex()
+                                                .size_full()
+                                                // A script leaves one result per
+                                                // statement, and a plan leaves the
+                                                // switch; a lone result alone would
+                                                // make the bar say nothing.
+                                                .when(results.len() > 1 || has_plan, |this| {
+                                                    this.child(self.render_view_bar(
+                                                        results.len(),
+                                                        *result,
+                                                        has_plan,
+                                                        showing_plan,
+                                                        cx,
+                                                    ))
+                                                })
+                                                .child(div().flex_1().min_h_0().child(content)),
+                                        ),
                                 ),
                         ),
                     )
