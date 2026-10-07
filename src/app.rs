@@ -1007,10 +1007,17 @@ impl Workspace {
                     .justify_end()
                     .gap_1()
                     .px_1()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     // Every button here is icon-only, so each one carries the
                     // name a screen reader announces: without it there is
                     // nothing to announce but the icon's file.
+                    //
+                    // The bar starts a window move on mouse-move while held,
+                    // so each button swallows its own press the way the
+                    // database picker does. The container must not: it would
+                    // swallow the empty space between the buttons too, and
+                    // the whole right half of the bar would stop dragging. A
+                    // disabled button is inert space, so it lets the press
+                    // through to the bar instead.
                     .child(
                         Button::new("quick-switcher")
                             .ghost()
@@ -1019,6 +1026,11 @@ impl Workspace {
                             .accessibility_label("Quick switcher")
                             .tooltip_with_action("Quick switcher", &QuickSwitcher, Some("Session"))
                             .disabled(!connected)
+                            .when(connected, |this| {
+                                this.on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                            })
                             .on_click(cx.listener(Self::on_quick_switcher_click)),
                     )
                     .child(
@@ -1029,6 +1041,11 @@ impl Workspace {
                             .accessibility_label("Refresh")
                             .tooltip_with_action("Refresh", &Refresh, Some("Session"))
                             .disabled(!connected)
+                            .when(connected, |this| {
+                                this.on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                            })
                             .on_click(cx.listener(Self::on_refresh_click)),
                     )
                     .child(
@@ -1039,6 +1056,11 @@ impl Workspace {
                             .accessibility_label("New query")
                             .tooltip_with_action("New query", &NewTab, Some("Session"))
                             .disabled(!connected)
+                            .when(connected, |this| {
+                                this.on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                            })
                             .on_click(cx.listener(Self::on_new_query_click)),
                     )
                     .child(
@@ -1052,6 +1074,7 @@ impl Workspace {
                                 &NewConnection,
                                 Some("Workspace"),
                             )
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.open_connect_tab(window, cx)
@@ -1067,6 +1090,7 @@ impl Workspace {
                             .icon(gpui_kit::assets::IconName::Settings)
                             .accessibility_label("Settings")
                             .tooltip_with_action("Settings", &OpenSettings, None)
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(|_, _window, cx| settings_window::open(cx)),
                     ),
             )
