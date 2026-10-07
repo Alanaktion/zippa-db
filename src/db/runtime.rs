@@ -58,6 +58,14 @@ impl<T> Task<T> {
         self.running.as_ref().map(|running| running.abort_handle())
     }
 
+    /// The work's answer, if it has arrived — without waiting for it. `None`
+    /// while the runtime is still working. For fire-and-forget work whose
+    /// result is picked up later, like a schema fetched for the completion
+    /// menu, rather than awaited.
+    pub fn try_recv(&mut self) -> Option<T> {
+        self.receiver.try_recv().ok()
+    }
+
     /// Stop the work when this is dropped unfinished — for work only its
     /// awaiter wants, like a connection test the user has walked away from.
     pub fn abort_on_drop(mut self) -> Self {

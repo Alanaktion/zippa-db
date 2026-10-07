@@ -109,7 +109,8 @@ pub struct Session {
     /// completions. Read once in the background as the session opens and
     /// again on refresh, so a keystroke never waits on the server. Holds only
     /// names until the read lands. Shared with every query tab's editor, which
-    /// reads whichever snapshot is current.
+    /// reads whichever snapshot is current. Other databases' schemas are
+    /// fetched through it on demand, when a query names them.
     catalog: SharedCatalog,
     /// Whether that read is still in flight, so the dialog can say so.
     catalog_loading: bool,
@@ -176,6 +177,9 @@ impl Session {
             next_key: 0,
             import: None,
         };
+        session
+            .catalog
+            .set_source(session.connection.clone(), Vec::new());
         session.open_tab(None, String::new(), false, window, cx);
         session.reload_metadata(cx);
         session
