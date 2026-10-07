@@ -31,7 +31,11 @@ impl Session {
         let active = self
             .active
             .as_ref()
-            .and_then(|active| ordered.iter().position(|panel| panel.downgrade() == *active))
+            .and_then(|active| {
+                ordered
+                    .iter()
+                    .position(|panel| panel.downgrade() == *active)
+            })
             .unwrap_or(0);
         SessionState {
             connection: self.connection.config.id,
