@@ -36,6 +36,8 @@ features you'd expect from a modern database client.
   of its own, so a `BEGIN` stays open across runs (the status bar says so,
   with Commit and Roll Back), and `SET`, `USE`, and temporary tables last too.
   `EXPLAIN` and `EXPLAIN ANALYZE` show up as a readable plan tree.
+  Comment out the caret's line or the selected lines, and back off again,
+  with `Cmd`/`Ctrl`+`/`.
 * **Tables.** Open a table to page, sort, and filter it. Edit cells, add rows,
   and mark rows for deletion; pending changes are marked in the grid and
   written together when you apply them.

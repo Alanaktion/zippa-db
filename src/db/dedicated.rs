@@ -66,17 +66,19 @@ impl Dedicated {
 
     async fn execute_raw(&mut self, sql: &str) -> Result<()> {
         // The statement is either the user's own or one of the job's fixed
-        // transaction-control statements; nothing in it is bound.
+        // transaction-control statements; nothing in it is bound. It goes by
+        // the text protocol, since MySQL refuses `BEGIN` and `SAVEPOINT` over
+        // the prepared-statement one (error 1295).
         let statement = AssertSqlSafe(sql.to_string());
         match self {
             Dedicated::Postgres(connection, _) => {
-                sqlx::query(statement).execute(&mut **connection).await?;
+                sqlx::raw_sql(statement).execute(&mut **connection).await?;
             }
             Dedicated::MySql(connection) => {
                 sqlx::raw_sql(statement).execute(&mut **connection).await?;
             }
             Dedicated::Sqlite(connection) => {
-                sqlx::query(statement).execute(&mut **connection).await?;
+                sqlx::raw_sql(statement).execute(&mut **connection).await?;
             }
         }
         Ok(())

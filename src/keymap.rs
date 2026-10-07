@@ -12,7 +12,7 @@ use crate::ui::data_grid::{
 };
 use crate::ui::import_dialog::CloseImport;
 use crate::ui::query_editor::{
-    Explain, ExplainAnalyze, RunQuery, RunScript, RunScriptIgnoringErrors,
+    Explain, ExplainAnalyze, RunQuery, RunScript, RunScriptIgnoringErrors, ToggleComment,
 };
 use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
@@ -104,6 +104,9 @@ pub fn bind(cx: &mut App) {
             Some("QueryEditor > Input"),
         ),
         KeyBinding::new("secondary-shift-e", ExplainAnalyze, Some("QueryEditor")),
+        // Toggle commenting on the caret's line or the selected lines.
+        KeyBinding::new("secondary-/", ToggleComment, Some("QueryEditor > Input")),
+        KeyBinding::new("secondary-/", ToggleComment, Some("QueryEditor")),
         // Stop a query that is taking too long.
         KeyBinding::new("secondary-.", CancelQuery, Some("Session")),
         // Import a SQL dump into the connection. The table view binds the same
