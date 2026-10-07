@@ -17,9 +17,11 @@
 //! The reading of the statement is deliberately shallow. It tokenizes the
 //! statement the caret is in, finds the tables it names (`FROM`, `JOIN`,
 //! `UPDATE`, `INTO`) and their aliases, and looks at the word before the caret
-//! to tell "a table goes here" from "a column goes here". It is not a parser,
-//! and where it cannot tell it offers columns, keywords, and tables together
-//! rather than guessing one.
+//! to tell "a table goes here" from "a column goes here". The aliases a
+//! `SELECT` list gives its own expressions are offered as columns of their
+//! own, for `HAVING`, `GROUP BY`, and `ORDER BY` to complete. It is not a
+//! parser, and where it cannot tell it offers columns, keywords, and tables
+//! together rather than guessing one.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -333,6 +335,11 @@ pub fn complete(
                         resolved.database.as_deref(),
                     );
                 }
+            }
+            // Aliases the statement's own `SELECT` lists define: `HAVING`
+            // and `ORDER BY` read them like columns.
+            for alias in select_aliases(&statement, &replace) {
+                out.name(&alias, SuggestionKind::Column, "Alias".into());
             }
             keywords(&mut out);
             objects(&mut out, schemas.current, None);
@@ -720,6 +727,136 @@ fn reference_at(
         },
         index,
     ))
+}
+
+/// The aliases the statement's `SELECT` lists give their expressions:
+/// `SELECT group_concat(user_id) AS assigned_users …` names
+/// `assigned_users`, which `HAVING` (and `GROUP BY`, `ORDER BY`, and the list
+/// itself) can then use. Read as shallowly as the rest of this module: a
+/// comma-separated item names its alias after `AS`, or in a trailing word
+/// that is not a keyword and follows neither a dot nor an operator
+/// (`count(*) c`, `end flag` — but not `t.a`, and not `a = b`). The word
+/// being typed is left out — it is not an alias yet.
+fn select_aliases(tokens: &[Token], typing: &Range<usize>) -> Vec<String> {
+    let mut aliases = Vec::new();
+    let mut depth = 0i32;
+    let mut index = 0;
+    while index < tokens.len() {
+        match &tokens[index] {
+            Token::Open => depth += 1,
+            Token::Close => depth = depth.saturating_sub(1),
+            token if depth == 0 && token.keyword().as_deref() == Some("SELECT") => {
+                // A `SELECT` inside parentheses belongs to a subquery, whose
+                // aliases are not visible here.
+                index = select_list(tokens, index + 1, typing, &mut aliases);
+                continue;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    aliases
+}
+
+/// Walk one `SELECT` list starting at `index`, collecting its aliases, and
+/// hand back the index the list ended at: a clause word, an unbalanced
+/// closing paren, or the end of the tokens.
+fn select_list(
+    tokens: &[Token],
+    mut index: usize,
+    typing: &Range<usize>,
+    aliases: &mut Vec<String>,
+) -> usize {
+    let mut item: Vec<&Token> = Vec::new();
+    let mut depth = 0i32;
+    loop {
+        let done = match tokens.get(index) {
+            None => true,
+            Some(Token::Open) => {
+                depth += 1;
+                false
+            }
+            Some(Token::Close) if depth == 0 => true,
+            Some(Token::Close) => {
+                depth -= 1;
+                false
+            }
+            Some(Token::Comma) if depth == 0 => {
+                item_alias(&item, typing)
+                    .into_iter()
+                    .for_each(|alias| aliases.push(alias));
+                item.clear();
+                index += 1;
+                continue;
+            }
+            Some(token)
+                if depth == 0
+                    && token.keyword().is_some_and(|word| {
+                        // `AS` names the item's alias; it does not end the
+                        // list the way the other clause words do.
+                        word != "AS" && CLAUSE_WORDS.contains(&word.as_str())
+                    }) =>
+            {
+                true
+            }
+            _ => false,
+        };
+        if done {
+            item_alias(&item, typing)
+                .into_iter()
+                .for_each(|alias| aliases.push(alias));
+            return index;
+        }
+        item.push(&tokens[index]);
+        index += 1;
+    }
+}
+
+/// The alias one comma-separated `SELECT` item gives its expression, if any.
+fn item_alias(item: &[&Token], typing: &Range<usize>) -> Option<String> {
+    // `expr AS alias`
+    for (at, token) in item.iter().enumerate() {
+        if token.keyword().as_deref() == Some("AS") {
+            return match item.get(at + 1) {
+                Some(Token::Word { text, range, .. }) if !overlaps(range, typing) => {
+                    Some((*text).clone())
+                }
+                _ => None,
+            };
+        }
+    }
+    // `expr alias`: a trailing word that is not a keyword, following a
+    // closing paren or a plain word — a function call's `count(*) c`, not a
+    // qualified `t.a` or a comparison's `a = b`.
+    let [.., before, last] = item else {
+        return None;
+    };
+    let Token::Word {
+        text,
+        quoted,
+        range,
+        ..
+    } = last
+    else {
+        return None;
+    };
+    if !*quoted && KEYWORDS.contains(&text.to_ascii_uppercase().as_str()) {
+        return None;
+    }
+    let plain_word = matches!(before, Token::Word { quoted: true, .. })
+        || before
+            .keyword()
+            .is_some_and(|word| !KEYWORDS.contains(&word.as_str()));
+    if !(matches!(before, Token::Close) || plain_word) || overlaps(range, typing) {
+        return None;
+    }
+    Some((*text).clone())
+}
+
+/// Whether the word being typed sits inside `range`: it is not a finished
+/// name yet.
+fn overlaps(range: &Range<usize>, typing: &Range<usize>) -> bool {
+    range.start < typing.end && typing.start < range.end
 }
 
 /// The catalog `name` is a database in: the current one by name, or one
@@ -1339,6 +1476,59 @@ mod tests {
             ["id", "user_id", "order"]
         );
         assert_eq!(labels("SELECT u.e| FROM users AS u"), ["email"]);
+    }
+
+    #[test]
+    fn a_select_list_alias_is_offered_as_a_column() {
+        let offered = labels(
+            "SELECT group_concat(user_id) AS assigned_users FROM orders GROUP BY id HAVING assi|",
+        );
+        assert!(offered.contains(&"assigned_users".to_string()));
+        // With the columns, ahead of the keywords.
+        let offered = labels(
+            "SELECT group_concat(user_id) AS assigned_users FROM orders GROUP BY id HAVING a|",
+        );
+        assert!(
+            offered.iter().position(|l| l == "assigned_users")
+                < offered.iter().position(|l| l == "add")
+        );
+    }
+
+    #[test]
+    fn a_select_list_alias_without_as_is_offered() {
+        let offered = labels("SELECT count(*) total FROM orders HAVING tot|");
+        assert!(offered.contains(&"total".to_string()));
+    }
+
+    #[test]
+    fn no_alias_is_invented_for_plain_or_qualified_columns() {
+        // `DISTINCT` is not an expression being aliased, and `users.email`
+        // names a column rather than aliasing one: neither may surface as an
+        // "Alias" beside the real column.
+        let details = complete_on(
+            "SELECT DISTINCT users.email FROM users HAVING ema|",
+            Engine::Postgres,
+            &HashMap::new(),
+            &[],
+        )
+        .map(|completions| {
+            completions
+                .items
+                .into_iter()
+                .map(|s| (s.label, s.detail))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+        let email = details
+            .iter()
+            .find(|(label, _)| label == "email")
+            .expect("the column is offered");
+        assert_eq!(email.1, "text");
+    }
+
+    #[test]
+    fn the_alias_being_typed_is_not_offered() {
+        assert!(!labels("SELECT id AS ident| FROM users").contains(&"ident".to_string()));
     }
 
     #[test]
