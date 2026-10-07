@@ -377,30 +377,31 @@
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-8 text-center">
 
           <div class="space-y-1">
-            <div class="text-3xl sm:text-4xl font-extrabold text-light-violet dark:text-dark-violet font-mono">Native</div>
-            <div class="text-sm font-medium text-light-text dark:text-dark-text">Rust Binary</div>
-            <div class="text-xs text-light-muted dark:text-dark-muted">No Electron, no JVM, no web views</div>
+            <div class="text-3xl sm:text-4xl font-extrabold text-light-violet dark:text-dark-violet font-mono">0.16s</div>
+            <div class="text-sm font-medium text-light-text dark:text-dark-text">Cold start</div>
+            <div class="text-xs text-light-muted dark:text-dark-muted">To first complete window render</div>
           </div>
 
           <div class="space-y-1">
-            <div class="text-3xl sm:text-4xl font-extrabold text-db-postgresLight dark:text-db-postgres font-mono">GPU</div>
-            <div class="text-sm font-medium text-light-text dark:text-dark-text">Accelerated UI</div>
-            <div class="text-xs text-light-muted dark:text-dark-muted">Rendered on the graphics processor</div>
+            <div class="text-3xl sm:text-4xl font-extrabold text-db-postgresLight dark:text-db-postgres font-mono">65 MB</div>
+            <div class="text-sm font-medium text-light-text dark:text-dark-text">Idle memory</div>
+            <div class="text-xs text-light-muted dark:text-dark-muted">Resident set at rest</div>
           </div>
 
           <div class="space-y-1">
-            <div class="text-3xl sm:text-4xl font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">Virtualized</div>
-            <div class="text-sm font-medium text-light-text dark:text-dark-text">Data Grid</div>
-            <div class="text-xs text-light-muted dark:text-dark-muted">Smooth scrolling on large result sets</div>
+            <div class="text-3xl sm:text-4xl font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">125 MB</div>
+            <div class="text-sm font-medium text-light-text dark:text-dark-text">Peak memory</div>
+            <div class="text-xs text-light-muted dark:text-dark-muted">Max observed, no result set loaded</div>
           </div>
 
           <div class="space-y-1">
-            <div class="text-3xl sm:text-4xl font-extrabold text-db-mysqlLight dark:text-db-mysql font-mono">MIT</div>
-            <div class="text-sm font-medium text-light-text dark:text-dark-text">Open Source</div>
-            <div class="text-xs text-light-muted dark:text-dark-muted">Free for personal and commercial use</div>
+            <div class="text-3xl sm:text-4xl font-extrabold text-db-mysqlLight dark:text-db-mysql font-mono">~20 MB</div>
+            <div class="text-sm font-medium text-light-text dark:text-dark-text">Download</div>
+            <div class="text-xs text-light-muted dark:text-dark-muted">~60 MB installed · one native binary</div>
           </div>
 
         </div>
+        <p class="mt-8 text-center text-xs text-light-muted dark:text-dark-muted">Measured on a MacBook Air (Apple M4). Your numbers will vary by machine and workload.</p>
       </div>
     </section>
 
