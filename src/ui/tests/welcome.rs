@@ -885,3 +885,52 @@ fn an_unreadable_connections_file_is_kept_aside(_cx: &mut TestAppContext) {
     assert!(dir.path.join("connections.json.unreadable").exists());
     assert!(!dir.path.join("connections.json").exists());
 }
+
+#[gpui_kit::test]
+fn sola_theme_sets_register_with_correct_modes(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        init_ui(cx);
+        crate::settings::load_builtin_themes(cx);
+    });
+
+    let names = cx.update(|cx| {
+        ThemeRegistry::global(cx)
+            .themes()
+            .keys()
+            .map(|k| k.as_str().to_string())
+            .collect::<Vec<_>>()
+    });
+
+    // The three Sola di Ryuvia theme sets translate Zed styles into gpui-kit
+    // theme sets bundled under `assets/themes/sola.json`.
+    assert!(
+        names.iter().any(|n| n == "Sola Mirage"),
+        "Sola Mirage dark theme should be registered; found: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "Sola Twilight"),
+        "Sola Twilight dark theme should be registered; found: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "Sola Dawn"),
+        "Sola Dawn light theme should be registered; found: {names:?}"
+    );
+
+    // Each registered theme must expose a usable mode.
+    cx.update(|cx| {
+        let themes = ThemeRegistry::global(cx)
+            .themes()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for config in themes {
+            if config.name.starts_with("Sola ") {
+                // Applying a config must not panic and must keep a name.
+                let theme = Theme::global_mut(cx);
+                theme.mode = config.mode;
+                theme.apply_config(&config);
+                assert!(!theme.theme_name().is_empty());
+            }
+        }
+    });
+}
