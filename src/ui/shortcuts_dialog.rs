@@ -102,10 +102,39 @@ const GROUPS: &[Group] = &[
     },
     Group {
         title: "Editing SQL",
-        rows: &[(
-            "Comment out the selected lines, or the caret's line",
-            &["secondary-/"],
-        )],
+        rows: &[
+            (
+                "Comment out the selected lines, or the caret's line",
+                &["secondary-/"],
+            ),
+            ("Copy the selection, or the caret's line", &["secondary-c"]),
+            ("Cut the selection, or the caret's line", &["secondary-x"]),
+            (
+                "Delete the selected lines, or the caret's line",
+                &["secondary-shift-k"],
+            ),
+            (
+                "Move the selected lines up or down",
+                &["alt-up", "alt-down"],
+            ),
+            (
+                "Duplicate the selected lines above or below",
+                &["alt-shift-up", "alt-shift-down"],
+            ),
+            (
+                "Select the next occurrence of the selection",
+                &["secondary-d"],
+            ),
+            (
+                "Select the previous occurrence of the selection",
+                &["secondary-shift-d"],
+            ),
+            ("Select the caret's line", &["secondary-l"]),
+            (
+                "Go to the first non-blank character, then the line's start",
+                &["home"],
+            ),
+        ],
     },
     Group {
         title: "Result grid",
