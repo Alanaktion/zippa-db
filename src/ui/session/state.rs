@@ -12,17 +12,32 @@ use super::{ObjectViewMode, Session, SessionEvent, SessionPanel, Status};
 
 impl Session {
     /// This session as it would be restored: the connection it belongs to, the
-    /// database it is on, and every tab in creation order.
+    /// database it is on, and every tab in the order the dock shows them.
     pub(crate) fn snapshot(&self, cx: &App) -> SessionState {
         if let Some(restoring) = &self.restoring {
             return restoring.clone();
         }
+        // Tabs are saved in the order the dock shows them, since a drag can
+        // reorder the strip; restoring opens them in this order.
+        let mut ordered = match self.panels.first() {
+            Some(first) => self.strip(first, cx),
+            None => Vec::new(),
+        };
+        for panel in &self.panels {
+            if !ordered.contains(panel) {
+                ordered.push(panel.clone());
+            }
+        }
+        let active = self
+            .active
+            .as_ref()
+            .and_then(|active| ordered.iter().position(|panel| panel.downgrade() == *active))
+            .unwrap_or(0);
         SessionState {
             connection: self.connection.config.id,
             database: Some(self.connection.database().to_string()),
-            active: self.active_tab_index(),
-            panels: self
-                .panels
+            active,
+            panels: ordered
                 .iter()
                 .map(|panel| panel.read(cx).snapshot(cx))
                 .collect(),
