@@ -15,8 +15,8 @@ use super::config::Engine;
 /// Transaction control is allowed as well (see [`transaction_control`]);
 /// everything else, `SET` included, is a write as far as this module is
 /// concerned.
-const READING: [&str; 8] = [
-    "SELECT", "VALUES", "TABLE", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "PRAGMA",
+const READING: [&str; 9] = [
+    "SELECT", "WITH", "VALUES", "TABLE", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "PRAGMA",
 ];
 
 /// Keywords that make a statement a write wherever they turn up in it, so a
@@ -690,6 +690,27 @@ mod tests {
         ] {
             assert_eq!(first_write(sql), None, "{sql} should read");
         }
+    }
+
+    #[test]
+    fn a_with_select_is_a_read() {
+        for sql in [
+            "with cte1 as (select a, b from table1), cte2 as (select c, d from table2) select b, d from cte1 join cte2 where cte1.a = cte2.c",
+            "WITH RECURSIVE countdown(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM countdown WHERE n < 3) SELECT n FROM countdown",
+            "with x as (select 1) values (2)",
+        ] {
+            assert_eq!(first_write(sql), None, "{sql} should read");
+        }
+        // But a CTE carrying a write still counts as one.
+        assert_eq!(
+            first_write("with moved as (update items set x = 1 returning *) select * from moved")
+                .as_deref(),
+            Some("WITH")
+        );
+        assert_eq!(
+            first_write("with n as (select 1) insert into items select * from n").as_deref(),
+            Some("WITH")
+        );
     }
 
     #[test]
