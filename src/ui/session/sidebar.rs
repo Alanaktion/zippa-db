@@ -1,13 +1,15 @@
-//! The object sidebar: the open database's tables and views, and the tools for
-//! working with the server.
+//! The object sidebar: the open database's tables and views, the tools for
+//! working with the server, and the user's saved queries.
 //!
-//! Two top tabs share it. **Schema** shows the object list and the filter over
+//! Three top tabs share it. **Schema** shows the object list and the filter over
 //! it, with the schema search and the SQL dump import inline beside the filter
 //! (both are about the objects below them). **Management** holds the
 //! DBA-facing views — the console, the process list, the server variables, and
 //! the query digest — as icon rows, since they are destinations rather than
 //! actions on the object list. SQLite has no server, so it lists the console
-//! and its own maintenance tab instead.
+//! and its own maintenance tab instead. **Saved** lists the queries the user
+//! named and kept, across every connection; clicking one opens it in a new
+//! query tab.
 //!
 //! TODO.md section 4 starts here — a tree of databases, schemas, tables,
 //! views, functions and the rest — so the list and the filter over it are
@@ -307,6 +309,7 @@ impl Session {
         let content = match self.sidebar_tab {
             SidebarTab::Schema => self.render_schema_tab(cx).into_any_element(),
             SidebarTab::Management => self.render_management_tab(cx).into_any_element(),
+            SidebarTab::Saved => self.render_saved_tab(cx).into_any_element(),
         };
 
         v_flex()
@@ -322,9 +325,10 @@ impl Session {
             .child(self.render_sidebar_tabs(cx))
     }
 
-    /// The two tabs at the top of the sidebar: the object list and the
-    /// server tools. A segmented bar reads as a section switch rather than a
-    /// strip of document tabs, which is what these are.
+    /// The three tabs at the top of the sidebar: the object list, the
+    /// server tools, and the saved queries. A segmented bar reads as a
+    /// section switch rather than a strip of document tabs, which is what
+    /// these are.
     fn render_sidebar_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         TabBar::new("sidebar-tabs")
             .segmented()
@@ -340,6 +344,7 @@ impl Session {
             }))
             .child(Tab::new().label("Schema").flex_1())
             .child(Tab::new().label("Management").flex_1())
+            .child(Tab::new().label("Saved").flex_1())
     }
 
     /// The Schema tab: the filter with its two inline actions, then the list of
@@ -482,6 +487,108 @@ impl Session {
                 )
             })
     }
+
+    /// The Saved tab: the queries the user named and kept, read fresh from
+    /// disk every render so a save or delete from anywhere shows up on the
+    /// next paint. Clicking a row opens it in a new query tab; the ×
+    /// forgets it.
+    fn render_saved_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let queries = crate::saved_queries::load();
+
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .gap_1()
+            .child(
+                div()
+                    .px_1()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("SAVED QUERIES"),
+            )
+            .when(queries.is_empty(), |this| {
+                this.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("No saved queries yet — save one from a query tab."),
+                )
+            })
+            .child(
+                div()
+                    .id("saved-queries")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(queries.into_iter().enumerate().map(|(ix, query)| {
+                        let row_name = query.name.clone();
+                        let row_sql = query.sql.clone();
+                        let delete_name = row_name.clone();
+                        let first_line = query
+                            .sql
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string();
+
+                        ListItem::new(("saved-query", ix))
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .min_w_0()
+                                    .gap_2()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .min_w_0()
+                                            .flex_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                                    .truncate()
+                                                    .child(row_name.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .truncate()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(first_line),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new(("saved-delete", ix))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::X)
+                                            .accessibility_label(format!(
+                                                "Delete saved query {row_name}"
+                                            ))
+                                            .tooltip(format!("Delete {row_name}"))
+                                            .on_click(cx.listener(move |_this, _, _window, cx| {
+                                                let _ = crate::saved_queries::remove(&delete_name);
+                                                // The row itself opens the query on click; a
+                                                // delete must not bubble up to it.
+                                                cx.stop_propagation();
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_tab(
+                                    Some(row_name.clone()),
+                                    row_sql.clone(),
+                                    false,
+                                    window,
+                                    cx,
+                                );
+                            }))
+                    })),
+            )
+    }
 }
 
 /// One tool row in the Management tab.
@@ -511,13 +618,15 @@ fn tool_row(
         )
 }
 
-/// Which of the sidebar's two tabs is showing.
+/// Which of the sidebar's three tabs is showing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum SidebarTab {
     /// The object list: tables, views and routines, with the filter over it.
     Schema,
     /// The DBA-facing tools built on this connection.
     Management,
+    /// The queries the user saved by name, across every connection.
+    Saved,
 }
 
 impl SidebarTab {
@@ -526,6 +635,7 @@ impl SidebarTab {
         match self {
             SidebarTab::Schema => 0,
             SidebarTab::Management => 1,
+            SidebarTab::Saved => 2,
         }
     }
 
@@ -534,7 +644,8 @@ impl SidebarTab {
     fn from_index(index: usize) -> Self {
         match index {
             0 => SidebarTab::Schema,
-            _ => SidebarTab::Management,
+            1 => SidebarTab::Management,
+            _ => SidebarTab::Saved,
         }
     }
 }

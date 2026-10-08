@@ -8,6 +8,7 @@ mod crash_log;
 mod db;
 mod keymap;
 mod menu;
+mod saved_queries;
 mod settings;
 mod ui;
 mod workspace_state;
@@ -56,6 +57,8 @@ gpui_kit::assets::icon_assets!(
         Binoculars,
         Wrench,
         FastForward,
+        Bookmark,
+        X,
     ]
 );
 
