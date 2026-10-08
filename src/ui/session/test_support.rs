@@ -202,6 +202,13 @@ impl Session {
         self.open_object(object, super::tab::ObjectViewMode::Schema, window, cx);
     }
 
+    /// Open a new-table structure tab, the way the sidebar's New table
+    /// button does.
+    #[cfg(test)]
+    pub(crate) fn open_new_table_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_new_table(window, cx);
+    }
+
     #[cfg(test)]
     pub(crate) fn open_tab_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_tab(None, String::new(), false, window, cx);

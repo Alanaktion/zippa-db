@@ -5,7 +5,9 @@
 
 use crate::db::schema::{ColumnDef, ForeignKeyDef, IndexDef, ReferentialAction};
 use crate::db::sql::quote_literal_for;
-use crate::db::{DatabaseObject, Engine, quote_identifier};
+use crate::db::{DatabaseObject, Engine, ObjectKind, quote_identifier};
+
+use super::rebuild::foreign_key_clause;
 
 /// One column row as the user has edited it, ready to be diffed against
 /// `original` and turned into SQL.
@@ -324,6 +326,115 @@ fn sqlite_modify(
         quote_identifier(&original.name, Engine::Sqlite),
         quote_identifier(&edit.name, Engine::Sqlite)
     )])
+}
+
+/// The `CREATE TABLE` — and whatever follows it — a new table's form asks
+/// for: one `CREATE TABLE` from its column rows, then its indexes and
+/// foreign keys. SQLite cannot add a primary key or a foreign key to an
+/// existing table at all, so those are declared inline in the `CREATE TABLE`
+/// itself there and skipped afterwards; the other two engines get them as
+/// follow-up statements, which keeps a named primary key constraint named.
+///
+/// Unlike the alter path, everything here is new — there is nothing to diff
+/// against — so every named column row becomes a column definition.
+///
+/// `Err` for a missing table name, for no named columns, or for more than
+/// one primary key; a table can only have one.
+pub(crate) fn generate_create_statements(
+    engine: Engine,
+    name: &str,
+    columns: &[ColumnEdit],
+    indexes: &[IndexEdit],
+    foreign_keys: &[ForeignKeyEdit],
+) -> Result<Vec<String>, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("the table needs a name".to_string());
+    }
+    let defined: Vec<&ColumnEdit> = columns
+        .iter()
+        .filter(|edit| edit.is_new() && !edit.dropped && !edit.name.trim().is_empty())
+        .collect();
+    if defined.is_empty() {
+        return Err("a table needs at least one column".to_string());
+    }
+    // A table can only have one primary key, on every engine.
+    let primary_key = new_table_primary_key(indexes)?;
+
+    let target = quote_identifier(name, engine);
+    let mut definitions: Vec<String> = defined
+        .iter()
+        .map(|edit| column_clause(engine, edit))
+        .collect();
+
+    // Enough of an object for the index and foreign key generators, which
+    // only read its name and schema. A new table is always unqualified: it
+    // lands in the connection's default schema, the same one an unqualified
+    // name reads from everywhere else in the app.
+    let object = DatabaseObject {
+        schema: None,
+        name: name.to_string(),
+        kind: ObjectKind::Table,
+    };
+
+    let mut statements = Vec::new();
+    if engine == Engine::Sqlite {
+        if !primary_key.is_empty() {
+            definitions.push(format!(
+                "PRIMARY KEY ({})",
+                columns_list(engine, &primary_key)
+            ));
+        }
+        for edit in foreign_keys {
+            if !edit.wants_a_statement() {
+                continue;
+            }
+            if edit.name.trim().is_empty() {
+                return Err("a foreign key needs a name".to_string());
+            }
+            definitions.push(foreign_key_clause(engine, edit, &[]));
+        }
+        statements.push(format!(
+            "CREATE TABLE {target} ({})",
+            definitions.join(", ")
+        ));
+        // The primary key and the foreign keys are inline now; the rest —
+        // plain and unique indexes — are created afterwards as usual.
+        let rest: Vec<IndexEdit> = indexes
+            .iter()
+            .filter(|edit| !edit.primary_key)
+            .cloned()
+            .collect();
+        statements.extend(generate_index_statements(engine, &object, &rest)?);
+    } else {
+        statements.push(format!(
+            "CREATE TABLE {target} ({})",
+            definitions.join(", ")
+        ));
+        statements.extend(generate_index_statements(engine, &object, indexes)?);
+        statements.extend(generate_foreign_key_statements(
+            engine,
+            &object,
+            foreign_keys,
+        )?);
+    }
+    Ok(statements)
+}
+
+/// The new table's primary key columns, from its index rows — at most one
+/// row may claim it.
+fn new_table_primary_key(indexes: &[IndexEdit]) -> Result<Vec<String>, String> {
+    let mut keys = indexes
+        .iter()
+        .filter(|edit| edit.primary_key && !edit.dropped && !edit.columns.is_empty());
+    let first = keys
+        .next()
+        .map(|edit| edit.columns.clone())
+        .unwrap_or_default();
+    if keys.next().is_some() {
+        return Err("a table can only have one primary key".to_string());
+    }
+    Ok(first)
 }
 
 /// One index row as the user has edited it: a whole index added or a whole
@@ -1184,6 +1295,133 @@ mod tests {
             &[added_fk("", &["tag_id"], None, "tags", &["id"])],
         )
         .expect_err("a foreign key with columns but no name should be refused");
+        assert!(error.contains("name"));
+    }
+
+    #[test]
+    fn postgres_creates_a_table_then_its_primary_key_constraint() {
+        let columns = vec![
+            added("id", "integer", false, None),
+            added("label", "text", true, Some("'x'")),
+        ];
+        let pk = added_index("orders_pkey", &["id"], false, true);
+
+        let statements =
+            generate_create_statements(Engine::Postgres, "orders", &columns, &[pk], &[])
+                .expect("should generate");
+        assert_eq!(
+            statements,
+            [
+                "CREATE TABLE orders (id integer NOT NULL, label text DEFAULT 'x')",
+                "ALTER TABLE orders ADD CONSTRAINT orders_pkey PRIMARY KEY (id)",
+            ]
+        );
+    }
+
+    #[test]
+    fn mysql_creates_a_table_then_adds_its_primary_key() {
+        let columns = vec![
+            added("id", "int", false, None),
+            added("tag_id", "int", true, None),
+        ];
+        let pk = added_index("primary", &["id"], false, true);
+        let fk = added_fk("fk", &["tag_id"], None, "tags", &["id"]);
+
+        let statements =
+            generate_create_statements(Engine::MySql, "tagged", &columns, &[pk], &[fk])
+                .expect("should generate");
+        assert_eq!(
+            statements,
+            [
+                "CREATE TABLE tagged (id int NOT NULL, tag_id int)",
+                "ALTER TABLE tagged ADD PRIMARY KEY (id)",
+                "ALTER TABLE tagged ADD CONSTRAINT fk FOREIGN KEY (tag_id) \
+                 REFERENCES tags (id) ON DELETE NO ACTION ON UPDATE NO ACTION",
+            ]
+        );
+    }
+
+    #[test]
+    fn sqlite_inlines_its_primary_key_and_foreign_keys() {
+        let columns = vec![
+            added("id", "INTEGER", false, None),
+            added("tag_id", "INTEGER", true, None),
+        ];
+        let pk = added_index("", &["id"], false, true);
+        let fk = added_fk("fk", &["tag_id"], None, "tags", &["id"]);
+        let plain = added_index("tagged_tag_id_idx", &["tag_id"], false, false);
+
+        let statements =
+            generate_create_statements(Engine::Sqlite, "tagged", &columns, &[pk, plain], &[fk])
+                .expect("should generate");
+        assert_eq!(
+            statements,
+            [
+                "CREATE TABLE tagged (id INTEGER NOT NULL, tag_id INTEGER, PRIMARY KEY (id), \
+                 CONSTRAINT fk FOREIGN KEY (tag_id) REFERENCES tags (id) \
+                 ON DELETE NO ACTION ON UPDATE NO ACTION)",
+                "CREATE INDEX tagged_tag_id_idx ON tagged (tag_id)",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_table_name_is_quoted_per_engine() {
+        let columns = vec![added("id", "integer", false, None)];
+
+        let statements = generate_create_statements(Engine::Postgres, "order", &columns, &[], &[])
+            .expect("should generate");
+        assert_eq!(statements, ["CREATE TABLE \"order\" (id integer NOT NULL)"]);
+
+        let statements = generate_create_statements(Engine::MySql, "order", &columns, &[], &[])
+            .expect("should generate");
+        assert_eq!(statements, ["CREATE TABLE `order` (id integer NOT NULL)"]);
+
+        let statements = generate_create_statements(Engine::Sqlite, "order", &columns, &[], &[])
+            .expect("should generate");
+        assert_eq!(statements, ["CREATE TABLE \"order\" (id integer NOT NULL)"]);
+    }
+
+    #[test]
+    fn create_table_needs_a_name_and_a_column() {
+        let columns = vec![added("id", "integer", false, None)];
+
+        let error = generate_create_statements(Engine::Postgres, "  ", &columns, &[], &[])
+            .expect_err("an empty name should be refused");
+        assert!(error.contains("name"));
+
+        let error = generate_create_statements(
+            Engine::Postgres,
+            "tags",
+            &[added("", "integer", false, None)],
+            &[],
+            &[],
+        )
+        .expect_err("no named columns should be refused");
+        assert!(error.contains("column"));
+    }
+
+    #[test]
+    fn create_table_refuses_a_second_primary_key() {
+        let columns = vec![
+            added("id", "integer", false, None),
+            added("n", "integer", false, None),
+        ];
+        let first = added_index("a_pkey", &["id"], false, true);
+        let second = added_index("b_pkey", &["n"], false, true);
+
+        let error =
+            generate_create_statements(Engine::Sqlite, "t", &columns, &[first, second], &[])
+                .expect_err("two primary keys should be refused");
+        assert!(error.contains("one primary key"));
+    }
+
+    #[test]
+    fn a_blank_new_table_generates_nothing_but_an_error() {
+        // A form with no name at all reports the missing name rather than a
+        // column problem.
+        let error = generate_create_statements(Engine::Postgres, "", &[], &[], &[])
+            .expect_err("an empty form should be refused");
         assert!(error.contains("name"));
     }
 }

@@ -252,6 +252,22 @@ impl SchemaView {
         self.toggle_foreign_key_drop(id, cx);
     }
 
+    pub(crate) fn set_table_name_for_test(
+        &mut self,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.table_name.clone();
+        input.update(cx, |input, cx| {
+            input.set_value(value.to_string(), window, cx)
+        });
+    }
+
+    pub(crate) fn is_new_table_for_test(&self) -> bool {
+        self.new_table
+    }
+
     pub(crate) fn preview_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.preview(window, cx);
     }

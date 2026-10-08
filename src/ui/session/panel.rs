@@ -331,6 +331,13 @@ impl SessionPanel {
         self.title.clone()
     }
 
+    /// Rename the tab, as when a new-table tab becomes its table's structure
+    /// tab.
+    pub(crate) fn set_title(&mut self, title: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.title = title.into();
+        cx.notify();
+    }
+
     pub(crate) fn is_query(&self) -> bool {
         matches!(self.content, TabContent::Query { .. })
     }
@@ -465,9 +472,12 @@ impl SessionPanel {
     }
 
     /// This tab as it would be restored: a query keeps its title, its buffer,
-    /// and its file; a table or structure tab keeps the object it shows.
-    pub(crate) fn snapshot(&self, cx: &App) -> PanelState {
-        match &self.content {
+    /// and its file; a table or structure tab keeps the object it shows. A
+    /// new-table tab has no object to restore — its half-designed form is
+    /// not serialized — so it is left out, and the quit-time dirty check is
+    /// what protects unapplied work instead.
+    pub(crate) fn snapshot(&self, cx: &App) -> Option<PanelState> {
+        let state = match &self.content {
             TabContent::Query { editor, path, .. } => PanelState::Query {
                 title: self.title.to_string(),
                 sql: editor.read(cx).sql(cx),
@@ -477,6 +487,7 @@ impl SessionPanel {
                 object: view.read(cx).object().clone(),
                 filters: view.read(cx).filters(cx),
             },
+            TabContent::Schema { view } if view.read(cx).is_new_table() => return None,
             TabContent::Schema { view } => PanelState::Schema {
                 object: view.read(cx).object().clone(),
             },
@@ -485,7 +496,8 @@ impl SessionPanel {
             TabContent::Variables { .. } => PanelState::Variables,
             TabContent::Digest { .. } => PanelState::Digest,
             TabContent::Maintenance { .. } => PanelState::Maintenance,
-        }
+        };
+        Some(state)
     }
 
     /// Whether a query tab's buffer has changed since it was opened or last
@@ -531,7 +543,6 @@ impl SessionPanel {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn schema_view(&self) -> Option<Entity<SchemaView>> {
         match &self.content {
             TabContent::Schema { view } => Some(view.clone()),

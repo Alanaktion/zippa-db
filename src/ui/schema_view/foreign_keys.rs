@@ -243,8 +243,8 @@ impl SchemaView {
         })
     }
 
-    /// A checkbox per column `self.schema` has, letting a new foreign key
-    /// pick its local columns and the order they match the referenced ones.
+    /// A checkbox per column the table has, letting a new foreign key pick
+    /// its local columns and the order they match the referenced ones.
     fn render_foreign_key_column_picker(
         &self,
         key: &EditableForeignKey,
@@ -252,17 +252,7 @@ impl SchemaView {
     ) -> impl IntoElement {
         let id = key.id;
         let editable = self.foreign_keys_editable();
-        let available: Vec<String> = self
-            .schema
-            .as_ref()
-            .map(|schema| {
-                schema
-                    .columns
-                    .iter()
-                    .map(|column| column.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let available: Vec<String> = self.picker_columns(cx);
 
         let mut boxes = Vec::with_capacity(available.len());
         for name in available {

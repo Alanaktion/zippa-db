@@ -1120,3 +1120,160 @@ fn dropping_a_unique_constraint_on_sqlite_rebuilds_the_table(cx: &mut TestAppCon
         Some("2".to_string())
     );
 }
+
+#[gpui_kit::test]
+fn a_new_table_previews_a_create_table_statement(cx: &mut TestAppContext) {
+    let (_database, handle, view) = new_table_view(cx);
+
+    assert!(
+        view.read_with(cx, |view, _| view.is_new_table_for_test()),
+        "the tab should be in new-table mode"
+    );
+    assert_eq!(
+        handle
+            .update(cx, |session, _, cx| session.tab_titles(cx))
+            .unwrap(),
+        ["Query 1", "New table"],
+        "a new-table tab is titled for what it is, not for a table"
+    );
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.set_table_name_for_test("tags", window, cx);
+            view.set_column_name_for_test(0, "id", window, cx);
+            view.set_column_type_for_test(0, "INTEGER", cx);
+            view.set_column_nullable_for_test(0, false, cx);
+            view.add_column_for_test(window, cx);
+            view.set_column_name_for_test(1, "label", window, cx);
+            view.preview_for_test(window, cx);
+        })
+        .unwrap();
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.pending_statements_for_test()),
+        Some(vec![
+            "CREATE TABLE tags (id INTEGER NOT NULL, label TEXT)".to_string()
+        ])
+    );
+}
+
+#[gpui_kit::test]
+fn a_new_table_inlines_its_primary_key_on_sqlite(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = new_table_view(cx);
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.set_table_name_for_test("tags", window, cx);
+            view.set_column_name_for_test(0, "id", window, cx);
+            view.set_column_type_for_test(0, "INTEGER", cx);
+            view.add_index_for_test(window, cx);
+            view.set_index_name_for_test(0, "tags_pkey", window, cx);
+            view.set_index_primary_key_for_test(0, true, cx);
+            // The picker offers the form's own column rows in new-table mode.
+            view.toggle_index_column_for_test(0, "id", true, cx);
+            view.preview_for_test(window, cx);
+        })
+        .unwrap();
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.pending_statements_for_test()),
+        Some(vec![
+            "CREATE TABLE tags (id INTEGER, PRIMARY KEY (id))".to_string()
+        ])
+    );
+}
+
+#[gpui_kit::test]
+fn a_new_table_without_a_name_or_columns_does_not_preview(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = new_table_view(cx);
+
+    // No name yet: the preview says so rather than generating anything.
+    view.downgrade()
+        .update_in(cx, |view, window, cx| view.preview_for_test(window, cx))
+        .unwrap();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.error_for_test()),
+        Some("the table needs a name".to_string())
+    );
+    assert!(
+        view.read_with(cx, |view, _| view.pending_statements_for_test())
+            .is_none()
+    );
+
+    // A name but no columns: still nothing to create.
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.set_table_name_for_test("tags", window, cx);
+            view.preview_for_test(window, cx);
+        })
+        .unwrap();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.error_for_test()),
+        Some("a table needs at least one column".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn a_new_table_applies_and_becomes_its_structure_tab(cx: &mut TestAppContext) {
+    let (database, handle, view) = new_table_view(cx);
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.set_table_name_for_test("tags", window, cx);
+            view.set_column_name_for_test(0, "id", window, cx);
+            view.set_column_type_for_test(0, "INTEGER", cx);
+            view.add_column_for_test(window, cx);
+            view.set_column_name_for_test(1, "label", window, cx);
+            view.preview_for_test(window, cx);
+            view.apply_for_test(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    // The CREATE TABLE really ran on the server, not just in the form.
+    assert_eq!(
+        value(
+            &database,
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tags'"
+        ),
+        Some("tags".to_string())
+    );
+
+    // And the tab is now the new table's ordinary structure tab.
+    assert!(
+        !view.read_with(cx, |view, _| view.is_new_table_for_test()),
+        "applying should leave new-table mode"
+    );
+    assert_eq!(
+        handle
+            .update(cx, |session, _, cx| session.tab_titles(cx))
+            .unwrap(),
+        ["Query 1", "tags"],
+        "the tab takes the created table's name"
+    );
+    assert_eq!(
+        view.read_with(cx, |view, cx| view.column_names_for_test(cx)),
+        ["id", "label"],
+        "the structure is re-read from the server after the create"
+    );
+}
+
+#[gpui_kit::test]
+fn opening_new_table_twice_brings_the_first_tab_forward(cx: &mut TestAppContext) {
+    let (_database, handle, _view) = new_table_view(cx);
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_new_table_for_test(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        handle
+            .update(cx, |session, _, cx| session.tab_titles(cx))
+            .unwrap(),
+        ["Query 1", "New table"],
+        "a second new-table tab should not open"
+    );
+}

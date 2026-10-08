@@ -491,7 +491,10 @@ fn primary_key(
         .collect()
 }
 
-fn foreign_key_clause(
+/// A foreign key as a table-constraint clause — `CONSTRAINT name FOREIGN
+/// KEY ...` — for `CREATE TABLE` text. `sql.rs` reuses this for a new
+/// table on SQLite, where a foreign key can only be declared inline.
+pub(crate) fn foreign_key_clause(
     engine: Engine,
     edit: &ForeignKeyEdit,
     renames: &[(String, String)],
