@@ -280,6 +280,24 @@ pub fn quote_identifier(name: &str, engine: Engine) -> String {
     }
 }
 
+/// `CREATE DATABASE` for `name`, or `None` when there is nothing to create:
+/// a SQLite database is a file, and an empty name would not parse.
+///
+/// The name is quoted with [`quote_identifier`].
+pub fn create_database_sql(name: &str, engine: Engine) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    match engine {
+        Engine::Postgres | Engine::MySql => Some(format!(
+            "CREATE DATABASE {}",
+            quote_identifier(name, engine)
+        )),
+        Engine::Sqlite => None,
+    }
+}
+
 /// Quote `value` as a SQL string literal.
 ///
 /// Used only for the metadata queries that cannot take a bind parameter (a
@@ -397,5 +415,40 @@ mod tests {
         assert_eq!(quote_identifier("rank", Engine::MySql), "`rank`");
         assert_eq!(quote_identifier("ordered", Engine::Postgres), "ordered");
         assert_eq!(quote_identifier("user_id", Engine::Sqlite), "user_id");
+    }
+
+    #[test]
+    fn create_database_quotes_the_name_per_engine() {
+        assert_eq!(
+            create_database_sql("analytics", Engine::Postgres),
+            Some("CREATE DATABASE analytics".to_string())
+        );
+        assert_eq!(
+            create_database_sql("analytics", Engine::MySql),
+            Some("CREATE DATABASE analytics".to_string())
+        );
+        assert_eq!(
+            create_database_sql("my database", Engine::Postgres),
+            Some("CREATE DATABASE \"my database\"".to_string())
+        );
+        assert_eq!(
+            create_database_sql("my database", Engine::MySql),
+            Some("CREATE DATABASE `my database`".to_string())
+        );
+        assert_eq!(
+            create_database_sql("we\"ird", Engine::Postgres),
+            Some("CREATE DATABASE \"we\"\"ird\"".to_string())
+        );
+        assert_eq!(
+            create_database_sql("we`ird", Engine::MySql),
+            Some("CREATE DATABASE `we``ird`".to_string())
+        );
+    }
+
+    #[test]
+    fn create_database_refuses_empty_names_and_sqlite() {
+        assert_eq!(create_database_sql("", Engine::Postgres), None);
+        assert_eq!(create_database_sql("   ", Engine::MySql), None);
+        assert_eq!(create_database_sql("analytics", Engine::Sqlite), None);
     }
 }

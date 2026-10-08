@@ -20,6 +20,7 @@ use regex::Regex;
 
 use crate::db::{CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObject};
 use crate::ui::completion::SharedCatalog;
+use crate::ui::create_database_dialog::CreateDatabaseView;
 use crate::ui::import_dialog::ImportView;
 use crate::workspace_state::SessionState;
 
@@ -129,6 +130,8 @@ pub struct Session {
     next_key: usize,
     /// The import dialog, while one is open over the window.
     import: Option<Entity<ImportView>>,
+    /// The create-database dialog, while one is open over the window.
+    create_database: Option<Entity<CreateDatabaseView>>,
 }
 
 impl EventEmitter<SessionEvent> for Session {}
@@ -176,6 +179,7 @@ impl Session {
             reconnecting: false,
             next_key: 0,
             import: None,
+            create_database: None,
         };
         session
             .catalog

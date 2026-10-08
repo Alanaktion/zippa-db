@@ -13,6 +13,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, Window, px};
 
 use crate::db::{Catalog, CatalogEntry, Connection, runtime};
+use crate::ui::create_database_dialog::{CreateDatabaseEvent, CreateDatabaseView};
 
 use super::{Session, SessionEvent, Status};
 
@@ -340,6 +341,69 @@ impl Session {
         self.reload_metadata(cx);
     }
 
+    /// Build the create-database dialog, if one is not already open.
+    pub(crate) fn open_create_database_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.create_database.is_some() {
+            return;
+        }
+
+        let view = cx.new(|cx| CreateDatabaseView::new(self.connection.clone(), window, cx));
+        cx.subscribe_in(&view, window, Self::on_create_database_event)
+            .detach();
+
+        let session = cx.entity().downgrade();
+        let body = view.clone();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let session = session.clone();
+            dialog
+                .title("Create database")
+                .w(px(400.))
+                // The dialog's own keys are off; `escape` is bound to
+                // `CloseCreateDatabase` on the body instead.
+                .keyboard(false)
+                .on_close(move |_, _window, cx| {
+                    session
+                        .update(cx, |this, cx| {
+                            this.create_database = None;
+                            cx.notify();
+                        })
+                        .ok();
+                })
+                .child(body.clone())
+        });
+
+        // Put the keyboard on the name box so typing starts at once.
+        view.update(cx, |view, cx| view.focus(window, cx));
+        self.create_database = Some(view);
+    }
+
+    /// The dialog's own buttons: dismiss it, or reload the database list
+    /// after a create.
+    fn on_create_database_event(
+        &mut self,
+        _: &Entity<CreateDatabaseView>,
+        event: &CreateDatabaseEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            CreateDatabaseEvent::Dismissed => {
+                self.create_database = None;
+                window.close_dialog(cx);
+                cx.notify();
+            }
+            CreateDatabaseEvent::Created => {
+                // The new database is on the server now; re-read the list so
+                // the picker offers it.
+                self.reload_metadata(cx);
+            }
+        }
+    }
+
     /// The database dropdown, rendered by whoever owns the toolbar.
     ///
     /// Sized and styled here rather than by the caller: `dropdown_menu`
@@ -367,6 +431,10 @@ impl Session {
 
         let databases = this.databases.clone();
         let weak = session.downgrade();
+        // SQLite is one file: there is no second database to create. (The
+        // picker itself is a disabled button for a file-based engine, so this
+        // is belt and braces should that ever change.)
+        let can_create_database = !this.connection.config.engine.is_file_based();
 
         let label = if this.reconnecting {
             "Reconnecting…".to_string()
@@ -404,25 +472,40 @@ impl Session {
                     )
                     .separator();
                 if databases.is_empty() {
-                    return menu.label("No databases");
+                    menu = menu.label("No databases");
+                } else {
+                    for database in &databases {
+                        let name = database.clone();
+                        let weak = weak.clone();
+
+                        menu = menu.item(
+                            PopupMenuItem::new(database.clone())
+                                .checked(*database == current)
+                                .on_click(move |_, window, cx| {
+                                    let name = name.clone();
+                                    if let Some(session) = weak.upgrade() {
+                                        session.update(cx, |session, cx| {
+                                            session.request_switch_database(name, window, cx)
+                                        });
+                                    }
+                                }),
+                        );
+                    }
                 }
 
-                for database in &databases {
-                    let name = database.clone();
+                if can_create_database {
                     let weak = weak.clone();
-
-                    menu = menu.item(
-                        PopupMenuItem::new(database.clone())
-                            .checked(*database == current)
-                            .on_click(move |_, window, cx| {
-                                let name = name.clone();
+                    menu = menu
+                        .separator()
+                        .item(PopupMenuItem::new("Create database…").on_click(
+                            move |_, window, cx| {
                                 if let Some(session) = weak.upgrade() {
                                     session.update(cx, |session, cx| {
-                                        session.request_switch_database(name, window, cx)
+                                        session.open_create_database_dialog(window, cx)
                                     });
                                 }
-                            }),
-                    );
+                            },
+                        ));
                 }
 
                 menu.scrollable(true).max_h(px(420.))
