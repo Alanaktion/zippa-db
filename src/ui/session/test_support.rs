@@ -10,6 +10,7 @@ use gpui_kit::{App, Context, Entity, SharedString, Window};
 
 use crate::db::DatabaseObject;
 use crate::ui::console::ConsoleView;
+use crate::ui::create_database_dialog::CreateDatabaseView;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::import_dialog::ImportView;
 use crate::ui::plan_view::PlanView;
@@ -390,6 +391,12 @@ impl Session {
         self.metadata_error = None;
         self.rebuild_tree(cx);
         cx.notify();
+    }
+
+    /// The create-database dialog, while one is open.
+    #[cfg(test)]
+    pub(crate) fn create_database_dialog_for_test(&self) -> Option<Entity<CreateDatabaseView>> {
+        self.create_database.clone()
     }
 
     /// The sidebar tree's highlighted object, if any.

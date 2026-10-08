@@ -6,6 +6,7 @@
 pub mod busy;
 pub mod completion;
 pub mod console;
+pub mod create_database_dialog;
 pub mod data_grid;
 pub mod engine;
 pub mod filter_bar;

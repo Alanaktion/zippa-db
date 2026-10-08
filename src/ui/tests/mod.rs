@@ -40,6 +40,7 @@ use crate::ui::welcome::Welcome;
 mod comments;
 mod completion;
 mod console;
+mod create_database;
 mod editing;
 mod explain;
 mod export;
