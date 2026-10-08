@@ -16,11 +16,11 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, Window, div, px};
+use gpui_kit::{App, Context, Entity, EventEmitter, Window, div, px};
 
 use crate::db::{
     ColumnDef, Connection, DatabaseObject, Engine, ForeignKeyDef, IndexDef, ObjectKind,
@@ -39,6 +39,15 @@ mod test_support;
 
 use rebuild::Change;
 use sql::{ColumnEdit, ForeignKeyEdit, IndexEdit};
+
+/// What a [`SchemaView`] reports to its owner.
+pub(crate) enum SchemaViewEvent {
+    /// The new-table form's `CREATE TABLE` ran. The session refreshes its
+    /// object list and turns the tab into the new table's structure tab.
+    TableCreated { object: DatabaseObject },
+}
+
+impl EventEmitter<SchemaViewEvent> for SchemaView {}
 
 /// The fixed set of `ON DELETE`/`ON UPDATE` choices, for the action dropdowns.
 fn referential_actions() -> [ReferentialAction; 5] {
@@ -191,6 +200,11 @@ pub struct SchemaView {
     /// nothing is waiting.
     pending: Option<Change>,
     preview: Entity<TextareaState>,
+    /// Set while the form is designing a table that does not exist yet: no
+    /// server state is loaded, and applying runs `CREATE TABLE`.
+    new_table: bool,
+    /// The new table's name; only used while `new_table` is set.
+    table_name: Entity<InputState>,
 }
 
 impl SchemaView {
@@ -201,6 +215,9 @@ impl SchemaView {
         cx: &mut Context<Self>,
     ) -> Self {
         let preview = cx.new(|cx| TextareaState::new(window, cx));
+        let table_name = cx.new(|cx| InputState::new(window, cx).placeholder("table name"));
+        cx.subscribe_in(&table_name, window, Self::on_field_event)
+            .detach();
 
         let mut view = Self {
             connection,
@@ -218,9 +235,73 @@ impl SchemaView {
             notice: None,
             pending: None,
             preview,
+            new_table: false,
+            table_name,
         };
         view.reload(cx);
         view
+    }
+
+    /// A structure tab for a table that does not exist yet: the same form,
+    /// with a name box and a blank first column, generating `CREATE TABLE`
+    /// on apply rather than diffing against a loaded structure.
+    pub fn new_table(
+        connection: Arc<Connection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let preview = cx.new(|cx| TextareaState::new(window, cx));
+        let table_name = cx.new(|cx| InputState::new(window, cx).placeholder("table name"));
+        cx.subscribe_in(&table_name, window, Self::on_field_event)
+            .detach();
+
+        let mut view = Self {
+            connection,
+            // A placeholder: nothing on the server answers to it until the
+            // table is created, so nothing here reads through it either.
+            object: DatabaseObject {
+                schema: None,
+                name: String::new(),
+                kind: ObjectKind::Table,
+            },
+            schema: None,
+            rebuild_source: None,
+            columns: Vec::new(),
+            indexes: Vec::new(),
+            foreign_keys: Vec::new(),
+            tables: Vec::new(),
+            next_id: 0,
+            loading: false,
+            applying: false,
+            error: None,
+            notice: None,
+            pending: None,
+            preview,
+            new_table: true,
+            table_name,
+        };
+        let row = view.new_row(None, window, cx);
+        view.columns.push(row);
+        view.load_reference_tables(cx);
+        view
+    }
+
+    /// Whether the form is designing a table that does not exist yet.
+    pub(crate) fn is_new_table(&self) -> bool {
+        self.new_table
+    }
+
+    /// The new table now exists: become its ordinary structure tab,
+    /// re-reading everything from the server the way an apply does.
+    pub(crate) fn adopt_created_table(&mut self, object: DatabaseObject, cx: &mut Context<Self>) {
+        self.new_table = false;
+        self.object = object;
+        self.columns.clear();
+        self.indexes.clear();
+        self.foreign_keys.clear();
+        self.pending = None;
+        self.notice = Some("Table created".into());
+        self.reload(cx);
     }
 
     pub fn object(&self) -> &DatabaseObject {
@@ -239,7 +320,59 @@ impl SchemaView {
         self.schema = None;
         self.pending = None;
         self.notice = None;
+        if self.new_table {
+            // The form is database-agnostic; only the foreign key picker's
+            // candidates belong to the new connection.
+            self.tables.clear();
+            self.load_reference_tables(cx);
+            return;
+        }
         self.reload(cx);
+    }
+
+    /// Fill `tables` — the foreign key picker's candidates — without loading
+    /// a structure, for the new-table form.
+    fn load_reference_tables(&mut self, cx: &mut Context<Self>) {
+        let connection = self.connection.clone();
+        let task = runtime::spawn(async move { connection.objects().await });
+
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                if let Ok(Ok(objects)) = result {
+                    this.tables = objects
+                        .into_iter()
+                        .filter(|object| object.kind == ObjectKind::Table)
+                        .collect();
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The column names a new index or foreign key can pick from: the form's
+    /// own rows while a table is being created, the loaded schema otherwise.
+    fn picker_columns(&self, cx: &App) -> Vec<String> {
+        if self.new_table {
+            self.columns
+                .iter()
+                .map(|column| column.name.read(cx).value().trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect()
+        } else {
+            self.schema
+                .as_ref()
+                .map(|schema| {
+                    schema
+                        .columns
+                        .iter()
+                        .map(|column| column.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
     }
 
     /// Read the structure fresh from the server.
@@ -388,7 +521,8 @@ impl SchemaView {
 
     /// Whether this connection and object allow changing columns at all.
     fn is_editable(&self) -> bool {
-        !self.connection.config.safety.is_read_only() && self.object.kind == ObjectKind::Table
+        !self.connection.config.safety.is_read_only()
+            && (self.new_table || self.object.kind == ObjectKind::Table)
     }
 
     /// Why editing is off, when it is, for the footer.
@@ -396,7 +530,7 @@ impl SchemaView {
         if self.connection.config.safety.is_read_only() {
             return Some("this connection is read-only");
         }
-        if self.object.kind == ObjectKind::View {
+        if !self.new_table && self.object.kind == ObjectKind::View {
             return Some("a view has no columns of its own to change");
         }
         None
@@ -410,6 +544,15 @@ impl SchemaView {
     }
 
     fn has_changes(&self, cx: &App) -> bool {
+        if self.new_table {
+            return !self.table_name.read(cx).value().trim().is_empty()
+                || self
+                    .columns
+                    .iter()
+                    .any(|column| !column.name.read(cx).value().trim().is_empty())
+                || self.has_index_changes(cx)
+                || self.has_foreign_key_changes(cx);
+        }
         let columns_changed = self.edits(cx).iter().any(|edit| {
             edit.changed() || edit.dropped || (edit.is_new() && !edit.name.trim().is_empty())
         });
@@ -425,14 +568,26 @@ impl SchemaView {
         self.notice = None;
 
         let engine = self.connection.config.engine;
-        let change = rebuild::plan(
-            engine,
-            &self.object,
-            &self.edits(cx),
-            &self.index_edits(cx),
-            &self.foreign_key_edits(cx),
-            self.rebuild_source.as_ref(),
-        );
+        let change = if self.new_table {
+            let name = self.table_name.read(cx).value().trim().to_string();
+            sql::generate_create_statements(
+                engine,
+                &name,
+                &self.edits(cx),
+                &self.index_edits(cx),
+                &self.foreign_key_edits(cx),
+            )
+            .map(Change::Statements)
+        } else {
+            rebuild::plan(
+                engine,
+                &self.object,
+                &self.edits(cx),
+                &self.index_edits(cx),
+                &self.foreign_key_edits(cx),
+                self.rebuild_source.as_ref(),
+            )
+        };
 
         match change {
             Ok(change) if change.is_empty() => {
@@ -462,11 +617,14 @@ impl SchemaView {
     }
 
     /// Run the previewed change, then reload from the server — a rename or a
-    /// retype changes identity, so nothing here is patched in place.
+    /// retype changes identity, so nothing here is patched in place. A new
+    /// table reports its creation to the session instead, which refreshes
+    /// the object list and turns the tab into the table's structure tab.
     fn apply(&mut self, cx: &mut Context<Self>) {
         let Some(change) = self.pending.take() else {
             return;
         };
+        let new_table = self.new_table;
 
         self.applying = true;
         self.error = None;
@@ -495,8 +653,19 @@ impl SchemaView {
                 this.applying = false;
                 match result {
                     Ok(Ok(())) => {
-                        this.notice = Some("Changes applied".into());
-                        this.reload(cx);
+                        if new_table {
+                            let name = this.table_name.read(cx).value().trim().to_string();
+                            cx.emit(SchemaViewEvent::TableCreated {
+                                object: DatabaseObject {
+                                    schema: None,
+                                    name,
+                                    kind: ObjectKind::Table,
+                                },
+                            });
+                        } else {
+                            this.notice = Some("Changes applied".into());
+                            this.reload(cx);
+                        }
                     }
                     Ok(Err(error)) => this.error = Some(format!("{error:#}")),
                     Err(_) => this.error = Some("applying the changes was cancelled".into()),
@@ -508,7 +677,20 @@ impl SchemaView {
         .detach();
     }
 
-    fn render_header(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.new_table {
+            return h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().text_sm().child("New table"))
+                .child(
+                    div()
+                        .w(px(280.))
+                        .child(Input::new(&self.table_name).id("new-table-name").small()),
+                )
+                .into_any_element();
+        }
+
         let kind = match self.object.kind {
             ObjectKind::Table => "table",
             ObjectKind::View => "view",
@@ -523,6 +705,7 @@ impl SchemaView {
                     .text_color(cx.theme().muted_foreground)
                     .child(kind),
             )
+            .into_any_element()
     }
 
     fn render_section_heading(&self, title: &'static str, cx: &Context<Self>) -> impl IntoElement {

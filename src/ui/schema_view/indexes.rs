@@ -133,16 +133,19 @@ impl SchemaView {
         cx.notify();
     }
 
-    /// Whether the table already has a primary key from the server that has
-    /// not been marked to drop — a table can only have one, so this disables
-    /// adding a second.
-    fn has_existing_primary_key(&self) -> bool {
+    /// Whether the primary-key checkbox on `except`'s row has to stay off:
+    /// the table already has a primary key somewhere else — a loaded one not
+    /// marked to drop, or another new row's in new-table mode — since a table
+    /// can only have one.
+    fn primary_key_taken_by_other(&self, except: usize) -> bool {
         self.indexes.iter().any(|index| {
-            index
-                .original
-                .as_ref()
-                .is_some_and(|original| original.is_primary_key)
-                && !index.dropped
+            index.id != except
+                && ((index
+                    .original
+                    .as_ref()
+                    .is_some_and(|original| original.is_primary_key)
+                    && !index.dropped)
+                    || (index.original.is_none() && index.primary_key))
         })
     }
 
@@ -170,17 +173,7 @@ impl SchemaView {
     ) -> impl IntoElement {
         let id = index.id;
         let editable = self.is_editable();
-        let available: Vec<String> = self
-            .schema
-            .as_ref()
-            .map(|schema| {
-                schema
-                    .columns
-                    .iter()
-                    .map(|column| column.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let available: Vec<String> = self.picker_columns(cx);
 
         let mut boxes = Vec::with_capacity(available.len());
         for name in available {
@@ -281,7 +274,7 @@ impl SchemaView {
                                     Checkbox::new(("index-primary-key", id))
                                         .accessibility_label("Primary key")
                                         .checked(index.primary_key)
-                                        .disabled(!editable || self.has_existing_primary_key())
+                                        .disabled(!editable || self.primary_key_taken_by_other(id))
                                         .on_click(cx.listener(
                                             move |this, checked: &bool, _window, cx| {
                                                 this.set_index_primary_key(id, *checked, cx);

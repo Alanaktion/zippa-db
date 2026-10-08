@@ -16,7 +16,7 @@ use crate::ui::console::ConsoleView;
 use crate::ui::filter_bar::FilterSpec;
 use crate::ui::process_list::ProcessListView;
 use crate::ui::query_digest::QueryDigestView;
-use crate::ui::schema_view::SchemaView;
+use crate::ui::schema_view::{SchemaView, SchemaViewEvent};
 use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::{TableView, TableViewEvent};
@@ -122,6 +122,71 @@ impl Session {
         };
 
         self.install(panel, window, cx);
+    }
+
+    /// Open a structure tab for a table that does not exist yet, or bring
+    /// forward the one already open — there is only ever one per session,
+    /// the same as the console. Read-only connections cannot create tables,
+    /// so this is never called for one.
+    pub(crate) fn open_new_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.connection.config.safety.is_read_only() {
+            return;
+        }
+
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| {
+                panel
+                    .read(cx)
+                    .schema_view()
+                    .is_some_and(|view| view.read(cx).is_new_table())
+            })
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+
+        let key = self.next_key;
+        self.next_key += 1;
+
+        let view = cx.new(|cx| SchemaView::new_table(self.connection.clone(), window, cx));
+        cx.subscribe_in(&view, window, Self::on_schema_view_event)
+            .detach();
+        let panel = cx.new(|cx| SessionPanel::schema(key, "New table", view, cx));
+        self.install(panel, window, cx);
+    }
+
+    /// A new-table structure tab's `CREATE TABLE` ran: refresh the sidebar's
+    /// object list and turn the tab into the new table's own structure tab.
+    fn on_schema_view_event(
+        &mut self,
+        view: &Entity<SchemaView>,
+        event: &SchemaViewEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SchemaViewEvent::TableCreated { object } => {
+                self.reload_metadata(cx);
+                view.update(cx, |view, cx| view.adopt_created_table(object.clone(), cx));
+                if let Some(panel) = self
+                    .panels
+                    .iter()
+                    .find(|panel| {
+                        panel
+                            .read(cx)
+                            .schema_view()
+                            .is_some_and(|candidate| candidate == *view)
+                    })
+                    .cloned()
+                {
+                    panel.update(cx, |panel, cx| panel.set_title(object.label(), cx));
+                }
+                cx.notify();
+            }
+        }
     }
 
     /// Open the console tab, or bring forward the one already open — there is

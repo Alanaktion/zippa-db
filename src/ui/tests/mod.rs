@@ -212,6 +212,31 @@ fn schema_view(
     (database, handle, view)
 }
 
+/// Open a new-table structure tab and hand back its view.
+fn new_table_view(
+    cx: &mut TestAppContext,
+) -> (
+    TempDatabase,
+    gpui_kit::WindowHandle<Session>,
+    gpui_kit::Entity<crate::ui::schema_view::SchemaView>,
+) {
+    let (database, handle) = session_with_objects(cx);
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_new_table_for_test(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let view = handle
+        .update(cx, |session, _, cx| session.active_schema_view(cx))
+        .unwrap()
+        .expect("opening a new table should open a schema view");
+
+    (database, handle, view)
+}
+
 /// A directory the file dialogs can be pointed at, removed with the test.
 struct ScratchDir {
     path: PathBuf,

@@ -28,11 +28,17 @@ impl Session {
                 ordered.push(panel.clone());
             }
         }
+        // Tabs with nothing restorable — a new-table tab mid-design — are
+        // left out of the saved state entirely.
+        let restorable: Vec<_> = ordered
+            .into_iter()
+            .filter(|panel| panel.read(cx).snapshot(cx).is_some())
+            .collect();
         let active = self
             .active
             .as_ref()
             .and_then(|active| {
-                ordered
+                restorable
                     .iter()
                     .position(|panel| panel.downgrade() == *active)
             })
@@ -41,9 +47,9 @@ impl Session {
             connection: self.connection.config.id,
             database: Some(self.connection.database().to_string()),
             active,
-            panels: ordered
+            panels: restorable
                 .iter()
-                .map(|panel| panel.read(cx).snapshot(cx))
+                .filter_map(|panel| panel.read(cx).snapshot(cx))
                 .collect(),
         }
     }

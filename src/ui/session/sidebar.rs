@@ -21,7 +21,7 @@ use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tree::{TreeItem, tree};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{Action, ClipboardItem, Context, Entity, SharedString, Window, div};
 use regex::Regex;
@@ -353,9 +353,10 @@ impl Session {
             .child(self.render_objects(cx))
     }
 
-    /// The filter box, with the schema search and the SQL dump import beside it.
-    /// Both open something about the objects below them, so they live on the
-    /// filter's line rather than as full-width buttons of their own.
+    /// The filter box, with the new-table button, the schema search, and the
+    /// SQL dump import beside it. All three open something about the objects
+    /// below them, so they live on the filter's line rather than as
+    /// full-width buttons of their own.
     fn render_object_filter(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .gap_1()
@@ -365,6 +366,18 @@ impl Session {
                     .small()
                     .cleanable(true)
                     .flex_1(),
+            )
+            .child(
+                Button::new("new-table")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Plus)
+                    .accessibility_label("New table")
+                    .tooltip("Create a new table in this database")
+                    .disabled(self.connection.config.safety.is_read_only())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_new_table(window, cx);
+                    })),
             )
             .child(
                 Button::new("search-schema")
