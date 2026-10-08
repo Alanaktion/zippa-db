@@ -57,6 +57,7 @@ mod row_panel;
 mod rows;
 mod running;
 mod safety;
+mod saved_queries;
 mod schema;
 mod schema_search;
 mod server_variables;

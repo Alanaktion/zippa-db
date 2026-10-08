@@ -43,6 +43,7 @@ use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::TableView;
 use crate::workspace_state::PanelState;
 
+use super::save_dialog::{SaveQueryDialog, SaveQueryEvent};
 use super::tab::{ObjectViewMode, Status, TabContent};
 use super::{CloseTab, NewTab};
 
@@ -97,6 +98,9 @@ pub(crate) enum SessionPanelEvent {
     },
     OpenFile,
     Save,
+    /// The save-query dialog stored the buffer; the sidebar's Saved tab
+    /// should repaint.
+    SavedQueriesChanged,
 }
 
 pub(crate) struct SessionPanel {
@@ -340,6 +344,31 @@ impl SessionPanel {
 
     pub(crate) fn is_query(&self) -> bool {
         matches!(self.content, TabContent::Query { .. })
+    }
+
+    /// Open the save-query dialog for this tab's buffer.
+    fn open_save_dialog(
+        &mut self,
+        sql: String,
+        default_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = SaveQueryDialog::open(sql, default_name, window, cx);
+        cx.subscribe_in(&view, window, Self::on_save_query_event)
+            .detach();
+    }
+
+    fn on_save_query_event(
+        &mut self,
+        _view: &Entity<SaveQueryDialog>,
+        event: &SaveQueryEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SaveQueryEvent::Saved => cx.emit(SessionPanelEvent::SavedQueriesChanged),
+        }
     }
 
     pub(crate) fn is_console(&self) -> bool {
@@ -1412,6 +1441,20 @@ impl BasePanel for SessionPanel {
     }
 }
 
+/// The name the save-query dialog prefills: the tab's title, unless it is
+/// still the default `Query N` the session hands out, which names nothing.
+fn default_save_name(title: &SharedString) -> String {
+    let title = title.as_ref();
+    let is_default = title
+        .strip_prefix("Query ")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()));
+    if is_default {
+        String::new()
+    } else {
+        title.to_string()
+    }
+}
+
 impl Panel for SessionPanel {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dirty = self.is_dirty(cx);
@@ -1495,7 +1538,7 @@ impl Panel for SessionPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
-        Some(vec![
+        let mut buttons = vec![
             Button::new("new-tab")
                 .ghost()
                 .xsmall()
@@ -1505,7 +1548,27 @@ impl Panel for SessionPanel {
                 .on_click(cx.listener(|_this, _, _window, cx| {
                     cx.emit(SessionPanelEvent::NewTabRequested);
                 })),
-        ])
+        ];
+        // Only a query tab has SQL worth keeping, and an empty buffer has
+        // nothing to name.
+        if let TabContent::Query { editor, .. } = &self.content {
+            let sql = editor.read(cx).sql(cx);
+            if !sql.trim().is_empty() {
+                let default_name = default_save_name(&self.title);
+                buttons.push(
+                    Button::new("save-query")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Bookmark)
+                        .accessibility_label("Save query")
+                        .tooltip("Save query")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_save_dialog(sql.clone(), default_name.clone(), window, cx);
+                        })),
+                );
+            }
+        }
+        Some(buttons)
     }
 
     /// The `…` menu's own Close vanishes when this tab is dirty (see

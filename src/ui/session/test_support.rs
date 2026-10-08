@@ -267,6 +267,14 @@ impl Session {
         cx.notify();
     }
 
+    /// Put the session in the sidebar's Saved tab, the way clicking its
+    /// top tab does.
+    #[cfg(test)]
+    pub(crate) fn show_saved_tab_for_test(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_tab = super::sidebar::SidebarTab::Saved;
+        cx.notify();
+    }
+
     /// Set the filter text the way typing in the box does.
     #[cfg(test)]
     pub(crate) fn set_filter_for_test(

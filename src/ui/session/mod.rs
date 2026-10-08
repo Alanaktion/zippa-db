@@ -27,6 +27,7 @@ mod files;
 mod metadata;
 mod panel;
 mod running;
+mod save_dialog;
 mod sidebar;
 mod state;
 pub(crate) mod tab;
@@ -362,6 +363,9 @@ impl Session {
             }
             SessionPanelEvent::OpenFile => self.open_file(cx),
             SessionPanelEvent::Save => self.save(panel, false, cx),
+            // The saved-query list is read from disk on every render, so a
+            // repaint is all a save needs.
+            SessionPanelEvent::SavedQueriesChanged => cx.notify(),
         }
     }
 
