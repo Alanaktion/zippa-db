@@ -570,6 +570,9 @@ impl Session {
                                             .tooltip(format!("Delete {row_name}"))
                                             .on_click(cx.listener(move |_this, _, _window, cx| {
                                                 let _ = crate::saved_queries::remove(&delete_name);
+                                                // The row itself opens the query on click; a
+                                                // delete must not bubble up to it.
+                                                cx.stop_propagation();
                                                 cx.notify();
                                             })),
                                     ),

@@ -72,6 +72,10 @@ fn deleting_a_saved_query_forgets_it(cx: &mut TestAppContext) {
     let _lock = saved_queries::FILE_LOCK.lock().unwrap();
     let (_database, handle) = saved_session(cx, "Temporary", "SELECT 1;");
     assert_eq!(saved_queries::load().len(), 1);
+    let tabs_before = handle
+        .read_with(cx, |session, cx| session.tab_titles(cx))
+        .unwrap()
+        .len();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
@@ -83,5 +87,13 @@ fn deleting_a_saved_query_forgets_it(cx: &mut TestAppContext) {
     assert!(
         saved_queries::load().is_empty(),
         "the deleted query should be gone"
+    );
+    let tabs_after = handle
+        .read_with(cx, |session, cx| session.tab_titles(cx))
+        .unwrap()
+        .len();
+    assert_eq!(
+        tabs_after, tabs_before,
+        "deleting a saved query must not open it in a new tab"
     );
 }
