@@ -41,6 +41,10 @@ fn an_empty_name_is_refused_with_an_inline_error(cx: &mut TestAppContext) {
 ///
 /// Needs a live Postgres server; see `db/tests.rs` for how to start one.
 /// `cargo test -- --ignored live_`.
+///
+/// The session is wrapped in gpui-kit's `Root`, the way the app opens its
+/// windows: the dialog goes through `window.open_dialog`, which panics on a
+/// bare `cx.open_window` window with no component root.
 #[gpui_kit::test]
 #[ignore = "needs a live Postgres server; see the doc comment"]
 async fn live_postgres_create_database(cx: &mut TestAppContext) {
@@ -56,29 +60,35 @@ async fn live_postgres_create_database(cx: &mut TestAppContext) {
     let handle = {
         let connection = Arc::new(connection);
         cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
-            Session::new(connection, window, cx)
+            let session = cx.new(|cx| Session::new(connection, window, cx));
+            Root::new(session, window, cx)
         })
     };
     cx.run_until_parked();
+
+    let session = handle
+        .read_with(cx, |root, _| root.view().clone().downcast::<Session>())
+        .unwrap()
+        .expect("the test window's root wraps a Session");
 
     let name = format!("zippa_create_db_{}", Uuid::new_v4().simple());
 
     // Open the dialog the way the picker menu does.
     handle
-        .update(cx, |session, window, cx| {
-            session.open_create_database_dialog(window, cx);
+        .update(cx, |_, window, cx| {
+            session.update(cx, |session, cx| {
+                session.open_create_database_dialog(window, cx);
+            })
         })
         .unwrap();
     cx.run_until_parked();
 
     // Name the database through the dialog itself.
-    let dialog = handle
-        .update(cx, |session, _, _| {
-            session
-                .create_database_dialog_for_test()
-                .expect("the dialog should be open")
-        })
-        .unwrap();
+    let dialog = session.update(cx, |session, _| {
+        session
+            .create_database_dialog_for_test()
+            .expect("the dialog should be open")
+    });
     handle
         .update(cx, |_, window, cx| {
             dialog.update(cx, |view, cx| {
@@ -91,11 +101,9 @@ async fn live_postgres_create_database(cx: &mut TestAppContext) {
 
     // Success closes the dialog; the failure cases keep it open with the
     // error inline.
-    let dialog_open = handle
-        .update(cx, |session, _, _| {
-            session.create_database_dialog_for_test().is_some()
-        })
-        .unwrap();
+    let dialog_open = session.update(cx, |session, _| {
+        session.create_database_dialog_for_test().is_some()
+    });
     assert!(!dialog_open, "the dialog closes after a create");
 
     // The new database is really there, and goes away again.
