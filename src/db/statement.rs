@@ -40,6 +40,16 @@ pub struct Statement {
     pub end: usize,
 }
 
+/// A `:name` placeholder in user SQL, and where it sits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placeholder {
+    /// The name without the colon.
+    pub name: String,
+    /// Byte range of `:name` in the SQL it came from.
+    pub start: usize,
+    pub end: usize,
+}
+
 /// Split `sql` into the statements it holds.
 ///
 /// Empty statements — a stray semicolon, trailing whitespace — are left out,
@@ -81,6 +91,87 @@ pub fn at_cursor(sql: &str, cursor: usize, engine: Engine) -> Option<Statement> 
         })
         .or_else(|| statements.first())
         .cloned()
+}
+
+/// Every `:name` placeholder in `sql`, outside strings and comments.
+///
+/// A colon starts a placeholder when the character before it is not part of
+/// a word or another colon — so `::` casts, `:=` assignments, and `12:30`
+/// are left alone — and the character after it starts a name.
+pub fn placeholders(sql: &str, engine: Engine) -> Vec<Placeholder> {
+    let characters: Vec<char> = sql.chars().collect();
+    // Byte index of each character, so the ranges are byte ranges.
+    let mut bytes = Vec::with_capacity(characters.len() + 1);
+    let mut byte = 0;
+    for character in &characters {
+        bytes.push(byte);
+        byte += character.len_utf8();
+    }
+    bytes.push(byte);
+
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < characters.len() {
+        match characters[index] {
+            quote @ ('\'' | '"' | '`') => {
+                index = skip_quoted(&characters, index, quote, engine);
+            }
+            '$' => {
+                // A dollar-quoted string or a positional parameter: no
+                // `:name` starts inside either.
+                if let Some(tag) = dollar_tag(&characters, index) {
+                    index = skip_until(&characters, index + tag.len(), &tag);
+                } else {
+                    index += 1;
+                    while index < characters.len() && characters[index].is_ascii_digit() {
+                        index += 1;
+                    }
+                }
+            }
+            '-' if characters.get(index + 1) == Some(&'-') => {
+                index = skip_until(&characters, index, "\n");
+            }
+            '/' if characters.get(index + 1) == Some(&'*') => {
+                index = skip_until(&characters, index + 2, "*/");
+            }
+            '#' if engine == Engine::MySql => {
+                index = skip_until(&characters, index, "\n");
+            }
+            ':' => {
+                let prev = if index > 0 {
+                    Some(characters[index - 1])
+                } else {
+                    None
+                };
+                let prev_is_word = prev.is_some_and(|prev| {
+                    prev.is_alphanumeric() || prev == '_' || prev == ':' || prev == '$'
+                });
+                let next = characters.get(index + 1).copied();
+                let next_starts_name = next.is_some_and(|next| next.is_alphabetic() || next == '_');
+                if !prev_is_word && next_starts_name {
+                    let mut end = index + 2;
+                    while end < characters.len()
+                        && (characters[end].is_alphanumeric() || characters[end] == '_')
+                    {
+                        end += 1;
+                    }
+                    let name = characters[index + 1..end].iter().collect();
+                    found.push(Placeholder {
+                        name,
+                        start: bytes[index],
+                        end: bytes[end],
+                    });
+                    index = end;
+                } else {
+                    index += 1;
+                }
+            }
+            _ => {
+                index += 1;
+            }
+        }
+    }
+    found
 }
 
 /// Option words an `EXPLAIN` header can carry before the statement it
@@ -870,5 +961,46 @@ mod tests {
         // not: the user can always switch the connection's mode.
         assert!(first_write("call do_something()").is_some());
         assert!(first_write("lock tables items write").is_some());
+    }
+
+    fn placeholder_names(sql: &str, engine: Engine) -> Vec<String> {
+        super::placeholders(sql, engine)
+            .into_iter()
+            .map(|placeholder| placeholder.name)
+            .collect()
+    }
+
+    #[test]
+    fn placeholders_are_found_outside_strings_and_comments() {
+        let sql = "select ':a', x from t -- :b\nwhere id = :id and name = :name";
+        assert_eq!(placeholder_names(sql, Engine::Postgres), ["id", "name"]);
+        assert_eq!(
+            placeholder_names("select /* :c */ :d", Engine::Postgres),
+            ["d"]
+        );
+    }
+
+    #[test]
+    fn casts_assignments_and_times_are_not_placeholders() {
+        assert!(placeholder_names("select x::int from t", Engine::Postgres).is_empty());
+        assert!(placeholder_names("select a:=1 from t", Engine::MySql).is_empty());
+        assert!(placeholder_names("select 12:30", Engine::Postgres).is_empty());
+        assert!(placeholder_names("select $1 from t", Engine::Postgres).is_empty());
+    }
+
+    #[test]
+    fn a_placeholder_carries_its_byte_range() {
+        let sql = "select * from t where id = :id";
+        let placeholders = super::placeholders(sql, Engine::Postgres);
+        assert_eq!(placeholders.len(), 1);
+        let placeholder = &placeholders[0];
+        assert_eq!(placeholder.name, "id");
+        assert_eq!(&sql[placeholder.start..placeholder.end], ":id");
+    }
+
+    #[test]
+    fn dollar_quoted_strings_hide_placeholders() {
+        let sql = "select $$:not_a_var$$, :real from t";
+        assert_eq!(placeholder_names(sql, Engine::Postgres), ["real"]);
     }
 }

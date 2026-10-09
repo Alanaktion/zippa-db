@@ -40,6 +40,7 @@ pub mod export;
 pub mod health;
 pub mod import;
 pub mod mysql;
+pub mod params;
 pub mod pinned;
 pub mod plan;
 pub mod postgres;

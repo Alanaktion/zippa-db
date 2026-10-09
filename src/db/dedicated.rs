@@ -21,7 +21,7 @@ use sqlx::{AssertSqlSafe, Row as _};
 use super::config::Engine;
 use super::connection::fetch_on;
 use super::pinned::TxnState;
-use super::query::QueryResult;
+use super::query::{Cell, QueryResult};
 use super::{health, mysql, postgres, sqlite};
 
 /// A dedicated connection to one engine.
@@ -87,25 +87,33 @@ impl Dedicated {
     /// Run one statement and read back its rows, the way a query tab shows
     /// them.
     pub(crate) async fn fetch(&mut self, sql: &str) -> Result<QueryResult> {
-        self.fetch_raw(sql).await.map_err(health::plain)
+        self.fetch_with(sql, Vec::new()).await
     }
 
-    async fn fetch_raw(&mut self, sql: &str) -> Result<QueryResult> {
+    /// The same, binding `params` in order.
+    pub(crate) async fn fetch_with(&mut self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
+        self.fetch_raw(sql, params).await.map_err(health::plain)
+    }
+
+    async fn fetch_raw(&mut self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
         match self {
             Dedicated::Postgres(connection, scale) => {
                 let scale = *scale;
                 fetch_on::<sqlx::Postgres, _>(
                     &mut **connection,
                     sql,
+                    params,
                     move |row, index| postgres::cell(row, index, scale),
                     postgres::rows_affected,
                 )
                 .await
             }
             Dedicated::MySql(connection) => {
+                let has_params = !params.is_empty();
                 let fetched = fetch_on::<sqlx::MySql, _>(
                     &mut **connection,
                     sql,
+                    params,
                     mysql::cell,
                     mysql::rows_affected,
                 )
@@ -113,8 +121,10 @@ impl Dedicated {
                 match fetched {
                     // A statement the prepared protocol refuses (`LOCK
                     // TABLES`, `USE`, …) is refused before it runs, so it is
-                    // safe to send again as text. None of them return rows.
-                    Err(error) if mysql::unpreparable(&error) => {
+                    // safe to send again as text. None of them return rows —
+                    // and none of them carry parameters, which text cannot
+                    // bind.
+                    Err(error) if mysql::unpreparable(&error) && !has_params => {
                         let started = std::time::Instant::now();
                         let done = sqlx::raw_sql(AssertSqlSafe(sql.to_string()))
                             .execute(&mut **connection)
@@ -134,6 +144,7 @@ impl Dedicated {
                 fetch_on::<sqlx::Sqlite, _>(
                     &mut **connection,
                     sql,
+                    params,
                     sqlite::cell,
                     sqlite::rows_affected,
                 )

@@ -20,6 +20,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
+use crate::db::params::Variable;
 use crate::db::{Blocker, Engine, statement, transaction_blocker};
 use crate::settings::{self, CompletionKey, Settings};
 use crate::ui::completion::{SharedCatalog, SqlCompletions};
@@ -67,6 +68,8 @@ pub enum QueryEditorEvent {
     Open,
     /// The user asked to write this buffer to its file.
     Save,
+    /// The user asked to edit this buffer's `:name` variables.
+    EditVariables,
 }
 
 pub struct QueryEditor {
@@ -75,6 +78,10 @@ pub struct QueryEditor {
     #[cfg(test)]
     completions: Rc<SqlCompletions>,
     running: bool,
+    /// The `:name` variables for this buffer, edited in the Variables dialog.
+    /// The whole buffer shares one mapping: every occurrence of a name, in
+    /// every statement, uses the same value.
+    variables: Vec<Variable>,
     /// The engine this buffer runs against, so the analyze button can say when
     /// the server has no `EXPLAIN ANALYZE`.
     engine: Engine,
@@ -126,10 +133,22 @@ impl QueryEditor {
             #[cfg(test)]
             completions,
             running: false,
+            variables: Vec::new(),
             engine,
             statement_cache: RefCell::new(None),
             blocker_cache: RefCell::new(None),
         }
+    }
+
+    /// This buffer's `:name` variables.
+    pub(crate) fn variables(&self) -> Vec<Variable> {
+        self.variables.clone()
+    }
+
+    /// Replace this buffer's `:name` variables, as the Variables dialog does.
+    pub(crate) fn set_variables(&mut self, variables: Vec<Variable>, cx: &mut Context<Self>) {
+        self.variables = variables;
+        cx.notify();
     }
 
     /// Put the caret in the editor, as clicking it does.
@@ -1125,6 +1144,18 @@ impl Render for QueryEditor {
                                     )
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.emit(QueryEditorEvent::Save)
+                                    })),
+                            )
+                            .child(
+                                Button::new("variables")
+                                    .ghost()
+                                    .small()
+                                    .icon(AssetIcon::Variable)
+                                    .accessibility_label("Edit query variables")
+                                    .tooltip("Edit the :name variables for this buffer")
+                                    .disabled(self.running)
+                                    .on_click(cx.listener(|_this, _, _window, cx| {
+                                        cx.emit(QueryEditorEvent::EditVariables)
                                     })),
                             )
                             .child(

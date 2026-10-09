@@ -28,6 +28,7 @@ pub mod sqlite_maintenance;
 pub mod table_view;
 mod text_filter;
 pub mod value_dialog;
+pub mod variables_dialog;
 pub mod welcome;
 
 #[cfg(test)]

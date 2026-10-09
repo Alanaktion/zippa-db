@@ -16,6 +16,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::db::params::Variable;
 use crate::db::{DatabaseObject, store};
 use crate::ui::filter_bar::FilterSpec;
 
@@ -71,6 +72,11 @@ pub enum PanelState {
         /// The file the buffer was bound to, if any.
         #[serde(default)]
         file: Option<PathBuf>,
+        /// The buffer's `:name` variables. A file written by an older build
+        /// has none, so a restored tab starts with an empty mapping the way
+        /// it always did.
+        #[serde(default)]
+        variables: Vec<Variable>,
     },
     Table {
         object: DatabaseObject,
@@ -164,11 +170,13 @@ mod tests {
                         title: "Query 1".into(),
                         sql: "select 1".into(),
                         file: None,
+                        variables: vec![],
                     },
                     PanelState::Query {
                         title: "report.sql".into(),
                         sql: "select 2".into(),
                         file: Some(PathBuf::from("/tmp/report.sql")),
+                        variables: vec![],
                     },
                     PanelState::Table {
                         object: object(),

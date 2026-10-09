@@ -27,8 +27,9 @@ use anyhow::{Context as _, Result};
 use super::config::Engine;
 use super::connection::{Connection, query_outcome};
 use super::import::excerpt;
+use super::params::{self, Variable};
 use super::pinned::{PinGuard, PinnedConnection, TxnState};
-use super::query::QueryResult;
+use super::query::{Cell, QueryResult};
 use super::query_log::{QueryOutcome, QuerySource};
 use super::statement::{self, Statement};
 
@@ -212,6 +213,11 @@ pub struct ScriptRun {
     /// would commit the tab's transaction (MySQL).
     nested: bool,
     statements: Vec<Statement>,
+    /// Each statement with its `:name` variables substituted, and the bind
+    /// parameters in order. A variable without a value refuses the run in
+    /// `start`, before anything executes.
+    rewritten: Vec<String>,
+    params: Vec<Vec<Cell>>,
     lines: Vec<usize>,
     next: usize,
     mode: ScriptMode,
@@ -227,17 +233,26 @@ impl ScriptRun {
     /// Start running every statement in `sql` on a tab's pinned connection.
     ///
     /// A read-only connection refuses the script before anything runs, naming
-    /// the first statement that writes.
+    /// the first statement that writes. `variables` are substituted into each
+    /// statement up front, so a missing value refuses the run before anything
+    /// executes.
     pub async fn start(
         pinned: PinnedConnection,
         sql: &str,
+        variables: &[Variable],
         mode: ScriptMode,
         on_failure: OnFailure,
     ) -> Result<Step> {
         let connection = pinned.connection().clone();
         let statements = statement::split(sql, connection.config.engine);
+        let mut rewritten = Vec::with_capacity(statements.len());
+        let mut params: Vec<Vec<Cell>> = Vec::with_capacity(statements.len());
         for statement in &statements {
-            connection.refuse_write(&statement.text)?;
+            let (text, statement_params) =
+                params::substitute(&statement.text, variables, connection.config.engine)?;
+            connection.refuse_write(&text)?;
+            rewritten.push(text);
+            params.push(statement_params);
         }
         // Counted forward from the statement before, not from the top each
         // time, which on a large file made the count quadratic.
@@ -279,6 +294,8 @@ impl ScriptRun {
             session: Some(session),
             nested,
             statements,
+            rewritten,
+            params,
             lines,
             next: 0,
             mode,
@@ -409,7 +426,8 @@ impl ScriptRun {
     /// it, which ends the run.
     async fn run_one(&mut self, index: usize) -> Result<Result<QueryResult, String>> {
         let transaction = self.mode == ScriptMode::Transaction;
-        let sql = self.statements[index].text.clone();
+        let sql = self.rewritten[index].clone();
+        let params = self.params[index].clone();
         let session = self.session.as_mut().context(CLOSED)?;
 
         if transaction {
@@ -417,7 +435,7 @@ impl ScriptRun {
         }
 
         let started = Instant::now();
-        let result = session.fetch(&sql).await;
+        let result = session.fetch_with(&sql, params).await;
         let elapsed = started.elapsed();
         // Without a transaction of the script's own, the statement may be the
         // user's own `BEGIN` or `COMMIT`, which the tab carries on with.

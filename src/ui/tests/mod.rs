@@ -67,6 +67,7 @@ mod sorting;
 mod sqlite_maintenance;
 mod transactions;
 mod value_dialog;
+mod variables;
 mod welcome;
 mod workspace;
 

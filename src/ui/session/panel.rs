@@ -101,6 +101,8 @@ pub(crate) enum SessionPanelEvent {
     /// The save-query dialog stored the buffer; the sidebar's Saved tab
     /// should repaint.
     SavedQueriesChanged,
+    /// The user asked to edit this tab's `:name` query variables.
+    EditVariables,
 }
 
 pub(crate) struct SessionPanel {
@@ -310,6 +312,7 @@ impl SessionPanel {
             }),
             QueryEditorEvent::Open => cx.emit(SessionPanelEvent::OpenFile),
             QueryEditorEvent::Save => cx.emit(SessionPanelEvent::Save),
+            QueryEditorEvent::EditVariables => cx.emit(SessionPanelEvent::EditVariables),
         }
     }
 
@@ -511,6 +514,7 @@ impl SessionPanel {
                 title: self.title.to_string(),
                 sql: editor.read(cx).sql(cx),
                 file: path.clone(),
+                variables: editor.read(cx).variables(),
             },
             TabContent::Table { view } => PanelState::Table {
                 object: view.read(cx).object().clone(),
