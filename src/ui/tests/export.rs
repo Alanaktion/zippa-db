@@ -150,3 +150,105 @@ fn cancelling_the_save_dialog_writes_nothing(cx: &mut TestAppContext) {
         "a cancelled dialog should leave no notice behind"
     );
 }
+
+#[gpui_kit::test]
+fn exporting_a_query_result_writes_csv(cx: &mut TestAppContext) {
+    let (_database, handle, session) = workspace_session(cx);
+    run_in_tab(cx, &handle, &session, "select 1 as id, 'alpha' as name");
+
+    let scratch = ScratchDir::new();
+    let path = scratch.path.join("results.csv");
+    export_query_result(cx, &session, Format::Csv, &path);
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the export was not written"),
+        "id,name\n1,alpha\n"
+    );
+    let status = session.read_with(cx, |session, cx| session.active_status_for_test(cx));
+    assert!(
+        status.contains("Exported 1 row to") && status.contains("results.csv"),
+        "the status bar should say what the export did: {status}"
+    );
+}
+
+#[gpui_kit::test]
+fn exporting_a_query_result_writes_json_with_typed_values(cx: &mut TestAppContext) {
+    let (_database, handle, session) = workspace_session(cx);
+    // From a table, so the columns carry their declared types.
+    run_in_tab(cx, &handle, &session, "select id, name, score from items");
+
+    let scratch = ScratchDir::new();
+    let path = scratch.path.join("results.json");
+    export_query_result(cx, &session, Format::Json, &path);
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the export was not written"),
+        "[\n  {\n    \"id\": 1,\n    \"name\": \"alpha\",\n    \"score\": 1.5\n  },\n  {\n    \"id\": 2,\n    \"name\": null,\n    \"score\": null\n  }\n]"
+    );
+}
+
+#[gpui_kit::test]
+fn exporting_a_query_result_writes_the_shown_result(cx: &mut TestAppContext) {
+    let (_database, handle, session) = workspace_session(cx);
+    prepare_workspace_editor(
+        cx,
+        &handle,
+        &session,
+        "select 'first' as which;\nselect 'second' as which;",
+    );
+    press_workspace(cx, &handle, "secondary-shift-enter");
+
+    // A script leaves one result per statement; show the second before
+    // exporting.
+    let panel = session
+        .read_with(cx, |session, _| session.active_panel_for_test())
+        .expect("the session should have an active tab");
+    panel.update(cx, |panel, cx| panel.show_result(1, cx));
+    cx.run_until_parked();
+
+    let scratch = ScratchDir::new();
+    let path = scratch.path.join("results.csv");
+    export_query_result(cx, &session, Format::Csv, &path);
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the export was not written"),
+        "which\nsecond\n"
+    );
+}
+
+#[gpui_kit::test]
+fn exporting_a_query_result_with_no_result_does_nothing(cx: &mut TestAppContext) {
+    let (_database, _handle, session) = workspace_session(cx);
+
+    let panel = session
+        .read_with(cx, |session, _| session.active_panel_for_test())
+        .expect("the session should have an active tab");
+    panel.update(cx, |panel, cx| panel.export_result(Format::Csv, cx));
+    cx.run_until_parked();
+
+    let status = session.read_with(cx, |session, cx| session.active_status_for_test(cx));
+    assert_eq!(
+        status, "Ready",
+        "with nothing to export the tab should be untouched"
+    );
+}
+
+#[gpui_kit::test]
+fn cancelling_a_query_export_writes_nothing(cx: &mut TestAppContext) {
+    let (_database, handle, session) = workspace_session(cx);
+    run_in_tab(cx, &handle, &session, "select 1 as id");
+    let before = session.read_with(cx, |session, cx| session.active_status_for_test(cx));
+
+    let panel = session
+        .read_with(cx, |session, _| session.active_panel_for_test())
+        .expect("the session should have an active tab");
+    panel.update(cx, |panel, cx| panel.export_result(Format::Csv, cx));
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+
+    let after = session.read_with(cx, |session, cx| session.active_status_for_test(cx));
+    assert_eq!(
+        after, before,
+        "a cancelled dialog should leave the status alone"
+    );
+}

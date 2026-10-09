@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use gpui_kit::Entity;
 
 use crate::db::query::QueryResult;
-use crate::db::{PinnedConnection, ScriptRun};
+use crate::db::{Engine, PinnedConnection, ScriptRun};
 use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::plan_view::PlanView;
@@ -69,6 +69,8 @@ pub(crate) enum TabContent {
         results: Vec<QueryResult>,
         /// Which of them the grid is showing.
         result: usize,
+        /// The engine the tab's connection speaks, for laying an export out.
+        engine: Engine,
         /// Handle on the run in flight, so it can be given up on.
         running: Option<tokio::task::AbortHandle>,
         /// A script paused on a failure, waiting for the user's answer.

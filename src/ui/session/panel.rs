@@ -3,14 +3,14 @@
 //! used to hold in a plain `Vec`, now a dock-managed panel with its own
 //! title, toolbar and closing behavior.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent, PanelId, TabGroup};
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, ResizableState, Sizable, h_flex, resizable_panel, v_flex,
     v_resizable,
@@ -25,6 +25,7 @@ use crate::db::Connection;
 use crate::db::DatabaseObject;
 use crate::db::Engine;
 use crate::db::Plan;
+use crate::db::export::{self, Format};
 use crate::db::query::QueryResult;
 use crate::db::runtime;
 use crate::db::{PinnedConnection, ScriptMode, ScriptRun, TxnState};
@@ -152,6 +153,7 @@ impl SessionPanel {
                 path: None,
                 results: Vec::new(),
                 result: 0,
+                engine,
                 running: None,
                 script: None,
                 pinned: None,
@@ -956,6 +958,90 @@ impl SessionPanel {
         cx.notify();
     }
 
+    /// Write the shown result to a file, in `format`.
+    ///
+    /// The export covers the rows the last run loaded — what the grid is
+    /// showing — rather than re-reading them from the server.
+    pub(crate) fn export_result(&mut self, format: Format, cx: &mut Context<Self>) {
+        let TabContent::Query {
+            results,
+            result,
+            engine,
+            ..
+        } = &self.content
+        else {
+            return;
+        };
+        let Some(shown) = results.get(*result) else {
+            return;
+        };
+        if shown.columns.is_empty() {
+            return;
+        }
+
+        let engine = *engine;
+        let columns = shown.columns.clone();
+        let types = shown.column_types.clone();
+        let rows = shown.rows.clone();
+        let prompt = sql_file::prompt_for_save(None, "query-results", format.extension(), cx);
+
+        cx.spawn(async move |this, cx| {
+            let path = match prompt.await {
+                Ok(Some(path)) => path,
+                Ok(None) => return,
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    this.update_in(cx, |this, window, cx| this.fail_export(message, window, cx))
+                        .ok();
+                    return;
+                }
+            };
+
+            // Laying the rows out is O(rows×cols) string work; it runs on the
+            // background executor so a big export does not stall the UI.
+            let row_count = rows.len();
+            let rendered = cx
+                .background_spawn(async move {
+                    export::render(format, engine, "", &columns, &types, &rows)
+                })
+                .await;
+            let export::Rendered { text, skipped } = rendered;
+
+            let written = cx
+                .background_spawn(sql_file::write(path.clone(), text))
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                match written {
+                    Ok(()) => {
+                        this.set_status(Status::Done(export_notice(row_count, &path, skipped)))
+                    }
+                    Err(error) => {
+                        let message = format!("{error:#}");
+                        this.set_status(Status::Error(message.clone()));
+                        crate::ui::notify_error(window, cx, format!("Error: {message}"));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Put an export failure where the status bar and the toasts can see it.
+    fn fail_export(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_status(Status::Error(message.clone()));
+        crate::ui::notify_error(window, cx, format!("Error: {message}"));
+        cx.notify();
+    }
+
+    /// Whether the tab is showing a result worth exporting: a result with
+    /// columns, i.e. rows the server returned rather than a write summary.
+    fn exportable(&self) -> bool {
+        matches!(&self.content, TabContent::Query { results, result, .. }
+            if results.get(*result).is_some_and(|shown| !shown.columns.is_empty()))
+    }
+
     /// What the status bar says about the run that just finished.
     fn result_summary(&self) -> String {
         let TabContent::Query {
@@ -1251,6 +1337,33 @@ impl SessionPanel {
             )
             .when(transaction.is_open(), |this| {
                 this.child(self.render_transaction(transaction, running, cx))
+            })
+            .child({
+                let panel = cx.entity().downgrade();
+                let exportable = self.exportable();
+                Button::new("export-result")
+                    .ghost()
+                    .xsmall()
+                    .label("Export")
+                    .dropdown_caret(true)
+                    .tooltip("Write the shown result to a file")
+                    .disabled(running || !exportable)
+                    .dropdown_menu(move |mut menu, _window, _cx| {
+                        for format in Format::RESULT_FILE {
+                            let panel = panel.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(format!("Export as {}…", format.label()))
+                                    .on_click(move |_, _window, cx| {
+                                        if let Some(panel) = panel.upgrade() {
+                                            panel.update(cx, |panel, cx| {
+                                                panel.export_result(format, cx)
+                                            });
+                                        }
+                                    }),
+                            );
+                        }
+                        menu
+                    })
             })
     }
 
@@ -1685,4 +1798,20 @@ impl Render for SessionPanel {
 pub(crate) fn close_script(run: Box<ScriptRun>) {
     // Nothing to wait for: the connection goes either way.
     drop(runtime::spawn(run.close()));
+}
+
+/// What the status bar says after an export: where it went, and — when the
+/// driver had only a description of some values — how many were written as
+/// `NULL`.
+fn export_notice(rows: usize, path: &Path, skipped: usize) -> String {
+    let unit = if rows == 1 { "row" } else { "rows" };
+    let mut notice = format!("Exported {rows} {unit} to {}", path.display());
+    match skipped {
+        0 => {}
+        1 => notice.push_str(" (1 value could not be read back and was written as NULL)"),
+        skipped => notice.push_str(&format!(
+            " ({skipped} values could not be read back and were written as NULL)"
+        )),
+    }
+    notice
 }

@@ -787,6 +787,25 @@ fn export_picked_rows(
     cx.run_until_parked();
 }
 
+/// Export the active query tab's shown result, answering the save dialog with
+/// `path`.
+fn export_query_result(
+    cx: &mut TestAppContext,
+    session: &Entity<Session>,
+    format: Format,
+    path: &std::path::Path,
+) {
+    let panel = session
+        .read_with(cx, |session, _| session.active_panel_for_test())
+        .expect("the session should have an active tab");
+    panel.update(cx, |panel, cx| panel.export_result(format, cx));
+    cx.simulate_new_path_selection({
+        let path = path.to_path_buf();
+        move |_directory| Some(path)
+    });
+    cx.run_until_parked();
+}
+
 /// Shift-click `row_ix`'s pick box, which takes everything between it and the
 /// last row picked.
 fn pick_through(cx: &mut TestAppContext, handle: WindowHandle<Session>, row_ix: usize) {
