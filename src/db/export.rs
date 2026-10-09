@@ -28,6 +28,10 @@ impl Format {
     /// The formats a file export offers, in the order a menu shows them.
     pub const FILE: [Format; 3] = [Format::Csv, Format::Json, Format::Sql];
 
+    /// The formats a query result export offers, in the order a menu shows
+    /// them. A result has no table name, so SQL `INSERT` is not among them.
+    pub const RESULT_FILE: [Format; 2] = [Format::Csv, Format::Json];
+
     /// The file extension a saved export gets.
     pub fn extension(self) -> &'static str {
         match self {
