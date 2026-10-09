@@ -2067,7 +2067,10 @@ async fn live_postgres_connects_through_an_ssh_tunnel() {
         .with_database("postgres")
         .await
         .expect("switching database should reuse the tunnel");
-    other.run_query_with("SELECT 1", Vec::new()).await.expect("query");
+    other
+        .run_query_with("SELECT 1", Vec::new())
+        .await
+        .expect("query");
     other.close().await;
     connection.close().await;
 }
