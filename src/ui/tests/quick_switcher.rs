@@ -267,6 +267,104 @@ fn the_console_item_opens_the_console_tab(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn typing_an_exact_name_ranks_it_first(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let _database = connect(cx, &handle);
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("active session");
+
+    // Creation order puts the longer name first, so only relevance ranking
+    // can put the exact match on top.
+    handle
+        .update(cx, |_, window, cx| {
+            session.update(cx, |session, cx| {
+                session.open_tab(Some("order_items".into()), String::new(), false, window, cx);
+                session.open_tab(Some("order".into()), String::new(), false, window, cx);
+            });
+        })
+        .unwrap();
+
+    click(cx, &handle, "quick-switcher");
+    cx.run_until_parked();
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "the palette should open"
+    );
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.input("order", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        session.update(cx, |session, _| session.active_tab_index()),
+        2,
+        "the exact match should be the first row, not the longer name"
+    );
+}
+
+#[gpui_kit::test]
+fn fuzzy_typing_matches_characters_out_of_order(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let _database = connect(cx, &handle);
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("active session");
+
+    handle
+        .update(cx, |_, window, cx| {
+            session.update(cx, |session, cx| {
+                session.open_tab(Some("order_items".into()), String::new(), false, window, cx);
+            });
+        })
+        .unwrap();
+
+    click(cx, &handle, "quick-switcher");
+    cx.run_until_parked();
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "the palette should open"
+    );
+
+    // Not a substring of anything: only the fuzzy matcher can find it.
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.input("o_items", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert!(
+        !workspace_dialog_open(cx, &handle),
+        "the palette should be gone once an item is chosen"
+    );
+    assert_eq!(
+        session.update(cx, |session, _| session.active_tab_index()),
+        1,
+        "o_items should fuzzy-match the order_items tab"
+    );
+}
+
+#[gpui_kit::test]
 fn the_schema_search_item_opens_the_dialog(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let _database = connect(cx, &handle);

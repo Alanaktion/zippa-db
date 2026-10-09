@@ -10,6 +10,7 @@ pub mod create_database_dialog;
 pub mod data_grid;
 pub mod engine;
 pub mod filter_bar;
+mod fuzzy;
 pub mod import_dialog;
 pub mod plan_view;
 pub mod process_list;

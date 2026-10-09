@@ -1,10 +1,15 @@
-//! Quick switcher / fuzzy object palette (`Cmd+K`).
+//! Quick switcher / command palette (`Cmd+K`).
 //!
 //! Provides fast search and navigation across:
 //! - Open query and table tabs
 //! - Tables and views in the active database schema
 //! - Quick actions (New Query Tab, Open SQL File, Refresh)
 //! - Available databases on the current connection
+//!
+//! Matching is done here, not by the `Command` component: every keystroke
+//! re-ranks the rows with [`fuzzy::match_score`] — exact matches first,
+//! then prefix, substring, and fuzzy subsequence hits — so the highlight
+//! always sits on the best match.
 
 use std::rc::Rc;
 
@@ -17,6 +22,8 @@ use gpui_kit::{App, Context, Entity, IntoElement, Render, SharedString, Window, 
 use crate::db::{DatabaseObject, ObjectKind};
 use crate::ui::session::Session;
 use crate::ui::session::tab::ObjectViewMode;
+
+use super::fuzzy;
 
 /// Actions and destinations selectable from the quick switcher.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,6 +42,27 @@ pub(crate) enum SwitcherTarget {
     OpenServerVariables,
     OpenQueryDigest,
     OpenMaintenance,
+}
+
+/// One palette row before it becomes a `CommandItem`: the label and keywords
+/// the fuzzy matcher scores, and everything the row is built from.
+struct PaletteItem {
+    target: SwitcherTarget,
+    label: String,
+    icon: IconName,
+    checked: bool,
+    keywords: Vec<String>,
+}
+
+/// A palette row for a fixed action: label, icon and keywords only.
+fn action(target: SwitcherTarget, label: &str, icon: IconName, keywords: &[&str]) -> PaletteItem {
+    PaletteItem {
+        target,
+        label: label.to_string(),
+        icon,
+        checked: false,
+        keywords: keywords.iter().map(|keyword| keyword.to_string()).collect(),
+    }
 }
 
 pub struct QuickSwitcherView {
@@ -168,35 +196,32 @@ impl Render for QuickSwitcherView {
             )
         };
 
-        let mut targets: Vec<Vec<SwitcherTarget>> = Vec::new();
-        let mut groups: Vec<CommandGroup> = Vec::new();
+        let mut tab_items = Vec::new();
 
         // 1. Open Tabs
         if !tabs_info.is_empty() {
-            let mut tab_targets = Vec::new();
-            let mut tab_group = CommandGroup::new().label("Open Tabs");
             for (ix, (title, icon, is_query, path)) in tabs_info.into_iter().enumerate() {
-                let mut keywords = vec!["tab", if is_query { "query" } else { "table" }, "open"];
+                let mut keywords = vec![
+                    "tab".to_string(),
+                    if is_query { "query" } else { "table" }.to_string(),
+                    "open".to_string(),
+                ];
                 if let Some(p) = &path {
-                    keywords.push(p.as_str());
+                    keywords.push(p.clone());
                 }
-                tab_group = tab_group.item(
-                    CommandItem::new()
-                        .label(title)
-                        .icon(icon)
-                        .checked(ix == active_tab_ix)
-                        .keywords(keywords),
-                );
-                tab_targets.push(SwitcherTarget::Tab(ix));
+                tab_items.push(PaletteItem {
+                    target: SwitcherTarget::Tab(ix),
+                    label: title.to_string(),
+                    icon,
+                    checked: ix == active_tab_ix,
+                    keywords,
+                });
             }
-            targets.push(tab_targets);
-            groups.push(tab_group);
         }
 
         // 2. Database Objects (Tables & Views)
+        let mut obj_items = Vec::new();
         if !objects.is_empty() {
-            let mut obj_targets = Vec::new();
-            let mut obj_group = CommandGroup::new().label("Tables & Views");
             for obj in objects {
                 let icon = match obj.kind {
                     ObjectKind::Table => IconName::Table,
@@ -206,157 +231,140 @@ impl Render for QuickSwitcherView {
                     ObjectKind::Table => "table",
                     ObjectKind::View => "view",
                 };
-                let mut keywords = vec![kind_str, "schema", "object"];
+                let mut keywords = vec![
+                    kind_str.to_string(),
+                    "schema".to_string(),
+                    "object".to_string(),
+                ];
                 if let Some(schema) = &obj.schema {
-                    keywords.push(schema.as_str());
+                    keywords.push(schema.clone());
                 }
-                obj_group = obj_group.item(
-                    CommandItem::new()
-                        .label(obj.label())
-                        .icon(icon)
-                        .keywords(keywords),
-                );
-                obj_targets.push(SwitcherTarget::Object(obj));
+                let label = obj.label();
+                obj_items.push(PaletteItem {
+                    target: SwitcherTarget::Object(obj),
+                    label,
+                    icon,
+                    checked: false,
+                    keywords,
+                });
             }
-            targets.push(obj_targets);
-            groups.push(obj_group);
         }
 
         // 3. Actions / Commands
-        {
-            let mut act_targets = Vec::new();
-            let mut act_group = CommandGroup::new().label("Actions");
-
-            act_group = act_group.item(
-                CommandItem::new()
-                    .label("New Query Tab")
-                    .icon(IconName::Plus)
-                    .keywords(["new", "query", "tab", "sql", "editor", "create"]),
-            );
-            act_targets.push(SwitcherTarget::NewTab);
-
-            act_group = act_group.item(
-                CommandItem::new()
-                    .label("Open SQL File...")
-                    .icon(IconName::FolderOpen)
-                    .keywords(["open", "file", "sql", "load", "import"]),
-            );
-            act_targets.push(SwitcherTarget::OpenFile);
-
-            act_group = act_group.item(
-                CommandItem::new()
-                    .label("Refresh Schema & Tables")
-                    .icon(IconName::RefreshCw)
-                    .keywords(["refresh", "reload", "schema", "tables", "metadata"]),
-            );
-            act_targets.push(SwitcherTarget::Refresh);
-
-            act_group = act_group.item(
-                CommandItem::new()
-                    .label("Search Schema...")
-                    .icon(IconName::Search)
-                    .keywords([
-                        "search", "find", "schema", "column", "index", "routine", "trigger",
-                    ]),
-            );
-            act_targets.push(SwitcherTarget::SearchSchema);
-
-            act_group = act_group.item(
-                CommandItem::new()
-                    .label("Explain Query")
-                    .icon(IconName::Route)
-                    .keywords(["explain", "plan", "query", "cost", "tree"]),
-            );
-            act_targets.push(SwitcherTarget::Explain);
-
-            act_group = act_group.item(
-                CommandItem::new()
-                    .label("Explain Query & Analyze")
-                    .icon(IconName::Gauge)
-                    .keywords(["explain", "analyze", "plan", "query", "timing"]),
-            );
-            act_targets.push(SwitcherTarget::ExplainAnalyze);
-
-            act_group = act_group.item(
-                CommandItem::new()
-                    .label("Console")
-                    .icon(IconName::SquareTerminal)
-                    .keywords(["console", "log", "statements", "history"]),
-            );
-            act_targets.push(SwitcherTarget::OpenConsole);
-
-            if is_file_based {
-                act_group = act_group.item(
-                    CommandItem::new()
-                        .label("Maintenance")
-                        .icon(IconName::Wrench)
-                        .keywords([
-                            "maintenance",
-                            "integrity",
-                            "check",
-                            "optimize",
-                            "vacuum",
-                            "analyze",
-                        ]),
-                );
-                act_targets.push(SwitcherTarget::OpenMaintenance);
-            } else {
-                act_group = act_group.item(
-                    CommandItem::new()
-                        .label("Processes")
-                        .icon(IconName::Activity)
-                        .keywords(["processes", "connections", "activity", "kill"]),
-                );
-                act_targets.push(SwitcherTarget::OpenProcessList);
-
-                act_group = act_group.item(
-                    CommandItem::new()
-                        .label("Variables")
-                        .icon(IconName::SlidersHorizontal)
-                        .keywords(["variables", "settings", "configuration", "server"]),
-                );
-                act_targets.push(SwitcherTarget::OpenServerVariables);
-
-                act_group = act_group.item(
-                    CommandItem::new()
-                        .label("Query Digest")
-                        .icon(IconName::Gauge)
-                        .keywords(["digest", "slow", "queries", "performance"]),
-                );
-                act_targets.push(SwitcherTarget::OpenQueryDigest);
-            }
-
-            targets.push(act_targets);
-            groups.push(act_group);
+        let mut act_items = vec![
+            action(
+                SwitcherTarget::NewTab,
+                "New Query Tab",
+                IconName::Plus,
+                &["new", "query", "tab", "sql", "editor", "create"],
+            ),
+            action(
+                SwitcherTarget::OpenFile,
+                "Open SQL File...",
+                IconName::FolderOpen,
+                &["open", "file", "sql", "load", "import"],
+            ),
+            action(
+                SwitcherTarget::Refresh,
+                "Refresh Schema & Tables",
+                IconName::RefreshCw,
+                &["refresh", "reload", "schema", "tables", "metadata"],
+            ),
+            action(
+                SwitcherTarget::SearchSchema,
+                "Search Schema...",
+                IconName::Search,
+                &[
+                    "search", "find", "schema", "column", "index", "routine", "trigger",
+                ],
+            ),
+            action(
+                SwitcherTarget::Explain,
+                "Explain Query",
+                IconName::Route,
+                &["explain", "plan", "query", "cost", "tree"],
+            ),
+            action(
+                SwitcherTarget::ExplainAnalyze,
+                "Explain Query & Analyze",
+                IconName::Gauge,
+                &["explain", "analyze", "plan", "query", "timing"],
+            ),
+            action(
+                SwitcherTarget::OpenConsole,
+                "Console",
+                IconName::SquareTerminal,
+                &["console", "log", "statements", "history"],
+            ),
+        ];
+        if is_file_based {
+            act_items.push(action(
+                SwitcherTarget::OpenMaintenance,
+                "Maintenance",
+                IconName::Wrench,
+                &[
+                    "maintenance",
+                    "integrity",
+                    "check",
+                    "optimize",
+                    "vacuum",
+                    "analyze",
+                ],
+            ));
+        } else {
+            act_items.extend([
+                action(
+                    SwitcherTarget::OpenProcessList,
+                    "Processes",
+                    IconName::Activity,
+                    &["processes", "connections", "activity", "kill"],
+                ),
+                action(
+                    SwitcherTarget::OpenServerVariables,
+                    "Variables",
+                    IconName::SlidersHorizontal,
+                    &["variables", "settings", "configuration", "server"],
+                ),
+                action(
+                    SwitcherTarget::OpenQueryDigest,
+                    "Query Digest",
+                    IconName::Gauge,
+                    &["digest", "slow", "queries", "performance"],
+                ),
+            ]);
         }
 
         // 4. Databases (if multi-database engine and databases known)
+        let mut db_items = Vec::new();
         if !is_file_based && databases.len() > 1 {
-            let mut db_targets = Vec::new();
-            let mut db_group = CommandGroup::new().label("Switch Database");
             for db in databases {
                 let is_current = db == current_db;
-                db_group = db_group.item(
-                    CommandItem::new()
-                        .label(format!("Database: {db}"))
-                        .icon(IconName::HardDrive)
-                        .checked(is_current)
-                        .keywords(["database", "db", "switch"]),
-                );
-                db_targets.push(SwitcherTarget::SwitchDatabase(db));
+                db_items.push(PaletteItem {
+                    target: SwitcherTarget::SwitchDatabase(db.clone()),
+                    label: format!("Database: {db}"),
+                    icon: IconName::HardDrive,
+                    checked: is_current,
+                    keywords: vec![
+                        "database".to_string(),
+                        "db".to_string(),
+                        "switch".to_string(),
+                    ],
+                });
             }
-            targets.push(db_targets);
-            groups.push(db_group);
         }
 
-        let targets = Rc::new(targets);
-        let targets_for_confirm = targets.clone();
-        let view_for_confirm = cx.weak_entity();
+        // Rank every group against the query: exact matches first, then
+        // prefix, substring, and fuzzy hits. The component's own substring
+        // filter stays off — it would only hide what was already ranked.
+        let query_text = self.state.read(cx).query(cx);
+        let query = query_text.trim();
 
+        let mut targets: Vec<Vec<SwitcherTarget>> = Vec::new();
         let mut command = Command::new(&self.state)
             .placeholder("Search tables, views, open queries, commands...")
             .bordered(false)
             .max_h(px(360.))
+            .filterable(false)
             .empty(|_, _, cx| {
                 div()
                     .p_6()
@@ -364,7 +372,68 @@ impl Render for QuickSwitcherView {
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child("No matching tables, views, queries or commands")
-            })
+            });
+
+        // Re-rank on every keystroke.
+        let view = cx.weak_entity();
+        command = command.on_query(move |_, _, cx| {
+            if let Some(view) = view.upgrade() {
+                view.update(cx, |_, cx| cx.notify());
+            }
+        });
+
+        for (group_label, items) in [
+            ("Open Tabs", tab_items),
+            ("Tables & Views", obj_items),
+            ("Actions", act_items),
+            ("Switch Database", db_items),
+        ] {
+            let mut scored: Vec<(i64, PaletteItem)> = items
+                .into_iter()
+                .filter_map(|item| {
+                    let score = item
+                        .keywords
+                        .iter()
+                        .fold(fuzzy::match_score(query, &item.label), |best, keyword| {
+                            best.max(fuzzy::match_score(query, keyword))
+                        });
+                    score.map(|score| (score, item))
+                })
+                .collect();
+            if scored.is_empty() {
+                continue;
+            }
+            // Stable: ties keep the group's original order.
+            scored.sort_by_key(|item| std::cmp::Reverse(item.0));
+
+            let mut group_targets = Vec::with_capacity(scored.len());
+            let mut group = CommandGroup::new().label(group_label);
+            for (_, item) in scored {
+                let PaletteItem {
+                    target,
+                    label,
+                    icon,
+                    checked,
+                    keywords,
+                } = item;
+                group_targets.push(target);
+                group = group.item(
+                    CommandItem::new()
+                        .label(label)
+                        .icon(icon)
+                        .checked(checked)
+                        .keywords(keywords),
+                );
+            }
+            targets.push(group_targets);
+            command = command.group(group);
+        }
+
+        let targets = Rc::new(targets);
+        let targets_for_confirm = targets.clone();
+        let view_for_confirm = cx.weak_entity();
+
+        command = command
             .on_confirm(move |index_path, window, cx| {
                 let target = targets_for_confirm
                     .get(index_path.section)
@@ -392,10 +461,6 @@ impl Render for QuickSwitcherView {
             .on_cancel(move |window, cx| {
                 window.close_dialog(cx);
             });
-
-        for group in groups {
-            command = command.group(group);
-        }
 
         command
     }
