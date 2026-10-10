@@ -23,9 +23,15 @@
 - **Structure.** Edit columns, indexes, and foreign keys with a generated-SQL preview.
 - **Import & export.** Results out as CSV, TSV, JSON, Markdown, or SQL `INSERT`; SQL dumps in (plain, gzip, bzip2, zstd) with progress and per-error choices.
 - **Server tools.** A console of every statement sent, process list, server variables, and query digest (Postgres/MySQL), plus SQLite maintenance.
-- **Keyboard first.** Every command has a shortcut — `Ctrl`/`Cmd`+`/` lists them all.
+- **Keyboard first.** Every command has a shortcut — `Ctrl`+`/` lists them all.
 
 ## Getting started
+
+Install pre-built packages from [the latest release](https://github.com/Alanaktion/zippa-db/releases/latest), available for macOS, Linux, and Windows.
+
+Connections, tabs, and settings live in the OS config dir (`~/Library/Application Support/zippa-db`, `~/.config/zippa-db`, or `%APPDATA%\zippa-db`); passwords stay in the OS keychain.
+
+## Building from source
 
 Requires Rust 1.95+. macOS needs full Xcode (Metal toolchain); on Linux run `./script/linux` for build dependencies.
 
@@ -34,8 +40,6 @@ git clone https://github.com/Alanaktion/zippa-db.git
 cd zippa-db
 cargo run --release
 ```
-
-Connections, tabs, and settings live in the OS config dir (`~/Library/Application Support/zippa-db`, `~/.config/zippa-db`, or `%APPDATA%\zippa-db`); passwords stay in the OS keychain.
 
 ## Built with
 
