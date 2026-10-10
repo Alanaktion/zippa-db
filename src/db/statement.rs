@@ -40,12 +40,12 @@ pub struct Statement {
     pub end: usize,
 }
 
-/// A `:name` placeholder in user SQL, and where it sits.
+/// A `:name` or `$name` placeholder in user SQL, and where it sits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placeholder {
-    /// The name without the colon.
+    /// The name without the sigil: `:name` and `$name` are the same variable.
     pub name: String,
-    /// Byte range of `:name` in the SQL it came from.
+    /// Byte range of the placeholder in the SQL it came from.
     pub start: usize,
     pub end: usize,
 }
@@ -93,11 +93,15 @@ pub fn at_cursor(sql: &str, cursor: usize, engine: Engine) -> Option<Statement> 
         .cloned()
 }
 
-/// Every `:name` placeholder in `sql`, outside strings and comments.
+/// Every `:name` or `$name` placeholder in `sql`, outside strings and comments.
 ///
-/// A colon starts a placeholder when the character before it is not part of
-/// a word or another colon — so `::` casts, `:=` assignments, and `12:30`
-/// are left alone — and the character after it starts a name.
+/// A colon or a dollar starts a placeholder when the character before it is
+/// not part of a word or another sigil — so `::` casts, `:=` assignments,
+/// `12:30`, Postgres' positional `$1`, and identifiers that merely contain a
+/// dollar (`my$col`) are left alone — and the character after it starts a
+/// name. A `$tag$` dollar-quoted string still hides everything inside it.
+/// The two sigils name the same variable: `:name` and `$name` take one value
+/// from the dialog, so SQL pasted from PHP needs no rewriting.
 pub fn placeholders(sql: &str, engine: Engine) -> Vec<Placeholder> {
     let characters: Vec<char> = sql.chars().collect();
     // Byte index of each character, so the ranges are byte ranges.
@@ -118,13 +122,29 @@ pub fn placeholders(sql: &str, engine: Engine) -> Vec<Placeholder> {
             }
             '$' => {
                 // A dollar-quoted string or a positional parameter: no
-                // `:name` starts inside either.
+                // placeholder starts inside either. Otherwise a `$name`
+                // variable, the same as `:name`.
                 if let Some(tag) = dollar_tag(&characters, index) {
                     index = skip_until(&characters, index + tag.len(), &tag);
                 } else {
-                    index += 1;
-                    while index < characters.len() && characters[index].is_ascii_digit() {
+                    let prev = if index > 0 {
+                        Some(characters[index - 1])
+                    } else {
+                        None
+                    };
+                    let prev_is_word = prev.is_some_and(|prev| {
+                        prev.is_alphanumeric() || prev == '_' || prev == ':' || prev == '$'
+                    });
+                    if let Some((placeholder, end)) =
+                        placeholder_at(&characters, &bytes, index, prev_is_word)
+                    {
+                        found.push(placeholder);
+                        index = end;
+                    } else {
                         index += 1;
+                        while index < characters.len() && characters[index].is_ascii_digit() {
+                            index += 1;
+                        }
                     }
                 }
             }
@@ -146,21 +166,10 @@ pub fn placeholders(sql: &str, engine: Engine) -> Vec<Placeholder> {
                 let prev_is_word = prev.is_some_and(|prev| {
                     prev.is_alphanumeric() || prev == '_' || prev == ':' || prev == '$'
                 });
-                let next = characters.get(index + 1).copied();
-                let next_starts_name = next.is_some_and(|next| next.is_alphabetic() || next == '_');
-                if !prev_is_word && next_starts_name {
-                    let mut end = index + 2;
-                    while end < characters.len()
-                        && (characters[end].is_alphanumeric() || characters[end] == '_')
-                    {
-                        end += 1;
-                    }
-                    let name = characters[index + 1..end].iter().collect();
-                    found.push(Placeholder {
-                        name,
-                        start: bytes[index],
-                        end: bytes[end],
-                    });
+                if let Some((placeholder, end)) =
+                    placeholder_at(&characters, &bytes, index, prev_is_word)
+                {
+                    found.push(placeholder);
                     index = end;
                 } else {
                     index += 1;
@@ -172,6 +181,39 @@ pub fn placeholders(sql: &str, engine: Engine) -> Vec<Placeholder> {
         }
     }
     found
+}
+
+/// A `:name` or `$name` placeholder starting at `index` — the sigil itself —
+/// or `None` when the sigil does not start one.
+///
+/// `prev_is_word` tells whether the character before the sigil is part of a
+/// word, which rules out casts (`::`), assignments (`:=`), times (`12:30`),
+/// and identifiers that merely contain a dollar (`my$col`); the character
+/// after the sigil must start a name, which rules out positional `$1`.
+fn placeholder_at(
+    characters: &[char],
+    bytes: &[usize],
+    index: usize,
+    prev_is_word: bool,
+) -> Option<(Placeholder, usize)> {
+    let next = characters.get(index + 1).copied();
+    let next_starts_name = next.is_some_and(|next| next.is_alphabetic() || next == '_');
+    if prev_is_word || !next_starts_name {
+        return None;
+    }
+    let mut end = index + 2;
+    while end < characters.len() && (characters[end].is_alphanumeric() || characters[end] == '_') {
+        end += 1;
+    }
+    let name = characters[index + 1..end].iter().collect();
+    Some((
+        Placeholder {
+            name,
+            start: bytes[index],
+            end: bytes[end],
+        },
+        end,
+    ))
 }
 
 /// Option words an `EXPLAIN` header can carry before the statement it
@@ -1002,5 +1044,49 @@ mod tests {
     fn dollar_quoted_strings_hide_placeholders() {
         let sql = "select $$:not_a_var$$, :real from t";
         assert_eq!(placeholder_names(sql, Engine::Postgres), ["real"]);
+    }
+
+    #[test]
+    fn dollar_variables_are_found_like_colon_ones() {
+        assert_eq!(
+            placeholder_names("select * from t where id = $id", Engine::Postgres),
+            ["id"]
+        );
+        assert_eq!(
+            placeholder_names("select * from t where id = $_id1", Engine::Postgres),
+            ["_id1"]
+        );
+    }
+
+    #[test]
+    fn the_two_sigils_name_the_same_variable() {
+        assert_eq!(
+            placeholder_names("select :a, $a from t", Engine::Postgres),
+            ["a", "a"]
+        );
+    }
+
+    #[test]
+    fn positional_params_and_dollar_quotes_are_not_dollar_variables() {
+        assert!(placeholder_names("select $1, $2 from t", Engine::Postgres).is_empty());
+        assert_eq!(
+            placeholder_names("select $$ $not_a_var $$, $real from t", Engine::Postgres),
+            ["real"]
+        );
+    }
+
+    #[test]
+    fn a_dollar_inside_a_word_is_not_a_variable() {
+        assert!(placeholder_names("select my$col from t", Engine::Postgres).is_empty());
+    }
+
+    #[test]
+    fn a_dollar_placeholder_carries_its_byte_range() {
+        let sql = "select * from t where id = $id";
+        let placeholders = super::placeholders(sql, Engine::Postgres);
+        assert_eq!(placeholders.len(), 1);
+        let placeholder = &placeholders[0];
+        assert_eq!(placeholder.name, "id");
+        assert_eq!(&sql[placeholder.start..placeholder.end], "$id");
     }
 }

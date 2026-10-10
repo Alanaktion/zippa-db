@@ -135,7 +135,7 @@ impl PinnedConnection {
     ///
     /// A read-only connection refuses a write here exactly as it does on the
     /// pool, before anything is checked out.
-    /// Run one statement, substituting the tab's `:name` variables first.
+    /// Run one statement, substituting the tab's `:name`/`$name` variables first.
     ///
     /// A placeholder in a value position becomes a bind parameter; one where
     /// a bind cannot go is pasted in as written. A variable without a value

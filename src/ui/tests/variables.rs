@@ -1,4 +1,4 @@
-//! Query variables: `:name` substitution when a buffer runs.
+//! Query variables: `:name`/`$name` substitution when a buffer runs.
 
 use super::*;
 use crate::db::params::Variable;
@@ -43,6 +43,26 @@ fn a_variable_binds_into_the_statement(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_dollar_variable_binds_into_the_statement(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    prepare_editor(cx, handle, "select * from items where name = $name", 0);
+    set_variables(cx, handle, vec![variable("name", "alpha")]);
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    let grid = handle
+        .update(cx, |session, _, cx| session.active_grid(cx))
+        .unwrap()
+        .expect("a query tab has a grid");
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.column_values_for_test(1, cx)),
+        vec![Some("alpha".to_string())],
+        "the $name placeholder should have bound 'alpha'"
+    );
+}
+
+#[gpui_kit::test]
 fn the_same_variable_is_used_for_every_statement_in_a_script(cx: &mut TestAppContext) {
     let (database, handle) = session_with_objects(cx);
 
@@ -77,7 +97,7 @@ fn a_missing_variable_refuses_the_run_before_anything_executes(cx: &mut TestAppC
         .update(cx, |session, _, cx| session.active_status_for_test(cx))
         .unwrap();
     assert!(
-        status.contains("no value for variable :name"),
+        status.contains("no value for variable 'name'"),
         "the run should be refused naming the variable: {status}"
     );
     assert_eq!(

@@ -1,10 +1,10 @@
 //! The query variables dialog.
 //!
 //! Opened from the Variables button in a query tab's toolbar. One row per
-//! `:name` variable — a name box, a value box, and a remove button — plus an
+//! variable — a name box, a value box, and a remove button — plus an
 //! add-row button. Saving hands the rows back to the session, which stores
-//! them on the tab; the values are substituted for the buffer's `:name`
-//! placeholders on the next run, and persisted with the session.
+//! them on the tab; the values are substituted for the buffer's `:name` and
+//! `$name` placeholders on the next run, and persisted with the session.
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
@@ -143,7 +143,7 @@ impl Render for VariablesView {
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child(
-                        "Each :name in this buffer takes the value beside it when the buffer runs.",
+                        "Each :name or $name in this buffer takes the value beside it when the buffer runs.",
                     ),
             )
             .children((0..self.rows.len()).map(|index| {

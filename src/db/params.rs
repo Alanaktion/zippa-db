@@ -1,9 +1,9 @@
-//! Named query variables (`:name`).
+//! Named query variables (`:name` or `$name`).
 //!
 //! A query tab's variables map names to values; before a statement runs,
-//! [`substitute`] rewrites each `:name` placeholder it holds. A placeholder
+//! [`substitute`] rewrites each `:name`/`$name` placeholder it holds. A placeholder
 //! in a value position becomes a real bind parameter — the same value is
-//! bound once per occurrence, so `:name` used twice binds twice — while one
+//! bound once per occurrence, so a name used twice binds twice — while one
 //! where a bind cannot go (after `FROM`, for a table name) is pasted in as
 //! written, and a value that is a keyword literal (`NOW()`) is pasted rather
 //! than bound, since binding would quote it instead of evaluating it.
@@ -25,7 +25,7 @@ pub struct Variable {
     pub value: String,
 }
 
-/// Words after which a `:name` names something a bind parameter cannot be —
+/// Words after which a placeholder names something a bind parameter cannot be —
 ///
 /// a table, a view, a database — so its value is pasted in as written
 /// rather than bound.
@@ -33,7 +33,7 @@ const IDENTIFIER_WORDS: [&str; 10] = [
     "FROM", "JOIN", "INTO", "UPDATE", "TABLE", "VIEW", "INDEX", "DATABASE", "SCHEMA", "TRUNCATE",
 ];
 
-/// Rewrite `sql`'s `:name` placeholders with `variables`.
+/// Rewrite `sql`'s `:name`/`$name` placeholders with `variables`.
 ///
 /// Returns the rewritten statement and the bind parameters in order. Every
 /// placeholder must have a value, or the run is refused naming it. A
@@ -54,7 +54,7 @@ pub fn substitute(
         .collect();
     for placeholder in &placeholders {
         if !values.contains_key(placeholder.name.as_str()) {
-            return Err(anyhow!("no value for variable :{}", placeholder.name));
+            return Err(anyhow!("no value for variable '{}'", placeholder.name));
         }
     }
 
@@ -174,7 +174,42 @@ mod tests {
             Engine::Postgres,
         )
         .unwrap_err();
-        assert_eq!(error.to_string(), "no value for variable :id");
+        assert_eq!(error.to_string(), "no value for variable 'id'");
+    }
+
+    #[test]
+    fn a_dollar_variable_substitutes_like_a_colon_one() {
+        let (sql, params) = substitute(
+            "SELECT * FROM t WHERE id = $id",
+            &variables(&[("id", "42")]),
+            Engine::Postgres,
+        )
+        .unwrap();
+        assert_eq!(sql, "SELECT * FROM t WHERE id = $1");
+        assert_eq!(params, vec![Some("42".to_string())]);
+    }
+
+    #[test]
+    fn mixed_sigils_share_one_value() {
+        let (sql, params) = substitute(
+            "SELECT * FROM t WHERE a = :x AND b = $x",
+            &variables(&[("x", "1")]),
+            Engine::Postgres,
+        )
+        .unwrap();
+        assert_eq!(sql, "SELECT * FROM t WHERE a = $1 AND b = $2");
+        assert_eq!(params, vec![Some("1".to_string()), Some("1".to_string())]);
+    }
+
+    #[test]
+    fn a_missing_dollar_variable_names_itself() {
+        let error = substitute(
+            "SELECT * FROM t WHERE id = $id",
+            &variables(&[]),
+            Engine::Postgres,
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "no value for variable 'id'");
     }
 
     #[test]

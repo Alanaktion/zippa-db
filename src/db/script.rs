@@ -213,7 +213,7 @@ pub struct ScriptRun {
     /// would commit the tab's transaction (MySQL).
     nested: bool,
     statements: Vec<Statement>,
-    /// Each statement with its `:name` variables substituted, and the bind
+    /// Each statement with its `:name`/`$name` variables substituted, and the bind
     /// parameters in order. A variable without a value refuses the run in
     /// `start`, before anything executes.
     rewritten: Vec<String>,

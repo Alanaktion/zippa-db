@@ -718,8 +718,8 @@ impl Connection {
     ///
     /// SQLite has no `EXPLAIN ANALYZE`, so a request for one there is refused
     /// rather than answered with the plain plan.
-    /// The same, binding `params` in order — for a statement whose `:name`
-    /// variables were substituted to bind parameters.
+    /// The same, binding `params` in order — for a statement whose
+    /// `:name`/`$name` variables were substituted to bind parameters.
     pub async fn explain_with(
         &self,
         sql: &str,

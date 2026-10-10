@@ -68,7 +68,7 @@ pub enum QueryEditorEvent {
     Open,
     /// The user asked to write this buffer to its file.
     Save,
-    /// The user asked to edit this buffer's `:name` variables.
+    /// The user asked to edit this buffer's `:name`/`$name` variables.
     EditVariables,
 }
 
@@ -78,7 +78,7 @@ pub struct QueryEditor {
     #[cfg(test)]
     completions: Rc<SqlCompletions>,
     running: bool,
-    /// The `:name` variables for this buffer, edited in the Variables dialog.
+    /// The `:name`/`$name` variables for this buffer, edited in the Variables dialog.
     /// The whole buffer shares one mapping: every occurrence of a name, in
     /// every statement, uses the same value.
     variables: Vec<Variable>,
@@ -140,12 +140,12 @@ impl QueryEditor {
         }
     }
 
-    /// This buffer's `:name` variables.
+    /// This buffer's `:name`/`$name` variables.
     pub(crate) fn variables(&self) -> Vec<Variable> {
         self.variables.clone()
     }
 
-    /// Replace this buffer's `:name` variables, as the Variables dialog does.
+    /// Replace this buffer's `:name`/`$name` variables, as the Variables dialog does.
     pub(crate) fn set_variables(&mut self, variables: Vec<Variable>, cx: &mut Context<Self>) {
         self.variables = variables;
         cx.notify();
@@ -1152,7 +1152,7 @@ impl Render for QueryEditor {
                                     .small()
                                     .icon(AssetIcon::Variable)
                                     .accessibility_label("Edit query variables")
-                                    .tooltip("Edit the :name variables for this buffer")
+                                    .tooltip("Edit the :name/$name variables for this buffer")
                                     .disabled(self.running)
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.emit(QueryEditorEvent::EditVariables)
