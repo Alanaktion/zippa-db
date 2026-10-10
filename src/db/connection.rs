@@ -718,9 +718,16 @@ impl Connection {
     ///
     /// SQLite has no `EXPLAIN ANALYZE`, so a request for one there is refused
     /// rather than answered with the plain plan.
-    pub async fn explain(&self, sql: &str, analyze: bool) -> Result<Explained> {
+    /// The same, binding `params` in order — for a statement whose
+    /// `:name`/`$name` variables were substituted to bind parameters.
+    pub async fn explain_with(
+        &self,
+        sql: &str,
+        params: Vec<Cell>,
+        analyze: bool,
+    ) -> Result<Explained> {
         let started = Instant::now();
-        let result = self.explain_inner(sql, analyze).await;
+        let result = self.explain_inner(sql, params, analyze).await;
         let outcome = match &result {
             Ok(_) => QueryOutcome::Ran,
             Err(error) => QueryOutcome::Error(format!("{error:#}")),
@@ -729,7 +736,12 @@ impl Connection {
         result
     }
 
-    async fn explain_inner(&self, sql: &str, analyze: bool) -> Result<Explained> {
+    async fn explain_inner(
+        &self,
+        sql: &str,
+        params: Vec<Cell>,
+        analyze: bool,
+    ) -> Result<Explained> {
         let statement = sql.trim().trim_end_matches(';').trim();
         // One statement is what a plan describes; a script has no single plan
         // to draw, and the caller's buffer may be a selection of many.
@@ -759,7 +771,7 @@ impl Connection {
                     }
                     (false, false) => format!("EXPLAIN (FORMAT JSON) {inner}"),
                 };
-                let result = self.fetch(&sql, Vec::new()).await?;
+                let result = self.fetch(&sql, params.clone()).await?;
                 let text = result
                     .rows
                     .first()
@@ -781,7 +793,7 @@ impl Connection {
                     (false, true) => format!("EXPLAIN ANALYZE {inner}"),
                     (false, false) => format!("EXPLAIN FORMAT=TREE {inner}"),
                 };
-                if let Ok(result) = self.fetch(&tree, Vec::new()).await {
+                if let Ok(result) = self.fetch(&tree, params.clone()).await {
                     let text = result
                         .rows
                         .first()
@@ -795,7 +807,7 @@ impl Connection {
                 }
 
                 let classic = format!("EXPLAIN {inner}");
-                let result = self.fetch(&classic, Vec::new()).await?;
+                let result = self.fetch(&classic, params).await?;
                 Ok(Explained::Rows(result))
             }
             Engine::Sqlite => {
@@ -816,7 +828,7 @@ impl Connection {
                 } else {
                     format!("EXPLAIN QUERY PLAN {inner}")
                 };
-                let result = self.fetch(&sql, Vec::new()).await?;
+                let result = self.fetch(&sql, params.clone()).await?;
                 let mut plan = plan::sqlite(&result);
                 plan.elapsed = result.elapsed;
                 Ok(Explained::Plan(plan))
@@ -1162,6 +1174,7 @@ impl Connection {
 pub(crate) async fn fetch_on<DB, F>(
     connection: &mut DB::Connection,
     sql: &str,
+    params: Vec<Cell>,
     cell: F,
     rows_affected: fn(&DB::QueryResult) -> u64,
 ) -> Result<QueryResult>
@@ -1169,11 +1182,16 @@ where
     DB: Database,
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
     <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> Option<String>: Encode<'q, DB>,
+    String: Type<DB>,
     F: Fn(&DB::Row, usize) -> Cell,
 {
     let statement = AssertSqlSafe(sql.to_string()).into_sql_str();
     let started = Instant::now();
-    let query = sqlx::query(statement.clone());
+    let mut query = sqlx::query(statement.clone());
+    for param in params {
+        query = query.bind(param);
+    }
 
     #[allow(deprecated)]
     let mut results = query.fetch_many(&mut *connection);

@@ -397,11 +397,13 @@ fn restored_connections_reopen_their_tabs_in_order(cx: &mut TestAppContext) {
                     title: "Query 1".into(),
                     sql: "select 1".into(),
                     file: None,
+                    variables: vec![],
                 },
                 PanelState::Query {
                     title: "Query 2".into(),
                     sql: "select 2".into(),
                     file: None,
+                    variables: vec![],
                 },
             ],
         }],
@@ -452,6 +454,7 @@ fn a_restored_file_tab_reads_its_file_to_decide_dirty(cx: &mut TestAppContext) {
                 // unsaved work once the file has been read back.
                 sql: "select 2;\n".into(),
                 file: Some(file),
+                variables: vec![],
             }],
         }],
         ..WorkspaceState::default()
@@ -547,6 +550,7 @@ fn a_connection_deleted_since_the_last_run_is_skipped(cx: &mut TestAppContext) {
                     title: "Query 1".into(),
                     sql: "select 1".into(),
                     file: None,
+                    variables: vec![],
                 }],
             },
             SessionState {
@@ -557,6 +561,7 @@ fn a_connection_deleted_since_the_last_run_is_skipped(cx: &mut TestAppContext) {
                     title: "Query 1".into(),
                     sql: "select 2".into(),
                     file: None,
+                    variables: vec![],
                 }],
             },
         ],
@@ -591,6 +596,7 @@ fn a_failed_reconnect_keeps_its_tabs_for_retrying(cx: &mut TestAppContext) {
                 title: "Query 1".into(),
                 sql: "select 1".into(),
                 file: None,
+                variables: vec![],
             }],
         }],
         ..WorkspaceState::default()
@@ -628,6 +634,7 @@ fn a_restored_state_round_trips_through_snapshot(cx: &mut TestAppContext) {
                     title: "Query 1".into(),
                     sql: "select 1".into(),
                     file: None,
+                    variables: vec![],
                 },
                 PanelState::Table {
                     object: DatabaseObject {

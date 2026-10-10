@@ -33,7 +33,7 @@ use super::config::Engine;
 use super::connection::{Connection, query_outcome};
 use super::dedicated::Dedicated;
 use super::health::ConnectionTrouble;
-use super::query::QueryResult;
+use super::query::{Cell, QueryResult};
 use super::query_log::{QueryOutcome, QuerySource};
 use super::{runtime, script, statement};
 
@@ -135,22 +135,33 @@ impl PinnedConnection {
     ///
     /// A read-only connection refuses a write here exactly as it does on the
     /// pool, before anything is checked out.
-    pub async fn run_query(&self, sql: &str) -> Result<QueryResult> {
-        self.connection.refuse_write(sql)?;
+    /// Run one statement, substituting the tab's `:name`/`$name` variables first.
+    ///
+    /// A placeholder in a value position becomes a bind parameter; one where
+    /// a bind cannot go is pasted in as written. A variable without a value
+    /// refuses the run before anything is sent.
+    pub async fn run_query_with(
+        &self,
+        sql: &str,
+        variables: &[super::params::Variable],
+    ) -> Result<QueryResult> {
+        let engine = self.connection.config.engine;
+        let (sql, params) = super::params::substitute(sql, variables, engine)?;
+        self.connection.refuse_write(&sql)?;
         let started = Instant::now();
-        let result = self.fetch(sql).await;
+        let result = self.fetch_with(&sql, params).await;
         let (elapsed, outcome) = match &result {
             Ok(result) => (result.elapsed, query_outcome(result)),
             Err(error) => (started.elapsed(), QueryOutcome::Error(format!("{error:#}"))),
         };
         self.connection
-            .log(sql, QuerySource::User, elapsed, outcome);
+            .log(&sql, QuerySource::User, elapsed, outcome);
         result
     }
 
-    async fn fetch(&self, sql: &str) -> Result<QueryResult> {
+    async fn fetch_with(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
         let mut guard = self.lock().await?;
-        let result = guard.fetch(sql).await;
+        let result = guard.fetch_with(sql, params).await;
         guard.note(sql, result.as_ref().err());
         // A connection the server has dropped is let go, so the tab's next run
         // starts on a fresh one. Postgres would find out in `settle`, but
@@ -236,17 +247,17 @@ impl PinGuard {
             .ok_or_else(|| anyhow!("the tab's connection was closed"))
     }
 
-    /// Run one statement and read back its rows.
+    /// Run one statement and read back its rows, binding `params` in order.
     ///
     /// Should the run be dropped before the statement comes back — the user
     /// cancelling it — the connection is closed rather than kept: nothing
     /// says where the statement got to, or what it left open.
-    pub(crate) async fn fetch(&mut self, sql: &str) -> Result<QueryResult> {
+    pub(crate) async fn fetch_with(&mut self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
         let mut flight = Flight {
             guard: self,
             landed: false,
         };
-        let result = flight.guard.session()?.fetch(sql).await;
+        let result = flight.guard.session()?.fetch_with(sql, params).await;
         flight.landed = true;
         result
     }

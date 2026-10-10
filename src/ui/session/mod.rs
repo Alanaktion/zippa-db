@@ -22,6 +22,7 @@ use crate::db::{CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObj
 use crate::ui::completion::SharedCatalog;
 use crate::ui::create_database_dialog::CreateDatabaseView;
 use crate::ui::import_dialog::ImportView;
+use crate::ui::variables_dialog::VariablesView;
 use crate::workspace_state::SessionState;
 
 mod files;
@@ -35,6 +36,7 @@ pub(crate) mod tab;
 mod tabs;
 #[cfg(test)]
 mod test_support;
+mod variables;
 
 pub(crate) use panel::CloseScope;
 use panel::{SessionPanel, SessionPanelEvent};
@@ -133,6 +135,9 @@ pub struct Session {
     import: Option<Entity<ImportView>>,
     /// The create-database dialog, while one is open over the window.
     create_database: Option<Entity<CreateDatabaseView>>,
+    /// The query-variables dialog, while one is open over the window, and
+    /// the tab whose variables it edits.
+    variables_dialog: Option<(Entity<SessionPanel>, Entity<VariablesView>)>,
 }
 
 impl EventEmitter<SessionEvent> for Session {}
@@ -181,6 +186,7 @@ impl Session {
             next_key: 0,
             import: None,
             create_database: None,
+            variables_dialog: None,
         };
         session
             .catalog
@@ -370,6 +376,7 @@ impl Session {
             // The saved-query list is read from disk on every render, so a
             // repaint is all a save needs.
             SessionPanelEvent::SavedQueriesChanged => cx.notify(),
+            SessionPanelEvent::EditVariables => self.open_variables_dialog(panel, window, cx),
         }
     }
 

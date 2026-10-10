@@ -9,7 +9,7 @@ use gpui_kit::{App, ClickEvent, Context, Entity, Window};
 
 use crate::db::{
     Blocker, Decision, Explained, OnFailure, ScriptFailure, ScriptMode, ScriptOutcome, ScriptRun,
-    Step, runtime, statement, transaction_blocker,
+    Step, params, runtime, statement, transaction_blocker,
 };
 
 use super::panel::close_script;
@@ -212,8 +212,10 @@ impl Session {
         let Some(pinned) = panel.update(cx, |panel, _| panel.pin(&self.connection)) else {
             return;
         };
-        let task =
-            runtime::spawn(async move { ScriptRun::start(pinned, &sql, mode, on_failure).await });
+        let variables = editor.read(cx).variables();
+        let task = runtime::spawn(async move {
+            ScriptRun::start(pinned, &sql, &variables, mode, on_failure).await
+        });
         self.follow_script(panel, task, writes, cx);
     }
 
@@ -501,8 +503,16 @@ impl Session {
         let Some(pinned) = panel.update(cx, |panel, _| panel.pin(&self.connection)) else {
             return;
         };
-        let task =
-            runtime::spawn(async move { pinned.run_query(&sql).await.map(|result| vec![result]) });
+        // The buffer's `:name` variables go along: the substitution happens
+        // here, on the tab, so a missing value refuses the run with its name
+        // rather than a database error about a placeholder.
+        let variables = editor.read(cx).variables();
+        let task = runtime::spawn(async move {
+            pinned
+                .run_query_with(&sql, &variables)
+                .await
+                .map(|result| vec![result])
+        });
         panel.update(cx, |panel, _| panel.set_running(task.abort_handle()));
 
         let weak = panel.downgrade();
@@ -574,7 +584,7 @@ impl Session {
             return;
         }
 
-        self.explain_now(panel, sql, analyze, cx);
+        self.explain_now(panel, sql, analyze, window, cx);
     }
 
     /// Ask before running the query an `ANALYZE` would, the way a write is
@@ -610,10 +620,10 @@ impl Session {
                         .cancel_text("Cancel")
                         .show_cancel(true),
                 )
-                .on_ok(move |_, _, cx| {
+                .on_ok(move |_, window, cx| {
                     if let Some(session) = session.upgrade() {
                         session.update(cx, |session, cx| {
-                            session.explain_now(&panel, sql.clone(), true, cx)
+                            session.explain_now(&panel, sql.clone(), true, &mut *window, cx)
                         });
                     }
                     true
@@ -628,6 +638,7 @@ impl Session {
         panel: &Entity<SessionPanel>,
         sql: String,
         analyze: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some((editor, grid)) = panel.read(cx).query_parts() else {
@@ -639,6 +650,24 @@ impl Session {
             return;
         }
 
+        // A missing variable refuses the plan with its name, before anything
+        // is marked running.
+        let variables = editor.read(cx).variables();
+        let (sql, query_params) =
+            match params::substitute(&sql, &variables, self.connection.config.engine) {
+                Ok(substituted) => substituted,
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    panel.update(cx, |panel, cx| {
+                        panel.set_status(Status::Error(message.clone()));
+                        cx.notify();
+                    });
+                    grid.update(cx, |grid, cx| grid.clear(cx));
+                    crate::ui::notify_error(window, cx, format!("Error: {message}"));
+                    return;
+                }
+            };
+
         panel.update(cx, |panel, cx| {
             panel.set_status(Status::Running);
             cx.notify();
@@ -646,7 +675,10 @@ impl Session {
         editor.update(cx, |editor, cx| editor.set_running(true, cx));
 
         let connection = self.connection.clone();
-        let task = runtime::spawn(async move { connection.explain(&sql, analyze).await });
+        let task =
+            runtime::spawn(
+                async move { connection.explain_with(&sql, query_params, analyze).await },
+            );
         panel.update(cx, |panel, _| panel.set_running(task.abort_handle()));
 
         let weak = panel.downgrade();

@@ -622,6 +622,7 @@ async fn a_script_runs_every_statement_in_one_transaction() {
             PinnedConnection::new(connection.clone()),
             "INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
              SELECT name FROM items WHERE id = 3;",
+            &[],
             ScriptMode::Transaction,
             OnFailure::Ask,
         )
@@ -644,6 +645,7 @@ async fn a_failure_pauses_the_script_and_rolling_back_undoes_it() {
         ScriptRun::start(
             PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
+            &[],
             ScriptMode::Transaction,
             OnFailure::Ask,
         )
@@ -676,6 +678,7 @@ async fn skipping_a_failure_keeps_the_rest_of_the_transaction() {
         ScriptRun::start(
             PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
+            &[],
             ScriptMode::Transaction,
             OnFailure::Ask,
         )
@@ -705,6 +708,7 @@ async fn skipping_every_error_stops_asking() {
             "INSERT INTO not_a_table VALUES (1);\n\
              INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
              INSERT INTO nor_this VALUES (1);",
+            &[],
             ScriptMode::Transaction,
             OnFailure::Ask,
         )
@@ -737,6 +741,7 @@ async fn ignoring_errors_without_a_transaction_keeps_what_worked() {
         ScriptRun::start(
             PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
+            &[],
             ScriptMode::Autocommit,
             OnFailure::Skip,
         )
@@ -757,6 +762,7 @@ async fn stopping_without_a_transaction_keeps_what_ran_before() {
         ScriptRun::start(
             PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
+            &[],
             ScriptMode::Autocommit,
             OnFailure::Ask,
         )
@@ -778,6 +784,7 @@ async fn closing_a_paused_script_rolls_its_transaction_back() {
         ScriptRun::start(
             PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
+            &[],
             ScriptMode::Transaction,
             OnFailure::Ask,
         )
@@ -799,6 +806,7 @@ async fn a_scripts_statements_are_logged_one_by_one() {
         ScriptRun::start(
             PinnedConnection::new(connection.clone()),
             FAILS_IN_THE_MIDDLE,
+            &[],
             ScriptMode::Transaction,
             OnFailure::Skip,
         )
@@ -836,6 +844,7 @@ async fn a_read_only_connection_refuses_a_script_before_it_runs() {
     let error = match ScriptRun::start(
         PinnedConnection::new(connection.clone()),
         "SELECT 1; DELETE FROM items",
+        &[],
         ScriptMode::Transaction,
         OnFailure::Ask,
     )
@@ -861,15 +870,15 @@ async fn a_pinned_connection_keeps_a_transaction_between_runs() {
     let pinned = PinnedConnection::new(connection.clone());
     assert_eq!(pinned.state(), TxnState::Idle, "nothing is checked out yet");
 
-    pinned.run_query("BEGIN").await.expect("begin");
+    pinned.run_query_with("BEGIN", &[]).await.expect("begin");
     assert_eq!(pinned.state(), TxnState::Open);
     pinned
-        .run_query("INSERT INTO items VALUES (3, 'gamma', 3.0, NULL)")
+        .run_query_with("INSERT INTO items VALUES (3, 'gamma', 3.0, NULL)", &[])
         .await
         .expect("insert");
     assert_eq!(pinned.state(), TxnState::Open);
     let inside = pinned
-        .run_query("SELECT COUNT(*) FROM items")
+        .run_query_with("SELECT COUNT(*) FROM items", &[])
         .await
         .expect("count");
     assert_eq!(
@@ -878,7 +887,10 @@ async fn a_pinned_connection_keeps_a_transaction_between_runs() {
         "the tab sees its own insert"
     );
 
-    pinned.run_query("ROLLBACK").await.expect("rollback");
+    pinned
+        .run_query_with("ROLLBACK", &[])
+        .await
+        .expect("rollback");
     assert_eq!(pinned.state(), TxnState::Idle);
     assert_eq!(
         item_count(&connection).await,
@@ -898,25 +910,25 @@ async fn a_pinned_connection_keeps_session_state_between_runs() {
     let pinned = PinnedConnection::new(connection.clone());
 
     pinned
-        .run_query("CREATE TEMP TABLE scratch (a)")
+        .run_query_with("CREATE TEMP TABLE scratch (a)", &[])
         .await
         .expect("create temp");
     pinned
-        .run_query("INSERT INTO scratch VALUES (1)")
+        .run_query_with("INSERT INTO scratch VALUES (1)", &[])
         .await
         .expect("insert temp");
     pinned
-        .run_query("PRAGMA foreign_keys = ON")
+        .run_query_with("PRAGMA foreign_keys = ON", &[])
         .await
         .expect("pragma");
 
     let rows = pinned
-        .run_query("SELECT a FROM scratch")
+        .run_query_with("SELECT a FROM scratch", &[])
         .await
         .expect("read temp");
     assert_eq!(rows.rows, [[Some("1".to_string())]]);
     let keys = pinned
-        .run_query("PRAGMA foreign_keys")
+        .run_query_with("PRAGMA foreign_keys", &[])
         .await
         .expect("read pragma");
     assert_eq!(keys.rows[0][0].as_deref(), Some("1"));
@@ -935,12 +947,12 @@ async fn a_committed_transaction_is_visible_to_the_pool() {
     let connection = shared(&database).await;
     let pinned = PinnedConnection::new(connection.clone());
 
-    pinned.run_query("BEGIN").await.expect("begin");
+    pinned.run_query_with("BEGIN", &[]).await.expect("begin");
     pinned
-        .run_query("DELETE FROM items WHERE id = 2")
+        .run_query_with("DELETE FROM items WHERE id = 2", &[])
         .await
         .expect("delete");
-    pinned.run_query("COMMIT").await.expect("commit");
+    pinned.run_query_with("COMMIT", &[]).await.expect("commit");
     assert_eq!(pinned.state(), TxnState::Idle);
     assert_eq!(item_count(&connection).await, "1");
 
@@ -966,16 +978,19 @@ async fn a_read_only_pin_runs_transaction_control_but_refuses_writes() {
     let pinned = PinnedConnection::new(connection.clone());
 
     pinned
-        .run_query("BEGIN")
+        .run_query_with("BEGIN", &[])
         .await
         .expect("begin is not a write");
     assert_eq!(pinned.state(), TxnState::Open);
     let error = pinned
-        .run_query("DELETE FROM items")
+        .run_query_with("DELETE FROM items", &[])
         .await
         .expect_err("a read-only connection refuses a delete");
     assert!(format!("{error:#}").contains("DELETE"), "{error:#}");
-    pinned.run_query("ROLLBACK").await.expect("rollback");
+    pinned
+        .run_query_with("ROLLBACK", &[])
+        .await
+        .expect("rollback");
     assert_eq!(pinned.state(), TxnState::Idle);
 
     // A checked-out connection holds the pool's close open until it goes.
@@ -992,9 +1007,9 @@ async fn a_script_inside_an_open_transaction_rolls_back_only_itself() {
     let connection = shared(&database).await;
     let pinned = PinnedConnection::new(connection.clone());
 
-    pinned.run_query("BEGIN").await.expect("begin");
+    pinned.run_query_with("BEGIN", &[]).await.expect("begin");
     pinned
-        .run_query("INSERT INTO items VALUES (10, 'mine', 1.0, NULL)")
+        .run_query_with("INSERT INTO items VALUES (10, 'mine', 1.0, NULL)", &[])
         .await
         .expect("insert");
 
@@ -1002,6 +1017,7 @@ async fn a_script_inside_an_open_transaction_rolls_back_only_itself() {
         ScriptRun::start(
             pinned.clone(),
             FAILS_IN_THE_MIDDLE,
+            &[],
             ScriptMode::Transaction,
             OnFailure::Ask,
         )
@@ -1016,7 +1032,7 @@ async fn a_script_inside_an_open_transaction_rolls_back_only_itself() {
     );
 
     let count = pinned
-        .run_query("SELECT COUNT(*) FROM items")
+        .run_query_with("SELECT COUNT(*) FROM items", &[])
         .await
         .expect("count");
     assert_eq!(
@@ -1024,7 +1040,7 @@ async fn a_script_inside_an_open_transaction_rolls_back_only_itself() {
         Some("3"),
         "only the tab's insert is left"
     );
-    pinned.run_query("COMMIT").await.expect("commit");
+    pinned.run_query_with("COMMIT", &[]).await.expect("commit");
     assert_eq!(item_count(&connection).await, "3");
 
     // A checked-out connection holds the pool's close open until it goes.
@@ -1042,13 +1058,17 @@ async fn a_scripts_own_begin_leaves_the_tab_in_a_transaction() {
         ScriptRun::start(
             pinned.clone(),
             "BEGIN;\nINSERT INTO items VALUES (3, 'gamma', 3.0, NULL);",
+            &[],
             ScriptMode::Autocommit,
             OnFailure::Ask,
         )
         .await,
     );
     assert_eq!(pinned.state(), TxnState::Open);
-    pinned.run_query("ROLLBACK").await.expect("rollback");
+    pinned
+        .run_query_with("ROLLBACK", &[])
+        .await
+        .expect("rollback");
     assert_eq!(item_count(&connection).await, "2");
 
     // A checked-out connection holds the pool's close open until it goes.
@@ -1067,12 +1087,15 @@ async fn pinned_connections_are_capped_per_connection() {
     let mut pins = Vec::new();
     for _ in 0..super::connection::PINNED_MAX {
         let pinned = PinnedConnection::new(connection.clone());
-        pinned.run_query("SELECT 1").await.expect("within the cap");
+        pinned
+            .run_query_with("SELECT 1", &[])
+            .await
+            .expect("within the cap");
         pins.push(pinned);
     }
     let one_more = PinnedConnection::new(connection.clone());
     let error = one_more
-        .run_query("SELECT 1")
+        .run_query_with("SELECT 1", &[])
         .await
         .expect_err("past the cap");
     assert!(
@@ -1085,7 +1108,7 @@ async fn pinned_connections_are_capped_per_connection() {
     // Letting one tab go frees its slot.
     drop(pins.pop());
     one_more
-        .run_query("SELECT 1")
+        .run_query_with("SELECT 1", &[])
         .await
         .expect("a slot was freed");
 
@@ -1497,7 +1520,7 @@ async fn explain_reads_a_sqlite_plan_tree() {
     let connection = open_with(&database, SafetyMode::default()).await;
 
     let explained = connection
-        .explain("select * from items where id = 1", false)
+        .explain_with("select * from items where id = 1", Vec::new(), false)
         .await
         .expect("a select should explain");
     let super::plan::Explained::Plan(plan) = explained else {
@@ -1536,7 +1559,7 @@ async fn explain_refuses_to_analyze_a_write() {
         "explain analyze delete from items",
     ] {
         let error = connection
-            .explain(sql, true)
+            .explain_with(sql, Vec::new(), true)
             .await
             .expect_err("analyzing a write should be refused");
         assert!(
@@ -1556,7 +1579,7 @@ async fn explain_refuses_to_analyze_a_read_on_sqlite() {
     // SQLite's planner reports no timings, so rather than answer a request for
     // actual times with the plain plan, it says it cannot.
     let error = connection
-        .explain("select * from items", true)
+        .explain_with("select * from items", Vec::new(), true)
         .await
         .expect_err("SQLite has no EXPLAIN ANALYZE");
     assert!(
@@ -1566,7 +1589,7 @@ async fn explain_refuses_to_analyze_a_read_on_sqlite() {
 
     // The plain plan is still there under the other button.
     let explained = connection
-        .explain("select * from items", false)
+        .explain_with("select * from items", Vec::new(), false)
         .await
         .expect("a plain explain should still be allowed");
     assert!(matches!(explained, super::plan::Explained::Plan(_)));
@@ -1580,7 +1603,7 @@ async fn plain_explain_of_a_write_does_not_run_it() {
     let connection = open_with(&database, SafetyMode::AutoApply).await;
 
     connection
-        .explain("delete from items", false)
+        .explain_with("delete from items", Vec::new(), false)
         .await
         .expect("explaining a write without ANALYZE is safe");
 
@@ -1604,13 +1627,15 @@ async fn a_read_only_connection_can_still_explain() {
 
     // A plain plan is a read, and the classifier already knows it.
     connection
-        .explain("select * from items", false)
+        .explain_with("select * from items", Vec::new(), false)
         .await
         .expect("a read-only connection should explain a read");
 
     // The classifier calls any `ANALYZE` a write, so the pool is the guard
     // here; either way the connection must not run the write.
-    let _ = connection.explain("delete from items", true).await;
+    let _ = connection
+        .explain_with("delete from items", Vec::new(), true)
+        .await;
     let count = connection
         .run_query("select count(*) from items")
         .await
@@ -1626,7 +1651,7 @@ async fn explain_needs_a_statement() {
     let connection = open_with(&database, SafetyMode::default()).await;
 
     let error = connection
-        .explain("   ;  ", false)
+        .explain_with("   ;  ", Vec::new(), false)
         .await
         .expect_err("an empty buffer has nothing to explain");
     assert!(format!("{error:#}").contains("Select one statement"));
@@ -1634,7 +1659,7 @@ async fn explain_needs_a_statement() {
     // A plan describes one statement, so a selection of several is refused
     // rather than explained as whatever the server does with a script.
     let error = connection
-        .explain("select 1; select 2", false)
+        .explain_with("select 1; select 2", Vec::new(), false)
         .await
         .expect_err("a script has no single plan");
     assert!(format!("{error:#}").contains("Select one statement"));
@@ -2042,7 +2067,10 @@ async fn live_postgres_connects_through_an_ssh_tunnel() {
         .with_database("postgres")
         .await
         .expect("switching database should reuse the tunnel");
-    other.run_query("SELECT 1").await.expect("query");
+    other
+        .run_query_with("SELECT 1", Vec::new())
+        .await
+        .expect("query");
     other.close().await;
     connection.close().await;
 }
@@ -2399,7 +2427,7 @@ async fn live_postgres_query_digest_reports_availability() {
 
     // Give the digest something to have counted, if the extension happens
     // to be installed and tracking this session.
-    let _ = connection.run_query("SELECT 1").await;
+    let _ = connection.run_query_with("SELECT 1", Vec::new()).await;
 
     match connection
         .query_digest()
@@ -2426,7 +2454,7 @@ async fn live_postgres_query_digest_reports_availability() {
 async fn live_mysql_query_digest_reports_availability() {
     let (connection, _pool) = live_mysql().await;
 
-    let _ = connection.run_query("SELECT 1").await;
+    let _ = connection.run_query_with("SELECT 1", Vec::new()).await;
 
     match connection
         .query_digest()
@@ -2469,6 +2497,7 @@ async fn live_postgres_a_script_carries_on_past_a_skipped_failure() {
              INSERT INTO zippa_script_skip VALUES (1);\n\
              INSERT INTO zippa_script_skip VALUES (2);\n\
              SELECT COUNT(*) FROM zippa_script_skip;",
+            &[],
             ScriptMode::Transaction,
             OnFailure::Ask,
         )
@@ -2511,6 +2540,7 @@ async fn live_mysql_a_script_of_row_changes_rolls_back() {
             PinnedConnection::new(connection.clone()),
             "INSERT INTO zippa_script_rollback VALUES (1);\n\
              INSERT INTO not_a_table VALUES (1);",
+            &[],
             ScriptMode::Transaction,
             OnFailure::Ask,
         )
@@ -2557,6 +2587,7 @@ async fn live_mysql_an_autocommit_script_can_lock_tables() {
              INSERT INTO zippa_script_locks VALUES (1);\n\
              UNLOCK TABLES;\n\
              SELECT COUNT(*) FROM zippa_script_locks;",
+            &[],
             ScriptMode::Autocommit,
             OnFailure::Ask,
         )
@@ -2595,10 +2626,10 @@ async fn live_mysql_a_pinned_tab_holds_a_transaction_and_its_locks() {
         .expect("could not create the fixture");
 
     let pinned = PinnedConnection::new(connection.clone());
-    pinned.run_query("BEGIN").await.expect("begin");
+    pinned.run_query_with("BEGIN", &[]).await.expect("begin");
     assert_eq!(pinned.state(), TxnState::Open);
     pinned
-        .run_query("INSERT INTO zippa_pinned VALUES (1)")
+        .run_query_with("INSERT INTO zippa_pinned VALUES (1)", &[])
         .await
         .expect("insert");
     let elsewhere = connection
@@ -2610,19 +2641,25 @@ async fn live_mysql_a_pinned_tab_holds_a_transaction_and_its_locks() {
         [[Some("0".to_string())]],
         "not committed yet"
     );
-    pinned.run_query("ROLLBACK").await.expect("rollback");
+    pinned
+        .run_query_with("ROLLBACK", &[])
+        .await
+        .expect("rollback");
     assert_eq!(pinned.state(), TxnState::Idle);
 
-    pinned.run_query("USE app").await.expect("use");
+    pinned.run_query_with("USE app", &[]).await.expect("use");
     pinned
-        .run_query("LOCK TABLES zippa_pinned WRITE")
+        .run_query_with("LOCK TABLES zippa_pinned WRITE", &[])
         .await
         .expect("lock tables");
     pinned
-        .run_query("INSERT INTO zippa_pinned VALUES (2)")
+        .run_query_with("INSERT INTO zippa_pinned VALUES (2)", &[])
         .await
         .expect("insert under the lock, on the same connection");
-    pinned.run_query("UNLOCK TABLES").await.expect("unlock");
+    pinned
+        .run_query_with("UNLOCK TABLES", &[])
+        .await
+        .expect("unlock");
 
     let count = connection
         .run_query("SELECT COUNT(*) FROM zippa_pinned")
@@ -2650,24 +2687,30 @@ async fn live_postgres_a_pinned_tab_reports_a_failed_transaction() {
     let pinned = PinnedConnection::new(connection.clone());
 
     pinned
-        .run_query("SET search_path = pg_catalog")
+        .run_query_with("SET search_path = pg_catalog", &[])
         .await
         .expect("set");
-    let path = pinned.run_query("SHOW search_path").await.expect("show");
+    let path = pinned
+        .run_query_with("SHOW search_path", &[])
+        .await
+        .expect("show");
     assert_eq!(
         path.rows,
         [[Some("pg_catalog".to_string())]],
         "SET lasts between runs"
     );
 
-    pinned.run_query("BEGIN").await.expect("begin");
+    pinned.run_query_with("BEGIN", &[]).await.expect("begin");
     assert_eq!(pinned.state(), TxnState::Open);
     pinned
-        .run_query("SELECT * FROM zippa_not_a_table")
+        .run_query_with("SELECT * FROM zippa_not_a_table", &[])
         .await
         .expect_err("no such table");
     assert_eq!(pinned.state(), TxnState::Failed);
-    pinned.run_query("ROLLBACK").await.expect("rollback");
+    pinned
+        .run_query_with("ROLLBACK", &[])
+        .await
+        .expect("rollback");
     assert_eq!(pinned.state(), TxnState::Idle);
 
     drop(pinned);

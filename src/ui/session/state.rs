@@ -146,8 +146,18 @@ impl Session {
 
         for panel in state.panels {
             match panel {
-                PanelState::Query { title, sql, file } => {
+                PanelState::Query {
+                    title,
+                    sql,
+                    file,
+                    variables,
+                } => {
                     let panel = self.open_tab(Some(title), sql.clone(), false, window, cx);
+                    if !variables.is_empty()
+                        && let Some((editor, _)) = panel.read(cx).query_parts()
+                    {
+                        editor.update(cx, |editor, cx| editor.set_variables(variables, cx));
+                    }
                     if let Some(path) = file {
                         panel.update(cx, |panel, cx| panel.set_file(path.clone(), cx));
                         file_backed.push((panel, path));
