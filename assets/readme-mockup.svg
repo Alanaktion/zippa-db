@@ -1,0 +1,234 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" role="img" aria-label="Zippa DB app window mockup">
+  <title>Zippa DB — app window</title>
+  <style>
+    :root {
+      --base: #F4F5F8;
+      --panel: #FFFFFF;
+      --side: #F7F8FA;
+      --subtle: #EAECEF;
+      --border: #D5D8E1;
+      --hairline: #D5D8E1;
+      --text: #1E202B;
+      --muted: #6C7393;
+      --violet: #7C4DFF;
+      --violet-bg: rgba(124, 77, 255, 0.10);
+      --tab-active: #F4F5F8;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --base: #16171D;
+        --panel: #1C1E26;
+        --side: #17181F;
+        --subtle: #242734;
+        --border: #2E3244;
+        --hairline: #2E3244;
+        --text: #C0CAF5;
+        --muted: #565F89;
+        --violet: #BB9AF7;
+        --violet-bg: rgba(187, 154, 247, 0.12);
+        --tab-active: #16171D;
+      }
+    }
+    text { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace; }
+    .t-title { font-size: 15px; font-weight: 600; fill: var(--text); }
+    .t-muted { fill: var(--muted); }
+    .t-label { font-size: 10px; font-weight: 600; letter-spacing: 1.2px; fill: var(--muted); }
+    .t-item { font-size: 13.5px; fill: var(--text); }
+    .t-cell { font-size: 12.5px; fill: var(--text); }
+    .t-head { font-size: 12.5px; font-weight: 500; fill: var(--muted); }
+    .t-small { font-size: 12px; fill: var(--muted); }
+    .t-tab { font-size: 13px; fill: var(--muted); }
+    .t-tab-active { font-size: 13px; font-weight: 500; fill: var(--text); }
+  </style>
+
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="12" stdDeviation="24" flood-color="#000000" flood-opacity="0.18"/>
+    </filter>
+    <!-- database glyph -->
+    <g id="i-db" fill="none" stroke="currentColor" stroke-width="1.6">
+      <ellipse cx="0" cy="-4" rx="7" ry="3"/>
+      <path d="M -7 -4 v 8 c 0 1.7 3.1 3 7 3 s 7 -1.3 7 -3 v -8"/>
+      <path d="M -7 0 c 0 1.7 3.1 3 7 3 s 7 -1.3 7 -3"/>
+    </g>
+    <!-- search glyph -->
+    <g id="i-search" fill="none" stroke="currentColor" stroke-width="1.8">
+      <circle cx="-1.5" cy="-1.5" r="5.5"/>
+      <path d="M 2.8 2.8 L 7 7"/>
+    </g>
+    <!-- plus glyph -->
+    <g id="i-plus" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+      <path d="M -6 0 H 6 M 0 -6 V 6"/>
+    </g>
+    <!-- x glyph -->
+    <g id="i-x" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+      <path d="M -4.5 -4.5 L 4.5 4.5 M 4.5 -4.5 L -4.5 4.5"/>
+    </g>
+    <!-- chevron-down glyph -->
+    <g id="i-chev-d" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M -5 -2 L 0 3 L 5 -2"/>
+    </g>
+    <!-- chevron-left glyph -->
+    <g id="i-chev-l" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M -2 -5 L -7 0 L -2 5"/>
+    </g>
+    <!-- chevron-right glyph -->
+    <g id="i-chev-r" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 2 -5 L 7 0 L 2 5"/>
+    </g>
+    <!-- table glyph -->
+    <g id="i-table" fill="none" stroke="currentColor" stroke-width="1.6">
+      <rect x="-8" y="-6" width="16" height="12" rx="2"/>
+      <path d="M -8 -1 H 8 M -2 -6 V 6"/>
+    </g>
+    <!-- terminal glyph -->
+    <g id="i-term" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="-8" y="-7" width="16" height="14" rx="3"/>
+      <path d="M -4 -1 L -1 1.5 L -4 4 M 1 4 H 5"/>
+    </g>
+  </defs>
+
+  <!-- window -->
+  <rect x="16" y="16" width="1248" height="768" rx="14" fill="var(--panel)" stroke="var(--border)" stroke-width="1.5" filter="url(#shadow)"/>
+  <clipPath id="win"><rect x="16" y="16" width="1248" height="768" rx="14"/></clipPath>
+  <g clip-path="url(#win)">
+
+    <!-- title bar -->
+    <line x1="16" y1="64" x2="1264" y2="64" stroke="var(--border)" stroke-width="1"/>
+    <circle cx="44" cy="40" r="7" fill="#FF5F57"/>
+    <circle cx="66" cy="40" r="7" fill="#FEBC2E"/>
+    <circle cx="88" cy="40" r="7" fill="#28C840"/>
+    <text x="112" y="45" class="t-title">Local</text>
+    <g transform="translate(168,42)" style="color:var(--muted)"><use href="#i-db"/></g>
+    <text x="184" y="46" class="mono t-small">store</text>
+    <g style="color:var(--muted)">
+      <g transform="translate(1140,40)"><use href="#i-search"/></g>
+      <g transform="translate(1172,40)"><use href="#i-table"/></g>
+      <g transform="translate(1204,40)"><use href="#i-plus"/></g>
+      <g transform="translate(1236,40)"><use href="#i-db"/></g>
+    </g>
+
+    <!-- sidebar -->
+    <rect x="16" y="64" width="240" height="720" fill="var(--side)"/>
+    <line x1="256" y1="64" x2="256" y2="784" stroke="var(--border)" stroke-width="1"/>
+    <rect x="30" y="80" width="178" height="32" rx="8" fill="var(--panel)" stroke="var(--border)"/>
+    <g transform="translate(48,96)" style="color:var(--muted)"><use href="#i-search"/></g>
+    <text x="62" y="100" class="t-small">Filter tables</text>
+    <text x="30" y="140" class="t-label">TABLES &amp; VIEWS</text>
+    <g class="t-item">
+      <text x="42" y="166">categories</text>
+      <text x="42" y="196">customers</text>
+      <text x="42" y="226">order_items</text>
+      <rect x="30" y="238" width="200" height="30" rx="7" fill="var(--violet-bg)"/>
+      <text x="42" y="258" font-weight="500">orders</text>
+      <text x="42" y="288">products</text>
+    </g>
+    <rect x="30" y="716" width="200" height="38" rx="10" fill="var(--subtle)"/>
+    <rect x="33" y="719" width="97" height="32" rx="8" fill="var(--panel)"/>
+    <text x="81" y="740" font-size="12.5" font-weight="500" fill="var(--text)" text-anchor="middle">Schema</text>
+    <text x="179" y="740" font-size="12.5" fill="var(--muted)" text-anchor="middle">Management</text>
+
+    <!-- tab bar -->
+    <line x1="256" y1="104" x2="1264" y2="104" stroke="var(--border)" stroke-width="1"/>
+    <g class="t-tab">
+      <g transform="translate(282,84)" style="color:var(--muted)"><use href="#i-term"/></g>
+      <text x="298" y="89">Query 1</text>
+      <g transform="translate(356,84)" style="color:var(--muted)"><use href="#i-x"/></g>
+    </g>
+    <rect x="380" y="64" width="150" height="40" fill="var(--tab-active)"/>
+    <line x1="380" y1="64" x2="380" y2="104" stroke="var(--border)" stroke-width="1"/>
+    <line x1="530" y1="64" x2="530" y2="104" stroke="var(--border)" stroke-width="1"/>
+    <g transform="translate(404,84)" style="color:var(--muted)"><use href="#i-table"/></g>
+    <text x="420" y="89" class="t-tab-active">orders</text>
+    <g transform="translate(508,84)" style="color:var(--muted)"><use href="#i-x"/></g>
+    <g style="color:var(--muted)">
+      <g transform="translate(1200,84)"><use href="#i-plus"/></g>
+      <g transform="translate(1232,84)"><use href="#i-chev-d"/></g>
+    </g>
+
+    <!-- filter row -->
+    <line x1="256" y1="140" x2="1264" y2="140" stroke="var(--border)" stroke-width="1"/>
+    <g transform="translate(280,122)" color="var(--text)"><use href="#i-plus"/></g>
+    <text x="294" y="127" font-size="13" fill="var(--text)">Filter</text>
+
+    <!-- grid header -->
+    <line x1="256" y1="172" x2="1264" y2="172" stroke="var(--border)" stroke-width="1"/>
+    <g class="t-head">
+      <rect x="276" y="150" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
+      <text x="330" y="161">id</text>
+      <text x="430" y="161">customer_id</text>
+      <text x="580" y="161">status</text>
+      <text x="730" y="161">total</text>
+      <text x="880" y="161">created_at</text>
+    </g>
+    <g style="color:var(--muted)">
+      <g transform="translate(352,156) scale(0.7)"><use href="#i-chev-d"/></g>
+      <g transform="translate(518,156) scale(0.7)"><use href="#i-chev-d"/></g>
+      <g transform="translate(630,156) scale(0.7)"><use href="#i-chev-d"/></g>
+      <g transform="translate(772,156) scale(0.7)"><use href="#i-chev-d"/></g>
+      <g transform="translate(962,156) scale(0.7)"><use href="#i-chev-d"/></g>
+    </g>
+
+    <!-- grid rows -->
+    <g class="mono t-cell">
+      <rect x="560" y="172" width="150" height="32" fill="var(--violet-bg)"/>
+      <line x1="256" y1="204" x2="1264" y2="204" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
+      <rect x="276" y="181" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
+      <text x="330" y="193">1</text>
+      <text x="430" y="193">42</text>
+      <text x="580" y="193">shipped</text>
+      <text x="730" y="193">129.99</text>
+      <text x="880" y="193">2026-09-20 14:03:11</text>
+
+      <line x1="256" y1="236" x2="1264" y2="236" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
+      <rect x="276" y="213" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
+      <text x="330" y="225">2</text>
+      <text x="430" y="225">17</text>
+      <text x="580" y="225">pending</text>
+      <text x="730" y="225">59.50</text>
+      <text x="880" y="225">2026-09-21 09:41:02</text>
+
+      <line x1="256" y1="268" x2="1264" y2="268" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
+      <rect x="276" y="245" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
+      <text x="330" y="257">3</text>
+      <text x="430" y="257">42</text>
+      <text x="580" y="257">delivered</text>
+      <text x="730" y="257">24.00</text>
+      <text x="880" y="257">2026-09-22 18:15:47</text>
+
+      <line x1="256" y1="300" x2="1264" y2="300" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
+      <rect x="276" y="277" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
+      <text x="330" y="289">4</text>
+      <text x="430" y="289">8</text>
+      <text x="580" y="289">cancelled</text>
+      <text x="730" y="289">199.00</text>
+      <text x="880" y="289">2026-09-23 11:02:36</text>
+
+      <line x1="256" y1="332" x2="1264" y2="332" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
+      <rect x="276" y="309" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
+      <text x="330" y="321">5</text>
+      <text x="430" y="321">23</text>
+      <text x="580" y="321">shipped</text>
+      <text x="730" y="321">84.75</text>
+      <text x="880" y="321">2026-09-24 16:55:19</text>
+    </g>
+
+    <!-- grid status bar -->
+    <line x1="256" y1="744" x2="1264" y2="744" stroke="var(--border)" stroke-width="1"/>
+    <g style="color:var(--muted)">
+      <g transform="translate(284,764)"><use href="#i-chev-l"/></g>
+      <g transform="translate(304,764)"><use href="#i-chev-r"/></g>
+    </g>
+    <text x="322" y="768" class="t-small">Limit</text>
+    <rect x="360" y="754" width="76" height="22" rx="6" fill="none" stroke="var(--border)"/>
+    <text x="398" y="769" class="mono" font-size="12" fill="var(--text)" text-anchor="middle">300</text>
+    <text x="448" y="768" class="t-small">Rows 1–5</text>
+    <g font-size="12.5">
+      <text x="1024" y="768" fill="var(--text)">New row</text>
+      <text x="1094" y="768" fill="var(--text)">Export</text>
+      <g transform="translate(1142,764)" style="color:var(--muted)"><use href="#i-chev-d"/></g>
+      <text x="1158" y="768" fill="var(--text)">View structure</text>
+    </g>
+  </g>
+</svg>
