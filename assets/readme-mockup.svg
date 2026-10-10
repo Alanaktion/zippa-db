@@ -172,46 +172,46 @@
 
     <!-- grid rows -->
     <g class="mono t-cell">
-      <line x1="256" y1="212" x2="1264" y2="212" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
-      <rect x="276" y="186" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
-      <text x="330" y="197">1</text>
-      <text x="430" y="197">42</text>
-      <rect x="568" y="180" width="110" height="26" rx="6" fill="var(--violet-bg)"/>
-      <text x="580" y="197">shipped</text>
-      <text x="730" y="197">129.99</text>
-      <text x="880" y="197">2026-09-20 14:03:11</text>
+      <rect x="560" y="172" width="150" height="32" fill="var(--violet-bg)"/>
+      <line x1="256" y1="204" x2="1264" y2="204" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
+      <rect x="276" y="181" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
+      <text x="330" y="193">1</text>
+      <text x="430" y="193">42</text>
+      <text x="580" y="193">shipped</text>
+      <text x="730" y="193">129.99</text>
+      <text x="880" y="193">2026-09-20 14:03:11</text>
 
-      <line x1="256" y1="252" x2="1264" y2="252" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
-      <rect x="276" y="226" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
-      <text x="330" y="237">2</text>
-      <text x="430" y="237">17</text>
-      <text x="580" y="237">pending</text>
-      <text x="730" y="237">59.50</text>
-      <text x="880" y="237">2026-09-21 09:41:02</text>
+      <line x1="256" y1="236" x2="1264" y2="236" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
+      <rect x="276" y="213" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
+      <text x="330" y="225">2</text>
+      <text x="430" y="225">17</text>
+      <text x="580" y="225">pending</text>
+      <text x="730" y="225">59.50</text>
+      <text x="880" y="225">2026-09-21 09:41:02</text>
 
-      <line x1="256" y1="292" x2="1264" y2="292" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
-      <rect x="276" y="266" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
-      <text x="330" y="277">3</text>
-      <text x="430" y="277">42</text>
-      <text x="580" y="277">delivered</text>
-      <text x="730" y="277">24.00</text>
-      <text x="880" y="277">2026-09-22 18:15:47</text>
+      <line x1="256" y1="268" x2="1264" y2="268" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
+      <rect x="276" y="245" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
+      <text x="330" y="257">3</text>
+      <text x="430" y="257">42</text>
+      <text x="580" y="257">delivered</text>
+      <text x="730" y="257">24.00</text>
+      <text x="880" y="257">2026-09-22 18:15:47</text>
+
+      <line x1="256" y1="300" x2="1264" y2="300" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
+      <rect x="276" y="277" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
+      <text x="330" y="289">4</text>
+      <text x="430" y="289">8</text>
+      <text x="580" y="289">cancelled</text>
+      <text x="730" y="289">199.00</text>
+      <text x="880" y="289">2026-09-23 11:02:36</text>
 
       <line x1="256" y1="332" x2="1264" y2="332" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
-      <rect x="276" y="306" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
-      <text x="330" y="317">4</text>
-      <text x="430" y="317">8</text>
-      <text x="580" y="317">cancelled</text>
-      <text x="730" y="317">199.00</text>
-      <text x="880" y="317">2026-09-23 11:02:36</text>
-
-      <line x1="256" y1="372" x2="1264" y2="372" stroke="var(--hairline)" stroke-width="1" opacity="0.6"/>
-      <rect x="276" y="346" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
-      <text x="330" y="357">5</text>
-      <text x="430" y="357">23</text>
-      <text x="580" y="357">shipped</text>
-      <text x="730" y="357">84.75</text>
-      <text x="880" y="357">2026-09-24 16:55:19</text>
+      <rect x="276" y="309" width="14" height="14" rx="3" fill="none" stroke="var(--border)" stroke-width="1.4"/>
+      <text x="330" y="321">5</text>
+      <text x="430" y="321">23</text>
+      <text x="580" y="321">shipped</text>
+      <text x="730" y="321">84.75</text>
+      <text x="880" y="321">2026-09-24 16:55:19</text>
     </g>
 
     <!-- grid status bar -->
