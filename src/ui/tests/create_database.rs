@@ -44,7 +44,9 @@ fn an_empty_name_is_refused_with_an_inline_error(cx: &mut TestAppContext) {
 ///
 /// The session is wrapped in gpui-kit's `Root`, the way the app opens its
 /// windows: the dialog goes through `window.open_dialog`, which panics on a
-/// bare `cx.open_window` window with no component root.
+/// bare `cx.open_window` window with no component root. The dialog is opened
+/// through `cx.update_window` rather than `handle.update`: opening it updates
+/// the `Root` itself, which the latter would still be borrowing.
 #[gpui_kit::test]
 #[ignore = "needs a live Postgres server; see the doc comment"]
 async fn live_postgres_create_database(cx: &mut TestAppContext) {
@@ -73,14 +75,16 @@ async fn live_postgres_create_database(cx: &mut TestAppContext) {
 
     let name = format!("zippa_create_db_{}", Uuid::new_v4().simple());
 
-    // Open the dialog the way the picker menu does.
-    handle
-        .update(cx, |_, window, cx| {
-            session.update(cx, |session, cx| {
-                session.open_create_database_dialog(window, cx);
-            })
+    // Open the dialog the way the picker menu does. `update_window` hands
+    // over the window without holding the root view: opening the dialog
+    // updates the `Root` itself, which a `handle.update` would still be
+    // borrowing ("cannot read Root while it is already being updated").
+    cx.update_window(handle.into(), |_, window, cx| {
+        session.update(cx, |session, cx| {
+            session.open_create_database_dialog(window, cx);
         })
-        .unwrap();
+    })
+    .unwrap();
     cx.run_until_parked();
 
     // Name the database through the dialog itself.
@@ -89,13 +93,12 @@ async fn live_postgres_create_database(cx: &mut TestAppContext) {
             .create_database_dialog_for_test()
             .expect("the dialog should be open")
     });
-    handle
-        .update(cx, |_, window, cx| {
-            dialog.update(cx, |view, cx| {
-                view.set_name_for_test(&name, window, cx);
-            });
-        })
-        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        dialog.update(cx, |view, cx| {
+            view.set_name_for_test(&name, window, cx);
+        });
+    })
+    .unwrap();
     dialog.update(cx, |view, cx| view.submit_for_test(cx));
     cx.run_until_parked();
 
