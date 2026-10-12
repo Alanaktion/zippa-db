@@ -18,8 +18,8 @@ use crate::ui::query_editor::{
 };
 use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
-    OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, PreviousTab,
-    QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs, SearchSchema,
+    OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, OpenUserManagement,
+    PreviousTab, QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs, SearchSchema,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -195,6 +195,8 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-shift-v", OpenServerVariables, Some("Session")),
         // The slow/frequent query digest.
         KeyBinding::new("secondary-shift-d", OpenQueryDigest, Some("Session")),
+        // Server users and roles: create, password, drop.
+        KeyBinding::new("secondary-shift-u", OpenUserManagement, Some("Session")),
         // SQLite's housekeeping: integrity checks, optimize, vacuum.
         KeyBinding::new("secondary-shift-m", OpenMaintenance, Some("Session")),
         // Ctrl+Tab is the tab-switching key on every OS, browsers and macOS

@@ -37,6 +37,15 @@ pub(crate) const VARIABLES_SQL: &str = "SELECT name, setting, unit, context, sho
      CASE WHEN setting IS DISTINCT FROM boot_val THEN 'yes' ELSE '' END AS changed \
      FROM pg_settings ORDER BY name";
 
+/// Every role on the server, with the login attributes the user management
+/// tab shows. `pg_roles` is readable by every role; the password hashes are
+/// not in it.
+pub(crate) const USERS_SQL: &str = "SELECT rolname AS name, \
+     CASE WHEN rolsuper THEN 'yes' ELSE '' END AS superuser, \
+     CASE WHEN rolcanlogin THEN 'yes' ELSE '' END AS can_login, \
+     CASE WHEN rolcreatedb THEN 'yes' ELSE '' END AS can_create_db \
+     FROM pg_roles ORDER BY rolname";
+
 /// Whether `pg_stat_statements` is installed on this database — it is a
 /// contrib extension, not built in, and the digest has nothing to read
 /// without it.

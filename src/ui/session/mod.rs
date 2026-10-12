@@ -68,6 +68,7 @@ actions!(
         OpenServerVariables,
         OpenQueryDigest,
         OpenMaintenance,
+        OpenUserManagement,
     ]
 );
 
@@ -435,6 +436,15 @@ impl Session {
         self.open_process_list(window, cx);
     }
 
+    fn on_open_user_management(
+        &mut self,
+        _: &OpenUserManagement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_user_management(window, cx);
+    }
+
     fn on_open_server_variables(
         &mut self,
         _: &OpenServerVariables,
@@ -588,6 +598,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_open_server_variables))
             .on_action(cx.listener(Self::on_open_query_digest))
             .on_action(cx.listener(Self::on_open_maintenance))
+            .on_action(cx.listener(Self::on_open_user_management))
             .on_action(cx.listener(Self::on_disconnect))
             .on_action(cx.listener(Self::on_reconnect))
             .child(

@@ -21,6 +21,7 @@ use crate::ui::schema_view::SchemaView;
 use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::TableView;
+use crate::ui::user_management::UserManagementView;
 
 use super::Session;
 use super::panel::{CloseScope, SessionPanel, SessionPanelEvent};
@@ -128,6 +129,29 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         self.open_process_list(window, cx);
+    }
+
+    /// The user management view in the active tab, if this is the user
+    /// management tab.
+    #[cfg(test)]
+    pub(crate) fn active_user_management_view(
+        &self,
+        cx: &App,
+    ) -> Option<Entity<UserManagementView>> {
+        self.active_panel_for_test()?
+            .read(cx)
+            .user_management_view()
+    }
+
+    /// Open the user management tab, or bring it forward, the way the
+    /// sidebar's button does.
+    #[cfg(test)]
+    pub(crate) fn open_user_management_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_user_management(window, cx);
     }
 
     /// The server variables view in the active tab, if this is the server

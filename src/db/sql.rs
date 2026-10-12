@@ -298,6 +298,97 @@ pub fn create_database_sql(name: &str, engine: Engine) -> Option<String> {
     }
 }
 
+/// `CREATE USER`/`CREATE ROLE` for a login user, or `None` when there is
+/// nothing valid to create: an empty name never parses, MySQL needs the
+/// `user@host` pair, and SQLite has no users.
+///
+/// Postgres makes a role that can log in; MySQL makes `'name'@'host'`
+/// identified by the password. The password is quoted as a literal for the
+/// engine.
+pub fn create_user_sql(
+    name: &str,
+    host: Option<&str>,
+    password: &str,
+    engine: Engine,
+) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let password = quote_literal_for(engine, password);
+    match engine {
+        Engine::Postgres => Some(format!(
+            "CREATE ROLE {} WITH LOGIN PASSWORD {password}",
+            quote_identifier(name, engine)
+        )),
+        Engine::MySql => {
+            let host = host.map(str::trim).filter(|host| !host.is_empty())?;
+            Some(format!(
+                "CREATE USER {} IDENTIFIED BY {password}",
+                mysql_user_at_host(name, host, engine)
+            ))
+        }
+        Engine::Sqlite => None,
+    }
+}
+
+/// `DROP USER`/`DROP ROLE`, or `None` on the same inputs
+/// [`create_user_sql`] refuses.
+pub fn drop_user_sql(name: &str, host: Option<&str>, engine: Engine) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    match engine {
+        Engine::Postgres => Some(format!("DROP ROLE {}", quote_identifier(name, engine))),
+        Engine::MySql => {
+            let host = host.map(str::trim).filter(|host| !host.is_empty())?;
+            Some(format!(
+                "DROP USER {}",
+                mysql_user_at_host(name, host, engine)
+            ))
+        }
+        Engine::Sqlite => None,
+    }
+}
+
+/// Set a user's password, or `None` on the same inputs the other two refuse.
+pub fn set_user_password_sql(
+    name: &str,
+    host: Option<&str>,
+    password: &str,
+    engine: Engine,
+) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let password = quote_literal_for(engine, password);
+    match engine {
+        Engine::Postgres => Some(format!(
+            "ALTER ROLE {} WITH PASSWORD {password}",
+            quote_identifier(name, engine)
+        )),
+        Engine::MySql => {
+            let host = host.map(str::trim).filter(|host| !host.is_empty())?;
+            Some(format!(
+                "ALTER USER {} IDENTIFIED BY {password}",
+                mysql_user_at_host(name, host, engine)
+            ))
+        }
+        Engine::Sqlite => None,
+    }
+}
+
+/// MySQL's `'name'@'host'`: both halves are string literals.
+fn mysql_user_at_host(name: &str, host: &str, engine: Engine) -> String {
+    format!(
+        "{}@{}",
+        quote_literal_for(engine, name),
+        quote_literal_for(engine, host)
+    )
+}
+
 /// Quote `value` as a SQL string literal.
 ///
 /// Used only for the metadata queries that cannot take a bind parameter (a
@@ -450,5 +541,61 @@ mod tests {
         assert_eq!(create_database_sql("", Engine::Postgres), None);
         assert_eq!(create_database_sql("   ", Engine::MySql), None);
         assert_eq!(create_database_sql("analytics", Engine::Sqlite), None);
+    }
+
+    #[test]
+    fn user_statements_cover_both_engines() {
+        assert_eq!(
+            create_user_sql("app", None, "s3cret", Engine::Postgres),
+            Some("CREATE ROLE app WITH LOGIN PASSWORD 's3cret'".to_string())
+        );
+        assert_eq!(
+            create_user_sql("app", Some("%"), "s3cret", Engine::MySql),
+            Some("CREATE USER 'app'@'%' IDENTIFIED BY 's3cret'".to_string())
+        );
+        assert_eq!(
+            drop_user_sql("app", None, Engine::Postgres),
+            Some("DROP ROLE app".to_string())
+        );
+        assert_eq!(
+            drop_user_sql("app", Some("localhost"), Engine::MySql),
+            Some("DROP USER 'app'@'localhost'".to_string())
+        );
+        assert_eq!(
+            set_user_password_sql("app", None, "n3w", Engine::Postgres),
+            Some("ALTER ROLE app WITH PASSWORD 'n3w'".to_string())
+        );
+        assert_eq!(
+            set_user_password_sql("app", Some("%"), "n3w", Engine::MySql),
+            Some("ALTER USER 'app'@'%' IDENTIFIED BY 'n3w'".to_string())
+        );
+    }
+
+    #[test]
+    fn user_statements_quote_names_and_passwords() {
+        assert_eq!(
+            create_user_sql("my app", None, "it's", Engine::Postgres),
+            Some("CREATE ROLE \"my app\" WITH LOGIN PASSWORD 'it''s'".to_string())
+        );
+        assert_eq!(
+            create_user_sql("o'brien", Some("%"), "a\\b", Engine::MySql),
+            Some("CREATE USER 'o''brien'@'%' IDENTIFIED BY 'a\\\\b'".to_string())
+        );
+    }
+
+    #[test]
+    fn user_statements_refuse_empty_names_missing_hosts_and_sqlite() {
+        assert_eq!(create_user_sql("", None, "pw", Engine::Postgres), None);
+        assert_eq!(create_user_sql("app", None, "pw", Engine::MySql), None);
+        assert_eq!(create_user_sql("app", Some(""), "pw", Engine::MySql), None);
+        assert_eq!(
+            create_user_sql("app", Some("%"), "pw", Engine::Sqlite),
+            None
+        );
+        assert_eq!(drop_user_sql("", None, Engine::Postgres), None);
+        assert_eq!(
+            set_user_password_sql("app", None, "pw", Engine::Sqlite),
+            None
+        );
     }
 }

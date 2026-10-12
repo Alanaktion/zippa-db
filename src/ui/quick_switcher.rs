@@ -42,6 +42,7 @@ pub(crate) enum SwitcherTarget {
     OpenServerVariables,
     OpenQueryDigest,
     OpenMaintenance,
+    OpenUserManagement,
 }
 
 /// One palette row before it becomes a `CommandItem`: the label and keywords
@@ -125,6 +126,9 @@ impl QuickSwitcherView {
             }
             SwitcherTarget::OpenMaintenance => {
                 session.update(cx, |session, cx| session.open_maintenance(window, cx))
+            }
+            SwitcherTarget::OpenUserManagement => {
+                session.update(cx, |session, cx| session.open_user_management(window, cx))
             }
         }
     }
@@ -330,6 +334,12 @@ impl Render for QuickSwitcherView {
                     "Query Digest",
                     IconName::Gauge,
                     &["digest", "slow", "queries", "performance"],
+                ),
+                action(
+                    SwitcherTarget::OpenUserManagement,
+                    "Users",
+                    IconName::Users,
+                    &["users", "roles", "accounts", "password", "privileges"],
                 ),
             ]);
         }

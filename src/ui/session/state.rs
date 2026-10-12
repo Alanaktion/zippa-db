@@ -212,6 +212,14 @@ impl Session {
                         restored += 1;
                     }
                 }
+                PanelState::Users => {
+                    // A no-op for a SQLite connection, which has no users.
+                    let before = self.panels.len();
+                    self.open_user_management(window, cx);
+                    if self.panels.len() > before {
+                        restored += 1;
+                    }
+                }
                 // Written by a newer build; leave it out rather than guess.
                 PanelState::Unknown => {}
             }

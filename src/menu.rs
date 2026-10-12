@@ -25,8 +25,8 @@ use crate::ui::query_editor::{
 };
 use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
-    OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, PreviousTab,
-    QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs, SearchSchema,
+    OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, OpenUserManagement,
+    PreviousTab, QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs, SearchSchema,
 };
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -139,6 +139,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Processes", OpenProcessList),
             MenuItem::action("Server Variables", OpenServerVariables),
             MenuItem::action("Query Digest", OpenQueryDigest),
+            MenuItem::action("Users", OpenUserManagement),
             MenuItem::action("Maintenance", OpenMaintenance),
             MenuItem::separator(),
             MenuItem::action("Next Tab", NextTab),
@@ -228,6 +229,7 @@ mod tests {
             ("Processes", TypeId::of::<OpenProcessList>()),
             ("Server Variables", TypeId::of::<OpenServerVariables>()),
             ("Query Digest", TypeId::of::<OpenQueryDigest>()),
+            ("Users", TypeId::of::<OpenUserManagement>()),
             ("Maintenance", TypeId::of::<OpenMaintenance>()),
             ("Next Tab", TypeId::of::<NextTab>()),
             ("Previous Tab", TypeId::of::<PreviousTab>()),

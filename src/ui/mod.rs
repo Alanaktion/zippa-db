@@ -27,6 +27,7 @@ pub mod sql_file;
 pub mod sqlite_maintenance;
 pub mod table_view;
 mod text_filter;
+pub mod user_management;
 pub mod value_dialog;
 pub mod variables_dialog;
 pub mod welcome;

@@ -60,6 +60,11 @@ pub(crate) const VARIABLES_SQL: &str = "SELECT v.VARIABLE_NAME, v.VARIABLE_VALUE
      JOIN performance_schema.variables_info i ON v.VARIABLE_NAME = i.VARIABLE_NAME \
      ORDER BY v.VARIABLE_NAME";
 
+/// Every user on the server and the host it may connect from. Reading
+/// `mysql.user` needs the `SELECT` privilege on it; without that the user
+/// management tab reports the server's refusal instead of a list.
+pub(crate) const USERS_SQL: &str = "SELECT user AS name, host FROM mysql.user ORDER BY user, host";
+
 /// Whether `performance_schema` is on — it is a compile-time-default-on
 /// server variable that cannot be flipped at runtime, and the digest table
 /// it feeds is empty without it.

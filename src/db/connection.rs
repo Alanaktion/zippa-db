@@ -27,7 +27,8 @@ use super::query::{Cell, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
 use super::tunnel::Tunnel;
 use super::{
-    health, mysql, postgres, quote_identifier, quote_literal, sqlite, statement, typed_placeholder,
+    health, mysql, postgres, quote_identifier, quote_literal, sql, sqlite, statement,
+    typed_placeholder,
 };
 
 /// Connections kept for the app's own reads and writes — the sidebar, table
@@ -956,6 +957,56 @@ impl Connection {
             }
             Engine::Sqlite => anyhow::bail!("SQLite has no server processes to end"),
         }
+        Ok(())
+    }
+
+    /// Every user (Postgres: every role) on the server, for the user
+    /// management tab. SQLite has no users.
+    pub async fn users(&self) -> Result<QueryResult> {
+        let sql = match self.config.engine {
+            Engine::Postgres => postgres::USERS_SQL,
+            Engine::MySql => mysql::USERS_SQL,
+            Engine::Sqlite => anyhow::bail!("SQLite has no users to list"),
+        };
+        self.run_query(sql).await
+    }
+
+    /// Create a login user. `host` is MySQL's `user@host` part; Postgres
+    /// roles have no host, so it is ignored there.
+    pub async fn create_user(&self, name: &str, host: Option<&str>, password: &str) -> Result<()> {
+        if self.config.safety.is_read_only() {
+            anyhow::bail!("this connection is read-only");
+        }
+        let sql = sql::create_user_sql(name, host, password, self.config.engine)
+            .ok_or_else(|| anyhow::anyhow!("a valid name is required to create a user"))?;
+        self.execute(&sql, vec![]).await?;
+        Ok(())
+    }
+
+    /// Drop a user by the name (and host, on MySQL) [`Self::users`] showed.
+    pub async fn drop_user(&self, name: &str, host: Option<&str>) -> Result<()> {
+        if self.config.safety.is_read_only() {
+            anyhow::bail!("this connection is read-only");
+        }
+        let sql = sql::drop_user_sql(name, host, self.config.engine)
+            .ok_or_else(|| anyhow::anyhow!("a valid name is required to drop a user"))?;
+        self.execute(&sql, vec![]).await?;
+        Ok(())
+    }
+
+    /// Set a user's password.
+    pub async fn set_user_password(
+        &self,
+        name: &str,
+        host: Option<&str>,
+        password: &str,
+    ) -> Result<()> {
+        if self.config.safety.is_read_only() {
+            anyhow::bail!("this connection is read-only");
+        }
+        let sql = sql::set_user_password_sql(name, host, password, self.config.engine)
+            .ok_or_else(|| anyhow::anyhow!("a valid name is required to set a password"))?;
+        self.execute(&sql, vec![]).await?;
         Ok(())
     }
 
