@@ -60,6 +60,7 @@ gpui_kit::assets::icon_assets!(
         Bookmark,
         X,
         Variable,
+        Users,
     ]
 );
 

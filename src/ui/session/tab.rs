@@ -16,6 +16,7 @@ use crate::ui::schema_view::SchemaView;
 use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::TableView;
+use crate::ui::user_management::UserManagementView;
 
 /// Whether a sidebar object is opened as its rows or its own definition.
 ///
@@ -109,5 +110,8 @@ pub(crate) enum TabContent {
     },
     Maintenance {
         view: Entity<SqliteMaintenanceView>,
+    },
+    Users {
+        view: Entity<UserManagementView>,
     },
 }

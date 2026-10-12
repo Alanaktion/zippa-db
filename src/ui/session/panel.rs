@@ -42,6 +42,7 @@ use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::sql_file;
 use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::TableView;
+use crate::ui::user_management::UserManagementView;
 use crate::workspace_state::PanelState;
 
 use super::save_dialog::{SaveQueryDialog, SaveQueryEvent};
@@ -240,6 +241,24 @@ impl SessionPanel {
         }
     }
 
+    /// The user management tab over an already-built [`UserManagementView`]:
+    /// one per session, the same as the console and the process list.
+    pub(crate) fn users(
+        key: usize,
+        title: impl Into<SharedString>,
+        view: Entity<UserManagementView>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            key,
+            title: title.into(),
+            content: TabContent::Users { view },
+            focus: cx.focus_handle(),
+            group: None,
+            panes: cx.new(|_| ResizableState::default()),
+        }
+    }
+
     /// The server variables tab over an already-built [`ServerVariablesView`]:
     /// one per session, the same as the console and the process list.
     pub(crate) fn variables(
@@ -396,6 +415,10 @@ impl SessionPanel {
         matches!(self.content, TabContent::Maintenance { .. })
     }
 
+    pub(crate) fn is_user_management(&self) -> bool {
+        matches!(self.content, TabContent::Users { .. })
+    }
+
     /// The icon that tells this tab's kind apart at a glance.
     ///
     /// A table's data tab and its structure tab carry the same name, so the
@@ -411,6 +434,7 @@ impl SessionPanel {
             TabContent::Variables { .. } => IconName::SlidersHorizontal,
             TabContent::Digest { .. } => IconName::Gauge,
             TabContent::Maintenance { .. } => IconName::Wrench,
+            TabContent::Users { .. } => IconName::Users,
         }
     }
 
@@ -429,6 +453,7 @@ impl SessionPanel {
             TabContent::Variables { .. } => "server variables",
             TabContent::Digest { .. } => "query digest",
             TabContent::Maintenance { .. } => "database maintenance",
+            TabContent::Users { .. } => "user management",
         }
     }
 
@@ -487,7 +512,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => None,
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => None,
         }
     }
 
@@ -501,7 +527,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => None,
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => None,
         }
     }
 
@@ -531,6 +558,7 @@ impl SessionPanel {
             TabContent::Variables { .. } => PanelState::Variables,
             TabContent::Digest { .. } => PanelState::Digest,
             TabContent::Maintenance { .. } => PanelState::Maintenance,
+            TabContent::Users { .. } => PanelState::Users,
         };
         Some(state)
     }
@@ -549,7 +577,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => false,
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => false,
         }
     }
 
@@ -574,7 +603,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => None,
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => None,
         }
     }
 
@@ -587,7 +617,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => None,
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => None,
         }
     }
 
@@ -601,7 +632,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => None,
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => None,
         }
     }
 
@@ -613,6 +645,22 @@ impl SessionPanel {
             | TabContent::Table { .. }
             | TabContent::Schema { .. }
             | TabContent::Console { .. }
+            | TabContent::Variables { .. }
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn user_management_view(&self) -> Option<Entity<UserManagementView>> {
+        match &self.content {
+            TabContent::Users { view } => Some(view.clone()),
+            TabContent::Query { .. }
+            | TabContent::Table { .. }
+            | TabContent::Schema { .. }
+            | TabContent::Console { .. }
+            | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. } => None,
@@ -629,7 +677,8 @@ impl SessionPanel {
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => None,
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => None,
         }
     }
 
@@ -643,7 +692,8 @@ impl SessionPanel {
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Maintenance { .. } => None,
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => None,
         }
     }
 
@@ -657,7 +707,8 @@ impl SessionPanel {
             | TabContent::Console { .. }
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
-            | TabContent::Digest { .. } => None,
+            | TabContent::Digest { .. }
+            | TabContent::Users { .. } => None,
         }
     }
 
@@ -670,7 +721,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => None,
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => None,
         }
     }
 
@@ -684,7 +736,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => None,
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => None,
         }
     }
 
@@ -786,7 +839,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => String::new(),
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => String::new(),
         }
     }
 
@@ -814,7 +868,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => (0, 0),
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => (0, 0),
         }
     }
 
@@ -1232,13 +1287,17 @@ impl SessionPanel {
                 let view = view.clone();
                 view.update(cx, |view, cx| view.set_connection(connection, cx));
             }
+            TabContent::Users { view } => {
+                let view = view.clone();
+                view.update(cx, |view, cx| view.set_connection(connection, cx));
+            }
         }
     }
 
     /// Reread a table tab's rows, a console tab's log, a process list, the
-    /// server variables, or the query digest. A query tab's buffer is the
-    /// user's own SQL and is left alone; a structure tab has nothing to
-    /// refresh this way.
+    /// server variables, the query digest, or the user list. A query tab's
+    /// buffer is the user's own SQL and is left alone; a structure tab has
+    /// nothing to refresh this way.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         match &self.content {
             TabContent::Table { view } => {
@@ -1258,6 +1317,10 @@ impl SessionPanel {
                 view.update(cx, |view, cx| view.refresh(cx));
             }
             TabContent::Digest { view } => {
+                let view = view.clone();
+                view.update(cx, |view, cx| view.refresh(cx));
+            }
+            TabContent::Users { view } => {
                 let view = view.clone();
                 view.update(cx, |view, cx| view.refresh(cx));
             }
@@ -1520,6 +1583,7 @@ impl Focusable for SessionPanel {
             TabContent::Variables { view } => view.read(cx).focus_handle(cx),
             TabContent::Digest { view } => view.read(cx).focus_handle(cx),
             TabContent::Maintenance { view } => view.read(cx).focus_handle(cx),
+            TabContent::Users { view } => view.read(cx).focus_handle(cx),
         }
     }
 }
@@ -1783,6 +1847,7 @@ impl Render for SessionPanel {
             TabContent::Schema { view } => view.clone().into_any_element(),
             TabContent::Console { view } => view.clone().into_any_element(),
             TabContent::Processes { view } => view.clone().into_any_element(),
+            TabContent::Users { view } => view.clone().into_any_element(),
             TabContent::Variables { view } => view.clone().into_any_element(),
             TabContent::Digest { view } => view.clone().into_any_element(),
             TabContent::Maintenance { view } => view.clone().into_any_element(),

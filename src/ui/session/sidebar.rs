@@ -35,7 +35,7 @@ use crate::ui::text_filter;
 use super::tab::ObjectViewMode;
 use super::{
     ImportSqlDump, OpenConsole, OpenMaintenance, OpenProcessList, OpenQueryDigest,
-    OpenServerVariables, SearchSchema, Session,
+    OpenServerVariables, OpenUserManagement, SearchSchema, Session,
 };
 
 impl Session {
@@ -483,6 +483,18 @@ impl Session {
                     )
                     .on_click(
                         cx.listener(|this, _, window, cx| this.open_query_digest(window, cx)),
+                    ),
+                )
+                .child(
+                    tool_row(
+                        "open-user-management",
+                        IconName::Users,
+                        "Users",
+                        "Server users and roles: create, password, drop",
+                        &OpenUserManagement,
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_user_management(window, cx)),
                     ),
                 )
             })

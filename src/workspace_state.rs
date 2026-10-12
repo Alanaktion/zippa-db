@@ -104,6 +104,9 @@ pub enum PanelState {
     /// The SQLite maintenance tab. Carries nothing of its own — what its
     /// buttons last reported is not worth restoring, so it reopens empty.
     Maintenance,
+    /// The user management tab. Carries nothing of its own, the same as the
+    /// process list — it re-reads the server on open.
+    Users,
     /// A panel kind a newer build wrote. It is skipped rather than failing the
     /// whole file, so a newer version's workspace still opens in an older one.
     #[serde(other)]

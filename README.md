@@ -22,7 +22,7 @@
 - **Tables.** Page, sort, and filter; stage cell edits, new rows, and deletions, then apply them together.
 - **Structure.** Edit columns, indexes, and foreign keys with a generated-SQL preview.
 - **Import & export.** Results out as CSV, TSV, JSON, Markdown, or SQL `INSERT`; SQL dumps in (plain, gzip, bzip2, zstd) with progress and per-error choices.
-- **Server tools.** A console of every statement sent, process list, server variables, and query digest (Postgres/MySQL), plus SQLite maintenance.
+- **Server tools.** A console of every statement sent, process list, server variables, query digest, and user management (Postgres/MySQL), plus SQLite maintenance.
 - **Keyboard first.** Every command has a shortcut — `Ctrl`+`/` lists them all.
 
 ## Getting started

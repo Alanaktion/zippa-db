@@ -20,6 +20,7 @@ use crate::ui::schema_view::{SchemaView, SchemaViewEvent};
 use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::{TableView, TableViewEvent};
+use crate::ui::user_management::UserManagementView;
 
 use super::{
     CloseScope, CloseTab, NewTab, NextTab, ObjectViewMode, PreviousTab, Session, SessionEvent,
@@ -232,6 +233,31 @@ impl Session {
         self.next_key += 1;
         let view = cx.new(|cx| ProcessListView::new(self.connection.clone(), window, cx));
         let panel = cx.new(|cx| SessionPanel::processes(key, "Processes", view, cx));
+        self.install(panel, window, cx);
+    }
+
+    /// Open the user management tab, or bring forward the one already open.
+    /// SQLite has no users, so this is never called for one — see
+    /// `Session::render_sidebar`, which does not offer the button there.
+    pub(crate) fn open_user_management(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.connection.config.engine == Engine::Sqlite {
+            return;
+        }
+
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).is_user_management())
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+
+        let key = self.next_key;
+        self.next_key += 1;
+        let view = cx.new(|cx| UserManagementView::new(self.connection.clone(), window, cx));
+        let panel = cx.new(|cx| SessionPanel::users(key, "Users", view, cx));
         self.install(panel, window, cx);
     }
 

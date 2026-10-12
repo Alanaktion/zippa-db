@@ -2415,6 +2415,102 @@ async fn live_mysql_server_variables_lists_max_connections() {
     connection.close().await;
 }
 
+/// `users` lists the roles, and a created role can have its password set and
+/// be dropped again.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_users_lists_creates_and_drops_a_role() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    let name = format!("zippa_test_role_{}", Uuid::new_v4().simple());
+
+    let names = user_names(&connection).await;
+    assert!(
+        names.iter().any(|n| n == "postgres"),
+        "the test superuser should be listed"
+    );
+
+    connection
+        .create_user(&name, None, "s3cret")
+        .await
+        .expect("creating the role failed");
+    let names = user_names(&connection).await;
+    assert!(
+        names.iter().any(|n| n == &name),
+        "the new role should be listed"
+    );
+
+    connection
+        .set_user_password(&name, None, "n3w")
+        .await
+        .expect("setting the password failed");
+
+    connection
+        .drop_user(&name, None)
+        .await
+        .expect("dropping the role failed");
+    let names = user_names(&connection).await;
+    assert!(
+        names.iter().all(|n| n != &name),
+        "the dropped role should be gone"
+    );
+
+    connection.close().await;
+}
+
+/// The same, for MySQL's `mysql.user` and `CREATE/ALTER/DROP USER`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_users_lists_creates_and_drops_a_user() {
+    let (connection, _pool) = live_mysql().await;
+    let name = format!("zippa_test_user_{}", Uuid::new_v4().simple());
+
+    let names = user_names(&connection).await;
+    assert!(
+        names.iter().any(|n| n == "root"),
+        "the test superuser should be listed"
+    );
+
+    connection
+        .create_user(&name, Some("%"), "s3cret")
+        .await
+        .expect("creating the user failed");
+    let names = user_names(&connection).await;
+    assert!(
+        names.iter().any(|n| n == &name),
+        "the new user should be listed"
+    );
+
+    connection
+        .set_user_password(&name, Some("%"), "n3w")
+        .await
+        .expect("setting the password failed");
+
+    connection
+        .drop_user(&name, Some("%"))
+        .await
+        .expect("dropping the user failed");
+    let names = user_names(&connection).await;
+    assert!(
+        names.iter().all(|n| n != &name),
+        "the dropped user should be gone"
+    );
+
+    connection.close().await;
+}
+
+/// The first column of [`Connection::users`], which is the name on both
+/// engines.
+async fn user_names(connection: &Connection) -> Vec<String> {
+    connection
+        .users()
+        .await
+        .expect("could not read the user list")
+        .rows
+        .iter()
+        .filter_map(|row| row.first().cloned().flatten())
+        .collect()
+}
+
 /// `query_digest` is opt-in instrumentation on both engines, so a fresh test
 /// server may or may not have it installed/on; this checks the call never
 /// errors and, whichever branch it takes, that the branch itself is shaped
