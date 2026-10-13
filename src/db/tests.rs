@@ -2462,7 +2462,11 @@ async fn live_postgres_users_lists_creates_and_drops_a_role() {
 #[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
 async fn live_mysql_users_lists_creates_and_drops_a_user() {
     let (connection, _pool) = live_mysql().await;
-    let name = format!("zippa_test_user_{}", Uuid::new_v4().simple());
+    // MySQL caps usernames at 32 chars; keep the random suffix short.
+    let name = format!(
+        "zippa_test_user_{}",
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
 
     let names = user_names(&connection).await;
     assert!(
