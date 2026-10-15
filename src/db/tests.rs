@@ -2576,6 +2576,31 @@ async fn live_postgres_all_foreign_keys_lists_a_created_relation() {
         "tables in public are schema-less, as `objects` lists them"
     );
 
+    let tables = connection
+        .erd_tables()
+        .await
+        .expect("reading the tables' columns failed");
+    let parent_table = tables
+        .iter()
+        .find(|table| table.name == parent)
+        .expect("the parent table should be listed");
+    assert_eq!(parent_table.columns.len(), 1);
+    assert!(parent_table.columns[0].primary_key, "id is the primary key");
+    let child_table = tables
+        .iter()
+        .find(|table| table.name == child)
+        .expect("the child table should be listed");
+    assert_eq!(
+        child_table
+            .columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.primary_key))
+            .collect::<Vec<_>>(),
+        [("id", true), ("parent_id", false)]
+    );
+    assert_eq!(relation.from_columns, ["parent_id"]);
+    assert_eq!(relation.to_columns, ["id"]);
+
     connection
         .run_query(&format!("DROP TABLE {child}, {parent}"))
         .await
@@ -2615,6 +2640,31 @@ async fn live_mysql_all_foreign_keys_lists_a_created_relation() {
         relation.to.schema, None,
         "same-database references are schema-less"
     );
+
+    let tables = connection
+        .erd_tables()
+        .await
+        .expect("reading the tables' columns failed");
+    let parent_table = tables
+        .iter()
+        .find(|table| table.name == parent)
+        .expect("the parent table should be listed");
+    assert_eq!(parent_table.columns.len(), 1);
+    assert!(parent_table.columns[0].primary_key, "id is the primary key");
+    let child_table = tables
+        .iter()
+        .find(|table| table.name == child)
+        .expect("the child table should be listed");
+    assert_eq!(
+        child_table
+            .columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.primary_key))
+            .collect::<Vec<_>>(),
+        [("id", true), ("parent_id", false)]
+    );
+    assert_eq!(relation.from_columns, ["parent_id"]);
+    assert_eq!(relation.to_columns, ["id"]);
 
     connection
         .run_query(&format!("DROP TABLE {child}, {parent}"))

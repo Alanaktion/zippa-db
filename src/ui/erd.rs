@@ -1,5 +1,5 @@
-//! ER diagram tab: the database's tables and foreign keys as a pannable,
-//! zoomable canvas, exportable to SVG.
+//! ER diagram tab: the database's tables, their columns, and the foreign
+//! keys between them as a pannable, zoomable canvas, exportable to SVG.
 //!
 //! The whole diagram renders as one [`svg`] element, so hundreds of tables
 //! stay cheap: panning and zooming only change the element's transformation,
@@ -25,8 +25,8 @@ use gpui_kit::{
     Styled, Transformation, Window, div, point, px, size, svg,
 };
 
-use crate::db::erd::{self, ErdDiagram, ErdPalette, ErdTable};
-use crate::db::{Connection, ObjectKind, runtime};
+use crate::db::erd::{self, ErdDiagram, ErdPalette};
+use crate::db::{Connection, runtime};
 use crate::ui::busy::busy_label;
 use crate::ui::sql_file;
 
@@ -82,20 +82,12 @@ impl ErdView {
         self.notice = None;
         cx.notify();
 
-        // Queries and the simulation both go through the database runtime:
+        // Queries and the layout both go through the database runtime:
         // sqlx needs its Tokio reactor, and under test the runtime runs the
         // work inline on the calling thread instead.
         let connection = self.connection.clone();
         let task = runtime::spawn(async move {
-            let objects = connection.objects().await?;
-            let tables: Vec<ErdTable> = objects
-                .iter()
-                .filter(|object| object.kind == ObjectKind::Table)
-                .map(|object| ErdTable {
-                    schema: object.schema.clone(),
-                    name: object.name.clone(),
-                })
-                .collect();
+            let tables = connection.erd_tables().await?;
             let relations = connection.all_foreign_keys().await?;
             Ok::<_, anyhow::Error>(erd::layout_diagram(&tables, &relations))
         });
@@ -372,9 +364,11 @@ fn plural(count: usize, noun: &str) -> String {
 fn palette_for(theme: &Theme) -> ErdPalette {
     ErdPalette {
         background: hex(theme.background),
-        node_fill: hex(theme.secondary),
+        node_fill: hex(theme.background),
+        header_fill: hex(theme.secondary),
         node_border: hex(theme.border),
         text: hex(theme.foreground),
+        muted_text: hex(theme.muted_foreground),
         edge: hex(theme.muted_foreground),
     }
 }

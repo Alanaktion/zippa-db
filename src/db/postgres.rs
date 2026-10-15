@@ -315,6 +315,23 @@ pub(crate) fn foreign_keys_sql(schema: &str, table: &str) -> String {
     )
 }
 
+/// Every column of every table outside the system schemas, for the ER
+/// diagram: schema, table, column, its type as `format_type` spells it, and
+/// `PRI` for a primary-key column (empty otherwise) — the five fields the
+/// other engines' `ERD_COLUMNS_SQL` share.
+pub(crate) const ERD_COLUMNS_SQL: &str = "SELECT n.nspname, c.relname, a.attname, \
+     format_type(a.atttypid, a.atttypmod), \
+     CASE WHEN EXISTS ( \
+       SELECT 1 FROM pg_index i \
+       WHERE i.indrelid = c.oid AND i.indisprimary AND a.attnum = ANY(i.indkey) \
+     ) THEN 'PRI' ELSE '' END \
+     FROM pg_class c \
+     JOIN pg_namespace n ON n.oid = c.relnamespace \
+     JOIN pg_attribute a ON a.attrelid = c.oid \
+     WHERE c.relkind IN ('r', 'p', 'f') AND a.attnum > 0 AND NOT a.attisdropped \
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+     ORDER BY n.nspname, c.relname, a.attnum";
+
 /// Every foreign key in the non-system schemas: the local schema/table first,
 /// then the per-table columns [`foreign_keys_sql`] returns. The ER diagram
 /// reads the whole graph in one query instead of one per table.

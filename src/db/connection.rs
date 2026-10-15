@@ -6,6 +6,7 @@
 //! lists databases and objects, decoding a row cell — lives in the sibling
 //! `postgres` / `mysql` / `sqlite` modules.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,7 +22,7 @@ use sqlx::{
 use super::catalog::{Catalog, CatalogEntry, CatalogKind, MAX_ENTRIES};
 use super::config::{ConnectionConfig, Engine};
 use super::dedicated::Dedicated;
-use super::erd::ErdRelation;
+use super::erd::{ErdColumn, ErdRelation, ErdTable};
 use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary};
 use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
@@ -364,6 +365,53 @@ impl Connection {
             .rows
             .iter()
             .filter_map(|row| self.object_row(row))
+            .collect())
+    }
+
+    /// Every table in the current database with its columns, for the ER
+    /// diagram: the tables [`Self::objects`] lists (views left out), each
+    /// with its columns in ordinal order and which of them form the primary
+    /// key. One bulk read for the columns rather than one per table.
+    pub async fn erd_tables(&self) -> Result<Vec<ErdTable>> {
+        let sql = match self.config.engine {
+            Engine::Postgres => postgres::ERD_COLUMNS_SQL,
+            Engine::MySql => mysql::ERD_COLUMNS_SQL,
+            Engine::Sqlite => sqlite::ERD_COLUMNS_SQL,
+        };
+        let objects = self.objects().await?;
+        let result = self.run_query(sql).await?;
+
+        let mut columns: HashMap<(Option<String>, String), Vec<ErdColumn>> = HashMap::new();
+        for row in &result.rows {
+            let text = |index: usize| {
+                row.get(index)
+                    .and_then(|cell| cell.clone())
+                    .unwrap_or_default()
+            };
+            let schema = self.shown_schema(row.first().cloned().flatten());
+            columns
+                .entry((schema, text(1)))
+                .or_default()
+                .push(ErdColumn {
+                    name: text(2),
+                    data_type: text(3),
+                    primary_key: text(4) == "PRI",
+                });
+        }
+
+        Ok(objects
+            .into_iter()
+            .filter(|object| object.kind == ObjectKind::Table)
+            .map(|object| {
+                let columns = columns
+                    .remove(&(object.schema.clone(), object.name.clone()))
+                    .unwrap_or_default();
+                ErdTable {
+                    schema: object.schema,
+                    name: object.name,
+                    columns,
+                }
+            })
             .collect())
     }
 

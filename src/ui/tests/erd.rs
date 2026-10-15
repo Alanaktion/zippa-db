@@ -89,4 +89,17 @@ fn erd_diagram_loads_tables_and_their_foreign_keys(cx: &mut TestAppContext) {
         diagram.nodes[edge.to].table.name.as_str(),
     );
     assert_eq!((from, to), ("books", "authors"));
+
+    // The edge runs between the rows of the columns the key joins.
+    let books = &diagram.nodes[edge.from];
+    let columns: Vec<&str> = books
+        .table
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect();
+    assert_eq!(columns, ["id", "author_id", "title"]);
+    assert!(books.table.columns[0].primary_key);
+    assert_eq!((edge.from_row, edge.to_row), (Some(1), Some(0)));
+    assert_eq!(edge.to_columns, ["id"]);
 }

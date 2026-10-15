@@ -295,6 +295,18 @@ pub(crate) fn foreign_keys_sql(table: &str) -> String {
     )
 }
 
+/// Every column of every base table in the current database, for the ER
+/// diagram: a `NULL` schema (tables are matched schema-less here), table,
+/// column, full type, and `column_key`, which is `PRI` for a primary-key
+/// column.
+pub(crate) const ERD_COLUMNS_SQL: &str = "SELECT NULL, c.table_name, c.column_name, \
+     c.column_type, c.column_key \
+     FROM information_schema.columns c \
+     JOIN information_schema.tables t \
+       ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
+     WHERE c.table_schema = DATABASE() AND t.table_type = 'BASE TABLE' \
+     ORDER BY c.table_name, c.ordinal_position";
+
 /// Every foreign key in the current database: the local table first (no
 /// local schema column on this engine — the leading `NULL` keeps the column
 /// layout identical to [`ALL_FOREIGN_KEYS_SQL`]'s Postgres sibling), then

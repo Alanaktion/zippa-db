@@ -105,6 +105,16 @@ pub(crate) fn indexes_sql(table: &str) -> String {
     )
 }
 
+/// Every column of every user table, for the ER diagram: a stand-in `NULL`
+/// schema, table, column, declared type, and `PRI` for a primary-key column
+/// (empty otherwise) — the layout the server engines' `ERD_COLUMNS_SQL`
+/// share.
+pub(crate) const ERD_COLUMNS_SQL: &str = "SELECT NULL, m.name, ti.name, ti.type, \
+     CASE WHEN ti.pk > 0 THEN 'PRI' ELSE '' END \
+     FROM sqlite_master m JOIN pragma_table_info(m.name) ti \
+     WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' \
+     ORDER BY m.name, ti.cid";
+
 /// One row per foreign key: no name (SQLite does not have one, so the caller
 /// synthesizes one), local columns, no schema, referenced table/columns
 /// (matching order), `ON DELETE`/`ON UPDATE` — already spelled the way every

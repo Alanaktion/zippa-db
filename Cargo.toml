@@ -30,7 +30,6 @@ anyhow = "1"
 bzip2 = "0.6"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "7"
-fdg-sim = "0.9.1"
 flate2 = "1"
 futures = "0.3.34"
 # One dependency pulls in GPUI (Zed's preview channel), gpui-base, the styled
