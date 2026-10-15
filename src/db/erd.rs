@@ -129,13 +129,15 @@ pub struct ErdDiagram {
 
 /// Box geometry in world units. The SVG draws with the same numbers the
 /// routing attaches edges by.
-const HEADER_HEIGHT: f32 = 28.0;
-const ROW_HEIGHT: f32 = 20.0;
+pub const HEADER_HEIGHT: f32 = 28.0;
+pub const ROW_HEIGHT: f32 = 20.0;
 const MIN_NODE_WIDTH: f32 = 160.0;
 const MAX_NODE_WIDTH: f32 = 360.0;
 const CHAR_WIDTH: f32 = 7.0;
-const ROW_PADDING: f32 = 8.0;
-const TAG_WIDTH: f32 = 22.0;
+pub const ROW_PADDING: f32 = 8.0;
+pub const TAG_WIDTH: f32 = 22.0;
+/// Corner radius of a table's box.
+pub const CORNER_RADIUS: f32 = 6.0;
 
 /// Spacing: between layers (room for the curves), between tables in a
 /// layer, around a dummy slot, and between laid-out blocks.
@@ -1038,7 +1040,34 @@ pub fn diagram_svg(diagram: &ErdDiagram, palette: &ErdPalette) -> String {
     for edge in &diagram.edges {
         edge_svg(&mut svg, diagram, edge, palette);
     }
+    for (node, labels) in diagram.nodes.iter().zip(table_labels(diagram)) {
+        table_svg(&mut svg, node, &labels, palette);
+    }
 
+    svg.push_str("</svg>\n");
+    svg
+}
+
+/// The text drawn on one table, already cut to fit its box, so the canvas
+/// and the SVG show the same thing.
+#[derive(Debug, Clone)]
+pub struct TableLabels {
+    pub header: String,
+    pub rows: Vec<RowLabel>,
+}
+
+/// One column's row: its key tag (`PK`, `FK`, `PF` for both, or empty), name,
+/// and type.
+#[derive(Debug, Clone)]
+pub struct RowLabel {
+    pub tag: &'static str,
+    pub name: String,
+    pub data_type: String,
+    pub primary_key: bool,
+}
+
+/// The labels for every table, in node order.
+pub fn table_labels(diagram: &ErdDiagram) -> Vec<TableLabels> {
     // Which rows hold a referencing column, for the `FK` tag.
     let mut referencing: HashSet<(usize, &str)> = HashSet::new();
     for edge in &diagram.edges {
@@ -1046,50 +1075,95 @@ pub fn diagram_svg(diagram: &ErdDiagram, palette: &ErdPalette) -> String {
             referencing.insert((edge.from, column.as_str()));
         }
     }
-    for (i, node) in diagram.nodes.iter().enumerate() {
-        table_svg(&mut svg, i, node, &referencing, palette);
-    }
-
-    svg.push_str("</svg>\n");
-    svg
+    diagram
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            let header_chars = ((node.width - 16.0) / 7.6).max(1.0) as usize;
+            let available = node.width - ROW_PADDING * 2.0 - TAG_WIDTH - 12.0;
+            let total = (available / CHAR_WIDTH).max(2.0) as usize;
+            let rows = node
+                .table
+                .columns
+                .iter()
+                .map(|column| {
+                    let foreign = referencing.contains(&(index, column.name.as_str()));
+                    let tag = match (column.primary_key, foreign) {
+                        (true, true) => "PF",
+                        (true, false) => "PK",
+                        (false, true) => "FK",
+                        (false, false) => "",
+                    };
+                    // The type gets what the name leaves, up to half the row.
+                    let type_chars = column.data_type.chars().count();
+                    let name_chars = column.name.chars().count();
+                    let type_room =
+                        type_chars.min((total / 2).max(total.saturating_sub(name_chars)));
+                    let name_room = total.saturating_sub(type_room).max(1);
+                    RowLabel {
+                        tag,
+                        name: truncate(&column.name, name_room),
+                        data_type: truncate(&column.data_type, type_room),
+                        primary_key: column.primary_key,
+                    }
+                })
+                .collect();
+            TableLabels {
+                header: truncate(&node.table.display_name(), header_chars),
+                rows,
+            }
+        })
+        .collect()
 }
 
-fn edge_svg(svg: &mut String, diagram: &ErdDiagram, edge: &ErdEdge, palette: &ErdPalette) {
+/// One piece of an edge's curve: a cubic Bézier from wherever the previous
+/// piece ended (the path's first point, for the first).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Cubic {
+    pub control_a: (f32, f32),
+    pub control_b: (f32, f32),
+    pub to: (f32, f32),
+}
+
+/// The curve an edge is drawn as, starting at `edge.path[0]`: each pair of
+/// route points joined by a piece that leaves and arrives horizontally, or
+/// one loop out to the right for a table referencing itself.
+pub fn edge_curve(edge: &ErdEdge) -> Vec<Cubic> {
     let path = &edge.path;
     if path.len() < 2 {
-        return;
+        return Vec::new();
     }
-    let (from, to) = (&diagram.nodes[edge.from], &diagram.nodes[edge.to]);
-    let title = format!(
-        "{}: {}({}) → {}({})",
-        edge.name,
-        from.table.display_name(),
-        edge.from_columns.join(", "),
-        to.table.display_name(),
-        edge.to_columns.join(", "),
-    );
-
-    let mut d = format!("M {:.1} {:.1}", path[0].0, path[0].1);
     if edge.from == edge.to {
         let ((x, y1), (_, y2)) = (path[0], path[1]);
         let reach = x + SELF_LOOP_REACH;
-        d.push_str(&format!(
-            " C {reach:.1} {y1:.1}, {reach:.1} {y2:.1}, {x:.1} {y2:.1}"
-        ));
-    } else {
-        for pair in path.windows(2) {
+        return vec![Cubic {
+            control_a: (reach, y1),
+            control_b: (reach, y2),
+            to: (x, y2),
+        }];
+    }
+    path.windows(2)
+        .map(|pair| {
             let ((x1, y1), (x2, y2)) = (pair[0], pair[1]);
             let half = (x2 - x1) / 2.0;
-            d.push_str(&format!(
-                " C {:.1} {y1:.1}, {:.1} {y2:.1}, {x2:.1} {y2:.1}",
-                x1 + half,
-                x2 - half
-            ));
-        }
-    }
+            Cubic {
+                control_a: (x1 + half, y1),
+                control_b: (x2 - half, y2),
+                to: (x2, y2),
+            }
+        })
+        .collect()
+}
 
-    // Crow's foot ("many") at the referencing end, a double bar ("exactly
-    // one") at the referenced end, each facing out of its table.
+/// The end marks as straight strokes: a crow's foot ("many") at the
+/// referencing end and a double bar ("exactly one") at the referenced end,
+/// each facing out of its table.
+pub fn edge_marks(edge: &ErdEdge) -> Vec<((f32, f32), (f32, f32))> {
+    let path = &edge.path;
+    if path.len() < 2 {
+        return Vec::new();
+    }
     let outward = |at: (f32, f32), next: (f32, f32)| {
         if edge.from == edge.to || next.0 >= at.0 {
             1.0
@@ -1100,53 +1174,73 @@ fn edge_svg(svg: &mut String, diagram: &ErdDiagram, edge: &ErdEdge, palette: &Er
     let (start, end) = (path[0], path[path.len() - 1]);
     let s = outward(start, path[1]);
     let e = outward(end, path[path.len() - 2]);
-    let marks = format!(
-        "M {fx:.1} {sy:.1} L {sx:.1} {up:.1} M {fx:.1} {sy:.1} L {sx:.1} {down:.1} \
-         M {b1:.1} {eup:.1} L {b1:.1} {edown:.1} M {b2:.1} {eup:.1} L {b2:.1} {edown:.1}",
-        fx = start.0 + s * 12.0,
-        sx = start.0,
-        sy = start.1,
-        up = start.1 - 6.0,
-        down = start.1 + 6.0,
-        b1 = end.0 + e * 6.0,
-        b2 = end.0 + e * 10.0,
-        eup = end.1 - 6.0,
-        edown = end.1 + 6.0,
-    );
+    let foot = (start.0 + s * 12.0, start.1);
+    let (bar1, bar2) = (end.0 + e * 6.0, end.0 + e * 10.0);
+    vec![
+        (foot, (start.0, start.1 - 6.0)),
+        (foot, (start.0, start.1 + 6.0)),
+        ((bar1, end.1 - 6.0), (bar1, end.1 + 6.0)),
+        ((bar2, end.1 - 6.0), (bar2, end.1 + 6.0)),
+    ]
+}
+
+/// What an edge joins, in words: the constraint and both column lists.
+pub fn edge_title(diagram: &ErdDiagram, edge: &ErdEdge) -> String {
+    let (from, to) = (&diagram.nodes[edge.from], &diagram.nodes[edge.to]);
+    format!(
+        "{}: {}({}) → {}({})",
+        edge.name,
+        from.table.display_name(),
+        edge.from_columns.join(", "),
+        to.table.display_name(),
+        edge.to_columns.join(", "),
+    )
+}
+
+fn edge_svg(svg: &mut String, diagram: &ErdDiagram, edge: &ErdEdge, palette: &ErdPalette) {
+    let Some(&(x, y)) = edge.path.first() else {
+        return;
+    };
+    let mut d = format!("M {x:.1} {y:.1}");
+    for piece in edge_curve(edge) {
+        let (a, b, to) = (piece.control_a, piece.control_b, piece.to);
+        d.push_str(&format!(
+            " C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1}",
+            a.0, a.1, b.0, b.1, to.0, to.1
+        ));
+    }
+    let marks: Vec<String> = edge_marks(edge)
+        .into_iter()
+        .map(|(a, b)| format!("M {:.1} {:.1} L {:.1} {:.1}", a.0, a.1, b.0, b.1))
+        .collect();
 
     svg.push_str(&format!(
         "<g class=\"erd-edge\"><title>{title}</title>\
          <path d=\"{d}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"1.5\"/>\
          <path d=\"{marks}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"1.5\"/></g>\n",
-        title = escape_xml(&title),
+        title = escape_xml(&edge_title(diagram, edge)),
+        marks = marks.join(" "),
         color = palette.edge,
     ));
 }
 
-fn table_svg(
-    svg: &mut String,
-    index: usize,
-    node: &ErdNode,
-    referencing: &HashSet<(usize, &str)>,
-    palette: &ErdPalette,
-) {
+fn table_svg(svg: &mut String, node: &ErdNode, labels: &TableLabels, palette: &ErdPalette) {
     let (x, y, w, h) = (node.x, node.y, node.width, node.height);
-    let name = node.table.display_name();
-    let header_chars = ((w - 16.0) / 7.6).max(1.0) as usize;
+    let r = CORNER_RADIUS;
     svg.push_str(&format!(
         "<g class=\"erd-table\"><title>{title}</title>\
-         <rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"6\" fill=\"{fill}\"/>\
-         <rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{HEADER_HEIGHT:.1}\" rx=\"6\" fill=\"{header}\"/>",
-        title = escape_xml(&name),
+         <rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"{r}\" fill=\"{fill}\"/>\
+         <rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{HEADER_HEIGHT:.1}\" rx=\"{r}\" fill=\"{header}\"/>",
+        title = escape_xml(&node.table.display_name()),
         fill = palette.node_fill,
         header = palette.header_fill,
     ));
-    if !node.table.columns.is_empty() {
+    if !labels.rows.is_empty() {
         // Square off the header's lower corners where the rows begin.
         svg.push_str(&format!(
-            "<rect x=\"{x:.1}\" y=\"{sy:.1}\" width=\"{w:.1}\" height=\"6\" fill=\"{header}\"/>\
+            "<rect x=\"{x:.1}\" y=\"{sy:.1}\" width=\"{w:.1}\" height=\"{r}\" fill=\"{header}\"/>\
              <line x1=\"{x:.1}\" y1=\"{ly:.1}\" x2=\"{x2:.1}\" y2=\"{ly:.1}\" stroke=\"{border}\"/>",
-            sy = y + HEADER_HEIGHT - 6.0,
+            sy = y + HEADER_HEIGHT - r,
             ly = y + HEADER_HEIGHT,
             x2 = x + w,
             header = palette.header_fill,
@@ -1154,7 +1248,7 @@ fn table_svg(
         ));
     }
     svg.push_str(&format!(
-        "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"6\" fill=\"none\" \
+        "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"{r}\" fill=\"none\" \
          stroke=\"{border}\" stroke-width=\"1.5\"/>\
          <text x=\"{cx:.1}\" y=\"{cy:.1}\" text-anchor=\"middle\" dominant-baseline=\"central\" \
          font-family=\"sans-serif\" font-size=\"13\" font-weight=\"bold\" fill=\"{text}\">{name}</text>",
@@ -1162,31 +1256,18 @@ fn table_svg(
         cx = x + w / 2.0,
         cy = y + HEADER_HEIGHT / 2.0 + 1.0,
         text = palette.text,
-        name = escape_xml(&truncate(&name, header_chars)),
+        name = escape_xml(&labels.header),
     ));
 
-    let available = w - ROW_PADDING * 2.0 - TAG_WIDTH - 12.0;
-    for (row, column) in node.table.columns.iter().enumerate() {
+    for (row, label) in labels.rows.iter().enumerate() {
         let cy = node.row_y(Some(row)) + 1.0;
-        let foreign = referencing.contains(&(index, column.name.as_str()));
-        let tag = match (column.primary_key, foreign) {
-            (true, true) => "PF",
-            (true, false) => "PK",
-            (false, true) => "FK",
-            (false, false) => "",
-        };
-        // The type gets what the name leaves, up to half the row.
-        let type_chars = column.data_type.chars().count();
-        let name_chars = column.name.chars().count();
-        let total = (available / CHAR_WIDTH).max(2.0) as usize;
-        let type_room = type_chars.min((total / 2).max(total.saturating_sub(name_chars)));
-        let name_room = total.saturating_sub(type_room).max(1);
-        if !tag.is_empty() {
+        if !label.tag.is_empty() {
             svg.push_str(&format!(
                 "<text x=\"{tx:.1}\" y=\"{cy:.1}\" dominant-baseline=\"central\" font-family=\"sans-serif\" \
                  font-size=\"9\" font-weight=\"bold\" fill=\"{color}\">{tag}</text>",
                 tx = x + ROW_PADDING,
-                color = if column.primary_key {
+                tag = label.tag,
+                color = if label.primary_key {
                     &palette.text
                 } else {
                     &palette.muted_text
@@ -1202,8 +1283,8 @@ fn table_svg(
             dx = x + w - ROW_PADDING,
             text = palette.text,
             muted = palette.muted_text,
-            name = escape_xml(&truncate(&column.name, name_room)),
-            data_type = escape_xml(&truncate(&column.data_type, type_room)),
+            name = escape_xml(&label.name),
+            data_type = escape_xml(&label.data_type),
         ));
     }
     svg.push_str("</g>\n");

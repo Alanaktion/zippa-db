@@ -1,15 +1,18 @@
 //! ER diagram tab: the database's tables, their columns, and the foreign
 //! keys between them as a pannable, zoomable canvas, exportable to SVG.
 //!
-//! The whole diagram renders as one [`svg`] element, so hundreds of tables
-//! stay cheap: panning and zooming only change the element's transformation,
-//! never the SVG bytes. The export writes those same bytes.
+//! The diagram is painted straight onto one [`canvas`] at the current zoom —
+//! boxes as quads, edges as stroked paths, labels as shaped text — so it
+//! stays crisp at every scale and only what is on screen is drawn. GPUI's
+//! `svg()` element cannot stand in: it rasterizes to a one-colour mask.
+//! The export writes an SVG built from the same layout and labels.
 //!
-//! The SVG's viewBox is symmetric around the diagram's center, so the
-//! element's transformation — which scales around the element's own center —
-//! keeps the diagram centered: the resting state (zoom 1, no offset) is the
-//! fitted state, and zooming never drifts it.
+//! The diagram is laid out centered on the origin, and the canvas puts the
+//! origin at its own center plus the pan offset, so the resting state (zoom
+//! 1, no offset) is the fitted state.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -20,31 +23,51 @@ use gpui_kit::component::theme::Theme;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement, Render, Rgba, ScrollDelta, ScrollWheelEvent,
-    Styled, Transformation, Window, div, point, px, size, svg,
+    App, BorderStyle, Bounds, ContentMask, Context, Corners, FocusHandle, Focusable, FontWeight,
+    Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ParentElement, PathBuilder, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent,
+    SharedString, Size, Styled, TextAlign, TextRun, Window, canvas, div, fill, point, px, quad,
+    size, transparent_black,
 };
 
-use crate::db::erd::{self, ErdDiagram, ErdPalette};
+use crate::db::erd::{
+    self, CORNER_RADIUS, ErdDiagram, ErdPalette, HEADER_HEIGHT, ROW_HEIGHT, ROW_PADDING,
+    SELF_LOOP_REACH, TAG_WIDTH, TableLabels,
+};
 use crate::db::{Connection, runtime};
 use crate::ui::busy::busy_label;
 use crate::ui::sql_file;
 
 enum ErdPhase {
     Loading,
-    Ready { diagram: ErdDiagram, svg: Vec<u8> },
+    Ready {
+        diagram: Arc<ErdDiagram>,
+        labels: Arc<Vec<TableLabels>>,
+    },
     Failed(String),
 }
 
-const MIN_ZOOM: f32 = 0.05;
-const MAX_ZOOM: f32 = 8.0;
+/// Zoom is relative to the fitted view: out to a quarter of it, and in until
+/// the diagram is drawn at four times its natural size.
+const MIN_ZOOM: f32 = 0.25;
+const MAX_SCALE: f32 = 4.0;
+/// The fitted view never blows a small diagram up past this.
+const MAX_FIT: f32 = 1.5;
+/// Margin around the diagram in the fitted view, in world units.
+const FIT_PADDING: f32 = 48.0;
+/// Below this many pixels, text is a smudge; boxes and edges alone read
+/// better.
+const MIN_TEXT_SIZE: f32 = 4.0;
 
 pub struct ErdView {
     connection: Arc<Connection>,
     phase: ErdPhase,
     zoom: f32,
-    /// Translation applied to the SVG element, in screen pixels.
+    /// Pan, in screen pixels, of the diagram's center from the canvas's.
     offset: (f32, f32),
+    /// The canvas's bounds as last painted, for zooming about the pointer
+    /// and for the zoom limits, which depend on the fitted scale.
+    viewport: Rc<Cell<Option<Bounds<Pixels>>>>,
     last_mouse: Option<(f32, f32)>,
     notice: Option<String>,
     focus: FocusHandle,
@@ -57,6 +80,7 @@ impl ErdView {
             phase: ErdPhase::Loading,
             zoom: 1.0,
             offset: (0.0, 0.0),
+            viewport: Rc::new(Cell::new(None)),
             last_mouse: None,
             notice: None,
             focus: cx.focus_handle(),
@@ -99,10 +123,10 @@ impl ErdView {
                 .and_then(|inner| inner);
             this.update(cx, |this, cx| {
                 this.phase = match outcome {
-                    Ok(diagram) => {
-                        let svg = erd::diagram_svg(&diagram, &palette_for(cx.theme())).into_bytes();
-                        ErdPhase::Ready { diagram, svg }
-                    }
+                    Ok(diagram) => ErdPhase::Ready {
+                        labels: Arc::new(erd::table_labels(&diagram)),
+                        diagram: Arc::new(diagram),
+                    },
                     Err(error) => ErdPhase::Failed(format!("{error:#}")),
                 };
                 // The resting state is the fitted state (see the module docs).
@@ -122,16 +146,50 @@ impl ErdView {
         cx.notify();
     }
 
+    /// The scale the fitted view draws at, from the last painted bounds.
+    fn fit_scale(&self) -> Option<f32> {
+        let ErdPhase::Ready { diagram, .. } = &self.phase else {
+            return None;
+        };
+        Some(fit_scale(diagram, self.viewport.get()?.size))
+    }
+
     fn zoom_by(&mut self, factor: f32, cx: &mut Context<Self>) {
-        self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        self.zoom_about(factor, None, cx);
+    }
+
+    /// Zoom by `factor`, keeping the point under `anchor` (a window
+    /// position) where it is; the canvas's center when `None`.
+    fn zoom_about(&mut self, factor: f32, anchor: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        let max_zoom = self
+            .fit_scale()
+            .map_or(MAX_SCALE, |fit| (MAX_SCALE / fit).max(1.0));
+        let zoom = (self.zoom * factor).clamp(MIN_ZOOM, max_zoom);
+        let applied = zoom / self.zoom;
+        if let (Some(anchor), Some(bounds)) = (anchor, self.viewport.get()) {
+            // The anchor's offset from the diagram's center scales with the
+            // zoom; move the center so the anchor stays put.
+            let center = bounds.center();
+            let (ax, ay) = (
+                (anchor.x - center.x).as_f32(),
+                (anchor.y - center.y).as_f32(),
+            );
+            self.offset.0 = ax - (ax - self.offset.0) * applied;
+            self.offset.1 = ay - (ay - self.offset.1) * applied;
+        } else {
+            self.offset.0 *= applied;
+            self.offset.1 *= applied;
+        }
+        self.zoom = zoom;
         cx.notify();
     }
 
     fn export_svg(&mut self, cx: &mut Context<Self>) {
-        let ErdPhase::Ready { svg, .. } = &self.phase else {
+        let ErdPhase::Ready { diagram, .. } = &self.phase else {
             return;
         };
-        let svg = svg.clone();
+        // Built now rather than at load, so it takes the theme as it is.
+        let svg = erd::diagram_svg(diagram, &palette_for(cx.theme()));
         let database = self.connection.database().to_string();
         // The prompt is created here, on the UI thread; the spawned task only
         // waits for its answer.
@@ -164,7 +222,10 @@ impl ErdView {
             _ => (0, 0),
         };
         let ready = matches!(self.phase, ErdPhase::Ready { .. });
-        let zoom_label = format!("{}%", (self.zoom * 100.0).round());
+        // The scale the diagram is drawn at, which is what a percentage
+        // reads as; the fitted view's own until the canvas has been painted.
+        let scale = self.fit_scale().unwrap_or(1.0) * self.zoom;
+        let zoom_label = format!("{}%", (scale * 100.0).round());
 
         h_flex()
             .id("erd-toolbar")
@@ -273,9 +334,15 @@ impl ErdView {
                         .child("This database has no tables to diagram."),
                 )
                 .into_any_element(),
-            ErdPhase::Ready { svg: bytes, .. } => {
-                let transformation = Transformation::scale(size(self.zoom, self.zoom))
-                    .with_translation(point(px(self.offset.0), px(self.offset.1)));
+            ErdPhase::Ready { diagram, labels } => {
+                let scene = Scene {
+                    diagram: diagram.clone(),
+                    labels: labels.clone(),
+                    colors: SceneColors::from(cx.theme()),
+                    zoom: self.zoom,
+                    offset: self.offset,
+                };
+                let viewport = self.viewport.clone();
                 div()
                     .id("erd-canvas")
                     .test_support()
@@ -307,15 +374,16 @@ impl ErdView {
                             ScrollDelta::Lines(lines) => lines.y,
                         };
                         if amount != 0.0 {
-                            this.zoom_by((amount * 0.15).exp(), cx);
+                            this.zoom_about((amount * 0.15).exp(), Some(event.position), cx);
                             cx.stop_propagation();
                         }
                     }))
                     .child(
-                        svg()
-                            .data(bytes)
-                            .with_transformation(transformation)
-                            .size_full(),
+                        canvas(
+                            move |bounds, _, _| viewport.set(Some(bounds)),
+                            move |bounds, (), window, cx| scene.paint(bounds, window, cx),
+                        )
+                        .size_full(),
                     )
                     .into_any_element()
             }
@@ -328,7 +396,7 @@ impl ErdView {
     #[cfg(test)]
     pub(crate) fn diagram_for_test(&self) -> Option<&ErdDiagram> {
         match &self.phase {
-            ErdPhase::Ready { diagram, .. } => Some(diagram),
+            ErdPhase::Ready { diagram, .. } => Some(diagram.as_ref()),
             ErdPhase::Loading | ErdPhase::Failed(_) => None,
         }
     }
@@ -357,6 +425,277 @@ fn plural(count: usize, noun: &str) -> String {
     } else {
         format!("{count} {noun}s")
     }
+}
+
+/// The scale that fits the whole diagram, with its margin, into `viewport`.
+fn fit_scale(diagram: &ErdDiagram, viewport: Size<Pixels>) -> f32 {
+    let (min_x, min_y, max_x, max_y) = erd::bounds(diagram, FIT_PADDING);
+    // The diagram is centered on the origin, so fit its larger half each way.
+    let half_w = min_x.abs().max(max_x.abs()).max(1.0);
+    let half_h = min_y.abs().max(max_y.abs()).max(1.0);
+    let fit = (viewport.width.as_f32() / (2.0 * half_w))
+        .min(viewport.height.as_f32() / (2.0 * half_h))
+        .min(MAX_FIT);
+    if fit.is_finite() && fit > 0.0 {
+        fit
+    } else {
+        1.0
+    }
+}
+
+/// The theme's colours for the canvas, matching [`palette_for`].
+#[derive(Clone, Copy)]
+struct SceneColors {
+    node_fill: Hsla,
+    header_fill: Hsla,
+    node_border: Hsla,
+    text: Hsla,
+    muted_text: Hsla,
+    edge: Hsla,
+}
+
+impl From<&Theme> for SceneColors {
+    fn from(theme: &Theme) -> Self {
+        Self {
+            node_fill: theme.background,
+            header_fill: theme.secondary,
+            node_border: theme.border,
+            text: theme.foreground,
+            muted_text: theme.muted_foreground,
+            edge: theme.muted_foreground,
+        }
+    }
+}
+
+/// Everything one frame of the canvas needs, moved into its paint closure.
+struct Scene {
+    diagram: Arc<ErdDiagram>,
+    labels: Arc<Vec<TableLabels>>,
+    colors: SceneColors,
+    zoom: f32,
+    offset: (f32, f32),
+}
+
+impl Scene {
+    fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        let scale = fit_scale(&self.diagram, bounds.size) * self.zoom;
+        let center = bounds.center();
+        let origin = (
+            center.x.as_f32() + self.offset.0,
+            center.y.as_f32() + self.offset.1,
+        );
+        let at = |(x, y): (f32, f32)| point(px(origin.0 + x * scale), px(origin.1 + y * scale));
+        let rect = |x: f32, y: f32, w: f32, h: f32| Bounds {
+            origin: at((x, y)),
+            size: size(px(w * scale), px(h * scale)),
+        };
+        let on_screen = |area: &Bounds<Pixels>| area.intersects(&bounds);
+
+        let stroke = px((1.5 * scale).clamp(0.75, 2.5));
+        for edge in &self.diagram.edges {
+            let Some(&first) = edge.path.first() else {
+                continue;
+            };
+            let (mut x0, mut y0, mut x1, mut y1) = (first.0, first.1, first.0, first.1);
+            for &(x, y) in &edge.path {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+            // Room for the end marks and a self-reference's loop.
+            let reach = 12.0
+                + if edge.from == edge.to {
+                    SELF_LOOP_REACH
+                } else {
+                    0.0
+                };
+            let area = rect(x0 - reach, y0 - 8.0, x1 - x0 + 2.0 * reach, y1 - y0 + 16.0);
+            if !on_screen(&area) {
+                continue;
+            }
+            let mut curve = PathBuilder::stroke(stroke);
+            curve.move_to(at(first));
+            for piece in erd::edge_curve(edge) {
+                curve.cubic_bezier_to(at(piece.to), at(piece.control_a), at(piece.control_b));
+            }
+            if let Ok(path) = curve.build() {
+                window.paint_path(path, self.colors.edge);
+            }
+            let mut marks = PathBuilder::stroke(stroke);
+            for (a, b) in erd::edge_marks(edge) {
+                marks.move_to(at(a));
+                marks.line_to(at(b));
+            }
+            if let Ok(path) = marks.build() {
+                window.paint_path(path, self.colors.edge);
+            }
+        }
+
+        let radius = px(CORNER_RADIUS * scale);
+        let show_text = 12.0 * scale >= MIN_TEXT_SIZE;
+        for (node, labels) in self.diagram.nodes.iter().zip(self.labels.iter()) {
+            let area = rect(node.x, node.y, node.width, node.height);
+            if !on_screen(&area) {
+                continue;
+            }
+            let header = rect(node.x, node.y, node.width, HEADER_HEIGHT);
+            let header_corners = if labels.rows.is_empty() {
+                Corners::all(radius)
+            } else {
+                Corners {
+                    top_left: radius,
+                    top_right: radius,
+                    bottom_right: px(0.0),
+                    bottom_left: px(0.0),
+                }
+            };
+            window.paint_quad(quad(
+                area,
+                radius,
+                self.colors.node_fill,
+                px(0.0),
+                transparent_black(),
+                BorderStyle::Solid,
+            ));
+            window.paint_quad(quad(
+                header,
+                header_corners,
+                self.colors.header_fill,
+                px(0.0),
+                transparent_black(),
+                BorderStyle::Solid,
+            ));
+            if !labels.rows.is_empty() {
+                window.paint_quad(fill(
+                    Bounds {
+                        origin: point(header.origin.x, header.origin.y + header.size.height),
+                        size: size(header.size.width, px(1.0)),
+                    },
+                    self.colors.node_border,
+                ));
+            }
+            window.paint_quad(quad(
+                area,
+                radius,
+                transparent_black(),
+                px(1.0),
+                self.colors.node_border,
+                BorderStyle::Solid,
+            ));
+
+            if !show_text {
+                continue;
+            }
+            window.with_content_mask(Some(ContentMask { bounds: area }), |window| {
+                paint_text(
+                    &labels.header,
+                    13.0 * scale,
+                    true,
+                    self.colors.text,
+                    header.origin,
+                    header.size.height,
+                    TextAlign::Center,
+                    Some(header.size.width),
+                    window,
+                    cx,
+                );
+                let padding = ROW_PADDING * scale;
+                for (row, label) in labels.rows.iter().enumerate() {
+                    let line = rect(
+                        node.x,
+                        node.y + HEADER_HEIGHT + ROW_HEIGHT * row as f32,
+                        node.width,
+                        ROW_HEIGHT,
+                    );
+                    if !on_screen(&line) {
+                        continue;
+                    }
+                    let left = line.origin.x + px(padding);
+                    if !label.tag.is_empty() {
+                        let color = if label.primary_key {
+                            self.colors.text
+                        } else {
+                            self.colors.muted_text
+                        };
+                        paint_text(
+                            label.tag,
+                            9.0 * scale,
+                            true,
+                            color,
+                            point(left, line.origin.y),
+                            line.size.height,
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        );
+                    }
+                    paint_text(
+                        &label.name,
+                        12.0 * scale,
+                        false,
+                        self.colors.text,
+                        point(left + px(TAG_WIDTH * scale), line.origin.y),
+                        line.size.height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                    paint_text(
+                        &label.data_type,
+                        11.0 * scale,
+                        false,
+                        self.colors.muted_text,
+                        point(left, line.origin.y),
+                        line.size.height,
+                        TextAlign::Right,
+                        Some(line.size.width - px(2.0 * padding)),
+                        window,
+                        cx,
+                    );
+                }
+            });
+        }
+    }
+}
+
+/// Shape and paint one line of text in the window's own font, centered
+/// vertically in `line_height`.
+#[allow(clippy::too_many_arguments)]
+fn paint_text(
+    text: &str,
+    font_size: f32,
+    bold: bool,
+    color: Hsla,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    align: TextAlign,
+    align_width: Option<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let mut font = window.text_style().font();
+    if bold {
+        font.weight = FontWeight::BOLD;
+    }
+    let run = TextRun {
+        len: text.len(),
+        font,
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window.text_system().shape_line(
+        SharedString::from(text.to_string()),
+        px(font_size),
+        &[run],
+        None,
+    );
+    line.paint(origin, line_height, align, align_width, window, cx)
+        .ok();
 }
 
 /// The SVG palette follows the app theme; the export uses the same colours
