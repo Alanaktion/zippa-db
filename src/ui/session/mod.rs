@@ -19,6 +19,7 @@ use gpui_kit::{
 use regex::Regex;
 
 use crate::db::{CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObject};
+use crate::saved_queries::SavedQueries;
 use crate::ui::completion::SharedCatalog;
 use crate::ui::create_database_dialog::CreateDatabaseView;
 use crate::ui::import_dialog::ImportView;
@@ -148,6 +149,10 @@ impl Session {
     pub fn new(connection: Arc<Connection>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter tables"));
         cx.subscribe_in(&filter, window, Self::on_filter_event)
+            .detach();
+        // The sidebar's Saved tab draws the app's one saved-query list, which
+        // any window's save dialog or delete button may change.
+        cx.observe_global::<SavedQueries>(|_, cx| cx.notify())
             .detach();
 
         // A per-connection id: every workspace tab builds its own dock.
@@ -375,9 +380,6 @@ impl Session {
             }
             SessionPanelEvent::OpenFile => self.open_file(cx),
             SessionPanelEvent::Save => self.save(panel, false, cx),
-            // The saved-query list is read from disk on every render, so a
-            // repaint is all a save needs.
-            SessionPanelEvent::SavedQueriesChanged => cx.notify(),
             SessionPanelEvent::EditVariables => self.open_variables_dialog(panel, window, cx),
         }
     }

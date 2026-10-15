@@ -1,19 +1,15 @@
 //! The "Save query" dialog: a name box for the buffer the toolbar button was
-//! pressed on. Confirming stores it in the global saved-query list; the
-//! panel hears about it through [`SaveQueryEvent`].
+//! pressed on. Confirming stores it in the app's one saved-query list, which
+//! every sidebar observes.
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, EventEmitter, Window, div, px};
+use gpui_kit::{App, Context, Entity, Window, div, px};
 
-/// What the dialog did. The panel turns `Saved` into a
-/// `SessionPanelEvent::SavedQueriesChanged` so the sidebar repaints.
-pub(crate) enum SaveQueryEvent {
-    Saved,
-}
+use crate::saved_queries;
 
 /// One text box for the query's name, with Save/Cancel beneath it.
 pub(crate) struct SaveQueryDialog {
@@ -22,12 +18,7 @@ pub(crate) struct SaveQueryDialog {
 }
 
 impl SaveQueryDialog {
-    pub(crate) fn open(
-        sql: String,
-        default_name: String,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self> {
+    pub(crate) fn open(sql: String, default_name: String, window: &mut Window, cx: &mut App) {
         let view = cx.new(|cx| {
             let name = cx.new(|cx| {
                 let mut state = InputState::new(window, cx);
@@ -50,11 +41,8 @@ impl SaveQueryDialog {
                 state.focus(window, cx);
             })
         });
-        view
     }
 }
-
-impl EventEmitter<SaveQueryEvent> for SaveQueryDialog {}
 
 impl Render for SaveQueryDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -94,10 +82,8 @@ impl Render for SaveQueryDialog {
                                 if name.is_empty() {
                                     return;
                                 }
-                                if crate::saved_queries::upsert(&name, &this.sql).is_ok() {
-                                    cx.emit(SaveQueryEvent::Saved);
-                                    window.close_dialog(cx);
-                                }
+                                saved_queries::upsert(&name, &this.sql, cx);
+                                window.close_dialog(cx);
                             })),
                     ),
             )

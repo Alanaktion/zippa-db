@@ -46,7 +46,7 @@ use crate::ui::table_view::TableView;
 use crate::ui::user_management::UserManagementView;
 use crate::workspace_state::PanelState;
 
-use super::save_dialog::{SaveQueryDialog, SaveQueryEvent};
+use super::save_dialog::SaveQueryDialog;
 use super::tab::{ObjectViewMode, Status, TabContent};
 use super::{CloseTab, NewTab};
 
@@ -101,9 +101,6 @@ pub(crate) enum SessionPanelEvent {
     },
     OpenFile,
     Save,
-    /// The save-query dialog stored the buffer; the sidebar's Saved tab
-    /// should repaint.
-    SavedQueriesChanged,
     /// The user asked to edit this tab's `:name` query variables.
     EditVariables,
 }
@@ -387,31 +384,6 @@ impl SessionPanel {
 
     pub(crate) fn is_query(&self) -> bool {
         matches!(self.content, TabContent::Query { .. })
-    }
-
-    /// Open the save-query dialog for this tab's buffer.
-    fn open_save_dialog(
-        &mut self,
-        sql: String,
-        default_name: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let view = SaveQueryDialog::open(sql, default_name, window, cx);
-        cx.subscribe_in(&view, window, Self::on_save_query_event)
-            .detach();
-    }
-
-    fn on_save_query_event(
-        &mut self,
-        _view: &Entity<SaveQueryDialog>,
-        event: &SaveQueryEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            SaveQueryEvent::Saved => cx.emit(SessionPanelEvent::SavedQueriesChanged),
-        }
     }
 
     pub(crate) fn is_console(&self) -> bool {
@@ -1818,9 +1790,9 @@ impl Panel for SessionPanel {
                         .icon(IconName::Bookmark)
                         .accessibility_label("Save query")
                         .tooltip("Save query")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_save_dialog(sql.clone(), default_name.clone(), window, cx);
-                        })),
+                        .on_click(move |_, window, cx| {
+                            SaveQueryDialog::open(sql.clone(), default_name.clone(), window, cx);
+                        }),
                 );
             }
         }

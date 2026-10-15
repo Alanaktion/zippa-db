@@ -2,7 +2,7 @@
 //! deleting one.
 
 use super::*;
-use crate::saved_queries;
+use crate::saved_queries::{self, SavedQueries};
 
 /// A session whose Saved tab is showing, with one query saved under `name`.
 fn saved_session(
@@ -10,7 +10,9 @@ fn saved_session(
     name: &str,
     sql: &str,
 ) -> (TempDatabase, WindowHandle<Session>) {
-    saved_queries::upsert(name, sql).expect("saving the test query should succeed");
+    saved_queries::reset_for_test();
+    cx.update(|cx| saved_queries::upsert(name, sql, cx));
+    cx.run_until_parked();
     let database = runtime::block_on(TempDatabase::new());
     let connection = runtime::block_on(Connection::open(database.config(), None))
         .expect("could not open the test database");
@@ -31,7 +33,9 @@ fn saved_session(
 
 #[gpui_kit::test]
 fn opening_a_saved_query_starts_a_new_tab_with_its_sql(cx: &mut TestAppContext) {
-    let _lock = saved_queries::FILE_LOCK.lock().unwrap();
+    let _lock = saved_queries::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let (_database, handle) = saved_session(cx, "All users", "SELECT * FROM users;");
     let before = handle
         .read_with(cx, |session, cx| session.tab_titles(cx))
@@ -64,14 +68,16 @@ fn opening_a_saved_query_starts_a_new_tab_with_its_sql(cx: &mut TestAppContext) 
         .unwrap();
     assert_eq!(sql, "SELECT * FROM users;");
 
-    saved_queries::remove("All users").expect("test cleanup should succeed");
+    saved_queries::reset_for_test();
 }
 
 #[gpui_kit::test]
 fn deleting_a_saved_query_forgets_it(cx: &mut TestAppContext) {
-    let _lock = saved_queries::FILE_LOCK.lock().unwrap();
+    let _lock = saved_queries::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let (_database, handle) = saved_session(cx, "Temporary", "SELECT 1;");
-    assert_eq!(saved_queries::load().len(), 1);
+    assert_eq!(cx.update(|cx| SavedQueries::get(cx).len()), 1);
     let tabs_before = handle
         .read_with(cx, |session, cx| session.tab_titles(cx))
         .unwrap()
@@ -85,8 +91,14 @@ fn deleting_a_saved_query_forgets_it(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     assert!(
-        saved_queries::load().is_empty(),
+        cx.update(|cx| SavedQueries::get(cx).is_empty()),
         "the deleted query should be gone"
+    );
+    assert!(
+        saved_queries::load()
+            .expect("the file should read back")
+            .is_empty(),
+        "the deletion should reach the file too"
     );
     let tabs_after = handle
         .read_with(cx, |session, cx| session.tab_titles(cx))
@@ -96,4 +108,5 @@ fn deleting_a_saved_query_forgets_it(cx: &mut TestAppContext) {
         tabs_after, tabs_before,
         "deleting a saved query must not open it in a new tab"
     );
+    saved_queries::reset_for_test();
 }
