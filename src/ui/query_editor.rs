@@ -14,6 +14,7 @@ use gpui_kit::{
 };
 
 use gpui_kit::assets::IconName as AssetIcon;
+use gpui_kit::base::input::{Copy, Cut, Paste, SelectAll};
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -34,6 +35,7 @@ actions!(
         RunScriptIgnoringErrors,
         Explain,
         ExplainAnalyze,
+        FormatQuery,
         ToggleComment,
         CopyLine,
         CutLine,
@@ -245,6 +247,21 @@ impl QueryEditor {
 
     fn explain(&mut self, _: &Explain, _window: &mut Window, cx: &mut Context<Self>) {
         self.emit_explain(false, cx);
+    }
+
+    /// Pretty-print the selection, or the whole buffer when nothing is
+    /// selected. A no-op when there is nothing to format, so the buffer —
+    /// and the undo stack — is left alone.
+    fn format_query(&mut self, _: &FormatQuery, window: &mut Window, cx: &mut Context<Self>) {
+        let dialect = match self.engine {
+            Engine::Postgres => sqlformat::Dialect::PostgreSql,
+            Engine::MySql | Engine::Sqlite => sqlformat::Dialect::Generic,
+        };
+        self.edit_buffer(
+            |text, selected| format_sql(text, selected, dialect),
+            window,
+            cx,
+        );
     }
 
     /// Comment out the lines the selection touches, or the caret's line, and
@@ -655,6 +672,48 @@ impl QueryEditor {
         let sql = state.value().to_string();
         statement::at_cursor(&sql, state.cursor(), self.engine).map(|statement| statement.text)
     }
+}
+
+/// Toggle `-- ` line comments over the lines a selection touches — or the
+/// caret's line — returning the new buffer and where the selection should sit
+/// in it. `None` when there is nothing to change, so a blank caret line is a
+/// no-op rather than an empty edit on the undo stack.
+///
+/// A blank line within the run is left alone; the run is uncommented only when
+/// every non-blank line already carries a comment, and commented as a whole
+/// Pretty-print the selection, or the whole buffer when the selection is
+/// empty. Pure, so the formatting is unit-tested without a window.
+/// Returns `None` when the target is blank or already formatted, so the
+/// buffer — and the undo stack — is left alone.
+fn format_sql(
+    text: &str,
+    selected: std::ops::Range<usize>,
+    dialect: sqlformat::Dialect,
+) -> Option<(String, std::ops::Range<usize>)> {
+    let len = text.len();
+    let (start, end) = if selected.is_empty() {
+        (0, len)
+    } else {
+        (selected.start.min(len), selected.end.min(len))
+    };
+    let target = text.get(start..end)?;
+    if target.trim().is_empty() {
+        return None;
+    }
+    let formatted = sqlformat::format(
+        target,
+        &sqlformat::QueryParams::None,
+        &sqlformat::FormatOptions {
+            dialect,
+            ..Default::default()
+        },
+    );
+    if formatted == target {
+        return None;
+    }
+    let mut new_text = text.to_string();
+    new_text.replace_range(start..end, &formatted);
+    Some((new_text, start..start + formatted.len()))
 }
 
 /// Toggle `-- ` line comments over the lines a selection touches — or the
@@ -1083,6 +1142,7 @@ impl Render for QueryEditor {
             .on_action(cx.listener(Self::run_script_ignoring_errors))
             .on_action(cx.listener(Self::explain))
             .on_action(cx.listener(Self::explain_analyze))
+            .on_action(cx.listener(Self::format_query))
             .on_action(cx.listener(Self::toggle_comment))
             .on_action(cx.listener(Self::copy_line))
             .on_action(cx.listener(Self::cut_line))
@@ -1156,6 +1216,23 @@ impl Render for QueryEditor {
                                     .disabled(self.running)
                                     .on_click(cx.listener(|_this, _, _window, cx| {
                                         cx.emit(QueryEditorEvent::EditVariables)
+                                    })),
+                            )
+                            .child(
+                                Button::new("format-query")
+                                    .ghost()
+                                    .small()
+                                    .icon(AssetIcon::Sparkles)
+                                    .accessibility_label(
+                                        "Format the selection, or the whole buffer",
+                                    )
+                                    .tooltip_with_action(
+                                        "Format the selection, or the whole buffer",
+                                        &FormatQuery,
+                                        Some("QueryEditor"),
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.format_query(&FormatQuery, window, cx)
                                     })),
                             )
                             .child(
@@ -1269,7 +1346,19 @@ impl Render for QueryEditor {
                     .border_t_1()
                     .border_color(cx.theme().border)
                     // Refines over the editor's own monospace default.
-                    .font_family(settings::editor_font(cx)),
+                    .font_family(settings::editor_font(cx))
+                    // The built-in menu is replaced wholesale, so the
+                    // standard items are rebuilt here with the format
+                    // command leading them.
+                    .context_menu(|menu, _, _| {
+                        menu.menu("Format query", Box::new(FormatQuery))
+                            .separator()
+                            .menu("Cut", Box::new(Cut))
+                            .menu("Copy", Box::new(Copy))
+                            .menu("Paste", Box::new(Paste))
+                            .separator()
+                            .menu("Select All", Box::new(SelectAll))
+                    }),
             )
     }
 }
@@ -1309,6 +1398,44 @@ mod tests {
     #[test]
     fn a_marker_with_no_space_comes_off_cleanly() {
         assert_eq!(toggle("--select 1", 2..2), ("select 1".to_string(), 0..0));
+    }
+
+    /// Format `text` with `selected` as the buffer selection, which must
+    /// change something.
+    fn format(text: &str, selected: std::ops::Range<usize>) -> (String, std::ops::Range<usize>) {
+        format_sql(text, selected, sqlformat::Dialect::Generic)
+            .expect("there should be a change to make")
+    }
+
+    #[test]
+    fn an_empty_selection_formats_the_whole_buffer() {
+        let (new, selection) = format("select a, b from t", 4..4);
+        assert_eq!(new, "select\n  a,\n  b\nfrom\n  t");
+        assert_eq!(selection, 0..new.len());
+    }
+
+    #[test]
+    fn a_selection_formats_only_itself() {
+        let (new, selection) = format("select 1;select a, b from t", 9..27);
+        assert_eq!(new, "select 1;select\n  a,\n  b\nfrom\n  t");
+        assert_eq!(selection, 9..new.len());
+    }
+
+    #[test]
+    fn already_formatted_text_is_left_alone() {
+        assert_eq!(
+            format_sql("select\n  a\nfrom\n  t", 0..0, sqlformat::Dialect::Generic),
+            None
+        );
+    }
+
+    #[test]
+    fn blank_text_is_left_alone() {
+        assert_eq!(
+            format_sql("  \n  ", 0..0, sqlformat::Dialect::Generic),
+            None
+        );
+        assert_eq!(format_sql("", 0..0, sqlformat::Dialect::Generic), None);
     }
 
     #[test]

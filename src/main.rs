@@ -57,6 +57,7 @@ gpui_kit::assets::icon_assets!(
         Binoculars,
         Wrench,
         ServerCog,
+        Sparkles,
         FastForward,
         Bookmark,
         X,

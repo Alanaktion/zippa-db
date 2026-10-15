@@ -13,8 +13,8 @@ use crate::ui::data_grid::{
 use crate::ui::import_dialog::CloseImport;
 use crate::ui::query_editor::{
     CopyLine, CutLine, DeleteLine, DuplicateLineDown, DuplicateLineUp, Explain, ExplainAnalyze,
-    MoveLineDown, MoveLineUp, RunQuery, RunScript, RunScriptIgnoringErrors, SelectLine,
-    SelectNextOccurrence, SelectPreviousOccurrence, SmartHome, ToggleComment,
+    FormatQuery, MoveLineDown, MoveLineUp, RunQuery, RunScript, RunScriptIgnoringErrors,
+    SelectLine, SelectNextOccurrence, SelectPreviousOccurrence, SmartHome, ToggleComment,
 };
 use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
@@ -109,6 +109,14 @@ pub fn bind(cx: &mut App) {
         // Toggle commenting on the caret's line or the selected lines.
         KeyBinding::new("secondary-/", ToggleComment, Some("QueryEditor > Input")),
         KeyBinding::new("secondary-/", ToggleComment, Some("QueryEditor")),
+        // Pretty-print the selection, or the whole buffer when nothing is
+        // selected.
+        KeyBinding::new(
+            "secondary-shift-f",
+            FormatQuery,
+            Some("QueryEditor > Input"),
+        ),
+        KeyBinding::new("secondary-shift-f", FormatQuery, Some("QueryEditor")),
         // The line operations, with VS Code's shape: with a selection they act
         // on it, otherwise on the caret's line. Copy and cut take the line
         // plus its newline, so pasting yields a whole line.
