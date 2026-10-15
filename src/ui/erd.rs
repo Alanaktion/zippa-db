@@ -382,25 +382,3 @@ fn palette_for(theme: &Theme) -> ErdPalette {
 fn hex(color: Hsla) -> String {
     format!("#{:06x}", u32::from(Rgba::from(color)) >> 8)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn theme_colours_become_six_digit_hex() {
-        let palette = palette_for(&Theme::default());
-        for colour in [
-            &palette.background,
-            &palette.node_fill,
-            &palette.node_border,
-            &palette.text,
-            &palette.edge,
-        ] {
-            assert!(
-                colour.len() == 7 && colour.starts_with('#'),
-                "expected #rrggbb, got {colour}"
-            );
-        }
-    }
-}

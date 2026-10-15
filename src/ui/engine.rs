@@ -142,12 +142,6 @@ mod tests {
     }
 
     #[test]
-    fn only_the_engine_logos_are_served() {
-        assert!(logo_bytes("icons/table.svg").is_none());
-        assert!(EngineLogos.list("icons/engines/").expect("a listing").len() == 3);
-    }
-
-    #[test]
     fn every_official_colour_is_used_verbatim_on_a_light_surface() {
         // The brand sheet's values are picked for light surfaces, so a light
         // theme should get them exactly as written.

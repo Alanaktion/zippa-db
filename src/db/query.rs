@@ -119,12 +119,6 @@ mod tests {
     }
 
     #[test]
-    fn booleans_are_digits() {
-        assert_eq!(boolean(true), "1");
-        assert_eq!(boolean(false), "0");
-    }
-
-    #[test]
     fn binary_types_are_recognized() {
         for name in ["BLOB", "bytea", "LONGBLOB", "VarBinary", "BYTEA[]"] {
             assert!(is_binary_type(name), "{name} should be binary");

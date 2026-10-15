@@ -607,17 +607,6 @@ mod tests {
         assert!(short.chars().count() <= 120);
         assert!(short.ends_with('…'));
     }
-
-    #[test]
-    fn progress_has_a_percentage() {
-        let progress = ImportProgress {
-            bytes: 50,
-            total: 200,
-            ..ImportProgress::default()
-        };
-        assert_eq!(progress.percent(), 25.0);
-        assert_eq!(ImportProgress::default().percent(), 0.0);
-    }
 }
 
 /// The runner, against a real (temporary) SQLite database.

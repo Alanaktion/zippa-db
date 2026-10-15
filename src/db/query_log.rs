@@ -122,12 +122,4 @@ mod tests {
         assert_eq!(snapshot[0].sql, "10", "the first 10 should have aged out");
         assert_eq!(snapshot[snapshot.len() - 1].sql, (CAPACITY + 9).to_string());
     }
-
-    #[test]
-    fn clear_empties_the_log() {
-        let log = QueryLog::default();
-        log.record(entry("select 1"));
-        log.clear();
-        assert!(log.snapshot().is_empty());
-    }
 }

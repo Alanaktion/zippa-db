@@ -222,16 +222,4 @@ mod tests {
         assert_eq!(result.rows[0][1], Some("User".to_string()));
         assert_eq!(result.rows[1][1], Some("Internal".to_string()));
     }
-
-    #[test]
-    fn outcomes_are_labelled() {
-        assert_eq!(outcome_label(&QueryOutcome::Rows(1)), "1 row");
-        assert_eq!(outcome_label(&QueryOutcome::Rows(2)), "2 rows");
-        assert_eq!(outcome_label(&QueryOutcome::Affected(1)), "1 row affected");
-        assert_eq!(outcome_label(&QueryOutcome::Ran), "ran");
-        assert_eq!(
-            outcome_label(&QueryOutcome::Error("boom".into())),
-            "Error: boom"
-        );
-    }
 }

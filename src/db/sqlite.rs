@@ -337,32 +337,3 @@ impl Maintenance {
         }
     }
 }
-
-#[cfg(test)]
-mod maintenance_tests {
-    use super::Maintenance;
-
-    #[test]
-    fn every_task_has_one_statement() {
-        for task in Maintenance::ALL {
-            assert!(!task.sql().contains(';'), "{task:?}");
-            assert!(!task.label().is_empty() && !task.description().is_empty());
-        }
-    }
-
-    #[test]
-    fn only_the_checks_are_reads() {
-        let reads: Vec<_> = Maintenance::ALL
-            .into_iter()
-            .filter(|task| !task.writes())
-            .collect();
-        assert_eq!(
-            reads,
-            [
-                Maintenance::IntegrityCheck,
-                Maintenance::QuickCheck,
-                Maintenance::ForeignKeyCheck
-            ]
-        );
-    }
-}

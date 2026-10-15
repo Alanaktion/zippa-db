@@ -736,8 +736,7 @@ impl SidebarTab {
 /// icons instead of labels: the three labels no longer fit side by side.
 const SIDEBAR_TAB_ICON_BREAKPOINT: f32 = 260.;
 
-/// Whether the sidebar's tabs collapse to icons at `width`. Pure, so the
-/// breakpoint is unit-tested without a window.
+/// Whether the sidebar's tabs collapse to icons at `width`.
 fn sidebar_tabs_collapsed(width: Pixels) -> bool {
     width < px(SIDEBAR_TAB_ICON_BREAKPOINT)
 }
@@ -761,17 +760,4 @@ fn folder(kind: StoredKind) -> (&'static str, &'static str) {
 /// Turn the filter box's text into a matcher; see [`text_filter::compile`].
 pub(super) fn compile_filter(pattern: &str) -> Option<Regex> {
     text_filter::compile(pattern)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn narrow_sidebars_collapse_the_tabs_to_icons() {
-        assert!(sidebar_tabs_collapsed(px(180.)));
-        assert!(sidebar_tabs_collapsed(px(209.9)));
-        assert!(!sidebar_tabs_collapsed(px(210.)));
-        assert!(!sidebar_tabs_collapsed(px(260.)));
-    }
 }

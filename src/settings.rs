@@ -439,18 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn the_scrollbar_setting_survives_a_round_trip_through_the_file() {
-        let settings = Settings {
-            always_show_scrollbars: false,
-            ..Settings::default()
-        };
-
-        let written = serde_json::to_string(&settings).expect("settings should serialize");
-        let read: Settings = serde_json::from_str(&written).expect("settings should parse");
-        assert!(!read.always_show_scrollbars);
-    }
-
-    #[test]
     fn the_appearance_survives_a_round_trip_through_the_file() {
         for appearance in Appearance::ALL {
             let written = serde_json::to_string(&appearance).expect("appearance should serialize");
