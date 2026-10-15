@@ -5,6 +5,7 @@
 //! SQLite-backed test session can exercise.
 
 use super::*;
+use crate::ui::session::Tool;
 
 #[gpui_kit::test]
 fn a_sqlite_connection_never_opens_a_user_management_tab(cx: &mut TestAppContext) {
@@ -16,7 +17,7 @@ fn a_sqlite_connection_never_opens_a_user_management_tab(cx: &mut TestAppContext
 
     handle
         .update(cx, |session, window, cx| {
-            session.open_user_management_for_test(window, cx)
+            session.open_tool(Tool::Users, window, cx)
         })
         .unwrap();
 

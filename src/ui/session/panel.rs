@@ -31,23 +31,17 @@ use crate::db::runtime;
 use crate::db::{PinnedConnection, ScriptMode, ScriptRun, TxnState};
 use crate::ui::busy::busy_label;
 use crate::ui::completion::SharedCatalog;
-use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::{Copied, DataGrid};
-use crate::ui::erd::ErdView;
 use crate::ui::plan_view::PlanView;
-use crate::ui::process_list::ProcessListView;
-use crate::ui::query_digest::QueryDigestView;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
 use crate::ui::schema_view::SchemaView;
-use crate::ui::server_variables::ServerVariablesView;
 use crate::ui::sql_file;
-use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::TableView;
-use crate::ui::user_management::UserManagementView;
 use crate::workspace_state::PanelState;
 
 use super::save_dialog::SaveQueryDialog;
 use super::tab::{ObjectViewMode, Status, TabContent};
+use super::tool::{Tool, ToolView};
 use super::{CloseTab, NewTab};
 
 /// Starting height of the result pane below the editor, as a share of the
@@ -202,128 +196,13 @@ impl SessionPanel {
         }
     }
 
-    /// The console tab over an already-built [`ConsoleView`]: one per
-    /// session, the same as any other singleton tab, brought forward rather
-    /// than duplicated.
-    pub(crate) fn console(
-        key: usize,
-        title: impl Into<SharedString>,
-        view: Entity<ConsoleView>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    /// A tool tab over an already-built view: one per session, brought
+    /// forward rather than duplicated.
+    pub(crate) fn tool(key: usize, view: ToolView, cx: &mut Context<Self>) -> Self {
         Self {
             key,
-            title: title.into(),
-            content: TabContent::Console { view },
-            focus: cx.focus_handle(),
-            group: None,
-            panes: cx.new(|_| ResizableState::default()),
-        }
-    }
-
-    /// The process list tab over an already-built [`ProcessListView`]: one
-    /// per session, the same as the console.
-    pub(crate) fn processes(
-        key: usize,
-        title: impl Into<SharedString>,
-        view: Entity<ProcessListView>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
-            key,
-            title: title.into(),
-            content: TabContent::Processes { view },
-            focus: cx.focus_handle(),
-            group: None,
-            panes: cx.new(|_| ResizableState::default()),
-        }
-    }
-
-    /// The user management tab over an already-built [`UserManagementView`]:
-    /// one per session, the same as the console and the process list.
-    pub(crate) fn users(
-        key: usize,
-        title: impl Into<SharedString>,
-        view: Entity<UserManagementView>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
-            key,
-            title: title.into(),
-            content: TabContent::Users { view },
-            focus: cx.focus_handle(),
-            group: None,
-            panes: cx.new(|_| ResizableState::default()),
-        }
-    }
-
-    /// The ER diagram tab over an already-built [`ErdView`]: one per session,
-    /// the same as the console and the process list.
-    pub(crate) fn erd(
-        key: usize,
-        title: impl Into<SharedString>,
-        view: Entity<ErdView>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
-            key,
-            title: title.into(),
-            content: TabContent::Erd { view },
-            focus: cx.focus_handle(),
-            group: None,
-            panes: cx.new(|_| ResizableState::default()),
-        }
-    }
-
-    /// The server variables tab over an already-built [`ServerVariablesView`]:
-    /// one per session, the same as the console and the process list.
-    pub(crate) fn variables(
-        key: usize,
-        title: impl Into<SharedString>,
-        view: Entity<ServerVariablesView>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
-            key,
-            title: title.into(),
-            content: TabContent::Variables { view },
-            focus: cx.focus_handle(),
-            group: None,
-            panes: cx.new(|_| ResizableState::default()),
-        }
-    }
-
-    /// The query digest tab over an already-built [`QueryDigestView`]: one
-    /// per session, the same as the console, the process list, and the
-    /// server variables.
-    pub(crate) fn digest(
-        key: usize,
-        title: impl Into<SharedString>,
-        view: Entity<QueryDigestView>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
-            key,
-            title: title.into(),
-            content: TabContent::Digest { view },
-            focus: cx.focus_handle(),
-            group: None,
-            panes: cx.new(|_| ResizableState::default()),
-        }
-    }
-
-    /// The SQLite maintenance tab over an already-built
-    /// [`SqliteMaintenanceView`]: one per session, like the other tools.
-    pub(crate) fn maintenance(
-        key: usize,
-        title: impl Into<SharedString>,
-        view: Entity<SqliteMaintenanceView>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
-            key,
-            title: title.into(),
-            content: TabContent::Maintenance { view },
+            title: view.tool().title().into(),
+            content: TabContent::Tool(view),
             focus: cx.focus_handle(),
             group: None,
             panes: cx.new(|_| ResizableState::default()),
@@ -386,32 +265,12 @@ impl SessionPanel {
         matches!(self.content, TabContent::Query { .. })
     }
 
-    pub(crate) fn is_console(&self) -> bool {
-        matches!(self.content, TabContent::Console { .. })
-    }
-
-    pub(crate) fn is_process_list(&self) -> bool {
-        matches!(self.content, TabContent::Processes { .. })
-    }
-
-    pub(crate) fn is_server_variables(&self) -> bool {
-        matches!(self.content, TabContent::Variables { .. })
-    }
-
-    pub(crate) fn is_query_digest(&self) -> bool {
-        matches!(self.content, TabContent::Digest { .. })
-    }
-
-    pub(crate) fn is_maintenance(&self) -> bool {
-        matches!(self.content, TabContent::Maintenance { .. })
-    }
-
-    pub(crate) fn is_user_management(&self) -> bool {
-        matches!(self.content, TabContent::Users { .. })
-    }
-
-    pub(crate) fn is_erd(&self) -> bool {
-        matches!(self.content, TabContent::Erd { .. })
+    /// Which tool this tab is, if it is one.
+    pub(crate) fn tool_kind(&self) -> Option<Tool> {
+        match &self.content {
+            TabContent::Tool(view) => Some(view.tool()),
+            _ => None,
+        }
     }
 
     /// The icon that tells this tab's kind apart at a glance.
@@ -424,13 +283,7 @@ impl SessionPanel {
             TabContent::Query { .. } => IconName::SquareTerminal,
             TabContent::Table { .. } => IconName::Table,
             TabContent::Schema { .. } => IconName::ListTree,
-            TabContent::Console { .. } => IconName::ScrollText,
-            TabContent::Processes { .. } => IconName::Activity,
-            TabContent::Variables { .. } => IconName::SlidersHorizontal,
-            TabContent::Digest { .. } => IconName::Gauge,
-            TabContent::Maintenance { .. } => IconName::Wrench,
-            TabContent::Users { .. } => IconName::Users,
-            TabContent::Erd { .. } => IconName::Network,
+            TabContent::Tool(view) => view.tool().icon(),
         }
     }
 
@@ -444,13 +297,7 @@ impl SessionPanel {
             TabContent::Query { .. } => "query",
             TabContent::Table { .. } => "table",
             TabContent::Schema { .. } => "table structure",
-            TabContent::Console { .. } => "console",
-            TabContent::Processes { .. } => "process list",
-            TabContent::Variables { .. } => "server variables",
-            TabContent::Digest { .. } => "query digest",
-            TabContent::Maintenance { .. } => "database maintenance",
-            TabContent::Users { .. } => "user management",
-            TabContent::Erd { .. } => "ER diagram",
+            TabContent::Tool(view) => view.tool().kind(),
         }
     }
 
@@ -504,14 +351,7 @@ impl SessionPanel {
         match &self.content {
             TabContent::Table { view } => Some(view.read(cx).object().clone()),
             TabContent::Schema { view } => Some(view.read(cx).object().clone()),
-            TabContent::Query { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => None,
+            TabContent::Query { .. } | TabContent::Tool(_) => None,
         }
     }
 
@@ -520,14 +360,7 @@ impl SessionPanel {
         match &self.content {
             TabContent::Table { .. } => Some(ObjectViewMode::Data),
             TabContent::Schema { .. } => Some(ObjectViewMode::Schema),
-            TabContent::Query { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => None,
+            TabContent::Query { .. } | TabContent::Tool(_) => None,
         }
     }
 
@@ -552,13 +385,7 @@ impl SessionPanel {
             TabContent::Schema { view } => PanelState::Schema {
                 object: view.read(cx).object().clone(),
             },
-            TabContent::Console { .. } => PanelState::Console,
-            TabContent::Processes { .. } => PanelState::Processes,
-            TabContent::Variables { .. } => PanelState::Variables,
-            TabContent::Digest { .. } => PanelState::Digest,
-            TabContent::Maintenance { .. } => PanelState::Maintenance,
-            TabContent::Users { .. } => PanelState::Users,
-            TabContent::Erd { .. } => PanelState::Erd,
+            TabContent::Tool(view) => view.tool().state(),
         };
         Some(state)
     }
@@ -582,13 +409,7 @@ impl SessionPanel {
             }
             TabContent::Table { view } => view.read(cx).has_staged_edits(cx),
             TabContent::Schema { view } => view.read(cx).is_dirty(cx),
-            TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => false,
+            TabContent::Tool(_) => false,
         }
     }
 
@@ -607,157 +428,30 @@ impl SessionPanel {
     pub(crate) fn table_view(&self) -> Option<Entity<TableView>> {
         match &self.content {
             TabContent::Table { view } => Some(view.clone()),
-            TabContent::Query { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => None,
+            _ => None,
         }
     }
 
     pub(crate) fn schema_view(&self) -> Option<Entity<SchemaView>> {
         match &self.content {
             TabContent::Schema { view } => Some(view.clone()),
-            TabContent::Query { .. }
-            | TabContent::Table { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => None,
+            _ => None,
         }
     }
 
+    /// The tool view this tab holds, if it is a tool tab.
     #[cfg(test)]
-    pub(crate) fn console_view(&self) -> Option<Entity<ConsoleView>> {
+    pub(crate) fn tool_view(&self) -> Option<&ToolView> {
         match &self.content {
-            TabContent::Console { view } => Some(view.clone()),
-            TabContent::Query { .. }
-            | TabContent::Table { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn process_list_view(&self) -> Option<Entity<ProcessListView>> {
-        match &self.content {
-            TabContent::Processes { view } => Some(view.clone()),
-            TabContent::Query { .. }
-            | TabContent::Table { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Console { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn user_management_view(&self) -> Option<Entity<UserManagementView>> {
-        match &self.content {
-            TabContent::Users { view } => Some(view.clone()),
-            TabContent::Query { .. }
-            | TabContent::Table { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Erd { .. } => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn erd_view(&self) -> Option<Entity<ErdView>> {
-        match &self.content {
-            TabContent::Erd { view } => Some(view.clone()),
-            TabContent::Query { .. }
-            | TabContent::Table { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn server_variables_view(&self) -> Option<Entity<ServerVariablesView>> {
-        match &self.content {
-            TabContent::Variables { view } => Some(view.clone()),
-            TabContent::Query { .. }
-            | TabContent::Table { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn query_digest_view(&self) -> Option<Entity<QueryDigestView>> {
-        match &self.content {
-            TabContent::Digest { view } => Some(view.clone()),
-            TabContent::Query { .. }
-            | TabContent::Table { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn maintenance_view(&self) -> Option<Entity<SqliteMaintenanceView>> {
-        match &self.content {
-            TabContent::Maintenance { view } => Some(view.clone()),
-            TabContent::Query { .. }
-            | TabContent::Table { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => None,
+            TabContent::Tool(view) => Some(view),
+            _ => None,
         }
     }
 
     pub(crate) fn editor(&self) -> Option<Entity<QueryEditor>> {
         match &self.content {
             TabContent::Query { editor, .. } => Some(editor.clone()),
-            TabContent::Table { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => None,
+            _ => None,
         }
     }
 
@@ -765,15 +459,7 @@ impl SessionPanel {
     pub(crate) fn grid(&self) -> Option<Entity<DataGrid>> {
         match &self.content {
             TabContent::Query { grid, .. } => Some(grid.clone()),
-            TabContent::Table { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => None,
+            _ => None,
         }
     }
 
@@ -869,15 +555,9 @@ impl SessionPanel {
     pub(crate) fn status_message(&self) -> String {
         match &self.content {
             TabContent::Query { status, .. } => status.message(),
-            TabContent::Table { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => String::new(),
+            TabContent::Table { .. } | TabContent::Schema { .. } | TabContent::Tool(_) => {
+                String::new()
+            }
         }
     }
 
@@ -899,15 +579,7 @@ impl SessionPanel {
             TabContent::Query {
                 results, result, ..
             } => (results.len(), *result),
-            TabContent::Table { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Console { .. }
-            | TabContent::Processes { .. }
-            | TabContent::Variables { .. }
-            | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. }
-            | TabContent::Users { .. }
-            | TabContent::Erd { .. } => (0, 0),
+            TabContent::Table { .. } | TabContent::Schema { .. } | TabContent::Tool(_) => (0, 0),
         }
     }
 
@@ -1305,39 +977,11 @@ impl SessionPanel {
                 let view = view.clone();
                 view.update(cx, |view, cx| view.set_connection(connection, cx));
             }
-            TabContent::Console { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.set_connection(connection, cx));
-            }
-            TabContent::Processes { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.set_connection(connection, cx));
-            }
-            TabContent::Variables { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.set_connection(connection, cx));
-            }
-            TabContent::Digest { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.set_connection(connection, cx));
-            }
-            TabContent::Maintenance { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.set_connection(connection, cx));
-            }
-            TabContent::Users { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.set_connection(connection, cx));
-            }
-            TabContent::Erd { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.set_connection(connection, cx));
-            }
+            TabContent::Tool(view) => view.set_connection(connection, cx),
         }
     }
 
-    /// Reread a table tab's rows, a console tab's log, a process list, the
-    /// server variables, the query digest, or the user list. A query tab's
+    /// Reread a table tab's rows, or what a tool tab shows. A query tab's
     /// buffer is the user's own SQL and is left alone; a structure tab has
     /// nothing to refresh this way.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -1346,34 +990,8 @@ impl SessionPanel {
                 let view = view.clone();
                 view.update(cx, |view, cx| view.refresh(cx));
             }
-            TabContent::Console { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.refresh(cx));
-            }
-            TabContent::Processes { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.refresh(cx));
-            }
-            TabContent::Variables { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.refresh(cx));
-            }
-            TabContent::Digest { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.refresh(cx));
-            }
-            TabContent::Users { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.refresh(cx));
-            }
-            TabContent::Erd { view } => {
-                let view = view.clone();
-                view.update(cx, |view, cx| view.refresh(cx));
-            }
-            // Nothing to re-read: it only shows what its buttons ran.
-            TabContent::Query { .. }
-            | TabContent::Schema { .. }
-            | TabContent::Maintenance { .. } => {}
+            TabContent::Tool(view) => view.refresh(cx),
+            TabContent::Query { .. } | TabContent::Schema { .. } => {}
         }
     }
 
@@ -1622,15 +1240,8 @@ impl Focusable for SessionPanel {
             // left there would answer none of them.
             TabContent::Table { view } => view.read(cx).focus_handle(cx),
             TabContent::Schema { .. } => self.focus.clone(),
-            // The rows are what the keyboard is for here too, the same
-            // reason a table panel answers with its grid.
-            TabContent::Console { view } => view.read(cx).focus_handle(cx),
-            TabContent::Processes { view } => view.read(cx).focus_handle(cx),
-            TabContent::Variables { view } => view.read(cx).focus_handle(cx),
-            TabContent::Digest { view } => view.read(cx).focus_handle(cx),
-            TabContent::Maintenance { view } => view.read(cx).focus_handle(cx),
-            TabContent::Users { view } => view.read(cx).focus_handle(cx),
-            TabContent::Erd { view } => view.read(cx).focus_handle(cx),
+            // A tool's grid or canvas, for the same reason.
+            TabContent::Tool(view) => view.focus_handle(cx),
         }
     }
 }
@@ -1892,13 +1503,7 @@ impl Render for SessionPanel {
             // the pane.
             TabContent::Table { view } => view.clone().into_any_element(),
             TabContent::Schema { view } => view.clone().into_any_element(),
-            TabContent::Console { view } => view.clone().into_any_element(),
-            TabContent::Processes { view } => view.clone().into_any_element(),
-            TabContent::Users { view } => view.clone().into_any_element(),
-            TabContent::Erd { view } => view.clone().into_any_element(),
-            TabContent::Variables { view } => view.clone().into_any_element(),
-            TabContent::Digest { view } => view.clone().into_any_element(),
-            TabContent::Maintenance { view } => view.clone().into_any_element(),
+            TabContent::Tool(view) => view.element(),
         };
 
         div()

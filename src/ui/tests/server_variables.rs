@@ -7,6 +7,7 @@
 //! session can exercise.
 
 use super::*;
+use crate::ui::session::Tool;
 
 #[gpui_kit::test]
 fn a_sqlite_connection_never_opens_a_server_variables_tab(cx: &mut TestAppContext) {
@@ -18,7 +19,7 @@ fn a_sqlite_connection_never_opens_a_server_variables_tab(cx: &mut TestAppContex
 
     handle
         .update(cx, |session, window, cx| {
-            session.open_server_variables_for_test(window, cx)
+            session.open_tool(Tool::Variables, window, cx)
         })
         .unwrap();
 

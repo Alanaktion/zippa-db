@@ -11,18 +11,12 @@ use gpui_kit::component::dock::PanelId;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, Window};
 
-use crate::db::{DatabaseObject, Engine};
-use crate::ui::console::ConsoleView;
-use crate::ui::erd::ErdView;
+use crate::db::DatabaseObject;
 use crate::ui::filter_bar::FilterSpec;
-use crate::ui::process_list::ProcessListView;
-use crate::ui::query_digest::QueryDigestView;
 use crate::ui::schema_view::{SchemaView, SchemaViewEvent};
-use crate::ui::server_variables::ServerVariablesView;
-use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::{TableView, TableViewEvent};
-use crate::ui::user_management::UserManagementView;
 
+use super::tool::{Tool, ToolView};
 use super::{
     CloseScope, CloseTab, NewTab, NextTab, ObjectViewMode, PreviousTab, Session, SessionEvent,
     SessionPanel,
@@ -191,170 +185,39 @@ impl Session {
         }
     }
 
-    /// Open the console tab, or bring forward the one already open — there is
-    /// only ever one per session, the same as a table's data and structure
-    /// tabs are each one of a kind.
-    pub(crate) fn open_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(panel) = self
-            .panels
-            .iter()
-            .find(|panel| panel.read(cx).is_console())
-            .cloned()
-        {
-            self.activate_panel(&panel, window, cx);
-            return;
-        }
-
-        let key = self.next_key;
-        self.next_key += 1;
-        let view = cx.new(|cx| ConsoleView::new(self.connection.clone(), window, cx));
-        let panel = cx.new(|cx| SessionPanel::console(key, "Console", view, cx));
-        self.install(panel, window, cx);
-    }
-
-    /// Open the process list tab, or bring forward the one already open.
-    /// SQLite has no server to ask, so this is never called for one — see
-    /// `Session::render_sidebar`, which does not offer the button there.
-    pub(crate) fn open_process_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.connection.config.engine == Engine::Sqlite {
-            return;
+    /// Open `tool`'s tab, or bring forward the one already open — there is
+    /// only ever one of each per session, the same as a table's data and
+    /// structure tabs are each one of a kind. Nothing happens for a tool the
+    /// engine does not offer (see [`Tool::offered`]); the sidebar and the
+    /// quick switcher do not offer those either.
+    ///
+    /// Whether this opened a new tab.
+    pub(crate) fn open_tool(
+        &mut self,
+        tool: Tool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !tool.offered(self.connection.config.engine) {
+            return false;
         }
 
         if let Some(panel) = self
             .panels
             .iter()
-            .find(|panel| panel.read(cx).is_process_list())
+            .find(|panel| panel.read(cx).tool_kind() == Some(tool))
             .cloned()
         {
             self.activate_panel(&panel, window, cx);
-            return;
+            return false;
         }
 
         let key = self.next_key;
         self.next_key += 1;
-        let view = cx.new(|cx| ProcessListView::new(self.connection.clone(), window, cx));
-        let panel = cx.new(|cx| SessionPanel::processes(key, "Processes", view, cx));
+        let view = ToolView::new(tool, self.connection.clone(), window, cx);
+        let panel = cx.new(|cx| SessionPanel::tool(key, view, cx));
         self.install(panel, window, cx);
-    }
-
-    /// Open the user management tab, or bring forward the one already open.
-    /// SQLite has no users, so this is never called for one — see
-    /// `Session::render_sidebar`, which does not offer the button there.
-    pub(crate) fn open_user_management(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.connection.config.engine == Engine::Sqlite {
-            return;
-        }
-
-        if let Some(panel) = self
-            .panels
-            .iter()
-            .find(|panel| panel.read(cx).is_user_management())
-            .cloned()
-        {
-            self.activate_panel(&panel, window, cx);
-            return;
-        }
-
-        let key = self.next_key;
-        self.next_key += 1;
-        let view = cx.new(|cx| UserManagementView::new(self.connection.clone(), window, cx));
-        let panel = cx.new(|cx| SessionPanel::users(key, "Users", view, cx));
-        self.install(panel, window, cx);
-    }
-
-    /// Open the ER diagram tab, or bring forward the one already open. Every
-    /// engine has foreign keys to diagram, SQLite included.
-    pub(crate) fn open_erd(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(panel) = self
-            .panels
-            .iter()
-            .find(|panel| panel.read(cx).is_erd())
-            .cloned()
-        {
-            self.activate_panel(&panel, window, cx);
-            return;
-        }
-
-        let key = self.next_key;
-        self.next_key += 1;
-        let view = cx.new(|cx| ErdView::new(self.connection.clone(), window, cx));
-        let panel = cx.new(|cx| SessionPanel::erd(key, "ER diagram", view, cx));
-        self.install(panel, window, cx);
-    }
-
-    /// Open the server variables tab, or bring forward the one already open.
-    /// SQLite has no server-side configuration to show, so this is never
-    /// called for one — see `Session::render_sidebar`.
-    pub(crate) fn open_server_variables(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.connection.config.engine == Engine::Sqlite {
-            return;
-        }
-
-        if let Some(panel) = self
-            .panels
-            .iter()
-            .find(|panel| panel.read(cx).is_server_variables())
-            .cloned()
-        {
-            self.activate_panel(&panel, window, cx);
-            return;
-        }
-
-        let key = self.next_key;
-        self.next_key += 1;
-        let view = cx.new(|cx| ServerVariablesView::new(self.connection.clone(), window, cx));
-        let panel = cx.new(|cx| SessionPanel::variables(key, "Variables", view, cx));
-        self.install(panel, window, cx);
-    }
-
-    /// Open the query digest tab, or bring forward the one already open.
-    /// SQLite has no query instrumentation to read this way, so this is
-    /// never called for one — see `Session::render_sidebar`.
-    pub(crate) fn open_query_digest(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.connection.config.engine == Engine::Sqlite {
-            return;
-        }
-
-        if let Some(panel) = self
-            .panels
-            .iter()
-            .find(|panel| panel.read(cx).is_query_digest())
-            .cloned()
-        {
-            self.activate_panel(&panel, window, cx);
-            return;
-        }
-
-        let key = self.next_key;
-        self.next_key += 1;
-        let view = cx.new(|cx| QueryDigestView::new(self.connection.clone(), window, cx));
-        let panel = cx.new(|cx| SessionPanel::digest(key, "Query Digest", view, cx));
-        self.install(panel, window, cx);
-    }
-
-    /// Open the SQLite maintenance tab, or bring forward the one already
-    /// open. The other engines have a server to look after this, so this is
-    /// never called for one — see `Session::render_sidebar`.
-    pub(crate) fn open_maintenance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.connection.config.engine != Engine::Sqlite {
-            return;
-        }
-
-        if let Some(panel) = self
-            .panels
-            .iter()
-            .find(|panel| panel.read(cx).is_maintenance())
-            .cloned()
-        {
-            self.activate_panel(&panel, window, cx);
-            return;
-        }
-
-        let key = self.next_key;
-        self.next_key += 1;
-        let view = cx.new(|cx| SqliteMaintenanceView::new(self.connection.clone(), window, cx));
-        let panel = cx.new(|cx| SessionPanel::maintenance(key, "Maintenance", view, cx));
-        self.install(panel, window, cx);
+        true
     }
 
     /// A table view followed a foreign key; open (or reuse) the referenced

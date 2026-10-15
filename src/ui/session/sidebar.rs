@@ -36,7 +36,7 @@ use crate::ui::text_filter;
 use super::tab::ObjectViewMode;
 use super::{
     ImportSqlDump, OpenConsole, OpenErd, OpenMaintenance, OpenProcessList, OpenQueryDigest,
-    OpenServerVariables, OpenUserManagement, SearchSchema, Session,
+    OpenServerVariables, OpenUserManagement, SearchSchema, Session, Tool,
 };
 
 impl Session {
@@ -434,7 +434,7 @@ impl Session {
                         Some("Session"),
                     )
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_erd(window, cx);
+                        this.open_tool(Tool::Erd, window, cx);
                     })),
             )
             .child(
@@ -471,7 +471,9 @@ impl Session {
                     "Every statement this connection has sent",
                     &OpenConsole,
                 )
-                .on_click(cx.listener(|this, _, window, cx| this.open_console(window, cx))),
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_tool(Tool::Console, window, cx);
+                })),
             )
             .when(!server, |this| {
                 this.child(
@@ -482,7 +484,9 @@ impl Session {
                         "Integrity checks, optimize, vacuum",
                         &OpenMaintenance,
                     )
-                    .on_click(cx.listener(|this, _, window, cx| this.open_maintenance(window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_tool(Tool::Maintenance, window, cx);
+                    })),
                 )
             })
             .when(server, |this| {
@@ -494,9 +498,9 @@ impl Session {
                         "Who is connected and what they're doing right now",
                         &OpenProcessList,
                     )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_process_list(window, cx)),
-                    ),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_tool(Tool::Processes, window, cx);
+                    })),
                 )
                 .child(
                     tool_row(
@@ -506,9 +510,9 @@ impl Session {
                         "The server's own configuration",
                         &OpenServerVariables,
                     )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_server_variables(window, cx)),
-                    ),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_tool(Tool::Variables, window, cx);
+                    })),
                 )
                 .child(
                     tool_row(
@@ -518,9 +522,9 @@ impl Session {
                         "Slow and frequent statements, ranked by mean time",
                         &OpenQueryDigest,
                     )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_query_digest(window, cx)),
-                    ),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_tool(Tool::Digest, window, cx);
+                    })),
                 )
                 .child(
                     tool_row(
@@ -530,9 +534,9 @@ impl Session {
                         "Server users and roles: create, password, drop",
                         &OpenUserManagement,
                     )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_user_management(window, cx)),
-                    ),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_tool(Tool::Users, window, cx);
+                    })),
                 )
             })
     }

@@ -6,18 +6,13 @@ use gpui_kit::Entity;
 
 use crate::db::query::QueryResult;
 use crate::db::{Engine, PinnedConnection, ScriptRun};
-use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::DataGrid;
-use crate::ui::erd::ErdView;
 use crate::ui::plan_view::PlanView;
-use crate::ui::process_list::ProcessListView;
-use crate::ui::query_digest::QueryDigestView;
 use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
-use crate::ui::server_variables::ServerVariablesView;
-use crate::ui::sqlite_maintenance::SqliteMaintenanceView;
 use crate::ui::table_view::TableView;
-use crate::ui::user_management::UserManagementView;
+
+use super::tool::ToolView;
 
 /// Whether a sidebar object is opened as its rows or its own definition.
 ///
@@ -51,8 +46,8 @@ impl Status {
     }
 }
 
-/// What a tab holds: a query editor with its result, or a table opened from
-/// the sidebar.
+/// What a tab holds: a query editor with its result, a table opened from
+/// the sidebar, its structure, or one of the session's tools.
 ///
 /// The query variant is the wide one — it carries the buffer, its results, and
 /// the plan — and the others are a single entity handle. Boxing the query to
@@ -97,25 +92,6 @@ pub(crate) enum TabContent {
     Schema {
         view: Entity<SchemaView>,
     },
-    Console {
-        view: Entity<ConsoleView>,
-    },
-    Processes {
-        view: Entity<ProcessListView>,
-    },
-    Variables {
-        view: Entity<ServerVariablesView>,
-    },
-    Digest {
-        view: Entity<QueryDigestView>,
-    },
-    Maintenance {
-        view: Entity<SqliteMaintenanceView>,
-    },
-    Users {
-        view: Entity<UserManagementView>,
-    },
-    Erd {
-        view: Entity<ErdView>,
-    },
+    /// One of the session's tools — the console, a server view, and so on.
+    Tool(ToolView),
 }
