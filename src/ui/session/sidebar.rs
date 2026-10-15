@@ -25,7 +25,7 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tree::{TreeItem, tree};
 use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Action, ClipboardItem, Context, Entity, SharedString, Window, div};
+use gpui_kit::{Action, ClipboardItem, Context, Entity, Pixels, SharedString, Window, div, px};
 use regex::Regex;
 
 use crate::db::{DatabaseObject, Engine, ObjectKind, StoredKind, StoredObject};
@@ -328,9 +328,19 @@ impl Session {
     /// The three tabs at the top of the sidebar: the object list, the
     /// server tools, and the saved queries. A segmented bar reads as a
     /// section switch rather than a strip of document tabs, which is what
-    /// these are.
+    /// these are. The sidebar is resizable, so when it gets too narrow for
+    /// the labels they collapse to icons.
     fn render_sidebar_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        TabBar::new("sidebar-tabs")
+        let width = self
+            .columns
+            .read(cx)
+            .sizes()
+            .first()
+            .copied()
+            .unwrap_or(px(super::SIDEBAR_WIDTH));
+        let icons_only = sidebar_tabs_collapsed(width);
+
+        let mut bar = TabBar::new("sidebar-tabs")
             .segmented()
             .small()
             .text_sm()
@@ -341,10 +351,21 @@ impl Session {
                     this.sidebar_tab = tab;
                     cx.notify();
                 }
-            }))
-            .child(Tab::new().label("Schema").flex_1())
-            .child(Tab::new().label("Management").flex_1())
-            .child(Tab::new().label("Saved").flex_1())
+            }));
+        for tab in [
+            SidebarTab::Schema,
+            SidebarTab::Management,
+            SidebarTab::Saved,
+        ] {
+            let label = tab.label();
+            let item = Tab::new().flex_1().aria_label(label);
+            bar = bar.child(if icons_only {
+                item.icon(Icon::new(tab.icon()))
+            } else {
+                item.label(label)
+            });
+        }
+        bar
     }
 
     /// The Schema tab: the filter with its two inline actions, then the list of
@@ -651,6 +672,26 @@ impl SidebarTab {
         }
     }
 
+    /// The tab's label, shown when the sidebar is wide enough — and always
+    /// the accessible name, so the icon-only tabs still announce themselves.
+    fn label(self) -> &'static str {
+        match self {
+            SidebarTab::Schema => "Schema",
+            SidebarTab::Management => "Management",
+            SidebarTab::Saved => "Saved",
+        }
+    }
+
+    /// The icon the tab collapses to when the sidebar is too narrow for
+    /// its label.
+    fn icon(self) -> IconName {
+        match self {
+            SidebarTab::Schema => IconName::Database,
+            SidebarTab::Management => IconName::ServerCog,
+            SidebarTab::Saved => IconName::Bookmark,
+        }
+    }
+
     /// The tab a click on `index` selects; anything past the last named tab is
     /// the last one, so a click can never land on nothing.
     fn from_index(index: usize) -> Self {
@@ -660,6 +701,16 @@ impl SidebarTab {
             _ => SidebarTab::Saved,
         }
     }
+}
+
+/// The sidebar width below which the Schema/Management/Saved tabs show
+/// icons instead of labels: the three labels no longer fit side by side.
+const SIDEBAR_TAB_ICON_BREAKPOINT: f32 = 210.;
+
+/// Whether the sidebar's tabs collapse to icons at `width`. Pure, so the
+/// breakpoint is unit-tested without a window.
+fn sidebar_tabs_collapsed(width: Pixels) -> bool {
+    width < px(SIDEBAR_TAB_ICON_BREAKPOINT)
 }
 
 /// A tree id for a function, procedure or sequence, which cannot collide with
@@ -681,4 +732,17 @@ fn folder(kind: StoredKind) -> (&'static str, &'static str) {
 /// Turn the filter box's text into a matcher; see [`text_filter::compile`].
 pub(super) fn compile_filter(pattern: &str) -> Option<Regex> {
     text_filter::compile(pattern)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn narrow_sidebars_collapse_the_tabs_to_icons() {
+        assert!(sidebar_tabs_collapsed(px(180.)));
+        assert!(sidebar_tabs_collapsed(px(209.9)));
+        assert!(!sidebar_tabs_collapsed(px(210.)));
+        assert!(!sidebar_tabs_collapsed(px(260.)));
+    }
 }
