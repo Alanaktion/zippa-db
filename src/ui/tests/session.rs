@@ -416,6 +416,46 @@ fn typing_into_a_tab_marks_it_dirty(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn whitespace_only_buffer_is_not_dirty(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    // A stray newline or spaces — from an Enter, an undo, or deleting every
+    // character — are not unsaved work: an empty tab stays clean.
+    for whitespace in ["\n", "  \n  ", ""] {
+        handle
+            .update(cx, |session, window, cx| {
+                session.prepare_active_editor_for_test(whitespace, window, cx);
+                assert!(
+                    !session.tab_is_dirty_for_test(0, cx),
+                    "a whitespace-only buffer is not dirty"
+                );
+            })
+            .unwrap();
+    }
+
+    // Real content still marks the tab dirty.
+    handle
+        .update(cx, |session, window, cx| {
+            session.prepare_active_editor_for_test("SELECT 1;", window, cx);
+            assert!(session.tab_is_dirty_for_test(0, cx));
+        })
+        .unwrap();
+
+    // Clearing a tab that opened with content keeps it dirty: the deletion
+    // is real work a close would lose.
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_tab(None, "SELECT 1;".to_string(), false, window, cx);
+            session.prepare_active_editor_for_test("", window, cx);
+            assert!(
+                session.tab_is_dirty_for_test(1, cx),
+                "deleting a tab's content is unsaved work"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
 fn staging_an_edit_marks_a_table_tab_dirty(cx: &mut TestAppContext) {
     let (_database, handle, view) = table_view(cx);
     cx.run_until_parked();
