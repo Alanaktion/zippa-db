@@ -32,6 +32,9 @@ use super::{
     typed_placeholder,
 };
 
+/// What the query log shows in place of a password.
+const REDACTED: &str = "********";
+
 /// Connections kept for the app's own reads and writes — the sidebar, table
 /// views, the structure tab — however many query tabs hold one of their own.
 pub(crate) const POOL_SIZE: u32 = 5;
@@ -372,7 +375,17 @@ impl Connection {
         match self.config.engine {
             Engine::Postgres => {
                 let result = self.run_query(postgres::ALL_FOREIGN_KEYS_SQL).await?;
-                Ok(erd::parse_bulk_relations(&result))
+                Ok(erd::parse_bulk_relations(&result)
+                    .into_iter()
+                    .map(|mut relation| {
+                        // The same rule `objects` applies, so a table in
+                        // `public` matches the schema-less table the diagram
+                        // was handed rather than missing every edge.
+                        relation.from.schema = self.shown_schema(relation.from.schema.take());
+                        relation.to.schema = self.shown_schema(relation.to.schema.take());
+                        relation
+                    })
+                    .collect())
             }
             Engine::MySql => {
                 let result = self.run_query(mysql::ALL_FOREIGN_KEYS_SQL).await?;
@@ -905,9 +918,7 @@ impl Connection {
         request: ImportRequest,
         progress: tokio::sync::mpsc::UnboundedSender<ImportProgress>,
     ) -> Result<ImportSummary> {
-        if self.config.safety.is_read_only() {
-            anyhow::bail!("this connection is read-only, so a dump cannot be imported");
-        }
+        self.refuse_read_only("the dump was not imported")?;
 
         let dialect = match self.config.engine {
             Engine::Postgres => Dialect::Postgres,
@@ -973,9 +984,7 @@ impl Connection {
 
     /// End a server process by the id [`Self::processes`] showed for it.
     pub async fn kill_process(&self, id: &str) -> Result<()> {
-        if self.config.safety.is_read_only() {
-            anyhow::bail!("this connection is read-only");
-        }
+        self.refuse_read_only("the process was not ended")?;
         match self.config.engine {
             // `pg_terminate_backend` takes the backend's pid; the row's own
             // id column is exactly that.
@@ -1017,23 +1026,21 @@ impl Connection {
     /// Create a login user. `host` is MySQL's `user@host` part; Postgres
     /// roles have no host, so it is ignored there.
     pub async fn create_user(&self, name: &str, host: Option<&str>, password: &str) -> Result<()> {
-        if self.config.safety.is_read_only() {
-            anyhow::bail!("this connection is read-only");
-        }
-        let sql = sql::create_user_sql(name, host, password, self.config.engine)
+        self.refuse_read_only("the user was not created")?;
+        let engine = self.config.engine;
+        let sql = sql::create_user_sql(name, host, password, engine)
             .ok_or_else(|| anyhow::anyhow!("a valid name is required to create a user"))?;
-        self.execute(&sql, vec![]).await?;
+        let shown = sql::create_user_sql(name, host, REDACTED, engine).unwrap_or_default();
+        self.execute_logged_as(&sql, Vec::new(), &shown).await?;
         Ok(())
     }
 
     /// Drop a user by the name (and host, on MySQL) [`Self::users`] showed.
     pub async fn drop_user(&self, name: &str, host: Option<&str>) -> Result<()> {
-        if self.config.safety.is_read_only() {
-            anyhow::bail!("this connection is read-only");
-        }
+        self.refuse_read_only("the user was not dropped")?;
         let sql = sql::drop_user_sql(name, host, self.config.engine)
             .ok_or_else(|| anyhow::anyhow!("a valid name is required to drop a user"))?;
-        self.execute(&sql, vec![]).await?;
+        self.execute(&sql, Vec::new()).await?;
         Ok(())
     }
 
@@ -1044,12 +1051,12 @@ impl Connection {
         host: Option<&str>,
         password: &str,
     ) -> Result<()> {
-        if self.config.safety.is_read_only() {
-            anyhow::bail!("this connection is read-only");
-        }
-        let sql = sql::set_user_password_sql(name, host, password, self.config.engine)
+        self.refuse_read_only("the password was not changed")?;
+        let engine = self.config.engine;
+        let sql = sql::set_user_password_sql(name, host, password, engine)
             .ok_or_else(|| anyhow::anyhow!("a valid name is required to set a password"))?;
-        self.execute(&sql, vec![]).await?;
+        let shown = sql::set_user_password_sql(name, host, REDACTED, engine).unwrap_or_default();
+        self.execute_logged_as(&sql, Vec::new(), &shown).await?;
         Ok(())
     }
 
@@ -1122,13 +1129,20 @@ impl Connection {
         if self.config.engine != Engine::Sqlite {
             anyhow::bail!("maintenance commands are only offered for SQLite");
         }
-        if task.writes() && self.config.safety.is_read_only() {
-            anyhow::bail!(
-                "this connection is read-only, so {} was not run",
-                task.label()
-            );
+        if task.writes() {
+            self.refuse_read_only(&format!("{} was not run", task.label()))?;
         }
         self.run_query(task.sql()).await
+    }
+
+    /// Refuse anything on a read-only connection, saying what did not happen:
+    /// "this connection is read-only, so {consequence}". Every write entry
+    /// point goes through this, so the refusals read alike.
+    fn refuse_read_only(&self, consequence: &str) -> Result<()> {
+        if self.config.safety.is_read_only() {
+            anyhow::bail!("this connection is read-only, so {consequence}");
+        }
+        Ok(())
     }
 
     /// Refuse a statement a read-only connection must not run.
@@ -1141,7 +1155,7 @@ impl Connection {
             return Ok(());
         }
         if let Some(word) = statement::first_write(sql, self.config.engine) {
-            anyhow::bail!("this connection is read-only, so the {word} statement was not run");
+            return self.refuse_read_only(&format!("the {word} statement was not run"));
         }
         Ok(())
     }
@@ -1151,9 +1165,14 @@ impl Connection {
     /// Every parameter is bound as text or `NULL`; see
     /// [`typed_placeholder`](super::typed_placeholder) for why that is enough.
     pub async fn execute(&self, sql: &str, params: Vec<Cell>) -> Result<u64> {
-        if self.config.safety.is_read_only() {
-            anyhow::bail!("this connection is read-only");
-        }
+        self.execute_logged_as(sql, params, sql).await
+    }
+
+    /// [`Self::execute`], recording `shown` in the query log in place of
+    /// `sql` — for a statement that carries a secret, such as a password,
+    /// which the console must not show.
+    async fn execute_logged_as(&self, sql: &str, params: Vec<Cell>, shown: &str) -> Result<u64> {
+        self.refuse_read_only("the change was not made")?;
         let started = Instant::now();
         let result = match &self.pool {
             Pool::Postgres(pool) => execute_with(pool, sql, params, postgres::rows_affected).await,
@@ -1165,7 +1184,7 @@ impl Connection {
             Ok(affected) => QueryOutcome::Affected(*affected),
             Err(error) => QueryOutcome::Error(format!("{error:#}")),
         };
-        self.log(sql, QuerySource::Internal, started.elapsed(), outcome);
+        self.log(shown, QuerySource::Internal, started.elapsed(), outcome);
         result
     }
 
@@ -1179,9 +1198,7 @@ impl Connection {
     /// and `import::run`'s rollback policy document — so it still runs one
     /// statement at a time, and a failure there leaves what ran before it.
     pub async fn execute_script(&self, statements: &[String]) -> Result<()> {
-        if self.config.safety.is_read_only() {
-            anyhow::bail!("this connection is read-only");
-        }
+        self.refuse_read_only("the change was not made")?;
         match &self.pool {
             // MySQL runs one statement at a time through `execute`, which
             // already logs each one; the transactional engines run as one
@@ -1237,9 +1254,7 @@ impl Connection {
     /// statements: one dedicated connection, foreign keys off around a
     /// transaction, and a foreign-key check before it commits.
     pub async fn rebuild_table(&self, statements: Vec<String>) -> Result<()> {
-        if self.config.safety.is_read_only() {
-            anyhow::bail!("this connection is read-only");
-        }
+        self.refuse_read_only("the table was not rebuilt")?;
         match &self.pool {
             Pool::Sqlite(pool) => sqlite::rebuild(pool, &statements).await,
             // Only SQLite needs the copy-and-swap: the other engines restate
