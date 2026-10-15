@@ -17,7 +17,8 @@ use gpui_kit::component::table::ColumnSort;
 
 use crate::db::query::{Cell, QueryResult};
 use crate::db::{
-    Engine, RowKey, keyword_literal, placeholder, quote_identifier, text_type, typed_placeholder,
+    Engine, RowKey, keyword_literal, placeholder, qualified_name, quote_identifier, text_type,
+    typed_placeholder,
 };
 use crate::ui::data_grid::StagedRow;
 use crate::ui::filter_bar::{FilterSpec, Operator};
@@ -27,15 +28,11 @@ use super::TableView;
 impl TableView {
     /// The table this view reads and writes, qualified and quoted.
     fn target(&self) -> String {
-        let engine = self.connection.config.engine;
-        match &self.object.schema {
-            Some(schema) => format!(
-                "{}.{}",
-                quote_identifier(schema, engine),
-                quote_identifier(&self.object.name, engine)
-            ),
-            None => quote_identifier(&self.object.name, engine),
-        }
+        qualified_name(
+            self.object.schema.as_deref(),
+            &self.object.name,
+            self.connection.config.engine,
+        )
     }
 
     /// The statement this view runs for its current page and sort.

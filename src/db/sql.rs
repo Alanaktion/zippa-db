@@ -311,45 +311,22 @@ pub fn create_user_sql(
     password: &str,
     engine: Engine,
 ) -> Option<String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return None;
-    }
+    let user = user_target(name, host, engine)?;
     let password = quote_literal_for(engine, password);
-    match engine {
-        Engine::Postgres => Some(format!(
-            "CREATE ROLE {} WITH LOGIN PASSWORD {password}",
-            quote_identifier(name, engine)
-        )),
-        Engine::MySql => {
-            let host = host.map(str::trim).filter(|host| !host.is_empty())?;
-            Some(format!(
-                "CREATE USER {} IDENTIFIED BY {password}",
-                mysql_user_at_host(name, host, engine)
-            ))
-        }
-        Engine::Sqlite => None,
-    }
+    Some(match engine {
+        Engine::Postgres => format!("CREATE ROLE {user} WITH LOGIN PASSWORD {password}"),
+        _ => format!("CREATE USER {user} IDENTIFIED BY {password}"),
+    })
 }
 
 /// `DROP USER`/`DROP ROLE`, or `None` on the same inputs
 /// [`create_user_sql`] refuses.
 pub fn drop_user_sql(name: &str, host: Option<&str>, engine: Engine) -> Option<String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return None;
-    }
-    match engine {
-        Engine::Postgres => Some(format!("DROP ROLE {}", quote_identifier(name, engine))),
-        Engine::MySql => {
-            let host = host.map(str::trim).filter(|host| !host.is_empty())?;
-            Some(format!(
-                "DROP USER {}",
-                mysql_user_at_host(name, host, engine)
-            ))
-        }
-        Engine::Sqlite => None,
-    }
+    let user = user_target(name, host, engine)?;
+    Some(match engine {
+        Engine::Postgres => format!("DROP ROLE {user}"),
+        _ => format!("DROP USER {user}"),
+    })
 }
 
 /// Set a user's password, or `None` on the same inputs the other two refuse.
@@ -359,34 +336,56 @@ pub fn set_user_password_sql(
     password: &str,
     engine: Engine,
 ) -> Option<String> {
+    let user = user_target(name, host, engine)?;
+    let password = quote_literal_for(engine, password);
+    Some(match engine {
+        Engine::Postgres => format!("ALTER ROLE {user} WITH PASSWORD {password}"),
+        _ => format!("ALTER USER {user} IDENTIFIED BY {password}"),
+    })
+}
+
+/// The user a user statement names, or `None` when there is none to name:
+/// a Postgres role is an identifier, a MySQL user is `'name'@'host'` (both
+/// halves string literals, and the host required), and SQLite has no users.
+fn user_target(name: &str, host: Option<&str>, engine: Engine) -> Option<String> {
     let name = name.trim();
     if name.is_empty() {
         return None;
     }
-    let password = quote_literal_for(engine, password);
     match engine {
-        Engine::Postgres => Some(format!(
-            "ALTER ROLE {} WITH PASSWORD {password}",
-            quote_identifier(name, engine)
-        )),
+        Engine::Postgres => Some(quote_identifier(name, engine)),
         Engine::MySql => {
             let host = host.map(str::trim).filter(|host| !host.is_empty())?;
             Some(format!(
-                "ALTER USER {} IDENTIFIED BY {password}",
-                mysql_user_at_host(name, host, engine)
+                "{}@{}",
+                quote_literal_for(engine, name),
+                quote_literal_for(engine, host)
             ))
         }
         Engine::Sqlite => None,
     }
 }
 
-/// MySQL's `'name'@'host'`: both halves are string literals.
-fn mysql_user_at_host(name: &str, host: &str, engine: Engine) -> String {
-    format!(
-        "{}@{}",
-        quote_literal_for(engine, name),
-        quote_literal_for(engine, host)
-    )
+/// `schema.name` with both halves quoted, or just the name when there is no
+/// schema to qualify it with — how every generated statement names a table.
+pub(crate) fn qualified_name(schema: Option<&str>, name: &str, engine: Engine) -> String {
+    match schema {
+        Some(schema) => format!(
+            "{}.{}",
+            quote_identifier(schema, engine),
+            quote_identifier(name, engine)
+        ),
+        None => quote_identifier(name, engine),
+    }
+}
+
+/// Quoted identifiers joined by commas, as a column list is written.
+pub(crate) fn quoted_list(names: &[String], engine: Engine) -> String {
+    names
+        .iter()
+        .map(|name| quote_identifier(name, engine))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Quote `value` as a SQL string literal.

@@ -2443,6 +2443,7 @@ async fn live_postgres_users_lists_creates_and_drops_a_role() {
         .set_user_password(&name, None, "n3w")
         .await
         .expect("setting the password failed");
+    assert_passwords_not_logged(&connection, &["s3cret", "n3w"]);
 
     connection
         .drop_user(&name, None)
@@ -2488,6 +2489,7 @@ async fn live_mysql_users_lists_creates_and_drops_a_user() {
         .set_user_password(&name, Some("%"), "n3w")
         .await
         .expect("setting the password failed");
+    assert_passwords_not_logged(&connection, &["s3cret", "n3w"]);
 
     connection
         .drop_user(&name, Some("%"))
@@ -2500,6 +2502,25 @@ async fn live_mysql_users_lists_creates_and_drops_a_user() {
     );
 
     connection.close().await;
+}
+
+/// The console shows every statement the connection sent, so a password in
+/// one would be on screen: the log keeps a stand-in instead.
+fn assert_passwords_not_logged(connection: &Connection, passwords: &[&str]) {
+    let log = connection.query_log().snapshot();
+    assert!(
+        log.iter().any(|entry| entry.sql.contains("********")),
+        "the password statements should be logged with a stand-in"
+    );
+    for entry in &log {
+        for password in passwords {
+            assert!(
+                !entry.sql.contains(password),
+                "a password reached the query log: {}",
+                entry.sql
+            );
+        }
+    }
 }
 
 /// The first column of [`Connection::users`], which is the name on both
@@ -2544,6 +2565,16 @@ async fn live_postgres_all_foreign_keys_lists_a_created_relation() {
         .find(|relation| relation.from.name == child)
         .expect("the new foreign key should be listed");
     assert_eq!(relation.to.name, parent);
+    // `objects` lists a `public` table without its schema, and the diagram
+    // matches relations to tables by schema and name.
+    assert_eq!(
+        (
+            relation.from.schema.as_deref(),
+            relation.to.schema.as_deref()
+        ),
+        (None, None),
+        "tables in public are schema-less, as `objects` lists them"
+    );
 
     connection
         .run_query(&format!("DROP TABLE {child}, {parent}"))

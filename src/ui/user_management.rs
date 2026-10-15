@@ -194,13 +194,7 @@ impl UserManagementView {
         }
 
         let count = users.len();
-        let names: Vec<String> = users
-            .iter()
-            .map(|(name, host)| match host {
-                Some(host) => format!("'{name}'@'{host}'"),
-                None => format!("'{name}'"),
-            })
-            .collect();
+        let first = user_label(&users[0].0, users[0].1.as_deref());
         let view = cx.entity().downgrade();
 
         window.open_alert_dialog(cx, move |alert, _, _| {
@@ -209,7 +203,7 @@ impl UserManagementView {
 
             alert
                 .title(if count == 1 {
-                    format!("Drop user {}?", names[0])
+                    format!("Drop user {first}?")
                 } else {
                     format!("Drop {count} users?")
                 })
@@ -246,25 +240,34 @@ impl UserManagementView {
         let count = users.len();
         let task = runtime::spawn(async move {
             let mut failed = 0;
+            let mut first_error = None;
             for (name, host) in users {
-                if connection.drop_user(&name, host.as_deref()).await.is_err() {
+                if let Err(error) = connection.drop_user(&name, host.as_deref()).await {
                     failed += 1;
+                    first_error.get_or_insert_with(|| {
+                        format!("{}: {error:#}", user_label(&name, host.as_deref()))
+                    });
                 }
             }
-            failed
+            (failed, first_error)
         });
 
         cx.spawn(async move |this, cx| {
-            let failed = task.await.unwrap_or(count);
+            let (failed, first_error) = task
+                .await
+                .unwrap_or((count, Some("the drop was cancelled".to_string())));
             this.update(cx, |this, cx| {
                 // The list is re-read to show who is left, and the outcome
-                // set after it: a refresh starts by clearing the notice.
+                // set after it: a refresh starts by clearing the notice and
+                // the error.
                 this.refresh(cx);
                 this.notice = Some(if failed == 0 {
                     format!("Dropped {count} user{}", if count == 1 { "" } else { "s" })
                 } else {
                     format!("Dropped {}, {failed} failed", count - failed)
                 });
+                // Why the first one failed, so a refusal is not a bare count.
+                this.error = first_error;
             })
             .ok();
         })
@@ -405,7 +408,8 @@ impl UserDialogView {
             state.set_value("%".to_string(), window, cx);
             state
         });
-        let password = cx.new(|cx| InputState::new(window, cx));
+        // Masked like the connection editor's password box.
+        let password = cx.new(|cx| InputState::new(window, cx).masked(true));
         cx.subscribe(&password, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.submit(cx);
@@ -450,7 +454,9 @@ impl UserDialogView {
             return;
         }
         let engine = self.connection.config.engine;
-        let password = self.password.read(cx).value().trim().to_string();
+        // Taken as typed: a space at either end is part of the password,
+        // and trimming it would set one the user never chose.
+        let password = self.password.read(cx).value().to_string();
         if password.is_empty() {
             self.error = Some("Enter a password.".to_string());
             cx.notify();
@@ -539,10 +545,9 @@ impl Render for UserDialogView {
         let is_create = matches!(self.mode, UserDialogMode::Create);
         let title = match &self.mode {
             UserDialogMode::Create => "Create user".to_string(),
-            UserDialogMode::SetPassword { name, host } => match host {
-                Some(host) => format!("Set password for '{name}'@'{host}'"),
-                None => format!("Set password for '{name}'"),
-            },
+            UserDialogMode::SetPassword { name, host } => {
+                format!("Set password for {}", user_label(name, host.as_deref()))
+            }
         };
 
         v_flex()
@@ -588,5 +593,26 @@ impl Render for UserDialogView {
                             .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
                     ),
             )
+    }
+}
+
+/// A user as the server names one: `'name'@'host'` on MySQL, `'name'` on
+/// Postgres.
+fn user_label(name: &str, host: Option<&str>) -> String {
+    match host {
+        Some(host) => format!("'{name}'@'{host}'"),
+        None => format!("'{name}'"),
+    }
+}
+
+#[cfg(test)]
+impl UserDialogView {
+    /// The new-user dialog, as "New User" opens it.
+    pub(crate) fn create_for_test(
+        connection: Arc<Connection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new(connection, UserDialogMode::Create, window, cx)
     }
 }

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::db::Maintenance;
+use crate::ui::session::Tool;
 
 #[gpui_kit::test]
 fn the_maintenance_tab_opens_once_and_is_reused(cx: &mut TestAppContext) {
@@ -11,7 +12,7 @@ fn the_maintenance_tab_opens_once_and_is_reused(cx: &mut TestAppContext) {
     for _ in 0..2 {
         handle
             .update(cx, |session, window, cx| {
-                session.open_maintenance_for_test(window, cx)
+                session.open_tool(Tool::Maintenance, window, cx)
             })
             .unwrap();
     }
@@ -39,7 +40,7 @@ fn an_integrity_check_reports_ok_in_the_grid(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
     handle
         .update(cx, |session, window, cx| {
-            session.open_maintenance_for_test(window, cx)
+            session.open_tool(Tool::Maintenance, window, cx)
         })
         .unwrap();
     let view = handle
@@ -67,7 +68,7 @@ fn vacuum_reports_that_it_finished_and_a_read_only_connection_refuses_it(cx: &mu
     let (_database, handle) = session_with_objects(cx);
     handle
         .update(cx, |session, window, cx| {
-            session.open_maintenance_for_test(window, cx)
+            session.open_tool(Tool::Maintenance, window, cx)
         })
         .unwrap();
     let view = handle
@@ -86,7 +87,7 @@ fn vacuum_reports_that_it_finished_and_a_read_only_connection_refuses_it(cx: &mu
     let (_database, handle) = session_with_safety(cx, SafetyMode::ReadOnly);
     handle
         .update(cx, |session, window, cx| {
-            session.open_maintenance_for_test(window, cx)
+            session.open_tool(Tool::Maintenance, window, cx)
         })
         .unwrap();
     let view = handle

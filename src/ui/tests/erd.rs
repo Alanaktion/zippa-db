@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::db::runtime;
+use crate::ui::session::Tool;
 
 #[gpui_kit::test]
 fn erd_tab_opens_and_reuses_the_open_panel(cx: &mut TestAppContext) {
@@ -14,7 +15,7 @@ fn erd_tab_opens_and_reuses_the_open_panel(cx: &mut TestAppContext) {
     for _ in 0..2 {
         handle
             .update(cx, |session, window, cx| {
-                session.open_erd_for_test(window, cx)
+                session.open_tool(Tool::Erd, window, cx)
             })
             .unwrap();
     }
@@ -58,7 +59,7 @@ fn erd_diagram_loads_tables_and_their_foreign_keys(cx: &mut TestAppContext) {
 
     handle
         .update(cx, |session, window, cx| {
-            session.open_erd_for_test(window, cx)
+            session.open_tool(Tool::Erd, window, cx)
         })
         .unwrap();
     cx.run_until_parked();

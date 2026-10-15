@@ -19,6 +19,7 @@ use gpui_kit::{
 use regex::Regex;
 
 use crate::db::{CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObject};
+use crate::saved_queries::SavedQueries;
 use crate::ui::completion::SharedCatalog;
 use crate::ui::create_database_dialog::CreateDatabaseView;
 use crate::ui::import_dialog::ImportView;
@@ -36,12 +37,14 @@ pub(crate) mod tab;
 mod tabs;
 #[cfg(test)]
 mod test_support;
+mod tool;
 mod variables;
 
 pub(crate) use panel::CloseScope;
 use panel::{SessionPanel, SessionPanelEvent};
 use sidebar::SidebarTab;
 use tab::{ObjectViewMode, Status};
+pub(crate) use tool::Tool;
 
 /// Starting pane sizes; the user drags from here.
 const SIDEBAR_WIDTH: f32 = 260.;
@@ -148,6 +151,10 @@ impl Session {
     pub fn new(connection: Arc<Connection>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter tables"));
         cx.subscribe_in(&filter, window, Self::on_filter_event)
+            .detach();
+        // The sidebar's Saved tab draws the app's one saved-query list, which
+        // any window's save dialog or delete button may change.
+        cx.observe_global::<SavedQueries>(|_, cx| cx.notify())
             .detach();
 
         // A per-connection id: every workspace tab builds its own dock.
@@ -375,9 +382,6 @@ impl Session {
             }
             SessionPanelEvent::OpenFile => self.open_file(cx),
             SessionPanelEvent::Save => self.save(panel, false, cx),
-            // The saved-query list is read from disk on every render, so a
-            // repaint is all a save needs.
-            SessionPanelEvent::SavedQueriesChanged => cx.notify(),
             SessionPanelEvent::EditVariables => self.open_variables_dialog(panel, window, cx),
         }
     }
@@ -422,59 +426,6 @@ impl Session {
     fn on_search_schema(&mut self, _: &SearchSchema, window: &mut Window, cx: &mut Context<Self>) {
         let session = cx.entity().clone();
         let _ = crate::ui::schema_search::open(session, window, cx);
-    }
-
-    fn on_open_console(&mut self, _: &OpenConsole, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_console(window, cx);
-    }
-
-    fn on_open_process_list(
-        &mut self,
-        _: &OpenProcessList,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_process_list(window, cx);
-    }
-
-    fn on_open_user_management(
-        &mut self,
-        _: &OpenUserManagement,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_user_management(window, cx);
-    }
-
-    fn on_open_erd(&mut self, _: &OpenErd, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_erd(window, cx);
-    }
-
-    fn on_open_server_variables(
-        &mut self,
-        _: &OpenServerVariables,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_server_variables(window, cx);
-    }
-
-    fn on_open_query_digest(
-        &mut self,
-        _: &OpenQueryDigest,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_query_digest(window, cx);
-    }
-
-    fn on_open_maintenance(
-        &mut self,
-        _: &OpenMaintenance,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_maintenance(window, cx);
     }
 
     /// Leave the connection; the workspace puts a fresh manager in this tab.
@@ -598,13 +549,27 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_import_dump))
             .on_action(cx.listener(Self::on_quick_switcher))
             .on_action(cx.listener(Self::on_search_schema))
-            .on_action(cx.listener(Self::on_open_console))
-            .on_action(cx.listener(Self::on_open_process_list))
-            .on_action(cx.listener(Self::on_open_server_variables))
-            .on_action(cx.listener(Self::on_open_query_digest))
-            .on_action(cx.listener(Self::on_open_maintenance))
-            .on_action(cx.listener(Self::on_open_user_management))
-            .on_action(cx.listener(Self::on_open_erd))
+            .on_action(cx.listener(|this, _: &OpenConsole, window, cx| {
+                this.open_tool(Tool::Console, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenProcessList, window, cx| {
+                this.open_tool(Tool::Processes, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenServerVariables, window, cx| {
+                this.open_tool(Tool::Variables, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenQueryDigest, window, cx| {
+                this.open_tool(Tool::Digest, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenMaintenance, window, cx| {
+                this.open_tool(Tool::Maintenance, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenUserManagement, window, cx| {
+                this.open_tool(Tool::Users, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenErd, window, cx| {
+                this.open_tool(Tool::Erd, window, cx);
+            }))
             .on_action(cx.listener(Self::on_disconnect))
             .on_action(cx.listener(Self::on_reconnect))
             .child(

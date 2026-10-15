@@ -97,26 +97,14 @@ impl VariablesView {
         cx.emit(VariablesEvent::Saved(self.collect(cx)));
     }
 
-    /// The rows as the save would hand them over: blank names are dropped,
-    /// a leading `:` is stripped, and a repeated name keeps its first value.
+    /// The rows as the save would hand them over (see [`variables_from`]).
     fn collect(&self, cx: &App) -> Vec<Variable> {
-        let mut variables = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for row in &self.rows {
-            let name = row
-                .name
-                .read(cx)
-                .value()
-                .trim()
-                .trim_start_matches(':')
-                .to_string();
-            if name.is_empty() || !seen.insert(name.clone()) {
-                continue;
-            }
-            let value = row.value.read(cx).value().to_string();
-            variables.push(Variable { name, value });
-        }
-        variables
+        variables_from(self.rows.iter().map(|row| {
+            (
+                row.name.read(cx).value().to_string(),
+                row.value.read(cx).value().to_string(),
+            )
+        }))
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
@@ -235,42 +223,37 @@ impl VariablesView {
     }
 }
 
+/// `(name, value)` rows as variables: blank names are dropped, a leading
+/// `:` or `$` is stripped (the buffer may use either), and a repeated name
+/// keeps its first value.
+fn variables_from(rows: impl IntoIterator<Item = (String, String)>) -> Vec<Variable> {
+    let mut variables = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (name, value) in rows {
+        let name = name.trim().trim_start_matches([':', '$']).to_string();
+        if name.is_empty() || !seen.insert(name.clone()) {
+            continue;
+        }
+        variables.push(Variable { name, value });
+    }
+    variables
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn blank_and_duplicate_names_are_dropped_on_collect() {
-        // The collection logic, without a window: mirrors `collect`.
-        fn collect(names: &[&str], values: &[&str]) -> Vec<Variable> {
-            let mut variables = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-            for (name, value) in names.iter().zip(values.iter()) {
-                let name = name.trim().trim_start_matches(':').to_string();
-                if name.is_empty() || !seen.insert(name.clone()) {
-                    continue;
-                }
-                variables.push(Variable {
-                    name,
-                    value: value.to_string(),
-                });
-            }
-            variables
-        }
-
-        let variables = collect(&["a", "", ":b", "a"], &["1", "2", "3", "4"]);
+    fn blank_and_duplicate_names_are_dropped_and_sigils_stripped() {
+        let rows = [("a", "1"), ("", "2"), (":b", "3"), ("a", "4"), ("$c", "5")]
+            .map(|(name, value)| (name.to_string(), value.to_string()));
+        let variable = |name: &str, value: &str| Variable {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
         assert_eq!(
-            variables,
-            vec![
-                Variable {
-                    name: "a".to_string(),
-                    value: "1".to_string(),
-                },
-                Variable {
-                    name: "b".to_string(),
-                    value: "3".to_string(),
-                },
-            ]
+            variables_from(rows),
+            vec![variable("a", "1"), variable("b", "3"), variable("c", "5")]
         );
     }
 }

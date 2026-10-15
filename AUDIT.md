@@ -66,13 +66,12 @@ The "destructive statement" count only sees the first 64 KiB of the dump (`src/d
 
 - **[L] `MAX_COPY_BYTES` is not applied to every copy.** Row copies are now capped at `MAX_COPY_ROWS` before any row is cloned, but the byte cap still skips single-cell copies and both column shapes (`src/ui/data_grid/clipboard.rs`).
 - **[L] A NULL is shown differently in the grid and the row panel.** The grid renders it as the word `NULL` (`src/ui/data_grid/format.rs`); the row panel shows an empty box (`src/ui/table_view/row_panel.rs`). Both coerce a typed `null` per the setting, and the value dialog does too.
-- **[L] Three different guards for "a dialog is already open".** `window.has_active_dialog` (`src/ui/quick_switcher.rs`, `src/ui/schema_search.rs`, `src/ui/shortcuts_dialog.rs`), a struct field (`Session::import`, `src/ui/session/files.rs`), and none at all (`src/ui/welcome/mod.rs`).
+- **[L] Three different guards for "a dialog is already open".** `window.has_active_dialog` (`src/ui/quick_switcher.rs`, `src/ui/schema_search.rs`, `src/ui/shortcuts_dialog.rs`, `src/ui/user_management.rs`), a struct field (`Session::import`, `Session::create_database`, `Session::variables_dialog`), and none at all (`src/ui/welcome/mod.rs`, `src/ui/session/save_dialog.rs`).
 - **[L] The same failure is reported two ways at once.** `Welcome::connect` sets the inline banner *and* raises a toast; `connect_saved` shows only the banner; `settings::update` shows neither (`src/settings.rs`).
 - **[L] `FilterBar::set_columns` wipes its rows while `RowPanel::sync_columns` keeps its filter**, so a stale column pattern can outlive the columns it was written for.
 
 ### Duplication and dead code
 
-- **[L] Identifier-target SQL is duplicated.** `schema_view/sql.rs` re-implements `TableView::target` (its own doc admits it), and `columns_list` exists twice with different signatures (`src/ui/schema_view/sql.rs`, `src/ui/schema_view/rebuild.rs`).
 - **[L] `GridEdit::Staged` fires even when nothing changed** — after `add_draft`, `stage_cell`, `set_selected_deleted`, `reset_cell`, `discard`, `apply_staged`, each of which can return early (`src/ui/data_grid/mod.rs`). The owner cannot distinguish a real change from a no-op.
 - **[L] `store.rs`'s keychain functions are `#[cfg(test)]` no-op stubs** (`src/db/store.rs`), so no test exercises the real contract, and each call site has two code paths to keep right.
 - **[L] `SessionPanel::commit`, `TableView::commit`, and `ApplyEdits` are three names for one operation** (`src/ui/session/panel.rs`, `src/ui/table_view/mod.rs`, `src/keymap.rs`).
@@ -90,8 +89,6 @@ The checklist largely holds: every icon-only button in `app.rs`, `welcome/*`, `s
 ---
 
 ## 3. Documentation drift
-
-- **[L] Read-only refusal wording is inconsistent** — "this connection is read-only, so a dump cannot be imported", "…so the {word} statement was not run", and a bare "this connection is read-only" (`src/db/connection.rs`); some messages end with a period, others do not.
 
 The README, `AGENTS.md`, and the doc comments the audit found contradicting their code were brought in line in the 0.1 cleanup; `AGENTS.md` is a symlink to `CLAUDE.md`, so the two cannot drift.
 
@@ -212,3 +209,21 @@ Left open, because each needs a design call:
 - **[L] `~/.pgpass` is no longer read** (a side effect of the fix above). If it is wanted back, it should be an explicit per-connection option.
 - **[L] Grid commands bound to plain keys are not in the menu bar** (`EditCell` on `Enter`, `ToggleRow` on `Space`, `ExtendSelectionUp`/`Down` on `Shift+↑`/`↓`): on macOS a menu key equivalent fires before the focused view sees the key, so listing them would take `Enter` and `Space` from text boxes. They are listed in the shortcuts dialog.
 - **[L] Smaller notes.** `REINDEX SCHEMA` and `SET SESSION autocommit` are not in `transaction_blocker`; `typed_placeholder` casts a Postgres `"char"` column to `CHAR`; SQLite maintenance confirmations can stack on a double click; the structure tab's per-row checkboxes share one accessible name; the foreign-key jump uses the loaded value rather than a staged edit; the editor still says "Leave blank to keep the saved one" after the SSH auth method changes.
+
+## 12. Cleanup audit (2026-10-15, revision `64954cc`)
+
+A read of what landed after §11 — query variables, saved queries, create database, new-table creation, user management, the query formatter, the command palette's ranking, and the ER diagram — plus `cargo update`. Fixed in the same change:
+
+- **[H] The ER diagram drew no edges on Postgres for tables in `public`.** `all_foreign_keys` reported both ends as `public.table` while `objects` lists a `public` table without its schema, so `layout_diagram` matched neither end. Both now go through `shown_schema`; the live test pins it.
+- **[M] A password set from the user management tab showed in the query console.** `CREATE ROLE … PASSWORD` and `ALTER USER … IDENTIFIED BY` were logged as sent. They are logged with a `********` stand-in now.
+- **[M] An unreadable `saved_queries.json` was replaced on the next save,** losing every saved query: it loaded as empty and the next save wrote the one new query. The sidebar also read and parsed the file on every render, on the UI thread. Saved queries are now one global, read through `store::load_json` (which keeps an unreadable file aside) and written through `store::write_atomic` in the background.
+- **[M] Escape did nothing in the create-database, user, and variables dialogs.** Each turns the dialog's own keys off and handles a close action that nothing bound.
+- **[L]** The user dialog's password box was not masked, and the password was trimmed before it was set. A failed drop reported only a count. The variables dialog kept a leading `$` on a name, so `$id` never matched the buffer's `$id`.
+- **[L]** The read-only refusals now share one wording (§3), and the duplicated identifier quoting (§2) is one `db::sql::qualified_name`/`quoted_list`.
+- **Refactors.** `query_editor` is a directory like the other large views (`editing.rs` for the bound editing commands, `text.rs` for the pure text edits and their tests, `test_support.rs`); the seven tool tabs are one `TabContent::Tool(ToolView)` with a `Tool` kind, so `SessionPanel` no longer repeats a constructor, a predicate, and a match arm per tool, and `Session::open_tool` replaces seven `open_*` methods.
+
+Left open:
+
+- **[L] A stale ER diagram load can land after a newer one** (`ui/erd.rs`, `reload`): two reloads in flight (a refresh straight after a database switch) each replace the diagram when they finish, in whatever order. The table views guard against this; the diagram does not.
+- **[L] The save-query dialog does not save on `Enter`,** unlike the other name dialogs.
+- **[L] The Postgres user list shows every role,** the built-in `pg_*` roles included (`postgres::USERS_SQL`).

@@ -6,6 +6,7 @@
 //! SQLite-backed test session can exercise.
 
 use super::*;
+use crate::ui::session::Tool;
 
 #[gpui_kit::test]
 fn a_sqlite_connection_never_opens_a_query_digest_tab(cx: &mut TestAppContext) {
@@ -17,7 +18,7 @@ fn a_sqlite_connection_never_opens_a_query_digest_tab(cx: &mut TestAppContext) {
 
     handle
         .update(cx, |session, window, cx| {
-            session.open_query_digest_for_test(window, cx)
+            session.open_tool(Tool::Digest, window, cx)
         })
         .unwrap();
 

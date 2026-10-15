@@ -4,6 +4,7 @@
 //! the SQLite gate, which is all a SQLite-backed test session can exercise.
 
 use super::*;
+use crate::ui::session::Tool;
 
 #[gpui_kit::test]
 fn a_sqlite_connection_never_opens_a_process_list_tab(cx: &mut TestAppContext) {
@@ -15,7 +16,7 @@ fn a_sqlite_connection_never_opens_a_process_list_tab(cx: &mut TestAppContext) {
 
     handle
         .update(cx, |session, window, cx| {
-            session.open_process_list_for_test(window, cx)
+            session.open_tool(Tool::Processes, window, cx)
         })
         .unwrap();
 
