@@ -1,7 +1,7 @@
 //! The Create Database dialog: validation and the picker entry point.
 
 use super::*;
-use crate::ui::create_database_dialog::CreateDatabaseView;
+use crate::ui::create_database_dialog::{CreateDatabaseEvent, CreateDatabaseView};
 
 /// An empty name never reaches the server: the dialog says so inline and
 /// stays open.
@@ -122,4 +122,20 @@ async fn live_postgres_create_database(cx: &mut TestAppContext) {
     runtime::block_on(check.execute(&format!("DROP DATABASE {name}"), vec![]))
         .expect("dropping the test database failed");
     runtime::block_on(check.close());
+}
+
+/// Escape gives up on the dialog with the keyboard still in the name box.
+#[gpui_kit::test]
+fn escape_closes_the_dialog(cx: &mut TestAppContext) {
+    let database = runtime::block_on(TempDatabase::new());
+    let connection = Arc::new(
+        runtime::block_on(Connection::open(database.config(), None))
+            .expect("could not open the test database"),
+    );
+    assert!(escape_dismisses(
+        cx,
+        |window, cx| CreateDatabaseView::new(connection, window, cx),
+        |view, window, cx| view.focus(window, cx),
+        |event| matches!(event, CreateDatabaseEvent::Dismissed),
+    ));
 }
