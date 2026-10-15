@@ -20,8 +20,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, IntoElement, Render, SharedString, Window, div, px};
 
 use crate::db::{DatabaseObject, ObjectKind};
-use crate::ui::session::Session;
 use crate::ui::session::tab::ObjectViewMode;
+use crate::ui::session::{Session, Tool};
 
 use super::fuzzy;
 
@@ -37,13 +37,7 @@ pub(crate) enum SwitcherTarget {
     ExplainAnalyze,
     SwitchDatabase(String),
     SearchSchema,
-    OpenConsole,
-    OpenProcessList,
-    OpenServerVariables,
-    OpenQueryDigest,
-    OpenMaintenance,
-    OpenUserManagement,
-    OpenErd,
+    OpenTool(Tool),
 }
 
 /// One palette row before it becomes a `CommandItem`: the label and keywords
@@ -113,26 +107,10 @@ impl QuickSwitcherView {
             SwitcherTarget::SearchSchema => {
                 let _ = crate::ui::schema_search::open(session, window, cx);
             }
-            SwitcherTarget::OpenConsole => {
-                session.update(cx, |session, cx| session.open_console(window, cx))
-            }
-            SwitcherTarget::OpenProcessList => {
-                session.update(cx, |session, cx| session.open_process_list(window, cx))
-            }
-            SwitcherTarget::OpenServerVariables => {
-                session.update(cx, |session, cx| session.open_server_variables(window, cx))
-            }
-            SwitcherTarget::OpenQueryDigest => {
-                session.update(cx, |session, cx| session.open_query_digest(window, cx))
-            }
-            SwitcherTarget::OpenMaintenance => {
-                session.update(cx, |session, cx| session.open_maintenance(window, cx))
-            }
-            SwitcherTarget::OpenUserManagement => {
-                session.update(cx, |session, cx| session.open_user_management(window, cx))
-            }
-            SwitcherTarget::OpenErd => {
-                session.update(cx, |session, cx| session.open_erd(window, cx))
+            SwitcherTarget::OpenTool(tool) => {
+                session.update(cx, |session, cx| {
+                    session.open_tool(tool, window, cx);
+                });
             }
         }
     }
@@ -299,13 +277,13 @@ impl Render for QuickSwitcherView {
                 &["explain", "analyze", "plan", "query", "timing"],
             ),
             action(
-                SwitcherTarget::OpenConsole,
+                SwitcherTarget::OpenTool(Tool::Console),
                 "Console",
                 IconName::SquareTerminal,
                 &["console", "log", "statements", "history"],
             ),
             action(
-                SwitcherTarget::OpenErd,
+                SwitcherTarget::OpenTool(Tool::Erd),
                 "ER Diagram",
                 IconName::Network,
                 &[
@@ -321,7 +299,7 @@ impl Render for QuickSwitcherView {
         ];
         if is_file_based {
             act_items.push(action(
-                SwitcherTarget::OpenMaintenance,
+                SwitcherTarget::OpenTool(Tool::Maintenance),
                 "Maintenance",
                 IconName::Wrench,
                 &[
@@ -336,25 +314,25 @@ impl Render for QuickSwitcherView {
         } else {
             act_items.extend([
                 action(
-                    SwitcherTarget::OpenProcessList,
+                    SwitcherTarget::OpenTool(Tool::Processes),
                     "Processes",
                     IconName::Activity,
                     &["processes", "connections", "activity", "kill"],
                 ),
                 action(
-                    SwitcherTarget::OpenServerVariables,
+                    SwitcherTarget::OpenTool(Tool::Variables),
                     "Variables",
                     IconName::SlidersHorizontal,
                     &["variables", "settings", "configuration", "server"],
                 ),
                 action(
-                    SwitcherTarget::OpenQueryDigest,
+                    SwitcherTarget::OpenTool(Tool::Digest),
                     "Query Digest",
                     IconName::Gauge,
                     &["digest", "slow", "queries", "performance"],
                 ),
                 action(
-                    SwitcherTarget::OpenUserManagement,
+                    SwitcherTarget::OpenTool(Tool::Users),
                     "Users",
                     IconName::Users,
                     &["users", "roles", "accounts", "password", "privileges"],

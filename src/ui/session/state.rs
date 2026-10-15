@@ -8,7 +8,7 @@ use gpui_kit::{App, Context, Entity, Window};
 use crate::db::runtime;
 use crate::workspace_state::{PanelState, SessionState};
 
-use super::{ObjectViewMode, Session, SessionEvent, SessionPanel, Status};
+use super::{ObjectViewMode, Session, SessionEvent, SessionPanel, Status, Tool};
 
 impl Session {
     /// This session as it would be restored: the connection it belongs to, the
@@ -173,62 +173,18 @@ impl Session {
                     self.open_object(&object, ObjectViewMode::Schema, window, cx);
                     restored += 1;
                 }
-                PanelState::Console => {
-                    self.open_console(window, cx);
-                    restored += 1;
-                }
-                PanelState::Processes => {
-                    // A no-op for a SQLite connection, which has no process
-                    // list to show; nothing should count as restored then.
-                    let before = self.panels.len();
-                    self.open_process_list(window, cx);
-                    if self.panels.len() > before {
-                        restored += 1;
-                    }
-                }
-                PanelState::Variables => {
-                    // Also a no-op for SQLite, which has no server-side
-                    // configuration to show.
-                    let before = self.panels.len();
-                    self.open_server_variables(window, cx);
-                    if self.panels.len() > before {
-                        restored += 1;
-                    }
-                }
-                PanelState::Digest => {
-                    // Also a no-op for SQLite, which has no query
-                    // instrumentation to read this way.
-                    let before = self.panels.len();
-                    self.open_query_digest(window, cx);
-                    if self.panels.len() > before {
-                        restored += 1;
-                    }
-                }
-                PanelState::Maintenance => {
-                    // A no-op unless this is a SQLite connection.
-                    let before = self.panels.len();
-                    self.open_maintenance(window, cx);
-                    if self.panels.len() > before {
-                        restored += 1;
-                    }
-                }
-                PanelState::Users => {
-                    // A no-op for a SQLite connection, which has no users.
-                    let before = self.panels.len();
-                    self.open_user_management(window, cx);
-                    if self.panels.len() > before {
-                        restored += 1;
-                    }
-                }
-                PanelState::Erd => {
-                    let before = self.panels.len();
-                    self.open_erd(window, cx);
-                    if self.panels.len() > before {
-                        restored += 1;
-                    }
-                }
                 // Written by a newer build; leave it out rather than guess.
                 PanelState::Unknown => {}
+                // A tool the engine does not offer (the server views on
+                // SQLite, maintenance elsewhere) opens nothing, and nothing
+                // counts as restored then.
+                tool => {
+                    if let Some(tool) = Tool::from_state(&tool)
+                        && self.open_tool(tool, window, cx)
+                    {
+                        restored += 1;
+                    }
+                }
             }
         }
 

@@ -6,6 +6,7 @@
 use gpui_kit::{App, KeyBinding, NoAction};
 
 use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
+use crate::ui::create_database_dialog::CloseCreateDatabase;
 use crate::ui::data_grid::{
     ClearRowSelection, CopyValue, CopyWithHeaders, ExtendSelectionDown, ExtendSelectionUp,
     SelectAllRows, ToggleRow, ViewCell,
@@ -28,7 +29,9 @@ use crate::ui::table_view::{
     ApplyEdits, CancelEdit, DeleteRows, DiscardEdits, EditCell, InsertRow, RestoreRows, SetNull,
     ToggleRowPanel,
 };
+use crate::ui::user_management::CloseUserDialog;
 use crate::ui::value_dialog::{CloseValue, SaveValue};
+use crate::ui::variables_dialog::CloseVariablesDialog;
 use crate::ui::welcome::{EditorClose, EditorConnect};
 
 pub fn bind(cx: &mut App) {
@@ -174,6 +177,12 @@ pub fn bind(cx: &mut App) {
         // Giving up on the import dialog: its own `keyboard` handling is off so
         // that `enter` cannot dismiss it, which leaves `escape` to this.
         KeyBinding::new("escape", CloseImport, Some("ImportDialog")),
+        // The same for the other dialogs that turn their own keys off: each
+        // binds `escape` on its body, which the text box inside it passes
+        // the key on to.
+        KeyBinding::new("escape", CloseCreateDatabase, Some("CreateDatabaseDialog")),
+        KeyBinding::new("escape", CloseUserDialog, Some("UserDialog")),
+        KeyBinding::new("escape", CloseVariablesDialog, Some("VariablesDialog")),
         // The caret is usually in the editor, whose own context claims keys
         // before the session sees them.
         KeyBinding::new("secondary-.", CancelQuery, Some("QueryEditor > Input")),

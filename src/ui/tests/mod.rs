@@ -513,6 +513,48 @@ fn click_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, id: impl I
     cx.run_until_parked();
 }
 
+/// Open a dialog body in a window of its own, put the keyboard on its first
+/// box the way opening the dialog does, press escape, and say whether the
+/// body asked to be dismissed.
+fn escape_dismisses<V, E>(
+    cx: &mut TestAppContext,
+    build: impl FnOnce(&mut Window, &mut Context<V>) -> V,
+    focus: impl FnOnce(&V, &mut Window, &mut App),
+    dismissed: fn(&E) -> bool,
+) -> bool
+where
+    V: gpui_kit::Render + gpui_kit::EventEmitter<E>,
+    E: 'static,
+{
+    cx.update(|cx| {
+        init_ui(cx);
+        crate::keymap::bind(cx);
+    });
+    let handle = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), build);
+    let heard = std::rc::Rc::new(std::cell::Cell::new(false));
+    handle
+        .update(cx, |view, window, cx| {
+            let heard = heard.clone();
+            cx.subscribe_self(move |_, event: &E, _| {
+                if dismissed(event) {
+                    heard.set(true);
+                }
+            })
+            .detach();
+            focus(view, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    heard.get()
+}
+
 fn workspace_dialog_open(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> bool {
     cx.update_window(handle.window.into(), |_, window, cx| {
         window.has_active_dialog(cx)

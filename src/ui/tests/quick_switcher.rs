@@ -4,6 +4,7 @@ use super::*;
 use gpui_kit::component::WindowExt;
 
 use crate::ui::quick_switcher::SwitcherTarget;
+use crate::ui::session::Tool;
 
 #[gpui_kit::test]
 fn quick_switcher_opens_via_toolbar_and_lists_tabs_and_objects(cx: &mut TestAppContext) {
@@ -256,13 +257,13 @@ fn the_console_item_opens_the_console_tab(cx: &mut TestAppContext) {
     let view = switcher_view(cx, &handle, &session);
     view.downgrade()
         .update_in(cx, |view, window, cx| {
-            view.choose_for_test(SwitcherTarget::OpenConsole, window, cx)
+            view.choose_for_test(SwitcherTarget::OpenTool(Tool::Console), window, cx)
         })
         .unwrap();
 
     session.update(cx, |session, cx| {
         assert_eq!(session.panels().len(), 2);
-        assert!(session.panels()[1].read(cx).is_console());
+        assert!(session.panels()[1].read(cx).tool_kind() == Some(Tool::Console));
     });
 }
 

@@ -28,6 +28,7 @@ use super::Session;
 use super::panel::{CloseScope, SessionPanel, SessionPanelEvent};
 use super::sidebar::compile_filter;
 use super::tab::Status;
+use super::tool::ToolView;
 
 impl Session {
     /// Feed the grid a result without going through a live query.
@@ -101,133 +102,74 @@ impl Session {
         self.active_panel_for_test()?.read(cx).schema_view()
     }
 
-    /// The console view in the active tab, if this is the console tab.
-    #[cfg(test)]
+    /// The tool view in the active tab, if this is a tool tab.
+    fn active_tool_view<'a>(&self, cx: &'a App) -> Option<&'a ToolView> {
+        self.active_panel_for_test()?.read(cx).tool_view()
+    }
+
+    /// The view in the active tab, if this is the console tab.
     pub(crate) fn active_console_view(&self, cx: &App) -> Option<Entity<ConsoleView>> {
-        self.active_panel_for_test()?.read(cx).console_view()
+        match self.active_tool_view(cx)? {
+            ToolView::Console(view) => Some(view.clone()),
+            _ => None,
+        }
     }
 
-    /// Open the console tab, or bring it forward, the way the sidebar's
-    /// button does.
-    #[cfg(test)]
-    pub(crate) fn open_console_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_console(window, cx);
-    }
-
-    /// The process list view in the active tab, if this is the process list
-    /// tab.
-    #[cfg(test)]
+    /// The view in the active tab, if this is the process list tab.
     pub(crate) fn active_process_list_view(&self, cx: &App) -> Option<Entity<ProcessListView>> {
-        self.active_panel_for_test()?.read(cx).process_list_view()
+        match self.active_tool_view(cx)? {
+            ToolView::Processes(view) => Some(view.clone()),
+            _ => None,
+        }
     }
 
-    /// Open the process list tab, or bring it forward, the way the sidebar's
-    /// button does.
-    #[cfg(test)]
-    pub(crate) fn open_process_list_for_test(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_process_list(window, cx);
-    }
-
-    /// The user management view in the active tab, if this is the user
-    /// management tab.
-    #[cfg(test)]
+    /// The view in the active tab, if this is the user management tab.
     pub(crate) fn active_user_management_view(
         &self,
         cx: &App,
     ) -> Option<Entity<UserManagementView>> {
-        self.active_panel_for_test()?
-            .read(cx)
-            .user_management_view()
+        match self.active_tool_view(cx)? {
+            ToolView::Users(view) => Some(view.clone()),
+            _ => None,
+        }
     }
 
-    /// Open the user management tab, or bring it forward, the way the
-    /// sidebar's button does.
-    #[cfg(test)]
-    pub(crate) fn open_user_management_for_test(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_user_management(window, cx);
-    }
-
-    /// The ER diagram view in the active tab, if this is the ER diagram tab.
-    #[cfg(test)]
+    /// The view in the active tab, if this is the ER diagram tab.
     pub(crate) fn active_erd_view(&self, cx: &App) -> Option<Entity<ErdView>> {
-        self.active_panel_for_test()?.read(cx).erd_view()
+        match self.active_tool_view(cx)? {
+            ToolView::Erd(view) => Some(view.clone()),
+            _ => None,
+        }
     }
 
-    /// Open the ER diagram tab, or bring it forward, the way the sidebar's
-    /// button does.
-    #[cfg(test)]
-    pub(crate) fn open_erd_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_erd(window, cx);
-    }
-
-    /// The server variables view in the active tab, if this is the server
-    /// variables tab.
-    #[cfg(test)]
+    /// The view in the active tab, if this is the server variables tab.
     pub(crate) fn active_server_variables_view(
         &self,
         cx: &App,
     ) -> Option<Entity<ServerVariablesView>> {
-        self.active_panel_for_test()?
-            .read(cx)
-            .server_variables_view()
+        match self.active_tool_view(cx)? {
+            ToolView::Variables(view) => Some(view.clone()),
+            _ => None,
+        }
     }
 
-    /// Open the server variables tab, or bring it forward, the way the
-    /// sidebar's button does.
-    #[cfg(test)]
-    pub(crate) fn open_server_variables_for_test(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_server_variables(window, cx);
-    }
-
-    /// The query digest view in the active tab, if this is the query digest
-    /// tab.
-    #[cfg(test)]
+    /// The view in the active tab, if this is the query digest tab.
     pub(crate) fn active_query_digest_view(&self, cx: &App) -> Option<Entity<QueryDigestView>> {
-        self.active_panel_for_test()?.read(cx).query_digest_view()
+        match self.active_tool_view(cx)? {
+            ToolView::Digest(view) => Some(view.clone()),
+            _ => None,
+        }
     }
 
-    /// Open the query digest tab, or bring it forward, the way the sidebar's
-    /// button does.
-    #[cfg(test)]
-    pub(crate) fn open_query_digest_for_test(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_query_digest(window, cx);
-    }
-
-    /// The maintenance view in the active tab, if this is the maintenance
-    /// tab.
-    #[cfg(test)]
+    /// The view in the active tab, if this is the maintenance tab.
     pub(crate) fn active_maintenance_view(
         &self,
         cx: &App,
     ) -> Option<Entity<SqliteMaintenanceView>> {
-        self.active_panel_for_test()?.read(cx).maintenance_view()
-    }
-
-    /// Open the maintenance tab, or bring it forward, the way the sidebar's
-    /// button does.
-    #[cfg(test)]
-    pub(crate) fn open_maintenance_for_test(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_maintenance(window, cx);
+        match self.active_tool_view(cx)? {
+            ToolView::Maintenance(view) => Some(view.clone()),
+            _ => None,
+        }
     }
 
     /// Open `object`'s structure tab, the way the sidebar's row menu does.

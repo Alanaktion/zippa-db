@@ -11,7 +11,7 @@
 //! The generated SQL is still DDL for one screen, kept beside the view rather
 //! than in `db/`, like `sql.rs` next to it.
 
-use crate::db::{DatabaseObject, Engine, RebuildSource, quote_identifier};
+use crate::db::{DatabaseObject, Engine, RebuildSource, quote_identifier, quoted_list};
 
 use super::sql::{ColumnEdit, ForeignKeyEdit, IndexEdit, column_clause, target};
 
@@ -245,7 +245,10 @@ fn generate(
         primary_key.clear();
     }
     if !primary_key.is_empty() {
-        constraints.push(format!("PRIMARY KEY ({})", columns_list(&primary_key)));
+        constraints.push(format!(
+            "PRIMARY KEY ({})",
+            quoted_list(&primary_key, Engine::Sqlite)
+        ));
     }
 
     let mut recreations = Vec::new();
@@ -271,7 +274,7 @@ fn generate(
                 "CREATE {}INDEX {} ON {table} ({})",
                 if edit.unique { "UNIQUE " } else { "" },
                 quote_identifier(&edit.name, engine),
-                columns_list(&columns)
+                quoted_list(&columns, Engine::Sqlite)
             ));
             continue;
         };
@@ -299,7 +302,10 @@ fn generate(
                     .iter()
                     .map(|column| renamed(column, &renames))
                     .collect();
-                constraints.push(format!("UNIQUE ({})", columns_list(&columns)));
+                constraints.push(format!(
+                    "UNIQUE ({})",
+                    quoted_list(&columns, Engine::Sqlite)
+                ));
             }
             None => {}
         }
@@ -514,22 +520,14 @@ pub(crate) fn foreign_key_clause(
     }
     clause.push_str(&format!(
         "FOREIGN KEY ({}) REFERENCES {referenced} ({})",
-        columns_list(&local),
-        columns_list(&edit.referenced_columns)
+        quoted_list(&local, Engine::Sqlite),
+        quoted_list(&edit.referenced_columns, Engine::Sqlite)
     ));
     clause.push_str(" ON DELETE ");
     clause.push_str(edit.on_delete.label());
     clause.push_str(" ON UPDATE ");
     clause.push_str(edit.on_update.label());
     clause
-}
-
-fn columns_list(columns: &[String]) -> String {
-    columns
-        .iter()
-        .map(|column| quote_identifier(column, Engine::Sqlite))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// Every column the form has renamed, old name to new.

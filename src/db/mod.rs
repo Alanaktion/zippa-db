@@ -82,7 +82,10 @@ pub use script::{
     transaction_blocker,
 };
 pub use sql::quote_identifier;
-pub(crate) use sql::{keyword_literal, placeholder, quote_literal, text_type, typed_placeholder};
+pub(crate) use sql::{
+    keyword_literal, placeholder, qualified_name, quote_literal, quoted_list, text_type,
+    typed_placeholder,
+};
 pub use sqlite::Maintenance;
 
 /// Decode a column into a display string, or `None` when the decode fails.

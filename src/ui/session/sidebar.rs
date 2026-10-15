@@ -29,13 +29,14 @@ use gpui_kit::{Action, ClipboardItem, Context, Entity, Pixels, SharedString, Win
 use regex::Regex;
 
 use crate::db::{DatabaseObject, Engine, ObjectKind, StoredKind, StoredObject};
+use crate::saved_queries::{self, SavedQueries};
 use crate::ui::busy::skeleton_rows;
 use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
 use super::{
     ImportSqlDump, OpenConsole, OpenErd, OpenMaintenance, OpenProcessList, OpenQueryDigest,
-    OpenServerVariables, OpenUserManagement, SearchSchema, Session,
+    OpenServerVariables, OpenUserManagement, SearchSchema, Session, Tool,
 };
 
 impl Session {
@@ -433,7 +434,7 @@ impl Session {
                         Some("Session"),
                     )
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_erd(window, cx);
+                        this.open_tool(Tool::Erd, window, cx);
                     })),
             )
             .child(
@@ -470,7 +471,9 @@ impl Session {
                     "Every statement this connection has sent",
                     &OpenConsole,
                 )
-                .on_click(cx.listener(|this, _, window, cx| this.open_console(window, cx))),
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_tool(Tool::Console, window, cx);
+                })),
             )
             .when(!server, |this| {
                 this.child(
@@ -481,7 +484,9 @@ impl Session {
                         "Integrity checks, optimize, vacuum",
                         &OpenMaintenance,
                     )
-                    .on_click(cx.listener(|this, _, window, cx| this.open_maintenance(window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_tool(Tool::Maintenance, window, cx);
+                    })),
                 )
             })
             .when(server, |this| {
@@ -493,9 +498,9 @@ impl Session {
                         "Who is connected and what they're doing right now",
                         &OpenProcessList,
                     )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_process_list(window, cx)),
-                    ),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_tool(Tool::Processes, window, cx);
+                    })),
                 )
                 .child(
                     tool_row(
@@ -505,9 +510,9 @@ impl Session {
                         "The server's own configuration",
                         &OpenServerVariables,
                     )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_server_variables(window, cx)),
-                    ),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_tool(Tool::Variables, window, cx);
+                    })),
                 )
                 .child(
                     tool_row(
@@ -517,9 +522,9 @@ impl Session {
                         "Slow and frequent statements, ranked by mean time",
                         &OpenQueryDigest,
                     )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_query_digest(window, cx)),
-                    ),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_tool(Tool::Digest, window, cx);
+                    })),
                 )
                 .child(
                     tool_row(
@@ -529,19 +534,20 @@ impl Session {
                         "Server users and roles: create, password, drop",
                         &OpenUserManagement,
                     )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_user_management(window, cx)),
-                    ),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_tool(Tool::Users, window, cx);
+                    })),
                 )
             })
     }
 
-    /// The Saved tab: the queries the user named and kept, read fresh from
-    /// disk every render so a save or delete from anywhere shows up on the
-    /// next paint. Clicking a row opens it in a new query tab; the ×
-    /// forgets it.
+    /// The Saved tab: the queries the user named and kept, from the app's one
+    /// list (the session observes it, so a save or delete from any window
+    /// shows up on the next paint). Clicking a row opens it in a new query
+    /// tab; the × forgets it.
     fn render_saved_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let queries = crate::saved_queries::load();
+        let queries = SavedQueries::get(cx).to_vec();
+        let error = SavedQueries::error(cx);
 
         v_flex()
             .flex_1()
@@ -554,6 +560,15 @@ impl Session {
                     .text_color(cx.theme().muted_foreground)
                     .child("SAVED QUERIES"),
             )
+            .when_some(error, |this, error| {
+                this.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(format!("Error: {error}")),
+                )
+            })
             .when(queries.is_empty(), |this| {
                 this.child(
                     div()
@@ -616,13 +631,12 @@ impl Session {
                                                 "Delete saved query {row_name}"
                                             ))
                                             .tooltip(format!("Delete {row_name}"))
-                                            .on_click(cx.listener(move |_this, _, _window, cx| {
-                                                let _ = crate::saved_queries::remove(&delete_name);
+                                            .on_click(move |_, _window, cx| {
+                                                saved_queries::remove(&delete_name, cx);
                                                 // The row itself opens the query on click; a
                                                 // delete must not bubble up to it.
                                                 cx.stop_propagation();
-                                                cx.notify();
-                                            })),
+                                            }),
                                     ),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {

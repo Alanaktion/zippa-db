@@ -5,6 +5,7 @@
 //! SQLite-backed test session can exercise.
 
 use super::*;
+use crate::ui::session::Tool;
 
 #[gpui_kit::test]
 fn a_sqlite_connection_never_opens_a_user_management_tab(cx: &mut TestAppContext) {
@@ -16,7 +17,7 @@ fn a_sqlite_connection_never_opens_a_user_management_tab(cx: &mut TestAppContext
 
     handle
         .update(cx, |session, window, cx| {
-            session.open_user_management_for_test(window, cx)
+            session.open_tool(Tool::Users, window, cx)
         })
         .unwrap();
 
@@ -33,4 +34,23 @@ fn a_sqlite_connection_never_opens_a_user_management_tab(cx: &mut TestAppContext
             .unwrap()
             .is_none()
     );
+}
+
+/// Escape gives up on the new-user dialog with the keyboard still in the
+/// name box.
+#[gpui_kit::test]
+fn escape_closes_the_user_dialog(cx: &mut TestAppContext) {
+    use crate::ui::user_management::{UserDialogEvent, UserDialogView};
+
+    let database = runtime::block_on(TempDatabase::new());
+    let connection = Arc::new(
+        runtime::block_on(Connection::open(database.config(), None))
+            .expect("could not open the test database"),
+    );
+    assert!(escape_dismisses(
+        cx,
+        |window, cx| UserDialogView::create_for_test(connection, window, cx),
+        |view, window, cx| view.focus(window, cx),
+        |event| matches!(event, UserDialogEvent::Dismissed),
+    ));
 }

@@ -2,6 +2,7 @@
 //! `Connection::query_log`.
 
 use super::*;
+use crate::ui::session::Tool;
 
 #[gpui_kit::test]
 fn a_user_run_shows_up_in_the_console(cx: &mut TestAppContext) {
@@ -13,7 +14,7 @@ fn a_user_run_shows_up_in_the_console(cx: &mut TestAppContext) {
 
     handle
         .update(cx, |session, window, cx| {
-            session.open_console_for_test(window, cx)
+            session.open_tool(Tool::Console, window, cx)
         })
         .unwrap();
     // The refresh snapshots the log on the background executor.
@@ -39,7 +40,7 @@ fn opening_a_table_logs_its_reads_as_internal(cx: &mut TestAppContext) {
 
     handle
         .update(cx, |session, window, cx| {
-            session.open_console_for_test(window, cx)
+            session.open_tool(Tool::Console, window, cx)
         })
         .unwrap();
     // The refresh snapshots the log on the background executor.
@@ -72,8 +73,8 @@ fn opening_the_console_twice_brings_the_same_tab_forward(cx: &mut TestAppContext
 
     handle
         .update(cx, |session, window, cx| {
-            session.open_console_for_test(window, cx);
-            session.open_console_for_test(window, cx);
+            session.open_tool(Tool::Console, window, cx);
+            session.open_tool(Tool::Console, window, cx);
         })
         .unwrap();
 
@@ -97,7 +98,7 @@ fn the_clear_button_empties_the_log(cx: &mut TestAppContext) {
 
     handle
         .update(cx, |session, window, cx| {
-            session.open_console_for_test(window, cx)
+            session.open_tool(Tool::Console, window, cx)
         })
         .unwrap();
     // The refresh snapshots the log on the background executor.

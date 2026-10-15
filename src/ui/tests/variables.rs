@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::db::params::Variable;
-use crate::ui::variables_dialog::VariablesView;
+use crate::ui::variables_dialog::{VariablesEvent, VariablesView};
 
 fn set_variables(cx: &mut TestAppContext, handle: WindowHandle<Session>, variables: Vec<Variable>) {
     handle
@@ -175,4 +175,15 @@ fn variables_ride_along_with_the_session_snapshot(cx: &mut TestAppContext) {
         panic!("the first tab should be a query tab");
     };
     assert_eq!(variables, &vec![variable("name", "gamma")]);
+}
+
+/// Escape gives up on the dialog with the keyboard still in a name box.
+#[gpui_kit::test]
+fn escape_closes_the_dialog(cx: &mut TestAppContext) {
+    assert!(escape_dismisses(
+        cx,
+        |window, cx| VariablesView::new(vec![variable("name", "gamma")], window, cx),
+        |view, window, cx| view.focus(window, cx),
+        |event| matches!(event, VariablesEvent::Dismissed),
+    ));
 }
