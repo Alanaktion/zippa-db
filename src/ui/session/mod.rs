@@ -18,7 +18,9 @@ use gpui_kit::{
 
 use regex::Regex;
 
-use crate::db::{CatalogEntry, CatalogKind, Connection, DatabaseObject, StoredObject};
+use crate::db::{
+    CatalogEntry, CatalogKind, Connection, DatabaseObject, PinnedConnection, StoredObject,
+};
 use crate::saved_queries::SavedQueries;
 use crate::ui::completion::SharedCatalog;
 use crate::ui::create_database_dialog::CreateDatabaseView;
@@ -87,6 +89,11 @@ pub enum SessionEvent {
 
 pub struct Session {
     connection: Arc<Connection>,
+    /// The one connection every query tab shares when the
+    /// `share_connection_across_buffers` setting is on, checked out of the
+    /// pool on first use. `None` until a tab runs, or when each tab keeps its
+    /// own.
+    shared_pin: Option<PinnedConnection>,
     dock: Entity<DockArea>,
     /// Every panel this session owns, in creation order. The dock owns where
     /// they are; this owns which ones exist.
@@ -173,6 +180,7 @@ impl Session {
 
         let mut session = Self {
             connection,
+            shared_pin: None,
             dock,
             panels: Vec::new(),
             active: None,

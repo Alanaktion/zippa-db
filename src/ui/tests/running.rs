@@ -279,3 +279,58 @@ fn escaping_the_failure_question_rolls_back(cx: &mut TestAppContext) {
         "the tab should be free to run again"
     );
 }
+
+#[gpui_kit::test]
+fn a_script_runs_without_a_transaction_when_the_setting_is_off(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(Settings {
+            wrap_scripts_in_transaction: false,
+            ..Settings::default()
+        })
+    });
+    let (database, handle, session) = workspace_session(cx);
+
+    let sql = "insert into items values (3, 'gamma', 3.0, NULL);\ninsert into nope values (1);";
+    prepare_workspace_editor(cx, &handle, &session, sql);
+    press_workspace(cx, &handle, "secondary-shift-enter");
+    cx.run_until_parked();
+
+    // The second statement fails; without the wrapping transaction the run
+    // pauses to ask with the first statement already committed.
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "the failed statement should pause the script with a question"
+    );
+    click_workspace(cx, &handle, "script-abort");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        3,
+        "the first statement should have committed without the wrapping transaction"
+    );
+}
+
+#[gpui_kit::test]
+fn a_script_rolls_back_a_failed_statement_by_default(cx: &mut TestAppContext) {
+    let (database, handle, session) = workspace_session(cx);
+
+    let sql = "insert into items values (3, 'gamma', 3.0, NULL);\ninsert into nope values (1);";
+    prepare_workspace_editor(cx, &handle, &session, sql);
+    press_workspace(cx, &handle, "secondary-shift-enter");
+    cx.run_until_parked();
+
+    // The second statement fails; the wrapping transaction rolls back the first.
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "the failed statement should pause the script with a question"
+    );
+    click_workspace(cx, &handle, "script-abort");
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(other_count(&database)),
+        2,
+        "the wrapping transaction should have rolled back the first statement"
+    );
+}

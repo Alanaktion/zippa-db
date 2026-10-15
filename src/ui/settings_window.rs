@@ -216,6 +216,48 @@ fn editor_page() -> SettingPage {
                 ),
             ),
         )
+        .group(
+            SettingGroup::new().title("Scripts").item(
+                SettingItem::new(
+                    "Wrap scripts in a transaction",
+                    SettingField::switch(
+                        |cx| Settings::global(cx).wrap_scripts_in_transaction,
+                        |value, cx| {
+                            settings::update(cx, |settings| {
+                                settings.wrap_scripts_in_transaction = value
+                            })
+                        },
+                    )
+                    .default_value(true),
+                )
+                .description(
+                    "Run the whole buffer as a script inside one transaction, so a failed \
+                     statement can be rolled back with the rest. With this off, each \
+                     statement commits as it runs.",
+                ),
+            ),
+        )
+        .group(
+            SettingGroup::new().title("Connections").item(
+                SettingItem::new(
+                    "Share one connection across query buffers",
+                    SettingField::switch(
+                        |cx| Settings::global(cx).share_connection_across_buffers,
+                        |value, cx| {
+                            settings::update(cx, |settings| {
+                                settings.share_connection_across_buffers = value
+                            })
+                        },
+                    )
+                    .default_value(false),
+                )
+                .description(
+                    "Query tabs share a single server session instead of each holding its \
+                     own, so a session variable set in one buffer is visible in another. \
+                     Only one query runs at a time.",
+                ),
+            ),
+        )
 }
 
 fn data_page() -> SettingPage {

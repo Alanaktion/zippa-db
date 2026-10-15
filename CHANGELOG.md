@@ -46,7 +46,10 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   `USE`, temporary tables, and `LOCK TABLES` last between runs; an open
   transaction is named in the status bar with Commit and Roll Back, and
   closing the tab, the connection, or switching database asks before rolling
-  it back.
+  it back. Two settings change how queries run: scripts can run without the
+  wrapping transaction (each statement then commits as it runs), and query
+  tabs can share one connection instead of each holding their own, so a
+  session variable set in one buffer is visible in another.
 - **Query plans:** `EXPLAIN` and `EXPLAIN ANALYZE` as a tree with costs, rows,
   timing, and warnings.
 - **Table view:** paging, row limit, sorting, a filter bar, a row panel, and

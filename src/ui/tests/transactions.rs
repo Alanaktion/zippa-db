@@ -117,3 +117,161 @@ fn each_query_tab_has_its_own_transaction(cx: &mut TestAppContext) {
     assert!(status.contains("1 row"), "{status}");
     assert_eq!(runtime::block_on(other_count(&database)), 2);
 }
+
+#[gpui_kit::test]
+fn a_second_buffer_sees_the_first_buffers_session_when_sharing_is_on(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(Settings {
+            share_connection_across_buffers: true,
+            ..Settings::default()
+        })
+    });
+    let (_database, handle, session) = workspace_session(cx);
+
+    // A temporary table only exists on the connection that created it.
+    run_in_tab(
+        cx,
+        &handle,
+        &session,
+        "create temp table shared_seen (a integer)",
+    );
+    open_workspace_tab(cx, &handle, &session);
+    run_in_tab(cx, &handle, &session, "insert into shared_seen values (1)");
+
+    let status = session.read_with(cx, |session, cx| session.active_status_for_test(cx));
+    assert!(
+        !status.starts_with("Error:"),
+        "the second buffer should see the first buffer's temporary table: {status}"
+    );
+}
+
+#[gpui_kit::test]
+fn buffers_keep_their_own_connections_by_default(cx: &mut TestAppContext) {
+    let (_database, handle, session) = workspace_session(cx);
+
+    run_in_tab(
+        cx,
+        &handle,
+        &session,
+        "create temp table private_seen (a integer)",
+    );
+    open_workspace_tab(cx, &handle, &session);
+    run_in_tab(cx, &handle, &session, "insert into private_seen values (1)");
+
+    let status = session.read_with(cx, |session, cx| session.active_status_for_test(cx));
+    assert!(
+        status.starts_with("Error:"),
+        "the second buffer should not see the first buffer's temporary table: {status}"
+    );
+}
+
+#[gpui_kit::test]
+fn an_open_transaction_is_shared_across_buffers_when_the_setting_is_on(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(Settings {
+            share_connection_across_buffers: true,
+            ..Settings::default()
+        })
+    });
+    let (_database, handle, session) = workspace_session(cx);
+
+    run_in_tab(cx, &handle, &session, "BEGIN");
+    open_workspace_tab(cx, &handle, &session);
+    // The second tab's first run puts it on the shared connection, inside the
+    // first buffer's transaction.
+    run_in_tab(cx, &handle, &session, "select 1");
+
+    assert_eq!(
+        transaction(cx, &session),
+        TxnState::Open,
+        "the second buffer runs on the same connection, inside the first buffer's transaction"
+    );
+}
+
+#[gpui_kit::test]
+fn a_tab_with_an_open_transaction_keeps_its_connection_when_sharing_is_turned_on(
+    cx: &mut TestAppContext,
+) {
+    let (_database, handle, session) = workspace_session(cx);
+
+    run_in_tab(cx, &handle, &session, "BEGIN");
+    run_in_tab(
+        cx,
+        &handle,
+        &session,
+        "create temp table bound_seen (a integer)",
+    );
+    // Sharing is turned on with the transaction still open: the tab stays on
+    // its own connection rather than rolling the transaction back.
+    cx.update(|cx| {
+        cx.set_global(Settings {
+            share_connection_across_buffers: true,
+            ..Settings::default()
+        })
+    });
+    open_workspace_tab(cx, &handle, &session);
+    run_in_tab(cx, &handle, &session, "insert into bound_seen values (1)");
+
+    let status = session.read_with(cx, |session, cx| session.active_status_for_test(cx));
+    assert!(
+        status.starts_with("Error:"),
+        "the second tab is on the shared connection, not the first tab's still-open one: {status}"
+    );
+
+    activate_workspace_tab(cx, &handle, &session, 0);
+    assert_eq!(
+        transaction(cx, &session),
+        TxnState::Open,
+        "turning the setting on should not roll back the first tab's transaction"
+    );
+}
+
+#[gpui_kit::test]
+fn a_tab_with_an_open_transaction_keeps_the_shared_connection_when_sharing_is_turned_off(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        cx.set_global(Settings {
+            share_connection_across_buffers: true,
+            ..Settings::default()
+        })
+    });
+    let (_database, handle, session) = workspace_session(cx);
+
+    run_in_tab(cx, &handle, &session, "BEGIN");
+    run_in_tab(
+        cx,
+        &handle,
+        &session,
+        "create temp table still_shared (a integer)",
+    );
+    // Sharing is turned off with the transaction still open: the tab stays on
+    // the shared connection rather than rolling the transaction back.
+    cx.update(|cx| {
+        cx.set_global(Settings {
+            share_connection_across_buffers: false,
+            ..Settings::default()
+        })
+    });
+    open_workspace_tab(cx, &handle, &session);
+    run_in_tab(cx, &handle, &session, "insert into still_shared values (1)");
+
+    let status = session.read_with(cx, |session, cx| session.active_status_for_test(cx));
+    assert!(
+        status.starts_with("Error:"),
+        "the second tab should be on a connection of its own: {status}"
+    );
+
+    activate_workspace_tab(cx, &handle, &session, 0);
+    assert_eq!(
+        transaction(cx, &session),
+        TxnState::Open,
+        "turning the setting off should not roll back the first tab's transaction"
+    );
+    run_in_tab(cx, &handle, &session, "insert into still_shared values (2)");
+    let status = session.read_with(cx, |session, cx| session.active_status_for_test(cx));
+    assert!(
+        !status.starts_with("Error:"),
+        "the first tab should still see its temporary table: {status}"
+    );
+}

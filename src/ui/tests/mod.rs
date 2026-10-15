@@ -476,6 +476,39 @@ fn close_workspace_tab(
     cx.run_until_parked();
 }
 
+/// Open a query tab in a workspace session; the new tab becomes the active one.
+fn open_workspace_tab(
+    cx: &mut TestAppContext,
+    handle: &WorkspaceWindow,
+    session: &Entity<Session>,
+) {
+    let session = session.clone();
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        session.update(cx, |session, cx| {
+            session.open_tab_for_test(window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// Make tab `index` the active one in a workspace session.
+fn activate_workspace_tab(
+    cx: &mut TestAppContext,
+    handle: &WorkspaceWindow,
+    session: &Entity<Session>,
+    index: usize,
+) {
+    let session = session.clone();
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        session.update(cx, |session, cx| {
+            session.activate_tab_for_test(index, window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
 /// Run `sql` in the active tab of a workspace session, the way the run
 /// shortcut does, and leave the buffer empty again so the tab is not dirty.
 fn run_in_tab(
