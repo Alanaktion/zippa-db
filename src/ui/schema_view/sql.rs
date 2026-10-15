@@ -5,7 +5,9 @@
 
 use crate::db::schema::{ColumnDef, ForeignKeyDef, IndexDef, ReferentialAction};
 use crate::db::sql::quote_literal_for;
-use crate::db::{DatabaseObject, Engine, ObjectKind, quote_identifier};
+use crate::db::{
+    DatabaseObject, Engine, ObjectKind, qualified_name, quote_identifier, quoted_list,
+};
 
 use super::rebuild::foreign_key_clause;
 
@@ -77,14 +79,7 @@ impl ColumnEdit {
 
 /// `object`, qualified and quoted, the way `TableView::target` reads it.
 pub(crate) fn target(object: &DatabaseObject, engine: Engine) -> String {
-    match &object.schema {
-        Some(schema) => format!(
-            "{}.{}",
-            quote_identifier(schema, engine),
-            quote_identifier(&object.name, engine)
-        ),
-        None => quote_identifier(&object.name, engine),
-    }
+    qualified_name(object.schema.as_deref(), &object.name, engine)
 }
 
 /// A short, fixed list of common types for the column type dropdown.
@@ -382,7 +377,7 @@ pub(crate) fn generate_create_statements(
         if !primary_key.is_empty() {
             definitions.push(format!(
                 "PRIMARY KEY ({})",
-                columns_list(engine, &primary_key)
+                quoted_list(&primary_key, engine)
             ));
         }
         for edit in foreign_keys {
@@ -471,15 +466,9 @@ impl IndexEdit {
 /// index names are already table-scoped or database-scoped, so this is a
 /// no-op for them.
 fn qualified_index_name(object: &DatabaseObject, engine: Engine, name: &str) -> String {
-    match (engine, &object.schema) {
-        (Engine::Postgres, Some(schema)) => {
-            format!(
-                "{}.{}",
-                quote_identifier(schema, engine),
-                quote_identifier(name, engine)
-            )
-        }
-        _ => quote_identifier(name, engine),
+    match engine {
+        Engine::Postgres => qualified_name(object.schema.as_deref(), name, engine),
+        Engine::MySql | Engine::Sqlite => quote_identifier(name, engine),
     }
 }
 
@@ -520,17 +509,9 @@ pub(crate) fn generate_index_statements(
     Ok(statements)
 }
 
-fn columns_list(engine: Engine, columns: &[String]) -> String {
-    columns
-        .iter()
-        .map(|column| quote_identifier(column, engine))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn add_index_statement(engine: Engine, target: &str, edit: &IndexEdit) -> Result<String, String> {
     let name = quote_identifier(&edit.name, engine);
-    let columns = columns_list(engine, &edit.columns);
+    let columns = quoted_list(&edit.columns, engine);
 
     if edit.primary_key {
         return match engine {
@@ -658,21 +639,18 @@ pub(crate) fn generate_foreign_key_statements(
             return Err("a foreign key needs a name".to_string());
         }
 
-        let referenced = match &edit.referenced_schema {
-            Some(schema) if engine == Engine::Postgres => format!(
-                "{}.{}",
-                quote_identifier(schema, engine),
-                quote_identifier(&edit.referenced_table, engine)
-            ),
-            _ => quote_identifier(&edit.referenced_table, engine),
-        };
+        let referenced_schema = edit
+            .referenced_schema
+            .as_deref()
+            .filter(|_| engine == Engine::Postgres);
+        let referenced = qualified_name(referenced_schema, &edit.referenced_table, engine);
 
         statements.push(format!(
             "ALTER TABLE {target} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {referenced} ({}) \
              ON DELETE {} ON UPDATE {}",
             quote_identifier(&edit.name, engine),
-            columns_list(engine, &edit.columns),
-            columns_list(engine, &edit.referenced_columns),
+            quoted_list(&edit.columns, engine),
+            quoted_list(&edit.referenced_columns, engine),
             edit.on_delete.label(),
             edit.on_update.label(),
         ));
