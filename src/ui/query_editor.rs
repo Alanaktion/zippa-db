@@ -7,6 +7,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, EditorState, Enter, IndentInline};
+use gpui_kit::component::separator::Separator;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -1206,6 +1207,7 @@ impl Render for QueryEditor {
                                         cx.emit(QueryEditorEvent::Save)
                                     })),
                             )
+                            .child(Separator::vertical())
                             .child(
                                 Button::new("variables")
                                     .ghost()
@@ -1222,7 +1224,7 @@ impl Render for QueryEditor {
                                 Button::new("format-query")
                                     .ghost()
                                     .small()
-                                    .icon(AssetIcon::Sparkles)
+                                    .icon(AssetIcon::BrushCleaning)
                                     .accessibility_label(
                                         "Format the selection, or the whole buffer",
                                     )
@@ -1235,6 +1237,7 @@ impl Render for QueryEditor {
                                         this.format_query(&FormatQuery, window, cx)
                                     })),
                             )
+                            .child(Separator::vertical())
                             .child(
                                 Button::new("explain")
                                     .ghost()
@@ -1273,6 +1276,7 @@ impl Render for QueryEditor {
                                         this.emit_explain(true, cx)
                                     })),
                             )
+                            .child(Separator::vertical())
                             .child({
                                 // A buffer a transaction cannot hold says so
                                 // before it is run, in words and with its

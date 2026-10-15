@@ -44,6 +44,7 @@ gpui_kit::assets::icon_assets!(
         Braces,
         ChevronsDownUp,
         Pencil,
+        BrushCleaning,
         Trash,
         Columns3,
         Key,
