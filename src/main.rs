@@ -56,6 +56,7 @@ gpui_kit::assets::icon_assets!(
         Import,
         Binoculars,
         Wrench,
+        Sparkles,
         FastForward,
         Bookmark,
         X,

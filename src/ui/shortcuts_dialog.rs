@@ -107,6 +107,10 @@ const GROUPS: &[Group] = &[
                 "Comment out the selected lines, or the caret's line",
                 &["secondary-/"],
             ),
+            (
+                "Format the selection, or the whole buffer",
+                &["secondary-shift-f"],
+            ),
             ("Copy the selection, or the caret's line", &["secondary-c"]),
             ("Cut the selection, or the caret's line", &["secondary-x"]),
             (
