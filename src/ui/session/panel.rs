@@ -33,6 +33,7 @@ use crate::ui::busy::busy_label;
 use crate::ui::completion::SharedCatalog;
 use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::{Copied, DataGrid};
+use crate::ui::erd::ErdView;
 use crate::ui::plan_view::PlanView;
 use crate::ui::process_list::ProcessListView;
 use crate::ui::query_digest::QueryDigestView;
@@ -259,6 +260,24 @@ impl SessionPanel {
         }
     }
 
+    /// The ER diagram tab over an already-built [`ErdView`]: one per session,
+    /// the same as the console and the process list.
+    pub(crate) fn erd(
+        key: usize,
+        title: impl Into<SharedString>,
+        view: Entity<ErdView>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            key,
+            title: title.into(),
+            content: TabContent::Erd { view },
+            focus: cx.focus_handle(),
+            group: None,
+            panes: cx.new(|_| ResizableState::default()),
+        }
+    }
+
     /// The server variables tab over an already-built [`ServerVariablesView`]:
     /// one per session, the same as the console and the process list.
     pub(crate) fn variables(
@@ -419,6 +438,10 @@ impl SessionPanel {
         matches!(self.content, TabContent::Users { .. })
     }
 
+    pub(crate) fn is_erd(&self) -> bool {
+        matches!(self.content, TabContent::Erd { .. })
+    }
+
     /// The icon that tells this tab's kind apart at a glance.
     ///
     /// A table's data tab and its structure tab carry the same name, so the
@@ -435,6 +458,7 @@ impl SessionPanel {
             TabContent::Digest { .. } => IconName::Gauge,
             TabContent::Maintenance { .. } => IconName::Wrench,
             TabContent::Users { .. } => IconName::Users,
+            TabContent::Erd { .. } => IconName::Network,
         }
     }
 
@@ -454,6 +478,7 @@ impl SessionPanel {
             TabContent::Digest { .. } => "query digest",
             TabContent::Maintenance { .. } => "database maintenance",
             TabContent::Users { .. } => "user management",
+            TabContent::Erd { .. } => "ER diagram",
         }
     }
 
@@ -513,7 +538,8 @@ impl SessionPanel {
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => None,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => None,
         }
     }
 
@@ -528,7 +554,8 @@ impl SessionPanel {
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => None,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => None,
         }
     }
 
@@ -559,6 +586,7 @@ impl SessionPanel {
             TabContent::Digest { .. } => PanelState::Digest,
             TabContent::Maintenance { .. } => PanelState::Maintenance,
             TabContent::Users { .. } => PanelState::Users,
+            TabContent::Erd { .. } => PanelState::Erd,
         };
         Some(state)
     }
@@ -578,7 +606,8 @@ impl SessionPanel {
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => false,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => false,
         }
     }
 
@@ -604,7 +633,8 @@ impl SessionPanel {
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => None,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => None,
         }
     }
 
@@ -618,7 +648,8 @@ impl SessionPanel {
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => None,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => None,
         }
     }
 
@@ -633,7 +664,8 @@ impl SessionPanel {
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => None,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => None,
         }
     }
 
@@ -648,7 +680,8 @@ impl SessionPanel {
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => None,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => None,
         }
     }
 
@@ -663,7 +696,24 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Maintenance { .. } => None,
+            | TabContent::Maintenance { .. }
+            | TabContent::Erd { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn erd_view(&self) -> Option<Entity<ErdView>> {
+        match &self.content {
+            TabContent::Erd { view } => Some(view.clone()),
+            TabContent::Query { .. }
+            | TabContent::Table { .. }
+            | TabContent::Schema { .. }
+            | TabContent::Console { .. }
+            | TabContent::Processes { .. }
+            | TabContent::Variables { .. }
+            | TabContent::Digest { .. }
+            | TabContent::Maintenance { .. }
+            | TabContent::Users { .. } => None,
         }
     }
 
@@ -678,7 +728,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => None,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => None,
         }
     }
 
@@ -693,7 +744,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => None,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => None,
         }
     }
 
@@ -708,7 +760,8 @@ impl SessionPanel {
             | TabContent::Processes { .. }
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
-            | TabContent::Users { .. } => None,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => None,
         }
     }
 
@@ -722,7 +775,8 @@ impl SessionPanel {
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => None,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => None,
         }
     }
 
@@ -737,7 +791,8 @@ impl SessionPanel {
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => None,
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => None,
         }
     }
 
@@ -840,7 +895,8 @@ impl SessionPanel {
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => String::new(),
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => String::new(),
         }
     }
 
@@ -869,7 +925,8 @@ impl SessionPanel {
             | TabContent::Variables { .. }
             | TabContent::Digest { .. }
             | TabContent::Maintenance { .. }
-            | TabContent::Users { .. } => (0, 0),
+            | TabContent::Users { .. }
+            | TabContent::Erd { .. } => (0, 0),
         }
     }
 
@@ -1291,6 +1348,10 @@ impl SessionPanel {
                 let view = view.clone();
                 view.update(cx, |view, cx| view.set_connection(connection, cx));
             }
+            TabContent::Erd { view } => {
+                let view = view.clone();
+                view.update(cx, |view, cx| view.set_connection(connection, cx));
+            }
         }
     }
 
@@ -1321,6 +1382,10 @@ impl SessionPanel {
                 view.update(cx, |view, cx| view.refresh(cx));
             }
             TabContent::Users { view } => {
+                let view = view.clone();
+                view.update(cx, |view, cx| view.refresh(cx));
+            }
+            TabContent::Erd { view } => {
                 let view = view.clone();
                 view.update(cx, |view, cx| view.refresh(cx));
             }
@@ -1584,6 +1649,7 @@ impl Focusable for SessionPanel {
             TabContent::Digest { view } => view.read(cx).focus_handle(cx),
             TabContent::Maintenance { view } => view.read(cx).focus_handle(cx),
             TabContent::Users { view } => view.read(cx).focus_handle(cx),
+            TabContent::Erd { view } => view.read(cx).focus_handle(cx),
         }
     }
 }
@@ -1848,6 +1914,7 @@ impl Render for SessionPanel {
             TabContent::Console { view } => view.clone().into_any_element(),
             TabContent::Processes { view } => view.clone().into_any_element(),
             TabContent::Users { view } => view.clone().into_any_element(),
+            TabContent::Erd { view } => view.clone().into_any_element(),
             TabContent::Variables { view } => view.clone().into_any_element(),
             TabContent::Digest { view } => view.clone().into_any_element(),
             TabContent::Maintenance { view } => view.clone().into_any_element(),

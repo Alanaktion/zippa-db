@@ -13,6 +13,7 @@ use gpui_kit::{App, Context, Entity, Window};
 
 use crate::db::{DatabaseObject, Engine};
 use crate::ui::console::ConsoleView;
+use crate::ui::erd::ErdView;
 use crate::ui::filter_bar::FilterSpec;
 use crate::ui::process_list::ProcessListView;
 use crate::ui::query_digest::QueryDigestView;
@@ -258,6 +259,26 @@ impl Session {
         self.next_key += 1;
         let view = cx.new(|cx| UserManagementView::new(self.connection.clone(), window, cx));
         let panel = cx.new(|cx| SessionPanel::users(key, "Users", view, cx));
+        self.install(panel, window, cx);
+    }
+
+    /// Open the ER diagram tab, or bring forward the one already open. Every
+    /// engine has foreign keys to diagram, SQLite included.
+    pub(crate) fn open_erd(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).is_erd())
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+
+        let key = self.next_key;
+        self.next_key += 1;
+        let view = cx.new(|cx| ErdView::new(self.connection.clone(), window, cx));
+        let panel = cx.new(|cx| SessionPanel::erd(key, "ER diagram", view, cx));
         self.install(panel, window, cx);
     }
 

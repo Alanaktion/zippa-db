@@ -36,6 +36,7 @@ pub mod completion;
 pub mod config;
 pub mod connection;
 pub(crate) mod dedicated;
+pub mod erd;
 pub mod export;
 pub mod health;
 pub mod import;

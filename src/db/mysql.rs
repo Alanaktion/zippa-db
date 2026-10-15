@@ -295,6 +295,26 @@ pub(crate) fn foreign_keys_sql(table: &str) -> String {
     )
 }
 
+/// Every foreign key in the current database: the local table first (no
+/// local schema column on this engine — the leading `NULL` keeps the column
+/// layout identical to [`ALL_FOREIGN_KEYS_SQL`]'s Postgres sibling), then
+/// the per-table columns [`foreign_keys_sql`] returns. The ER diagram reads
+/// the whole graph in one query instead of one per table.
+pub(crate) const ALL_FOREIGN_KEYS_SQL: &str = "SELECT NULL, kcu.table_name, \
+     kcu.constraint_name, \
+     GROUP_CONCAT(kcu.column_name ORDER BY kcu.ordinal_position SEPARATOR ','), \
+     kcu.referenced_table_schema, kcu.referenced_table_name, \
+     GROUP_CONCAT(kcu.referenced_column_name ORDER BY kcu.ordinal_position SEPARATOR ','), \
+     rc.delete_rule, rc.update_rule \
+     FROM information_schema.key_column_usage kcu \
+     JOIN information_schema.referential_constraints rc \
+       ON rc.constraint_name = kcu.constraint_name \
+       AND rc.constraint_schema = kcu.constraint_schema \
+     WHERE kcu.table_schema = DATABASE() AND kcu.referenced_table_name IS NOT NULL \
+     GROUP BY kcu.table_name, kcu.constraint_name, kcu.referenced_table_schema, \
+       kcu.referenced_table_name, rc.delete_rule, rc.update_rule \
+     ORDER BY kcu.table_name, kcu.constraint_name";
+
 pub(crate) fn rows_affected(result: &MySqlQueryResult) -> u64 {
     result.rows_affected()
 }

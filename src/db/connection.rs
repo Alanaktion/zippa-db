@@ -21,13 +21,14 @@ use sqlx::{
 use super::catalog::{Catalog, CatalogEntry, CatalogKind, MAX_ENTRIES};
 use super::config::{ConnectionConfig, Engine};
 use super::dedicated::Dedicated;
+use super::erd::ErdRelation;
 use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary};
 use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
 use super::tunnel::Tunnel;
 use super::{
-    health, mysql, postgres, quote_identifier, quote_literal, sql, sqlite, statement,
+    erd, health, mysql, postgres, quote_identifier, quote_literal, sql, sqlite, statement,
     typed_placeholder,
 };
 
@@ -361,6 +362,48 @@ impl Connection {
             .iter()
             .filter_map(|row| self.object_row(row))
             .collect())
+    }
+
+    /// Every foreign key in the current database, for the ER diagram: the
+    /// referencing and referenced tables plus the constraint name. The two
+    /// server engines answer in one query each; SQLite reports foreign keys
+    /// per table, so this loops its tables — still fast, all local.
+    pub async fn all_foreign_keys(&self) -> Result<Vec<ErdRelation>> {
+        match self.config.engine {
+            Engine::Postgres => {
+                let result = self.run_query(postgres::ALL_FOREIGN_KEYS_SQL).await?;
+                Ok(erd::parse_bulk_relations(&result))
+            }
+            Engine::MySql => {
+                let result = self.run_query(mysql::ALL_FOREIGN_KEYS_SQL).await?;
+                let database = self.database().to_string();
+                Ok(erd::parse_bulk_relations(&result)
+                    .into_iter()
+                    .map(|mut relation| {
+                        // Tables are matched schema-less on this engine: a
+                        // reference inside this database drops its schema, and
+                        // one into another database keeps it so the match
+                        // misses — the diagram does not list that table.
+                        if relation.to.schema.as_deref().is_none_or(|s| s == database) {
+                            relation.to.schema = None;
+                        }
+                        relation
+                    })
+                    .collect())
+            }
+            Engine::Sqlite => {
+                let tables = self.run_query(sqlite::TABLE_NAMES_SQL).await?;
+                let mut relations = Vec::new();
+                for row in &tables.rows {
+                    let Some(name) = row.first().cloned().flatten() else {
+                        continue;
+                    };
+                    let result = self.run_query(&sqlite::foreign_keys_sql(&name)).await?;
+                    relations.extend(erd::parse_sqlite_relations(&name, &result));
+                }
+                Ok(relations)
+            }
+        }
     }
 
     /// One row of an object listing: `(schema, name, kind)`, the layout every

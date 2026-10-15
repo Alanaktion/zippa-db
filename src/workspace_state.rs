@@ -107,6 +107,9 @@ pub enum PanelState {
     /// The user management tab. Carries nothing of its own, the same as the
     /// process list — it re-reads the server on open.
     Users,
+    /// The ER diagram tab. Carries nothing of its own — it re-reads the
+    /// schema on open, the same as the process list.
+    Erd,
     /// A panel kind a newer build wrote. It is skipped rather than failing the
     /// whole file, so a newer version's workspace still opens in an older one.
     #[serde(other)]

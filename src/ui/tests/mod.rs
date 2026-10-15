@@ -42,6 +42,7 @@ mod completion;
 mod console;
 mod create_database;
 mod editing;
+mod erd;
 mod explain;
 mod export;
 mod files;
