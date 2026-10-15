@@ -734,7 +734,7 @@ impl SidebarTab {
 
 /// The sidebar width below which the Schema/Management/Saved tabs show
 /// icons instead of labels: the three labels no longer fit side by side.
-const SIDEBAR_TAB_ICON_BREAKPOINT: f32 = 210.;
+const SIDEBAR_TAB_ICON_BREAKPOINT: f32 = 260.;
 
 /// Whether the sidebar's tabs collapse to icons at `width`. Pure, so the
 /// breakpoint is unit-tested without a window.
