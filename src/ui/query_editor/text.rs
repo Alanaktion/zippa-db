@@ -30,6 +30,8 @@ pub(super) fn format_sql(
         &sqlformat::QueryParams::None,
         &sqlformat::FormatOptions {
             dialect,
+            lines_between_queries: 2,
+            max_inline_block: 60,
             ..Default::default()
         },
     );
