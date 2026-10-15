@@ -9,6 +9,7 @@ pub mod console;
 pub mod create_database_dialog;
 pub mod data_grid;
 pub mod engine;
+pub mod erd;
 pub mod filter_bar;
 mod fuzzy;
 pub mod import_dialog;

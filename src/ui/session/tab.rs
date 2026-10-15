@@ -8,6 +8,7 @@ use crate::db::query::QueryResult;
 use crate::db::{Engine, PinnedConnection, ScriptRun};
 use crate::ui::console::ConsoleView;
 use crate::ui::data_grid::DataGrid;
+use crate::ui::erd::ErdView;
 use crate::ui::plan_view::PlanView;
 use crate::ui::process_list::ProcessListView;
 use crate::ui::query_digest::QueryDigestView;
@@ -113,5 +114,8 @@ pub(crate) enum TabContent {
     },
     Users {
         view: Entity<UserManagementView>,
+    },
+    Erd {
+        view: Entity<ErdView>,
     },
 }

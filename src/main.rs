@@ -63,6 +63,10 @@ gpui_kit::assets::icon_assets!(
         X,
         Variable,
         Users,
+        Network,
+        Download,
+        ZoomIn,
+        ZoomOut,
     ]
 );
 

@@ -25,9 +25,10 @@ use crate::ui::query_editor::{
     ToggleComment,
 };
 use crate::ui::session::{
-    CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenFile,
-    OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, OpenUserManagement,
-    PreviousTab, QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs, SearchSchema,
+    CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenErd,
+    OpenFile, OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables,
+    OpenUserManagement, PreviousTab, QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs,
+    SearchSchema,
 };
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -143,6 +144,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Query Digest", OpenQueryDigest),
             MenuItem::action("Users", OpenUserManagement),
             MenuItem::action("Maintenance", OpenMaintenance),
+            MenuItem::action("ER Diagram", OpenErd),
             MenuItem::separator(),
             MenuItem::action("Next Tab", NextTab),
             MenuItem::action("Previous Tab", PreviousTab),
@@ -234,6 +236,7 @@ mod tests {
             ("Query Digest", TypeId::of::<OpenQueryDigest>()),
             ("Users", TypeId::of::<OpenUserManagement>()),
             ("Maintenance", TypeId::of::<OpenMaintenance>()),
+            ("ER Diagram", TypeId::of::<OpenErd>()),
             ("Next Tab", TypeId::of::<NextTab>()),
             ("Previous Tab", TypeId::of::<PreviousTab>()),
             ("Next Connection", TypeId::of::<NextConnection>()),

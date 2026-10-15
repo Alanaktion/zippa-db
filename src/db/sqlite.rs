@@ -15,6 +15,10 @@ pub(crate) const OBJECTS_SQL: &str = "SELECT NULL AS table_schema, name, \
      FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' \
      ORDER BY name";
 
+/// Every user table, for the ER diagram: SQLite reports foreign keys per
+/// table (`pragma_foreign_key_list`), so the diagram loops this list.
+pub(crate) const TABLE_NAMES_SQL: &str = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name";
+
 /// Every column in every user table and view, for the catalog search: owning
 /// table, whether it is a view, column name, and declared type.
 ///

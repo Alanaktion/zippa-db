@@ -69,6 +69,7 @@ actions!(
         OpenQueryDigest,
         OpenMaintenance,
         OpenUserManagement,
+        OpenErd,
     ]
 );
 
@@ -445,6 +446,10 @@ impl Session {
         self.open_user_management(window, cx);
     }
 
+    fn on_open_erd(&mut self, _: &OpenErd, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_erd(window, cx);
+    }
+
     fn on_open_server_variables(
         &mut self,
         _: &OpenServerVariables,
@@ -599,6 +604,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_open_query_digest))
             .on_action(cx.listener(Self::on_open_maintenance))
             .on_action(cx.listener(Self::on_open_user_management))
+            .on_action(cx.listener(Self::on_open_erd))
             .on_action(cx.listener(Self::on_disconnect))
             .on_action(cx.listener(Self::on_reconnect))
             .child(

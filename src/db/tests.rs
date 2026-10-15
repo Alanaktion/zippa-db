@@ -2515,6 +2515,83 @@ async fn user_names(connection: &Connection) -> Vec<String> {
         .collect()
 }
 
+/// `all_foreign_keys` reads the whole relation graph in one query: two tables
+/// joined by a foreign key come back as one relation.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_all_foreign_keys_lists_a_created_relation() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    let parent = format!("zippa_erd_parent_{}", Uuid::new_v4().simple());
+    let child = format!("zippa_erd_child_{}", Uuid::new_v4().simple());
+
+    connection
+        .run_query(&format!("CREATE TABLE {parent} (id INTEGER PRIMARY KEY)"))
+        .await
+        .expect("creating the parent table failed");
+    connection
+        .run_query(&format!(
+            "CREATE TABLE {child} (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES {parent}(id))"
+        ))
+        .await
+        .expect("creating the child table failed");
+
+    let relations = connection
+        .all_foreign_keys()
+        .await
+        .expect("reading the foreign keys failed");
+    let relation = relations
+        .iter()
+        .find(|relation| relation.from.name == child)
+        .expect("the new foreign key should be listed");
+    assert_eq!(relation.to.name, parent);
+
+    connection
+        .run_query(&format!("DROP TABLE {child}, {parent}"))
+        .await
+        .expect("cleaning up failed");
+    connection.close().await;
+}
+
+/// The same, for MySQL's `information_schema`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_all_foreign_keys_lists_a_created_relation() {
+    let (connection, _pool) = live_mysql().await;
+    let parent = format!("zippa_erd_parent_{}", Uuid::new_v4().simple());
+    let child = format!("zippa_erd_child_{}", Uuid::new_v4().simple());
+
+    connection
+        .run_query(&format!("CREATE TABLE {parent} (id INTEGER PRIMARY KEY)"))
+        .await
+        .expect("creating the parent table failed");
+    connection
+        .run_query(&format!(
+            "CREATE TABLE {child} (id INTEGER PRIMARY KEY, parent_id INTEGER, FOREIGN KEY (parent_id) REFERENCES {parent}(id))"
+        ))
+        .await
+        .expect("creating the child table failed");
+
+    let relations = connection
+        .all_foreign_keys()
+        .await
+        .expect("reading the foreign keys failed");
+    let relation = relations
+        .iter()
+        .find(|relation| relation.from.name == child)
+        .expect("the new foreign key should be listed");
+    assert_eq!(relation.to.name, parent);
+    assert_eq!(
+        relation.to.schema, None,
+        "same-database references are schema-less"
+    );
+
+    connection
+        .run_query(&format!("DROP TABLE {child}, {parent}"))
+        .await
+        .expect("cleaning up failed");
+    connection.close().await;
+}
+
 /// `query_digest` is opt-in instrumentation on both engines, so a fresh test
 /// server may or may not have it installed/on; this checks the call never
 /// errors and, whichever branch it takes, that the branch itself is shaped

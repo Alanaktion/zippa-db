@@ -12,6 +12,7 @@ use crate::db::DatabaseObject;
 use crate::ui::console::ConsoleView;
 use crate::ui::create_database_dialog::CreateDatabaseView;
 use crate::ui::data_grid::DataGrid;
+use crate::ui::erd::ErdView;
 use crate::ui::import_dialog::ImportView;
 use crate::ui::plan_view::PlanView;
 use crate::ui::process_list::ProcessListView;
@@ -152,6 +153,19 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         self.open_user_management(window, cx);
+    }
+
+    /// The ER diagram view in the active tab, if this is the ER diagram tab.
+    #[cfg(test)]
+    pub(crate) fn active_erd_view(&self, cx: &App) -> Option<Entity<ErdView>> {
+        self.active_panel_for_test()?.read(cx).erd_view()
+    }
+
+    /// Open the ER diagram tab, or bring it forward, the way the sidebar's
+    /// button does.
+    #[cfg(test)]
+    pub(crate) fn open_erd_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_erd(window, cx);
     }
 
     /// The server variables view in the active tab, if this is the server

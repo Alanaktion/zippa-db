@@ -315,6 +315,32 @@ pub(crate) fn foreign_keys_sql(schema: &str, table: &str) -> String {
     )
 }
 
+/// Every foreign key in the non-system schemas: the local schema/table first,
+/// then the per-table columns [`foreign_keys_sql`] returns. The ER diagram
+/// reads the whole graph in one query instead of one per table.
+pub(crate) const ALL_FOREIGN_KEYS_SQL: &str = "SELECT n.nspname, c.relname, con.conname, \
+     array_to_string(ARRAY( \
+       SELECT a.attname FROM pg_attribute a \
+       WHERE a.attrelid = con.conrelid AND a.attnum = ANY(con.conkey) \
+       ORDER BY array_position(con.conkey, a.attnum) \
+     ), ','), \
+     fn.nspname, fc.relname, \
+     array_to_string(ARRAY( \
+       SELECT a.attname FROM pg_attribute a \
+       WHERE a.attrelid = con.confrelid AND a.attnum = ANY(con.confkey) \
+       ORDER BY array_position(con.confkey, a.attnum) \
+     ), ','), \
+     rc.delete_rule, rc.update_rule \
+     FROM pg_constraint con \
+     JOIN pg_class c ON c.oid = con.conrelid \
+     JOIN pg_namespace n ON n.oid = c.relnamespace \
+     JOIN pg_class fc ON fc.oid = con.confrelid \
+     JOIN pg_namespace fn ON fn.oid = fc.relnamespace \
+     JOIN information_schema.referential_constraints rc \
+       ON rc.constraint_name = con.conname AND rc.constraint_schema = n.nspname \
+     WHERE con.contype = 'f' AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+     ORDER BY n.nspname, c.relname, con.conname";
+
 pub(crate) fn rows_affected(result: &PgQueryResult) -> u64 {
     result.rows_affected()
 }

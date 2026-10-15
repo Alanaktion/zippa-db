@@ -34,7 +34,7 @@ use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
 use super::{
-    ImportSqlDump, OpenConsole, OpenMaintenance, OpenProcessList, OpenQueryDigest,
+    ImportSqlDump, OpenConsole, OpenErd, OpenMaintenance, OpenProcessList, OpenQueryDigest,
     OpenServerVariables, OpenUserManagement, SearchSchema, Session,
 };
 
@@ -419,6 +419,21 @@ impl Session {
                     .on_click(cx.listener(|_this, _, window, cx| {
                         let session = cx.entity().clone();
                         let _ = crate::ui::schema_search::open(session, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("erd")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Network)
+                    .accessibility_label("ER diagram")
+                    .tooltip_with_action(
+                        "Diagram the tables and their foreign keys",
+                        &OpenErd,
+                        Some("Session"),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_erd(window, cx);
                     })),
             )
             .child(

@@ -43,6 +43,7 @@ pub(crate) enum SwitcherTarget {
     OpenQueryDigest,
     OpenMaintenance,
     OpenUserManagement,
+    OpenErd,
 }
 
 /// One palette row before it becomes a `CommandItem`: the label and keywords
@@ -129,6 +130,9 @@ impl QuickSwitcherView {
             }
             SwitcherTarget::OpenUserManagement => {
                 session.update(cx, |session, cx| session.open_user_management(window, cx))
+            }
+            SwitcherTarget::OpenErd => {
+                session.update(cx, |session, cx| session.open_erd(window, cx))
             }
         }
     }
@@ -299,6 +303,20 @@ impl Render for QuickSwitcherView {
                 "Console",
                 IconName::SquareTerminal,
                 &["console", "log", "statements", "history"],
+            ),
+            action(
+                SwitcherTarget::OpenErd,
+                "ER Diagram",
+                IconName::Network,
+                &[
+                    "erd",
+                    "diagram",
+                    "tables",
+                    "foreign",
+                    "keys",
+                    "relations",
+                    "schema",
+                ],
             ),
         ];
         if is_file_based {
