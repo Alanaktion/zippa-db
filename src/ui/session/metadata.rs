@@ -316,6 +316,10 @@ impl Session {
     pub(super) fn adopt_connection(&mut self, connection: Connection, cx: &mut Context<Self>) {
         let previous = std::mem::replace(&mut self.connection, Arc::new(connection));
 
+        // The shared pin belonged to the connection being left; the next run
+        // checks a fresh one out of the new pool.
+        self.shared_pin = None;
+
         // The console's history belongs to the tab, not the pool about to
         // close: an internal read that failed right before the switch (or
         // any read from before it) should still be there to look at

@@ -11,7 +11,7 @@ use gpui_kit::component::dock::PanelId;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, Window};
 
-use crate::db::DatabaseObject;
+use crate::db::{DatabaseObject, PinnedConnection};
 use crate::ui::filter_bar::FilterSpec;
 use crate::ui::schema_view::{SchemaView, SchemaViewEvent};
 use crate::ui::table_view::{TableView, TableViewEvent};
@@ -305,7 +305,7 @@ impl Session {
             return;
         }
 
-        if panel.read(cx).is_dirty(cx) || panel.read(cx).transaction().is_open() {
+        if panel.read(cx).is_dirty(cx) || self.close_rolls_back(panel, cx) {
             self.confirm_close(panel, window, cx);
             return;
         }
@@ -326,7 +326,7 @@ impl Session {
     ) {
         let title = panel.read(cx).title();
         let dirty = panel.read(cx).is_dirty(cx);
-        let transaction = panel.read(cx).transaction().is_open();
+        let transaction = self.close_rolls_back(panel, cx);
         let session = cx.entity().downgrade();
         let panel = panel.clone();
         let (heading, description, ok) =
@@ -502,10 +502,7 @@ impl Session {
             .iter()
             .filter(|panel| panel.read(cx).is_dirty(cx))
             .count();
-        let transactions = targets
-            .iter()
-            .filter(|panel| panel.read(cx).transaction().is_open())
-            .count();
+        let transactions = self.closing_rolls_back(&targets, cx);
         if dirty == 0 && transactions == 0 {
             self.close_tabs_now(&targets, window, cx);
             return;
@@ -622,12 +619,55 @@ impl Session {
             .count()
     }
 
-    /// How many tabs have a transaction open — work that closing the
-    /// connection, or switching it to another database, would roll back.
+    /// How many transactions are open — work that closing the connection, or
+    /// switching it to another database, would roll back. Tabs sharing the
+    /// session's one connection report one transaction, not one each.
     pub(crate) fn open_transactions(&self, cx: &App) -> usize {
-        self.panels
+        let mut pins: Vec<PinnedConnection> = Vec::new();
+        for panel in &self.panels {
+            if let Some(pin) = panel.read(cx).pinned_clone()
+                && pin.state().is_open()
+                && !pins.iter().any(|seen| seen.is_clone_of(&pin))
+            {
+                pins.push(pin);
+            }
+        }
+        pins.len()
+    }
+
+    /// Whether closing `panel` alone would roll back its open transaction:
+    /// no other tab shares the connection it is open on.
+    fn close_rolls_back(&self, panel: &Entity<SessionPanel>, cx: &App) -> bool {
+        let Some(pin) = panel.read(cx).pinned_clone() else {
+            return false;
+        };
+        if !pin.state().is_open() {
+            return false;
+        }
+        !self
+            .panels
             .iter()
-            .filter(|panel| panel.read(cx).transaction().is_open())
+            .any(|other| other != panel && other.read(cx).pinned_is(&pin))
+    }
+
+    /// How many open transactions closing exactly `targets` would roll back:
+    /// one per distinct connection whose every holder is in the set.
+    fn closing_rolls_back(&self, targets: &[Entity<SessionPanel>], cx: &App) -> usize {
+        let mut pins: Vec<PinnedConnection> = Vec::new();
+        for panel in targets {
+            if let Some(pin) = panel.read(cx).pinned_clone()
+                && pin.state().is_open()
+                && !pins.iter().any(|seen| seen.is_clone_of(&pin))
+            {
+                pins.push(pin);
+            }
+        }
+        pins.iter()
+            .filter(|pin| {
+                self.panels
+                    .iter()
+                    .all(|panel| targets.contains(panel) || !panel.read(cx).pinned_is(pin))
+            })
             .count()
     }
 
@@ -638,9 +678,9 @@ impl Session {
         let unsaved = self.has_unsaved_changes(cx);
         let open = match self.open_transactions(cx) {
             0 => None,
-            1 => Some("a tab with an open transaction, which will be rolled back".to_string()),
+            1 => Some("an open transaction, which will be rolled back".to_string()),
             count => Some(format!(
-                "{count} tabs with open transactions, which will be rolled back"
+                "{count} open transactions, which will be rolled back"
             )),
         };
         match (unsaved, open) {

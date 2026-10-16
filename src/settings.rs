@@ -135,6 +135,15 @@ pub struct Settings {
     pub coerce_null_literal: bool,
     /// Whether the result grid tints every other row.
     pub stripe_rows: bool,
+    /// Whether running a whole buffer as a script wraps it in one
+    /// transaction, so a failed statement can be rolled back with the rest.
+    /// On by default; with it off, each statement commits as it runs.
+    pub wrap_scripts_in_transaction: bool,
+    /// Whether every query buffer shares one server connection instead of
+    /// each holding its own, so e.g. a session variable set in one buffer is
+    /// visible in another. Off by default; with it on, only one query runs
+    /// at a time.
+    pub share_connection_across_buffers: bool,
     /// Whether scrollbars stay on screen instead of fading out when idle.
     ///
     /// On by default: a wide result is scrolled sideways by dragging its
@@ -158,6 +167,8 @@ impl Default for Settings {
             stripe_rows: true,
             always_show_scrollbars: true,
             accept_completion: CompletionKey::default(),
+            wrap_scripts_in_transaction: true,
+            share_connection_across_buffers: false,
         }
     }
 }
@@ -436,6 +447,41 @@ mod tests {
             settings.always_show_scrollbars,
             "a file written before the setting existed should still show scrollbars"
         );
+        assert!(
+            settings.wrap_scripts_in_transaction,
+            "a file written before the setting existed should still wrap scripts in a transaction"
+        );
+        assert!(
+            !settings.share_connection_across_buffers,
+            "a file written before the setting existed should keep one connection per buffer"
+        );
+    }
+
+    #[test]
+    fn new_settings_default_to_current_behavior() {
+        let settings = Settings::default();
+        assert!(
+            settings.wrap_scripts_in_transaction,
+            "scripts should keep wrapping in a transaction unless the user opts out"
+        );
+        assert!(
+            !settings.share_connection_across_buffers,
+            "buffers should keep their own connections unless the user opts in"
+        );
+    }
+
+    #[test]
+    fn the_new_settings_survive_a_round_trip_through_the_file() {
+        let settings = Settings {
+            wrap_scripts_in_transaction: false,
+            share_connection_across_buffers: true,
+            ..Settings::default()
+        };
+
+        let written = serde_json::to_string(&settings).expect("settings should serialize");
+        let read: Settings = serde_json::from_str(&written).expect("settings should parse");
+        assert!(!read.wrap_scripts_in_transaction);
+        assert!(read.share_connection_across_buffers);
     }
 
     #[test]

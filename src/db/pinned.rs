@@ -116,6 +116,12 @@ impl PinnedConnection {
         &self.connection
     }
 
+    /// Whether `other` is a clone of this same pinned connection — the same
+    /// server session — rather than a pin another tab holds.
+    pub fn is_clone_of(&self, other: &PinnedConnection) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
     /// Whether the tab has a transaction open, as of the last run.
     pub fn state(&self) -> TxnState {
         self.shared

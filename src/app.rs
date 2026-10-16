@@ -810,8 +810,8 @@ impl Workspace {
         }
 
         let description = match open {
-            1 => "A tab has an open transaction, which will be rolled back.".to_string(),
-            count => format!("{count} tabs have open transactions, which will be rolled back."),
+            1 => "An open transaction will be rolled back.".to_string(),
+            count => format!("{count} open transactions will be rolled back."),
         };
         window.open_alert_dialog(cx, move |alert, _, _| {
             alert

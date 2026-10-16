@@ -1,6 +1,8 @@
 //! Running the user's SQL: single statements, scripts, `EXPLAIN`, the
 //! confirmation a careful connection asks for, and cancelling.
 
+use std::sync::Arc;
+
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::{DialogButtonProps, DialogFooter};
@@ -8,9 +10,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, ClickEvent, Context, Entity, Window};
 
 use crate::db::{
-    Blocker, Decision, Explained, OnFailure, ScriptFailure, ScriptMode, ScriptOutcome, ScriptRun,
-    Step, params, runtime, statement, transaction_blocker,
+    Blocker, Decision, Explained, OnFailure, PinnedConnection, ScriptFailure, ScriptMode,
+    ScriptOutcome, ScriptRun, Step, params, runtime, statement, transaction_blocker,
 };
+use crate::settings::Settings;
 
 use super::panel::close_script;
 use super::{CancelQuery, Session, SessionEvent, SessionPanel, Status};
@@ -54,9 +57,10 @@ impl Session {
 
     /// Run every statement in `sql`, one after another.
     ///
-    /// Inside one transaction that pauses on each failure to ask, unless the
-    /// buffer holds a statement a transaction cannot hold — then the user is
-    /// asked first whether to run it without one. `ignoring_errors` runs it
+    /// Inside one transaction that pauses on each failure to ask — unless the
+    /// `wrap_scripts_in_transaction` setting is off, or the buffer holds a
+    /// statement a transaction cannot hold, in which case the user is asked
+    /// first whether to run it without one. `ignoring_errors` runs it
     /// without a transaction and past every failure, for a migration that
     /// was partly applied before.
     pub(super) fn run_script(
@@ -78,7 +82,13 @@ impl Session {
                 &statement::split(&sql, self.connection.config.engine),
             ) {
                 Some(blocker) => (ScriptMode::Autocommit, OnFailure::Ask, Some(blocker)),
-                None => (ScriptMode::Transaction, OnFailure::Ask, None),
+                None if Settings::global(cx).wrap_scripts_in_transaction => {
+                    (ScriptMode::Transaction, OnFailure::Ask, None)
+                }
+                // The setting is off: each statement commits as it runs, but
+                // a failure still pauses for an answer rather than skipping
+                // past it the way `ignoring_errors` does.
+                None => (ScriptMode::Autocommit, OnFailure::Ask, None),
             }
         };
 
@@ -131,8 +141,12 @@ impl Session {
             ));
         } else if mode == ScriptMode::Autocommit {
             description.push(
-                "Each statement commits as it runs, and a statement that fails is skipped."
-                    .to_string(),
+                if on_failure == OnFailure::Skip {
+                    "Each statement commits as it runs, and a statement that fails is skipped."
+                } else {
+                    "Each statement commits as it runs; a statement that fails pauses the run."
+                }
+                .to_string(),
             );
         }
         if writes {
@@ -179,6 +193,61 @@ impl Session {
         });
     }
 
+    /// The connection `panel` runs on: the session's one shared connection
+    /// when the setting says query buffers share it, else the tab's own.
+    ///
+    /// A tab with an open transaction keeps the connection it opened it on
+    /// until the transaction ends, since moving it would roll the transaction
+    /// back.
+    fn pin(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        cx: &mut Context<Self>,
+    ) -> Option<PinnedConnection> {
+        let connection = self.connection.clone();
+        if Settings::global(cx).share_connection_across_buffers {
+            if self
+                .shared_pin
+                .as_ref()
+                .is_none_or(|pin| !Arc::ptr_eq(pin.connection(), &connection))
+            {
+                self.shared_pin = Some(PinnedConnection::new(connection.clone()));
+            }
+            let wanted = self
+                .shared_pin
+                .clone()
+                .expect("the shared pin was just created");
+            panel.update(cx, |panel, _| panel.pin(&connection, Some(&wanted), None))
+        } else {
+            // The setting is off: the session's shared pin is retired once no
+            // tab still holds a clone of it, so it does not keep a server
+            // session checked out.
+            let retired = self.shared_pin.take();
+            let pinned = panel.update(cx, |panel, _| {
+                panel.pin(&connection, None, retired.as_ref())
+            });
+            if let Some(retired) = retired
+                && self
+                    .panels
+                    .iter()
+                    .any(|panel| panel.read(cx).pinned_is(&retired))
+            {
+                self.shared_pin = Some(retired);
+            }
+            pinned
+        }
+    }
+
+    /// Whether a run now would collide with one already in flight on the
+    /// shared connection — only when query buffers share one.
+    fn shared_connection_busy(&self, cx: &App) -> bool {
+        Settings::global(cx).share_connection_across_buffers
+            && self
+                .shared_pin
+                .as_ref()
+                .is_some_and(PinnedConnection::is_busy)
+    }
+
     /// Start a script for `panel`; its grid and status follow it.
     fn send_script(
         &mut self,
@@ -197,6 +266,18 @@ impl Session {
             return;
         }
 
+        // With one connection shared across buffers, a run in another tab
+        // holds it: the tab's own guard above already covers this tab.
+        if self.shared_connection_busy(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.set_status(Status::Error(
+                    "another query tab is using the shared connection".into(),
+                ));
+                cx.notify();
+            });
+            return;
+        }
+
         // A run is a natural checkpoint for the buffer text.
         cx.emit(SessionEvent::Changed);
 
@@ -209,7 +290,7 @@ impl Session {
         // Reads change nothing the sidebar shows, so only a script that
         // writes asks for the schema to be read again afterwards.
         let writes = statement::first_write(&sql, self.connection.config.engine).is_some();
-        let Some(pinned) = panel.update(cx, |panel, _| panel.pin(&self.connection)) else {
+        let Some(pinned) = self.pin(panel, cx) else {
             return;
         };
         let variables = editor.read(cx).variables();
@@ -489,6 +570,18 @@ impl Session {
             return;
         }
 
+        // With one connection shared across buffers, a run in another tab
+        // holds it: the tab's own guard above already covers this tab.
+        if self.shared_connection_busy(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.set_status(Status::Error(
+                    "another query tab is using the shared connection".into(),
+                ));
+                cx.notify();
+            });
+            return;
+        }
+
         // A run is a natural checkpoint for the buffer text.
         cx.emit(SessionEvent::Changed);
 
@@ -498,9 +591,10 @@ impl Session {
         });
         editor.update(cx, |editor, cx| editor.set_running(true, cx));
 
-        // The tab's own connection, so what one run opens — a transaction,
-        // a `SET`, a temporary table — is still there for the next.
-        let Some(pinned) = panel.update(cx, |panel, _| panel.pin(&self.connection)) else {
+        // The tab's connection — its own, or the session's one shared
+        // connection — so what one run opens (a transaction, a `SET`, a
+        // temporary table) is still there for the next.
+        let Some(pinned) = self.pin(panel, cx) else {
             return;
         };
         // The buffer's `:name` variables go along: the substitution happens

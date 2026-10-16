@@ -575,10 +575,16 @@ impl Render for QueryEditor {
                                             blocker.message()
                                         ),
                                     ),
-                                    None => (
+                                    None if Settings::global(cx).wrap_scripts_in_transaction => (
                                         IconName::SquareTerminal,
                                         "Run every statement in one transaction, asking about \
                                          each error"
+                                            .to_string(),
+                                    ),
+                                    None => (
+                                        IconName::SquareTerminal,
+                                        "Run every statement without a transaction, asking \
+                                         about each error"
                                             .to_string(),
                                     ),
                                 };

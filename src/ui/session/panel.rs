@@ -625,19 +625,58 @@ impl SessionPanel {
     /// The connection this query tab runs on, checked out of `connection`'s
     /// pool on first use. `None` for a tab that is not a query tab.
     ///
-    /// A pin left over from another connection — the session switched
-    /// database — is let go and replaced.
-    pub(crate) fn pin(&mut self, connection: &Arc<Connection>) -> Option<PinnedConnection> {
+    /// When `shared` is `Some`, every query tab runs on that one connection
+    /// instead of its own. A pin left over from another connection — the
+    /// session switched database — is let go and replaced, and so is a pin
+    /// from the other mode (`retired` names the session's old shared pin when
+    /// the setting is off). A tab with an open transaction is the exception:
+    /// it stays where it is until the transaction ends, since moving it would
+    /// roll the transaction back.
+    pub(crate) fn pin(
+        &mut self,
+        connection: &Arc<Connection>,
+        shared: Option<&PinnedConnection>,
+        retired: Option<&PinnedConnection>,
+    ) -> Option<PinnedConnection> {
         let TabContent::Query { pinned, .. } = &mut self.content else {
             return None;
         };
-        if pinned
-            .as_ref()
-            .is_none_or(|pin| !Arc::ptr_eq(pin.connection(), connection))
-        {
-            *pinned = Some(PinnedConnection::new(connection.clone()));
+        if let Some(wanted) = shared {
+            let same = pinned.as_ref().is_some_and(|pin| pin.is_clone_of(wanted));
+            let bound = !same && pinned.as_ref().is_some_and(|pin| pin.state().is_open());
+            if !same && !bound {
+                *pinned = Some(wanted.clone());
+            }
+        } else {
+            let stale = pinned
+                .as_ref()
+                .is_none_or(|pin| !Arc::ptr_eq(pin.connection(), connection));
+            let retired_clone =
+                retired.is_some_and(|old| pinned.as_ref().is_some_and(|pin| pin.is_clone_of(old)));
+            // A tab with an open transaction stays where it is until the
+            // transaction ends, since moving it would roll the transaction
+            // back — the same rule as the shared branch above.
+            let bound = pinned.as_ref().is_some_and(|pin| pin.state().is_open());
+            if stale || (retired_clone && !bound) {
+                *pinned = Some(PinnedConnection::new(connection.clone()));
+            }
         }
         pinned.clone()
+    }
+
+    /// This tab's connection, if the tab has run anything yet.
+    pub(crate) fn pinned_clone(&self) -> Option<PinnedConnection> {
+        match &self.content {
+            TabContent::Query { pinned, .. } => pinned.clone(),
+            _ => None,
+        }
+    }
+
+    /// Whether this tab's connection is a clone of `pin` — the same server
+    /// session — rather than a pin of its own.
+    pub(crate) fn pinned_is(&self, pin: &PinnedConnection) -> bool {
+        self.pinned_clone()
+            .is_some_and(|current| current.is_clone_of(pin))
     }
 
     /// Whether this tab has a transaction open on its connection.
