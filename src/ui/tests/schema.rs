@@ -1259,6 +1259,43 @@ fn a_new_table_applies_and_becomes_its_structure_tab(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn inspecting_a_views_structure_shows_its_create_view_statement(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    let object = DatabaseObject {
+        schema: None,
+        name: "named_items".into(),
+        kind: ObjectKind::View,
+    };
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_schema_for_test(&object, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let view = handle
+        .update(cx, |session, _, cx| session.active_schema_view(cx))
+        .unwrap()
+        .expect("opening a view's structure should open a schema view");
+
+    let source = view.read_with(cx, |view, cx| view.view_source_for_test(cx));
+    assert!(
+        source.to_ascii_uppercase().starts_with("CREATE VIEW"),
+        "a view's structure should show its CREATE VIEW statement, got: {source}"
+    );
+    assert!(
+        source.contains("named_items"),
+        "the statement should name the view, got: {source}"
+    );
+    assert!(
+        view.read_with(cx, |view, _| view.error_for_test())
+            .is_none(),
+        "the definition should load without an error"
+    );
+}
+
+#[gpui_kit::test]
 fn opening_new_table_twice_brings_the_first_tab_forward(cx: &mut TestAppContext) {
     let (_database, handle, _view) = new_table_view(cx);
 

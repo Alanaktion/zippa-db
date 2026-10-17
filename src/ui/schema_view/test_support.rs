@@ -290,6 +290,11 @@ impl SchemaView {
         self.notice.clone()
     }
 
+    /// The `CREATE VIEW` text the structure tab shows for a view.
+    pub(crate) fn view_source_for_test(&self, cx: &App) -> String {
+        self.view_source.read(cx).value().to_string()
+    }
+
     /// Read the structure again, the way applying a change does — used to
     /// pick up a change made through a second connection.
     pub(crate) fn reload_for_test(&mut self, cx: &mut Context<Self>) {

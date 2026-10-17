@@ -241,6 +241,19 @@ pub(crate) fn primary_key_sql(schema: &str, table: &str) -> String {
     )
 }
 
+/// A view's `CREATE VIEW` statement, reassembled from what the catalog
+/// holds: `pg_get_viewdef` only returns the `SELECT` body.
+pub(crate) fn view_definition_sql(schema: &str, name: &str) -> String {
+    format!(
+        "SELECT 'CREATE VIEW ' || quote_ident(n.nspname) || '.' || quote_ident(c.relname) \
+         || E' AS\\n' || pg_get_viewdef(c.oid, true) \
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = {} AND c.relname = {}",
+        quote_literal(schema),
+        quote_literal(name)
+    )
+}
+
 /// Columns of a table: name, driver-spelled type, nullability, default.
 pub(crate) fn columns_sql(schema: &str, table: &str) -> String {
     format!(

@@ -6,7 +6,7 @@ use sqlx::{AssertSqlSafe, Executor, Row, TypeInfo, ValueRef};
 
 use super::config::Engine;
 use super::query::{self, Cell};
-use super::sql::quote_literal_for;
+use super::sql::{quote_identifier, quote_literal_for};
 use super::{ConnectionConfig, SslConfig, SslMode, decode, pool_options};
 
 /// Schemas double as databases in MySQL; the server's own are hidden.
@@ -292,6 +292,18 @@ pub(crate) fn foreign_keys_sql(table: &str) -> String {
            kcu.referenced_table_name, rc.delete_rule, rc.update_rule \
          ORDER BY kcu.constraint_name",
         quote_literal_for(Engine::MySql, table)
+    )
+}
+
+/// A view's `CREATE VIEW` statement, reassembled from the stored `SELECT`
+/// body in `information_schema.VIEWS`.
+pub(crate) fn view_definition_sql(name: &str) -> String {
+    format!(
+        "SELECT CONCAT('CREATE VIEW ', {}, ' AS ', view_definition) \
+         FROM information_schema.views \
+         WHERE table_schema = DATABASE() AND table_name = {}",
+        quote_identifier(name, Engine::MySql),
+        quote_literal_for(Engine::MySql, name)
     )
 }
 

@@ -1366,6 +1366,62 @@ async fn the_other_modes_still_write() {
 }
 
 #[tokio::test]
+async fn view_definition_returns_the_views_create_statement() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let view = DatabaseObject {
+        kind: ObjectKind::View,
+        ..table("named_items")
+    };
+    let definition = connection
+        .view_definition(&view)
+        .await
+        .expect("could not read the view's definition");
+
+    assert!(
+        definition.to_ascii_uppercase().starts_with("CREATE VIEW"),
+        "the definition should be a CREATE VIEW statement, got: {definition}"
+    );
+    assert!(
+        definition.contains("named_items"),
+        "the definition should name the view, got: {definition}"
+    );
+    assert!(
+        definition.contains("SELECT id, name FROM items"),
+        "the definition should hold the view's query, got: {definition}"
+    );
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn view_definition_refuses_a_view_the_server_does_not_know() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let view = DatabaseObject {
+        kind: ObjectKind::View,
+        ..table("no_such_view")
+    };
+    let error = connection
+        .view_definition(&view)
+        .await
+        .expect_err("a missing view should not report a definition");
+
+    assert!(
+        format!("{error:#}").contains("no definition"),
+        "the error should say there is no definition, got: {error:#}"
+    );
+
+    connection.close().await;
+}
+
+#[tokio::test]
 async fn table_schema_reads_columns_and_marks_the_primary_key() {
     let database = TempDatabase::new().await;
     let connection = Connection::open(database.config(), None)

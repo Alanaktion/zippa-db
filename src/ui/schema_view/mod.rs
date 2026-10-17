@@ -179,6 +179,9 @@ pub struct SchemaView {
     /// back on top of the table (its indexes, triggers, and views). `None` on
     /// the other engines, and for a view.
     rebuild_source: Option<RebuildSource>,
+    /// A view's stored `CREATE VIEW` text, shown read-only instead of the
+    /// builder. Set for a view; never touched for a table.
+    view_source: Entity<TextareaState>,
     /// The Columns section's own editable state, seeded from `schema` each
     /// time it (re)loads.
     columns: Vec<EditableColumn>,
@@ -215,6 +218,7 @@ impl SchemaView {
         cx: &mut Context<Self>,
     ) -> Self {
         let preview = cx.new(|cx| TextareaState::new(window, cx));
+        let view_source = cx.new(|cx| TextareaState::new(window, cx));
         let table_name = cx.new(|cx| InputState::new(window, cx).placeholder("table name"));
         cx.subscribe_in(&table_name, window, Self::on_field_event)
             .detach();
@@ -224,6 +228,7 @@ impl SchemaView {
             object,
             schema: None,
             rebuild_source: None,
+            view_source,
             columns: Vec::new(),
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
@@ -251,6 +256,7 @@ impl SchemaView {
         cx: &mut Context<Self>,
     ) -> Self {
         let preview = cx.new(|cx| TextareaState::new(window, cx));
+        let view_source = cx.new(|cx| TextareaState::new(window, cx));
         let table_name = cx.new(|cx| InputState::new(window, cx).placeholder("table name"));
         cx.subscribe_in(&table_name, window, Self::on_field_event)
             .detach();
@@ -266,6 +272,7 @@ impl SchemaView {
             },
             schema: None,
             rebuild_source: None,
+            view_source,
             columns: Vec::new(),
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
@@ -389,6 +396,35 @@ impl SchemaView {
 
         let connection = self.connection.clone();
         let object = self.object.clone();
+
+        if object.kind == ObjectKind::View {
+            // A view has no structure to edit: show its stored `CREATE VIEW`
+            // statement instead of the table builder.
+            let task = runtime::spawn(async move { connection.view_definition(&object).await });
+
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                this.update_in(cx, |this, window, cx| {
+                    this.loading = false;
+                    match result {
+                        Ok(Ok(definition)) => {
+                            this.view_source.update(cx, |input, cx| {
+                                input.set_value(definition, window, cx);
+                            });
+                        }
+                        Ok(Err(error)) => this.error = Some(format!("{error:#}")),
+                        Err(_) => {
+                            this.error = Some("reading the view's definition was cancelled".into())
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+            return;
+        }
+
         // Only SQLite needs the stored text a rebuild works from, and only a
         // table has one.
         let wants_source =
@@ -531,7 +567,7 @@ impl SchemaView {
             return Some("this connection is read-only");
         }
         if !self.new_table && self.object.kind == ObjectKind::View {
-            return Some("a view has no columns of its own to change");
+            return Some("a view's definition is shown, not edited");
         }
         None
     }
@@ -816,7 +852,28 @@ impl Render for SchemaView {
             .id("schema-view")
             .test_support()
             .size_full()
-            .child(
+            .child(if self.object.kind == ObjectKind::View {
+                div()
+                    .id("schema-sections")
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        v_flex()
+                            .p_3()
+                            .gap_2()
+                            .size_full()
+                            .child(self.render_header(cx))
+                            .child(self.render_section_heading("Definition", cx))
+                            .child(
+                                Textarea::new(&self.view_source)
+                                    .flex_1()
+                                    .min_h_0()
+                                    .readonly(true)
+                                    .font_family(crate::settings::grid_font(cx)),
+                            ),
+                    )
+                    .into_any_element()
+            } else {
                 div()
                     .id("schema-sections")
                     .flex_1()
@@ -830,8 +887,9 @@ impl Render for SchemaView {
                             .child(self.render_columns(cx))
                             .child(self.render_indexes(cx))
                             .child(self.render_foreign_keys(cx)),
-                    ),
-            )
+                    )
+                    .into_any_element()
+            })
             .when(self.pending.is_some(), |this| {
                 this.when(
                     self.pending.as_ref().is_some_and(Change::is_rebuild),
