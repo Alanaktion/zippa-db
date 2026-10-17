@@ -147,6 +147,14 @@ pub(crate) fn master_sql(table: &str) -> String {
     )
 }
 
+/// A view's own `CREATE VIEW` text, as `sqlite_master` stores it.
+pub(crate) fn view_definition_sql(name: &str) -> String {
+    format!(
+        "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = {}",
+        quote_literal(name)
+    )
+}
+
 /// Run the body of a table rebuild as one atomic change.
 ///
 /// The procedure cannot be a plain list of statements: foreign keys have to be

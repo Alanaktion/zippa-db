@@ -5,7 +5,7 @@
 //! in `postgres.rs`/`mysql.rs`/`sqlite.rs`, run through the same
 //! `run_query`/`fetch_all` path everything else uses.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::config::Engine;
 use super::connection::{Connection, DatabaseObject};
@@ -227,6 +227,35 @@ impl Connection {
             }
         }
         Ok(source)
+    }
+
+    /// The `CREATE VIEW` statement behind a view, as the server stores it.
+    ///
+    /// The schema inspector shows this for a view instead of the table
+    /// structure builder.
+    pub async fn view_definition(&self, object: &DatabaseObject) -> Result<String> {
+        let engine = self.config.engine;
+        // `objects` drops the schema when it is the default one, same as
+        // `table_schema` — an unqualified Postgres view is in `public`.
+        let schema = object.schema.as_deref().unwrap_or("public");
+        let sql = match engine {
+            Engine::Postgres => postgres::view_definition_sql(schema, &object.name),
+            Engine::MySql => mysql::view_definition_sql(&object.name),
+            Engine::Sqlite => sqlite::view_definition_sql(&object.name),
+        };
+
+        let result = self.run_query(&sql).await?;
+        result
+            .rows
+            .first()
+            .and_then(|row| row.first().cloned().flatten())
+            .filter(|definition| !definition.trim().is_empty())
+            .with_context(|| {
+                format!(
+                    "the server reported no definition for the view {}",
+                    object.label()
+                )
+            })
     }
 
     /// Just `object`'s foreign keys — one round trip, for callers that don't
