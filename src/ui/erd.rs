@@ -1,6 +1,10 @@
 //! ER diagram tab: the database's tables, their columns, and the foreign
 //! keys between them as a pannable, zoomable canvas, exportable to SVG.
 //!
+//! Picking a table in the toolbar focuses its neighborhood — the tables
+//! reachable through relations, up to the chosen depth — and re-layouts
+//! just that subgraph. "All tables" goes back to the whole schema.
+//!
 //! The diagram is painted straight onto one [`canvas`] at the current zoom —
 //! boxes as quads, edges as stroked paths, labels as shaped text — so it
 //! stays crisp at every scale and only what is on screen is drawn. GPUI's
@@ -19,20 +23,21 @@ use anyhow::Result;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::theme::Theme;
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, IndexPath, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, BorderStyle, Bounds, ContentMask, Context, Corners, FocusHandle, Focusable, FontWeight,
-    Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    ParentElement, PathBuilder, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent,
-    SharedString, Size, Styled, TextAlign, TextRun, Window, canvas, div, fill, point, px, quad,
-    size, transparent_black,
+    AnyWindowHandle, App, BorderStyle, Bounds, ContentMask, Context, Corners, Entity, FocusHandle,
+    Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ParentElement, PathBuilder, Pixels, Point, Render, Rgba, ScrollDelta,
+    ScrollWheelEvent, SharedString, Size, Styled, TextAlign, TextRun, Window, canvas, div, fill,
+    point, px, quad, size, transparent_black,
 };
 
 use crate::db::erd::{
-    self, CORNER_RADIUS, ErdDiagram, ErdPalette, HEADER_HEIGHT, ROW_HEIGHT, ROW_PADDING,
-    SELF_LOOP_REACH, TAG_WIDTH, TableLabels,
+    self, CORNER_RADIUS, ErdDiagram, ErdPalette, ErdRelation, ErdTable, HEADER_HEIGHT, ROW_HEIGHT,
+    ROW_PADDING, SELF_LOOP_REACH, TAG_WIDTH, TableLabels,
 };
 use crate::db::{Connection, runtime};
 use crate::ui::busy::busy_label;
@@ -71,10 +76,65 @@ pub struct ErdView {
     last_mouse: Option<(f32, f32)>,
     notice: Option<String>,
     focus: FocusHandle,
+    window: AnyWindowHandle,
+    /// The whole schema, as loaded; the diagram shows all of it, or a
+    /// neighborhood of `focus_table`.
+    all_tables: Vec<ErdTable>,
+    all_relations: Vec<ErdRelation>,
+    /// The focused table, if any; `None` diagrams the whole schema.
+    focus_table: Option<ErdTable>,
+    /// How many hops out the neighborhood reaches; `None` is the table's
+    /// whole connected component.
+    max_depth: Option<usize>,
+    /// Focus candidates, sorted by display name; parallel to the table
+    /// picker's items after the "All tables" entry.
+    picker_tables: Vec<ErdTable>,
+    table_select: Entity<SelectState<SearchableVec<SharedString>>>,
+    depth_select: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// Guards against out-of-order layout completions: only the latest
+    /// generation may replace the diagram.
+    layout_gen: u64,
 }
 
 impl ErdView {
-    pub fn new(connection: Arc<Connection>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(connection: Arc<Connection>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let table_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(vec![SharedString::from("All tables")]),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+        let depth_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(vec![
+                    SharedString::from("1"),
+                    SharedString::from("2"),
+                    SharedString::from("3"),
+                    SharedString::from("All"),
+                ]),
+                Some(IndexPath::new(3)),
+                window,
+                cx,
+            )
+        });
+        cx.subscribe(
+            &table_select,
+            |this, _, _: &SelectEvent<SearchableVec<SharedString>>, cx| {
+                this.on_table_picked(cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &depth_select,
+            |this, _, _: &SelectEvent<SearchableVec<SharedString>>, cx| {
+                this.on_depth_picked(cx);
+            },
+        )
+        .detach();
+
         let mut view = Self {
             connection,
             phase: ErdPhase::Loading,
@@ -84,6 +144,15 @@ impl ErdView {
             last_mouse: None,
             notice: None,
             focus: cx.focus_handle(),
+            window: window.window_handle(),
+            all_tables: Vec::new(),
+            all_relations: Vec::new(),
+            focus_table: None,
+            max_depth: None,
+            picker_tables: Vec::new(),
+            table_select,
+            depth_select,
+            layout_gen: 0,
         };
         view.reload(cx);
         view
@@ -92,6 +161,15 @@ impl ErdView {
     /// Read-only connections are fine — the diagram never writes.
     pub fn set_connection(&mut self, connection: Arc<Connection>, cx: &mut Context<Self>) {
         self.connection = connection;
+        // The focus belongs to the old database: clear it and the picker
+        // now, before the reload brings the new schema in.
+        self.focus_table = None;
+        self.max_depth = None;
+        self.all_tables = Vec::new();
+        self.all_relations = Vec::new();
+        self.picker_tables = Vec::new();
+        self.sync_table_picker(cx);
+        self.sync_depth_picker(cx);
         self.reload(cx);
     }
 
@@ -104,15 +182,86 @@ impl ErdView {
         self.zoom = 1.0;
         self.offset = (0.0, 0.0);
         self.notice = None;
+        self.layout_gen += 1;
+        let generation = self.layout_gen;
         cx.notify();
 
         // Queries and the layout both go through the database runtime:
         // sqlx needs its Tokio reactor, and under test the runtime runs the
         // work inline on the calling thread instead.
         let connection = self.connection.clone();
+        let focus_table = self.focus_table.clone();
+        let max_depth = self.max_depth;
         let task = runtime::spawn(async move {
-            let tables = connection.erd_tables().await?;
-            let relations = connection.all_foreign_keys().await?;
+            let all_tables = connection.erd_tables().await?;
+            let all_relations = connection.all_foreign_keys().await?;
+            let (tables, relations) = match &focus_table {
+                Some(start) => erd::neighborhood(&all_tables, &all_relations, start, max_depth),
+                None => (all_tables.clone(), all_relations.clone()),
+            };
+            let diagram = erd::layout_diagram(&tables, &relations);
+            Ok::<_, anyhow::Error>((all_tables, all_relations, diagram))
+        });
+
+        cx.spawn(async move |this, cx| {
+            let outcome: Result<(Vec<ErdTable>, Vec<ErdRelation>, ErdDiagram)> = task
+                .await
+                .map_err(|_| anyhow::anyhow!("the schema read was cancelled"))
+                .and_then(|inner| inner);
+            this.update(cx, |this, cx| {
+                if this.layout_gen != generation {
+                    // A newer reload or refocus already superseded this.
+                    return;
+                }
+                match outcome {
+                    Ok((all_tables, all_relations, diagram)) => {
+                        this.all_tables = all_tables;
+                        this.all_relations = all_relations;
+                        // The focused table may be gone after a refresh.
+                        let focus_gone = this.focus_table.as_ref().is_some_and(|focus| {
+                            !this.all_tables.iter().any(|t| t.key() == focus.key())
+                        });
+                        if focus_gone {
+                            this.focus_table = None;
+                        }
+                        this.sync_table_picker(cx);
+                        this.phase = ErdPhase::Ready {
+                            labels: Arc::new(erd::table_labels(&diagram)),
+                            diagram: Arc::new(diagram),
+                        };
+                    }
+                    Err(error) => {
+                        this.phase = ErdPhase::Failed(format!("{error:#}"));
+                    }
+                }
+                // The resting state is the fitted state (see the module docs).
+                this.zoom = 1.0;
+                this.offset = (0.0, 0.0);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Re-layout the focused neighborhood (or the whole schema) without
+    /// re-reading it: picking a table or a depth only recomputes the
+    /// subgraph. The current diagram stays up until the new one lands.
+    fn relayout(&mut self, cx: &mut Context<Self>) {
+        if self.all_tables.is_empty() {
+            return; // Nothing loaded yet; the pending reload covers it.
+        }
+        self.layout_gen += 1;
+        let generation = self.layout_gen;
+        let all_tables = self.all_tables.clone();
+        let all_relations = self.all_relations.clone();
+        let focus_table = self.focus_table.clone();
+        let max_depth = self.max_depth;
+        let task = runtime::spawn(async move {
+            let (tables, relations) = match &focus_table {
+                Some(start) => erd::neighborhood(&all_tables, &all_relations, start, max_depth),
+                None => (all_tables, all_relations),
+            };
             Ok::<_, anyhow::Error>(erd::layout_diagram(&tables, &relations))
         });
 
@@ -122,21 +271,92 @@ impl ErdView {
                 .map_err(|_| anyhow::anyhow!("the schema read was cancelled"))
                 .and_then(|inner| inner);
             this.update(cx, |this, cx| {
-                this.phase = match outcome {
-                    Ok(diagram) => ErdPhase::Ready {
+                if this.layout_gen != generation {
+                    return;
+                }
+                if let Ok(diagram) = outcome {
+                    this.phase = ErdPhase::Ready {
                         labels: Arc::new(erd::table_labels(&diagram)),
                         diagram: Arc::new(diagram),
-                    },
-                    Err(error) => ErdPhase::Failed(format!("{error:#}")),
-                };
-                // The resting state is the fitted state (see the module docs).
-                this.zoom = 1.0;
-                this.offset = (0.0, 0.0);
+                    };
+                    this.zoom = 1.0;
+                    this.offset = (0.0, 0.0);
+                }
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// The table picker's choice: "All tables" (or nothing) clears the
+    /// focus, anything else focuses that table's neighborhood.
+    fn on_table_picked(&mut self, cx: &mut Context<Self>) {
+        let row = self
+            .table_select
+            .read(cx)
+            .selected_index(cx)
+            .map(|index| index.row);
+        self.focus_table = match row {
+            Some(0) | None => None,
+            Some(i) => self.picker_tables.get(i - 1).cloned(),
+        };
+        self.relayout(cx);
+    }
+
+    /// The depth picker's choice: "All" is the table's whole connected
+    /// component, a number caps the hops out.
+    fn on_depth_picked(&mut self, cx: &mut Context<Self>) {
+        let value = self.depth_select.read(cx).selected_value().cloned();
+        self.max_depth = match value.as_deref() {
+            Some("All") | None => None,
+            Some(depth) => depth.parse::<usize>().ok(),
+        };
+        self.relayout(cx);
+    }
+
+    /// Rebuild the table picker's items from the loaded schema, keeping the
+    /// focused table selected — or "All tables" when there is no focus.
+    /// `set_selected_index` does not emit an event, so this never loops
+    /// back into `on_table_picked`.
+    fn sync_table_picker(&mut self, cx: &mut Context<Self>) {
+        let mut picker_tables = self.all_tables.clone();
+        picker_tables.sort_by_key(|table| table.display_name());
+        let mut items = vec![SharedString::from("All tables")];
+        items.extend(
+            picker_tables
+                .iter()
+                .map(|table| SharedString::from(table.display_name())),
+        );
+        let selected = match &self.focus_table {
+            None => 0,
+            Some(focus) => picker_tables
+                .iter()
+                .position(|table| table.key() == focus.key())
+                .map_or(0, |i| i + 1),
+        };
+        self.picker_tables = picker_tables;
+        let select = self.table_select.clone();
+        let _ = self.window.update(cx, |_, window, cx| {
+            select.update(cx, |state, cx| {
+                state.set_items(SearchableVec::new(items), window, cx);
+                state.set_selected_index(Some(IndexPath::new(selected)), window, cx);
+            });
+        });
+    }
+
+    /// Reset the depth picker to "All".
+    fn sync_depth_picker(&mut self, cx: &mut Context<Self>) {
+        let selected = match self.max_depth {
+            None => 3,
+            Some(depth) => [1, 2, 3].iter().position(|&n| n == depth).unwrap_or(3),
+        };
+        let select = self.depth_select.clone();
+        let _ = self.window.update(cx, |_, window, cx| {
+            select.update(cx, |state, cx| {
+                state.set_selected_index(Some(IndexPath::new(selected)), window, cx);
+            });
+        });
     }
 
     /// The resting state is the fitted state; "fit" just returns there.
@@ -193,10 +413,10 @@ impl ErdView {
         let database = self.connection.database().to_string();
         // The prompt is created here, on the UI thread; the spawned task only
         // waits for its answer.
-        let title = if database.is_empty() {
-            "ER diagram".to_string()
-        } else {
-            format!("{database} ER diagram")
+        let title = match (&self.focus_table, database.is_empty()) {
+            (Some(table), _) => format!("{} relations", table.display_name()),
+            (None, false) => format!("{database} ER diagram"),
+            (None, true) => "ER diagram".to_string(),
         };
         let prompt = sql_file::prompt_for_save(None, &title, "svg", cx);
         cx.spawn(async move |this, cx| {
@@ -247,6 +467,36 @@ impl ErdView {
                         plural(relations, "relation"),
                     )),
             )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Table:"),
+            )
+            .child(
+                div().w(px(200.)).child(
+                    Select::new(&self.table_select)
+                        .id("erd-table")
+                        .xsmall()
+                        .accessibility_label("Focus table"),
+                ),
+            )
+            .when(self.focus_table.is_some(), |this| {
+                this.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Depth:"),
+                )
+                .child(
+                    div().w(px(88.)).child(
+                        Select::new(&self.depth_select)
+                            .id("erd-depth")
+                            .xsmall()
+                            .accessibility_label("Neighborhood depth"),
+                    ),
+                )
+            })
             .when_some(self.notice.clone(), |this, notice| {
                 this.child(div().text_sm().text_color(cx.theme().danger).child(notice))
             })
@@ -399,6 +649,25 @@ impl ErdView {
             ErdPhase::Ready { diagram, .. } => Some(diagram.as_ref()),
             ErdPhase::Loading | ErdPhase::Failed(_) => None,
         }
+    }
+
+    /// Focus a table's neighborhood the way the toolbar's pickers do, for
+    /// tests. `None` clears the focus back to the whole schema.
+    #[cfg(test)]
+    pub(crate) fn focus_table_for_test(
+        &mut self,
+        name: Option<&str>,
+        max_depth: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_table = name.and_then(|name| {
+            self.all_tables
+                .iter()
+                .find(|table| table.name == name)
+                .cloned()
+        });
+        self.max_depth = max_depth;
+        self.relayout(cx);
     }
 }
 
