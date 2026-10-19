@@ -51,7 +51,7 @@ pub struct ErdTable {
 }
 
 impl ErdTable {
-    fn key(&self) -> (String, String) {
+    pub(crate) fn key(&self) -> (String, String) {
         (self.schema.clone().unwrap_or_default(), self.name.clone())
     }
 
@@ -237,6 +237,78 @@ pub fn layout_diagram(tables: &[ErdTable], relations: &[ErdRelation]) -> ErdDiag
 
     center(&mut nodes, &mut edges);
     ErdDiagram { nodes, edges }
+}
+
+/// The tables reachable from `start` by following relations in either
+/// direction, up to `max_depth` hops (`None` for the whole connected
+/// component), and the relations between them. Tables keep their input
+/// order, so feeding the result back into [`layout_diagram`] stays
+/// deterministic. Relations naming a table that is not listed are dropped,
+/// the same as in the layout.
+pub fn neighborhood(
+    tables: &[ErdTable],
+    relations: &[ErdRelation],
+    start: &ErdTable,
+    max_depth: Option<usize>,
+) -> (Vec<ErdTable>, Vec<ErdRelation>) {
+    let index: HashMap<(String, String), usize> = tables
+        .iter()
+        .enumerate()
+        .map(|(i, table)| (table.key(), i))
+        .collect();
+    let Some(&start_idx) = index.get(&start.key()) else {
+        return (Vec::new(), Vec::new());
+    };
+
+    // Undirected adjacency between listed tables; self-loops add nothing —
+    // their table is already reached.
+    let mut adjacent: Vec<Vec<usize>> = vec![Vec::new(); tables.len()];
+    for relation in relations {
+        let (Some(&from), Some(&to)) = (
+            index.get(&relation.from.key()),
+            index.get(&relation.to.key()),
+        ) else {
+            continue;
+        };
+        if from != to {
+            adjacent[from].push(to);
+            adjacent[to].push(from);
+        }
+    }
+
+    let mut depth = vec![usize::MAX; tables.len()];
+    depth[start_idx] = 0;
+    let mut queue = std::collections::VecDeque::from([start_idx]);
+    while let Some(node) = queue.pop_front() {
+        for &next in &adjacent[node] {
+            if depth[next] == usize::MAX && max_depth.is_none_or(|max| depth[node] < max) {
+                depth[next] = depth[node] + 1;
+                queue.push_back(next);
+            }
+        }
+    }
+
+    let included: Vec<bool> = depth.iter().map(|&d| d != usize::MAX).collect();
+    let tables: Vec<ErdTable> = tables
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| included[*i])
+        .map(|(_, table)| table.clone())
+        .collect();
+    let relations: Vec<ErdRelation> = relations
+        .iter()
+        .filter(|relation| {
+            let (Some(&from), Some(&to)) = (
+                index.get(&relation.from.key()),
+                index.get(&relation.to.key()),
+            ) else {
+                return false;
+            };
+            included[from] && included[to]
+        })
+        .cloned()
+        .collect();
+    (tables, relations)
 }
 
 /// Match each relation to its tables and rows, dropping the ones that miss.
@@ -1780,5 +1852,70 @@ mod tests {
             muted_text: "#666666".to_string(),
             edge: "#555555".to_string(),
         }
+    }
+
+    fn names(tables: &[ErdTable]) -> Vec<&str> {
+        tables.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    #[test]
+    fn neighborhood_follows_relations_both_ways_up_to_the_depth() {
+        // a <- b -> c -> d, plus an unrelated e.
+        let tables = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|name| table(name))
+            .collect::<Vec<_>>();
+        let relations = vec![relation("b", "a"), relation("b", "c"), relation("c", "d")];
+
+        let (one, _) = neighborhood(&tables, &relations, &table("b"), Some(1));
+        assert_eq!(names(&one), ["a", "b", "c"]);
+
+        let (two, _) = neighborhood(&tables, &relations, &table("b"), Some(2));
+        assert_eq!(names(&two), ["a", "b", "c", "d"]);
+
+        // No depth limit: the whole connected component, still not e.
+        let (all, _) = neighborhood(&tables, &relations, &table("d"), None);
+        assert_eq!(names(&all), ["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn neighborhood_keeps_only_relations_between_included_tables() {
+        let tables = ["a", "b", "c"]
+            .iter()
+            .map(|name| table(name))
+            .collect::<Vec<_>>();
+        let relations = vec![relation("a", "b"), relation("b", "c")];
+
+        let (sub_tables, sub_relations) = neighborhood(&tables, &relations, &table("a"), Some(1));
+        assert_eq!(names(&sub_tables), ["a", "b"]);
+        assert_eq!(sub_relations.len(), 1);
+        assert_eq!(sub_relations[0].from.name, "a");
+        assert_eq!(sub_relations[0].to.name, "b");
+    }
+
+    #[test]
+    fn neighborhood_of_an_isolated_table_is_just_that_table() {
+        let tables = ["a", "b"]
+            .iter()
+            .map(|name| table(name))
+            .collect::<Vec<_>>();
+        let relations = vec![relation("a", "a")];
+
+        let (sub_tables, sub_relations) = neighborhood(&tables, &relations, &table("b"), None);
+        assert_eq!(names(&sub_tables), ["b"]);
+        assert!(sub_relations.is_empty());
+
+        // A self-loop's table is included, and the loop is kept.
+        let (loop_tables, loop_relations) = neighborhood(&tables, &relations, &table("a"), None);
+        assert_eq!(names(&loop_tables), ["a"]);
+        assert_eq!(loop_relations.len(), 1);
+    }
+
+    #[test]
+    fn neighborhood_of_an_unknown_table_is_empty() {
+        let tables = ["a"].iter().map(|name| table(name)).collect::<Vec<_>>();
+        let (sub_tables, sub_relations) = neighborhood(&tables, &[], &table("missing"), None);
+        assert!(sub_tables.is_empty());
+        assert!(sub_relations.is_empty());
     }
 }
