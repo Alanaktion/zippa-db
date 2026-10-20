@@ -110,6 +110,78 @@ fn a_result_tab_shows_that_statements_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_failed_run_shows_its_error_in_the_result_pane(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    prepare_editor(cx, handle, "select * from not_a_table", 0);
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    let error = handle
+        .update(cx, |session, _, cx| session.active_pane_error_for_test(cx))
+        .unwrap()
+        .expect("a failed run should leave its error in the result pane");
+    assert!(
+        error.contains("not_a_table"),
+        "the pane should carry the server's message: {error}"
+    );
+
+    // A run that works clears the pane's error and shows its rows again.
+    prepare_editor(cx, handle, "select * from items", 0);
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    assert_eq!(
+        handle
+            .update(cx, |session, _, cx| session.active_pane_error_for_test(cx))
+            .unwrap(),
+        None,
+        "a successful run should clear the pane's error"
+    );
+}
+
+#[gpui_kit::test]
+fn a_failed_run_keeps_its_error_in_its_own_tab(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    prepare_editor(cx, handle, "select * from not_a_table", 0);
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    // A second tab runs clean and has no error of its own.
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_tab_for_test(window, cx)
+        })
+        .unwrap();
+    prepare_editor(cx, handle, "select * from items", 0);
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+    assert_eq!(
+        handle
+            .update(cx, |session, _, cx| session.active_pane_error_for_test(cx))
+            .unwrap(),
+        None,
+        "the second tab should not inherit the first tab's error"
+    );
+
+    // Back on the first tab, its error is still in its pane.
+    handle
+        .update(cx, |session, window, cx| {
+            session.activate_tab_for_test(0, window, cx)
+        })
+        .unwrap();
+    let error = handle
+        .update(cx, |session, _, cx| session.active_pane_error_for_test(cx))
+        .unwrap()
+        .expect("the first tab should still hold its error");
+    assert!(
+        error.contains("not_a_table"),
+        "the error should stay with the tab that produced it: {error}"
+    );
+}
+
+#[gpui_kit::test]
 fn a_write_reports_the_rows_it_changed(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
 

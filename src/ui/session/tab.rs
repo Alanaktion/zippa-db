@@ -66,6 +66,12 @@ pub(crate) enum TabContent {
         results: Vec<QueryResult>,
         /// Which of them the grid is showing.
         result: usize,
+        /// The error the result pane shows, from a run that failed outright.
+        /// The pane is where a failure lives — attached to this tab, in the
+        /// space the rows would have filled — rather than only crossing the
+        /// status bar, where a long error is capped and scrolled and a tab
+        /// left in the background says nothing until it is opened again.
+        error: Option<String>,
         /// The engine the tab's connection speaks, for laying an export out.
         engine: Engine,
         /// Handle on the run in flight, so it can be given up on.

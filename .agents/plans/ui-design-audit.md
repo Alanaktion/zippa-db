@@ -158,3 +158,40 @@ already covers grid actions.
 2. Variables: bind a shortcut + Query menu, or keep the toolbar button?
 3. Format: demote to the Query menu, or keep it visible?
 4. Paging shortcuts: worth adding?
+
+## Feedback and overlays (added 2026-10-20, same PR)
+
+From the guide's "Feedback and overlays" section: pick the smallest surface
+that fits — notification for asynchronous status needing no decision, the
+region itself for state that belongs to it, a dialog only for decisions.
+
+**Query run errors moved from the status bar to the result pane.** A run
+that failed outright (single statement, script start, variable
+substitution, explain) now leaves its error in the tab's own result pane
+(`TabContent::Query.error`, rendered by `render_pane_error`): full text,
+in the space the rows would have filled, attached to the tab that produced
+it — so two tabs with two failures each show their own. The status bar
+names the state ("Error") without repeating the message it used to cap at
+72px and scroll. The toast stays: it carries the failure to wherever
+attention is when the tab is in the background. A fresh run, a successful
+run, or a plan clears the pane error; the pane also gives up the last run's
+results, completing what `show_run_error`'s comment already claimed.
+Scripts are unchanged — their failures are already a result in the pane,
+with the status as summary. The workspace-restore "could not read …" error
+takes the same pane path: it was status-bar-only in a tab that might sit
+unopened all session.
+
+**Audited and deliberately kept:**
+- The shared-connection guard refusal ("another query tab is using the
+  shared connection") stays as the tab's status: it answers the user's own
+  Run press in the tab they're looking at, and the pane must keep the
+  still-valid results.
+- Table-view and schema-view footer messages are inline validation next
+  to the action that produced them ("this row cannot be addressed",
+  "nothing has changed"); the async failures there (load, commit, export)
+  already toast. Schema apply failures are persistent in the view's own
+  footer, the same in-place principle as the query pane.
+- The script-failure alert dialog and the ConfirmWrites banner are
+  decisions, so dialogs/banners are the right surface per the guide.
+- Success toasts stay only where the outcome isn't otherwise visible
+  ("Copied …", "Reconnected.").

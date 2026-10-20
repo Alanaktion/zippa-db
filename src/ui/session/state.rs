@@ -209,10 +209,13 @@ impl Session {
                         Some(text) => panel.set_baseline(text),
                         None => {
                             panel.set_baseline(String::new());
-                            panel.set_status(Status::Error(format!(
-                                "could not read {}",
-                                path.display()
-                            )));
+                            // The tab's file could not be read: the pane
+                            // says so, where the restored buffer would have
+                            // been, not only the status bar — the tab may
+                            // sit unopened for the whole session.
+                            let message = format!("could not read {}", path.display());
+                            panel.set_status(Status::Error(message.clone()));
+                            panel.show_pane_error(message);
                         }
                     });
                 }

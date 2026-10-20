@@ -148,6 +148,7 @@ impl SessionPanel {
                 path: None,
                 results: Vec::new(),
                 result: 0,
+                error: None,
                 engine,
                 running: None,
                 script: None,
@@ -506,6 +507,7 @@ impl SessionPanel {
             plan: slot,
             show_plan,
             status,
+            error,
             ..
         } = &mut self.content
         else {
@@ -522,6 +524,8 @@ impl SessionPanel {
         };
         view.update(cx, |view, cx| view.set_plan(plan, cx));
         *show_plan = true;
+        // The plan is what the pane shows now, not an earlier run's error.
+        *error = None;
         *status = Status::Done(summary);
         cx.notify();
     }
@@ -595,8 +599,44 @@ impl SessionPanel {
     }
 
     pub(crate) fn set_status(&mut self, status: Status) {
-        if let TabContent::Query { status: slot, .. } = &mut self.content {
+        if let TabContent::Query {
+            status: slot,
+            error,
+            ..
+        } = &mut self.content
+        {
+            // A fresh run replaces whatever the pane was showing, error
+            // included; its outcome decides what the pane says next.
+            if matches!(status, Status::Running) {
+                *error = None;
+            }
             *slot = status;
+        }
+    }
+
+    /// The error the result pane is showing, if the last run failed outright.
+    pub(crate) fn pane_error(&self) -> Option<&str> {
+        match &self.content {
+            TabContent::Query { error, .. } => error.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Put a failure in the result pane: the run produced nothing, so the
+    /// pane gives up the last run's rows and says what happened instead.
+    /// The status keeps naming the error too; the bar shows the short form
+    /// while the pane carries the whole message (see `render_status_bar`).
+    pub(crate) fn show_pane_error(&mut self, message: String) {
+        if let TabContent::Query {
+            error,
+            results,
+            result,
+            ..
+        } = &mut self.content
+        {
+            *error = Some(message);
+            results.clear();
+            *result = 0;
         }
     }
 
@@ -711,6 +751,7 @@ impl SessionPanel {
             grid,
             results: slot,
             result,
+            error,
             show_plan,
             ..
         } = &mut self.content
@@ -721,6 +762,9 @@ impl SessionPanel {
         let grid = grid.clone();
         *slot = results;
         *result = 0;
+        // The run produced rows, so the pane is the grid again, not the
+        // error an earlier run left there.
+        *error = None;
         // A new run is what the user asked to see, so the grid comes back even
         // if a plan was showing.
         *show_plan = false;
@@ -1072,12 +1116,37 @@ impl SessionPanel {
         }
     }
 
+    /// The result pane, given over to a failure: the whole message, in the
+    /// space the rows would have filled, scrollable when it is long.
+    fn render_pane_error(&self, error: &str, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        div()
+            .id("query-error")
+            .test_support()
+            .size_full()
+            .overflow_y_scroll()
+            .p_4()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger)
+                    .child(format!("Error: {error}")),
+            )
+            .into_any_element()
+    }
+
     fn render_status_bar(&self, status: &Status, cx: &mut Context<Self>) -> impl IntoElement {
         let color = match status {
             Status::Error(_) => cx.theme().danger,
             _ => cx.theme().muted_foreground,
         };
-        let message = status.message();
+        // While the pane carries a failure, the bar only names the state:
+        // the whole message is in the pane, and repeating it here would
+        // just cap and scroll it in a 72px strip.
+        let message = if self.pane_error().is_some() && matches!(status, Status::Error(_)) {
+            "Error".to_string()
+        } else {
+            status.message()
+        };
         let transaction = self.transaction();
         let running = matches!(status, Status::Running);
 
@@ -1490,14 +1559,19 @@ impl Render for SessionPanel {
                 status,
                 results,
                 result,
+                error,
                 plan,
                 show_plan,
                 ..
             } => {
                 let has_plan = plan.is_some();
                 let showing_plan = *show_plan && has_plan;
-                let content: gpui_kit::AnyElement = match (showing_plan, plan) {
-                    (true, Some(plan)) => plan.clone().into_any_element(),
+                // A run that failed outright owns the pane: the error is
+                // shown where its rows would have been, in this tab, for as
+                // long as the tab is kept.
+                let content: gpui_kit::AnyElement = match (error, showing_plan, plan) {
+                    (Some(error), _, _) => self.render_pane_error(error, cx),
+                    (_, true, Some(plan)) => plan.clone().into_any_element(),
                     _ => grid.clone().into_any_element(),
                 };
 
@@ -1522,16 +1596,22 @@ impl Render for SessionPanel {
                                                 // A script leaves one result per
                                                 // statement, and a plan leaves the
                                                 // switch; a lone result alone would
-                                                // make the bar say nothing.
-                                                .when(results.len() > 1 || has_plan, |this| {
-                                                    this.child(self.render_view_bar(
-                                                        results.len(),
-                                                        *result,
-                                                        has_plan,
-                                                        showing_plan,
-                                                        cx,
-                                                    ))
-                                                })
+                                                // make the bar say nothing. While
+                                                // the pane shows an error there is
+                                                // nothing to switch between.
+                                                .when(
+                                                    error.is_none()
+                                                        && (results.len() > 1 || has_plan),
+                                                    |this| {
+                                                        this.child(self.render_view_bar(
+                                                            results.len(),
+                                                            *result,
+                                                            has_plan,
+                                                            showing_plan,
+                                                            cx,
+                                                        ))
+                                                    },
+                                                )
                                                 .child(div().flex_1().min_h_0().child(content)),
                                         ),
                                 ),

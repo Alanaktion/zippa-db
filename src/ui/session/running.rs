@@ -481,8 +481,9 @@ impl Session {
         }
     }
 
-    /// A run that failed outright: the status bar and a notification say so,
-    /// and the grid lets go of the last run's rows.
+    /// A run that failed outright: the result pane says so, the status bar
+    /// names it, a notification carries it to wherever attention is, and the
+    /// grid lets go of the last run's rows.
     fn show_run_error(
         &mut self,
         panel: &Entity<SessionPanel>,
@@ -497,6 +498,7 @@ impl Session {
         let message = format!("{error:#}");
         panel.update(cx, |panel, cx| {
             panel.set_status(Status::Error(message.clone()));
+            panel.show_pane_error(message.clone());
             cx.notify();
         });
         grid.update(cx, |grid, cx| grid.clear(cx));
@@ -627,6 +629,7 @@ impl Session {
                         Ok(Err(error)) => {
                             let message = format!("{error:#}");
                             panel.set_status(Status::Error(message.clone()));
+                            panel.show_pane_error(message.clone());
                             grid.update(cx, |grid, cx| grid.clear(cx));
                             crate::ui::notify_error(window, cx, format!("Error: {message}"));
                         }
@@ -754,6 +757,7 @@ impl Session {
                     let message = format!("{error:#}");
                     panel.update(cx, |panel, cx| {
                         panel.set_status(Status::Error(message.clone()));
+                        panel.show_pane_error(message.clone());
                         cx.notify();
                     });
                     grid.update(cx, |grid, cx| grid.clear(cx));
@@ -799,6 +803,7 @@ impl Session {
                         Ok(Err(error)) => {
                             let message = format!("{error:#}");
                             panel.set_status(Status::Error(message.clone()));
+                            panel.show_pane_error(message.clone());
                             grid.update(cx, |grid, cx| grid.clear(cx));
                             crate::ui::notify_error(window, cx, format!("Error: {message}"));
                         }

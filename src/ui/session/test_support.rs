@@ -366,6 +366,14 @@ impl Session {
             .unwrap_or_default()
     }
 
+    /// The error the active tab's result pane is showing, if its last run
+    /// failed outright.
+    #[cfg(test)]
+    pub(crate) fn active_pane_error_for_test(&self, cx: &App) -> Option<String> {
+        self.active_panel_for_test()
+            .and_then(|panel| panel.read(cx).pane_error().map(str::to_owned))
+    }
+
     /// Fill the sidebar without waiting on the server.
     #[cfg(test)]
     pub(crate) fn set_metadata_for_test(
