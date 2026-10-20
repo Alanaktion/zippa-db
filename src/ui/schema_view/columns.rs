@@ -192,11 +192,21 @@ impl SchemaView {
                     } else {
                         "Remove"
                     };
+                    let hint = if column.original.is_some() {
+                        if dropped {
+                            "Keep this column"
+                        } else {
+                            "Drop this column"
+                        }
+                    } else {
+                        "Remove this column"
+                    };
                     this.child(
                         Button::new(("column-drop", id))
                             .ghost()
                             .xsmall()
                             .label(label)
+                            .tooltip(hint)
                             .on_click(
                                 cx.listener(move |this, _, _window, cx| this.toggle_drop(id, cx)),
                             ),
@@ -228,6 +238,7 @@ impl SchemaView {
                                 .ghost()
                                 .xsmall()
                                 .label("Add column")
+                                .tooltip("Add a column")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.add_column(window, cx);
                                 })),

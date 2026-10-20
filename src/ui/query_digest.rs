@@ -120,6 +120,7 @@ impl QueryDigestView {
                     .xsmall()
                     .disabled(self.loading)
                     .label("Refresh")
+                    .tooltip("Refresh the query digest")
                     .on_click(cx.listener(|this, _, _window, cx| this.refresh(cx))),
             )
     }

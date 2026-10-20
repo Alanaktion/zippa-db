@@ -221,6 +221,7 @@ impl ProcessListView {
                     .xsmall()
                     .disabled(self.loading)
                     .label("Refresh")
+                    .tooltip("Refresh the process list")
                     .on_click(cx.listener(|this, _, _window, cx| this.refresh(cx))),
             )
     }

@@ -114,6 +114,7 @@ impl ConsoleView {
                     .ghost()
                     .xsmall()
                     .label("Refresh")
+                    .tooltip("Refresh the console")
                     .on_click(cx.listener(|this, _, _window, cx| this.refresh(cx))),
             )
             .child(
@@ -121,6 +122,7 @@ impl ConsoleView {
                     .ghost()
                     .xsmall()
                     .label("Clear")
+                    .tooltip("Clear the console")
                     .on_click(cx.listener(|this, _, _window, cx| this.clear(cx))),
             )
     }

@@ -7,6 +7,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, EditorState, Enter, IndentInline};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -470,7 +471,7 @@ impl Render for QueryEditor {
                                     .icon(IconName::FolderOpen)
                                     .accessibility_label("Open a SQL file")
                                     .tooltip_with_action(
-                                        "Open a SQL file",
+                                        "Open a SQL file…",
                                         &OpenFile,
                                         Some("Session"),
                                     )
@@ -506,61 +507,55 @@ impl Render for QueryEditor {
                                         cx.emit(QueryEditorEvent::EditVariables)
                                     })),
                             )
-                            .child(
-                                Button::new("format-query")
-                                    .ghost()
-                                    .small()
-                                    .icon(AssetIcon::BrushCleaning)
-                                    .accessibility_label(
-                                        "Format the selection, or the whole buffer",
-                                    )
-                                    .tooltip_with_action(
-                                        "Format the selection, or the whole buffer",
-                                        &FormatQuery,
-                                        Some("QueryEditor"),
-                                    )
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.format_query(&FormatQuery, window, cx)
-                                    })),
-                            )
                             .child(Separator::vertical())
                             .child(
                                 Button::new("explain")
                                     .ghost()
                                     .small()
                                     .icon(AssetIcon::Route)
+                                    .dropdown_caret(true)
                                     .accessibility_label("Explain the statement")
-                                    .tooltip_with_action(
-                                        "Show the statement's plan without running it",
-                                        &Explain,
-                                        Some("QueryEditor"),
-                                    )
+                                    .tooltip(if !can_analyze {
+                                        "SQLite has no EXPLAIN ANALYZE; actual times are not available"
+                                    } else {
+                                        "Show the statement's plan, or run it for actual times"
+                                    })
                                     .disabled(self.running)
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.emit_explain(false, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("explain-analyze")
-                                    .ghost()
-                                    .small()
-                                    .icon(AssetIcon::Gauge)
-                                    .accessibility_label("Explain the statement and run it")
-                                    .tooltip_with_action(
-                                        if !can_analyze {
-                                            "SQLite has no EXPLAIN ANALYZE; actual times are not available"
-                                        } else if writes {
-                                            "Analyze runs the query; this statement changes data"
-                                        } else {
-                                            "Explain the statement and run it for actual times"
-                                        },
-                                        &ExplainAnalyze,
-                                        Some("QueryEditor"),
-                                    )
-                                    .disabled(self.running || writes || !can_analyze)
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.emit_explain(true, cx)
-                                    })),
+                                    .dropdown_menu({
+                                        let editor = cx.entity().downgrade();
+                                        move |mut menu, _window, _cx| {
+                                            menu = menu.item(
+                                                PopupMenuItem::new("Explain")
+                                                    .icon(AssetIcon::Route)
+                                                    .on_click({
+                                                        let editor = editor.clone();
+                                                        move |_, _window, cx| {
+                                                            if let Some(editor) = editor.upgrade() {
+                                                                editor.update(cx, |editor, cx| {
+                                                                    editor.emit_explain(false, cx);
+                                                                });
+                                                            }
+                                                        }
+                                                    }),
+                                            );
+                                            menu = menu.item(
+                                                PopupMenuItem::new("Explain Analyze")
+                                                    .icon(AssetIcon::Gauge)
+                                                    .disabled(writes || !can_analyze)
+                                                    .on_click({
+                                                        let editor = editor.clone();
+                                                        move |_, _window, cx| {
+                                                            if let Some(editor) = editor.upgrade() {
+                                                                editor.update(cx, |editor, cx| {
+                                                                    editor.emit_explain(true, cx);
+                                                                });
+                                                            }
+                                                        }
+                                                    }),
+                                            );
+                                            menu
+                                        }
+                                    }),
                             )
                             .child(Separator::vertical())
                             .child({

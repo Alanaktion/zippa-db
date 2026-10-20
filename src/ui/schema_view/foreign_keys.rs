@@ -518,6 +518,7 @@ impl SchemaView {
                         .ghost()
                         .xsmall()
                         .label("Remove")
+                        .tooltip("Remove this foreign key")
                         .disabled(!editable)
                         .on_click(cx.listener(move |this, _, _window, cx| {
                             this.toggle_foreign_key_drop(id, cx);
@@ -580,11 +581,17 @@ impl SchemaView {
             .child(sized(
                 TableCell::new().justify_end().when(editable, |this| {
                     let label = if dropped { "Undrop" } else { "Drop" };
+                    let hint = if dropped {
+                        "Keep this foreign key"
+                    } else {
+                        "Drop this foreign key"
+                    };
                     this.child(
                         Button::new(("fk-drop", id))
                             .ghost()
                             .xsmall()
                             .label(label)
+                            .tooltip(hint)
                             .on_click(cx.listener(move |this, _, _window, cx| {
                                 this.toggle_foreign_key_drop(id, cx)
                             })),
@@ -623,6 +630,7 @@ impl SchemaView {
                                 .ghost()
                                 .xsmall()
                                 .label("Add foreign key")
+                                .tooltip("Add a foreign key")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.add_foreign_key(window, cx);
                                 })),

@@ -344,11 +344,21 @@ impl SchemaView {
                 } else {
                     "Remove"
                 };
+                let hint = if index.original.is_some() {
+                    if dropped {
+                        "Keep this index"
+                    } else {
+                        "Drop this index"
+                    }
+                } else {
+                    "Remove this index"
+                };
                 this.child(
                     Button::new(("index-drop", id))
                         .ghost()
                         .xsmall()
                         .label(label)
+                        .tooltip(hint)
                         .on_click(
                             cx.listener(move |this, _, _window, cx| this.toggle_index_drop(id, cx)),
                         ),
@@ -385,6 +395,7 @@ impl SchemaView {
                                 .ghost()
                                 .xsmall()
                                 .label("Add index")
+                                .tooltip("Add an index")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.add_index(window, cx);
                                 })),

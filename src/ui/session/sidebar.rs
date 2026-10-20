@@ -413,7 +413,7 @@ impl Session {
                     .icon(IconName::Binoculars)
                     .accessibility_label("Find in schema")
                     .tooltip_with_action(
-                        "Find things in the current schema",
+                        "Search the current schema…",
                         &SearchSchema,
                         Some("Session"),
                     )
@@ -443,11 +443,7 @@ impl Session {
                     .small()
                     .icon(IconName::Import)
                     .accessibility_label("Import SQL dump")
-                    .tooltip_with_action(
-                        "Import a SQL dump into this connection",
-                        &ImportSqlDump,
-                        Some("Session"),
-                    )
+                    .tooltip_with_action("Import a SQL dump…", &ImportSqlDump, Some("Session"))
                     .on_click(cx.listener(|this, _, _window, cx| this.import_dump(cx))),
             )
     }

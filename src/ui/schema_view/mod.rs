@@ -776,6 +776,7 @@ impl SchemaView {
                             .ghost()
                             .xsmall()
                             .label("Cancel")
+                            .tooltip("Discard the staged changes")
                             .on_click(cx.listener(|this, _, _window, cx| this.cancel_preview(cx))),
                     )
                     .child(
@@ -783,6 +784,7 @@ impl SchemaView {
                             .primary()
                             .xsmall()
                             .label("Apply")
+                            .tooltip("Apply the staged schema changes")
                             .on_click(cx.listener(|this, _, _window, cx| this.apply(cx))),
                     ),
             )
@@ -836,6 +838,7 @@ impl SchemaView {
                                 .primary()
                                 .xsmall()
                                 .label("Preview changes")
+                                .tooltip("Preview the staged changes before applying")
                                 .disabled(self.applying || !self.has_changes(cx))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.preview(window, cx);

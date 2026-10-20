@@ -177,6 +177,7 @@ impl ServerVariablesView {
                     .xsmall()
                     .disabled(self.loading)
                     .label("Refresh")
+                    .tooltip("Refresh the server variables")
                     .on_click(cx.listener(|this, _, _window, cx| this.refresh(cx))),
             )
     }

@@ -1177,6 +1177,7 @@ impl SessionPanel {
                     Button::new("transaction-commit")
                         .xsmall()
                         .label("Commit")
+                        .tooltip("Commit the open transaction")
                         .disabled(running)
                         .on_click(cx.listener(|_this, _, _window, cx| {
                             cx.emit(SessionPanelEvent::EndTransaction(true));
@@ -1187,6 +1188,7 @@ impl SessionPanel {
                 Button::new("transaction-rollback")
                     .xsmall()
                     .label("Roll Back")
+                    .tooltip("Roll back the open transaction")
                     .disabled(running)
                     .on_click(cx.listener(|_this, _, _window, cx| {
                         cx.emit(SessionPanelEvent::EndTransaction(false));

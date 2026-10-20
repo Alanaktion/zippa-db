@@ -304,6 +304,7 @@ impl UserManagementView {
                         .xsmall()
                         .disabled(self.loading)
                         .label("New User")
+                        .tooltip("Create a user…")
                         .on_click(
                             cx.listener(|this, _, window, cx| this.open_create_dialog(window, cx)),
                         ),
@@ -314,6 +315,7 @@ impl UserManagementView {
                         .xsmall()
                         .disabled(self.loading)
                         .label("Set Password")
+                        .tooltip("Set the selected user's password…")
                         .on_click(
                             cx.listener(|this, _, window, cx| {
                                 this.open_password_dialog(window, cx)
@@ -326,6 +328,7 @@ impl UserManagementView {
                         .xsmall()
                         .disabled(self.loading)
                         .label("Drop Selected")
+                        .tooltip("Drop the selected users")
                         .on_click(
                             cx.listener(|this, _, window, cx| this.drop_selected(window, cx)),
                         ),
@@ -337,6 +340,7 @@ impl UserManagementView {
                     .xsmall()
                     .disabled(self.loading)
                     .label("Refresh")
+                    .tooltip("Refresh the user list")
                     .on_click(cx.listener(|this, _, _window, cx| this.refresh(cx))),
             )
     }

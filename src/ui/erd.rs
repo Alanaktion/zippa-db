@@ -516,6 +516,7 @@ impl ErdView {
                     .small()
                     .icon(IconName::ZoomOut)
                     .accessibility_label("Zoom out")
+                    .tooltip("Zoom out")
                     .disabled(!ready)
                     .on_click(cx.listener(|this, _, _, cx| this.zoom_by(1.0 / 1.25, cx))),
             )
@@ -532,6 +533,7 @@ impl ErdView {
                     .small()
                     .icon(IconName::ZoomIn)
                     .accessibility_label("Zoom in")
+                    .tooltip("Zoom in")
                     .disabled(!ready)
                     .on_click(cx.listener(|this, _, _, cx| this.zoom_by(1.25, cx))),
             )
@@ -540,7 +542,7 @@ impl ErdView {
                     .ghost()
                     .small()
                     .icon(IconName::Download)
-                    .label("Export SVG")
+                    .label("Export SVG…")
                     .accessibility_label("Export the diagram as SVG")
                     .tooltip("Write the diagram to an SVG file")
                     .disabled(!ready)

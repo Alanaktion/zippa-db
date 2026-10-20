@@ -282,6 +282,7 @@ impl TableView {
                             .ghost()
                             .xsmall()
                             .label("View structure")
+                            .tooltip("See the table's columns, indexes, and keys")
                             .on_click(cx.listener(|this, _, _window, cx| this.view_structure(cx))),
                     )
                     .child(
