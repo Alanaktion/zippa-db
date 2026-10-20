@@ -1,5 +1,6 @@
-//! The OS application menu bar (the menu bar at the top of the screen on
-//! macOS; a per-window menu bar on Linux and Windows).
+//! The OS application menu bar: the native bar at the top of the screen on
+//! macOS, and a per-window bar drawn by `gpui_component::menu::AppMenuBar`
+//! on Linux and Windows.
 //!
 //! Reuses the same actions the keymap already binds in `keymap.rs` — a menu
 //! item is only another way to reach them, not a second implementation — so
@@ -13,8 +14,11 @@
 //! also where a shortcut is discovered, and a menu that grows and shrinks as
 //! focus moves is worse at that than one that stays put.
 
+#[cfg(target_os = "macos")]
+use gpui_kit::SystemMenuType;
+use gpui_kit::base::GlobalState;
 use gpui_kit::base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
-use gpui_kit::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, actions};
+use gpui_kit::{App, KeyBinding, Menu, MenuItem, OsAction, actions};
 
 use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
 use crate::ui::data_grid::{
@@ -54,6 +58,12 @@ pub fn init(cx: &mut App) {
     ]);
 
     cx.set_menus(menus());
+    // The native bar on macOS reads the menus from the platform; on Linux
+    // and Windows the in-window AppMenuBar reads them from the component
+    // global instead — see Workspace::render.
+    if let Some(menus) = cx.get_menus() {
+        GlobalState::global_mut(cx).set_app_menus(menus);
+    }
 }
 
 /// The menu bar itself.
@@ -61,35 +71,50 @@ pub fn init(cx: &mut App) {
 /// Built apart from [`init`] so a test can read the tree back: `set_menus`
 /// keeps it and does not hand it out.
 fn menus() -> Vec<Menu> {
-    vec![
-        Menu::new("Zippa DB").items(vec![
-            MenuItem::action("Settings…", OpenSettings),
-            MenuItem::separator(),
-            // The Services submenu is the system's to fill in, and belongs
-            // here rather than in a menu of our own.
-            MenuItem::os_submenu("Services", SystemMenuType::Services),
-            MenuItem::separator(),
-            MenuItem::action("Hide Zippa DB", Hide),
-            MenuItem::action("Hide Others", HideOthers),
-            MenuItem::action("Show All", ShowAll),
-            MenuItem::separator(),
-            MenuItem::action("Quit Zippa DB", Quit),
-        ]),
-        Menu::new("File").items(vec![
-            MenuItem::action("New Connection", NewConnection),
-            MenuItem::action("New Query Tab", NewTab),
-            MenuItem::separator(),
-            MenuItem::action("Open…", OpenFile),
-            MenuItem::action("Save", SaveFile),
-            MenuItem::action("Save As…", SaveFileAs),
-            MenuItem::separator(),
-            MenuItem::action("Import SQL Dump…", ImportSqlDump),
-            MenuItem::separator(),
-            MenuItem::action("Close Tab", CloseTab),
-            MenuItem::action("Close Connection", CloseConnection),
-            MenuItem::action("Reconnect", Reconnect),
-            MenuItem::action("Disconnect", Disconnect),
-        ]),
+    let mut menus = Vec::new();
+
+    // macOS puts the application menu first; there is no such convention on
+    // Linux and Windows, where Settings and Quit live in File instead.
+    #[cfg(target_os = "macos")]
+    menus.push(Menu::new("Zippa DB").items(vec![
+        MenuItem::action("Settings…", OpenSettings),
+        MenuItem::separator(),
+        // The Services submenu is the system's to fill in, and belongs
+        // here rather than in a menu of our own.
+        MenuItem::os_submenu("Services", SystemMenuType::Services),
+        MenuItem::separator(),
+        MenuItem::action("Hide Zippa DB", Hide),
+        MenuItem::action("Hide Others", HideOthers),
+        MenuItem::action("Show All", ShowAll),
+        MenuItem::separator(),
+        MenuItem::action("Quit Zippa DB", Quit),
+    ]));
+
+    let mut file = vec![
+        MenuItem::action("New Connection", NewConnection),
+        MenuItem::action("New Query Tab", NewTab),
+        MenuItem::separator(),
+        MenuItem::action("Open…", OpenFile),
+        MenuItem::action("Save", SaveFile),
+        MenuItem::action("Save As…", SaveFileAs),
+        MenuItem::separator(),
+        MenuItem::action("Import SQL Dump…", ImportSqlDump),
+        MenuItem::separator(),
+        MenuItem::action("Close Tab", CloseTab),
+        MenuItem::action("Close Connection", CloseConnection),
+        MenuItem::action("Reconnect", Reconnect),
+        MenuItem::action("Disconnect", Disconnect),
+    ];
+    #[cfg(not(target_os = "macos"))]
+    file.extend([
+        MenuItem::separator(),
+        MenuItem::action("Settings…", OpenSettings),
+        MenuItem::separator(),
+        MenuItem::action("Quit", Quit),
+    ]);
+    menus.push(Menu::new("File").items(file));
+
+    menus.extend([
         // The text boxes' own clipboard and undo, with the native selectors
         // macOS expects them to carry. They answer wherever an input has the
         // focus — the query editor, a cell, a dialog's fields.
@@ -153,7 +178,8 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Previous Connection", PreviousConnection),
         ]),
         Menu::new("Help").items(vec![MenuItem::action("Keyboard Shortcuts", ShowShortcuts)]),
-    ]
+    ]);
+    menus
 }
 
 #[cfg(test)]
@@ -193,7 +219,10 @@ mod tests {
         // Every action the keymap binds, plus the app-level commands the OS
         // gives its own keys to. A binding with no menu item is a shortcut the
         // menu bar cannot teach.
-        for (what, id) in [
+        // (Only mutated on macOS, where the application menu adds its own
+        // commands below.)
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut expected: Vec<(&str, TypeId)> = vec![
             ("New Connection", TypeId::of::<NewConnection>()),
             ("New Query Tab", TypeId::of::<NewTab>()),
             ("Open", TypeId::of::<OpenFile>()),
@@ -244,16 +273,22 @@ mod tests {
             ("Settings", TypeId::of::<OpenSettings>()),
             ("Keyboard Shortcuts", TypeId::of::<ShowShortcuts>()),
             ("Quit", TypeId::of::<Quit>()),
-            ("Hide", TypeId::of::<Hide>()),
-            ("Hide Others", TypeId::of::<HideOthers>()),
-            ("Show All", TypeId::of::<ShowAll>()),
             ("Undo", TypeId::of::<Undo>()),
             ("Redo", TypeId::of::<Redo>()),
             ("Cut", TypeId::of::<Cut>()),
             ("Copy", TypeId::of::<Copy>()),
             ("Paste", TypeId::of::<Paste>()),
             ("Select All", TypeId::of::<SelectAll>()),
-        ] {
+        ];
+        // The application-menu commands only exist where there is an
+        // application menu.
+        #[cfg(target_os = "macos")]
+        expected.extend([
+            ("Hide", TypeId::of::<Hide>()),
+            ("Hide Others", TypeId::of::<HideOthers>()),
+            ("Show All", TypeId::of::<ShowAll>()),
+        ]);
+        for (what, id) in expected {
             assert!(present.contains(&id), "{what} is missing from the menu bar");
         }
     }
@@ -279,6 +314,31 @@ mod tests {
                 menu.name
             );
         }
+    }
+
+    #[gpui_kit::test]
+    fn the_in_window_menu_bar_gets_the_platform_menus(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            crate::keymap::bind(cx);
+            crate::menu::init(cx);
+        });
+
+        cx.update(|cx| {
+            let stored: Vec<String> = GlobalState::global(cx)
+                .app_menus()
+                .iter()
+                .map(|menu| menu.name.to_string())
+                .collect();
+            let built: Vec<String> = menus()
+                .into_iter()
+                .map(|menu| menu.name.to_string())
+                .collect();
+            assert_eq!(
+                stored, built,
+                "the in-window menu bar must see the same menus the platform got"
+            );
+        });
     }
 
     #[gpui_kit::test]

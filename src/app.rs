@@ -15,6 +15,7 @@ use std::sync::Arc;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
+use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, Size, TitleBar, WindowExt, h_flex, v_flex,
@@ -206,6 +207,9 @@ pub struct Workspace {
     /// Held by the window itself, so the connection shortcuts answer even when
     /// nothing inside a tab has the caret.
     focus: FocusHandle,
+    /// The application menu bar on Linux and Windows, where there is no
+    /// native one (see `menu.rs`). Created but never rendered on macOS.
+    menu_bar: Entity<AppMenuBar>,
     /// Tabs a startup restore is reconnecting, keyed by the connection manager
     /// that is connecting them. Their contents are kept here until the session
     /// exists, so a failed reconnect does not erase the user's tabs.
@@ -242,6 +246,7 @@ impl Workspace {
             active: 0,
             value: None,
             focus,
+            menu_bar: AppMenuBar::new(cx),
             pending: HashMap::new(),
             last_saved: None,
         };
@@ -1129,6 +1134,13 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
+            // On Linux and Windows there is no native menu bar, so the app
+            // draws its own below the title bar; macOS keeps the native one.
+            // The bar is wrapped so its own full-size root takes only the
+            // height its buttons need, not the window's.
+            .when(cfg!(not(target_os = "macos")), |this| {
+                this.child(div().flex_none().child(self.menu_bar.clone()))
+            })
             // A strip for a single connection is a title the title bar already
             // carries, so it is only worth the row once there is more than one
             // tab to choose between. Closing the last one still works from
