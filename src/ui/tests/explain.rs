@@ -168,7 +168,9 @@ fn switching_between_the_result_and_the_plan_keeps_both(cx: &mut TestAppContext)
             .unwrap()
     );
 
-    click_in_session(cx, handle, "show-results");
+    handle
+        .update(cx, |session, _, cx| session.pick_plan_for_test(false, cx))
+        .unwrap();
     cx.run_until_parked();
     assert!(
         !handle
@@ -185,7 +187,9 @@ fn switching_between_the_result_and_the_plan_keeps_both(cx: &mut TestAppContext)
         "the plan should still be there to switch back to"
     );
 
-    click_in_session(cx, handle, "show-plan");
+    handle
+        .update(cx, |session, _, cx| session.pick_plan_for_test(true, cx))
+        .unwrap();
     cx.run_until_parked();
     assert!(
         handle
@@ -279,4 +283,20 @@ fn the_warnings_button_opens_a_dialog(cx: &mut TestAppContext) {
         workspace_dialog_open(cx, &handle),
         "the warnings button should open a dialog"
     );
+}
+
+#[gpui_kit::test]
+fn sqlite_offers_explain_without_a_menu(cx: &mut TestAppContext) {
+    // SQLite has no EXPLAIN ANALYZE, so the split button would hold one dead
+    // item; it gets the plain button instead.
+    let (_database, handle) = session_with_objects(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        assert!(window.find("explain").visible());
+        assert!(
+            window.try_find("explain-split").is_none(),
+            "SQLite should not get the Explain menu"
+        );
+    })
+    .unwrap();
 }

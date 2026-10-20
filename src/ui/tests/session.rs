@@ -261,11 +261,15 @@ fn the_sidebar_switches_to_the_management_tools(cx: &mut TestAppContext) {
 
         assert!(
             window.find("open-console").visible(),
-            "the console tool is missing from the Management tab"
+            "the console tool is missing from the Tools tab"
+        );
+        assert!(
+            window.find("open-erd").visible(),
+            "the ER diagram is missing from the Tools tab"
         );
         assert!(
             window.try_find("object-items").is_none(),
-            "the object list belongs on the Schema tab, not the Management one"
+            "the object list belongs on the Schema tab, not the Tools one"
         );
         // A file-backed connection has no server to ask, so its tools are not
         // listed.
@@ -282,29 +286,30 @@ fn the_sidebar_switches_to_the_management_tools(cx: &mut TestAppContext) {
         })
         .unwrap();
 
-    // Back on the Schema tab, the search and import buttons share the filter's
-    // line rather than taking rows of their own.
+    // Back on the Schema tab, the filter has its line to itself, and the
+    // schema's commands are one menu on the list's heading below it.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
 
         assert!(
             window.try_find("open-console").is_none(),
-            "the server tools belong on the Management tab"
+            "the server tools belong on the Tools tab"
         );
-        let filter = window.find("object-filter").bounds();
-        for id in ["search-schema", "import-dump"] {
-            let button = window.find(id);
-            assert!(button.visible(), "{id} is missing from the Schema tab");
-            // The button's center sits within the filter's own band, so the two
-            // share a line rather than one taking a row of its own.
-            let center = button.bounds().center().y;
+        for id in ["search-schema", "import-dump", "erd", "new-table"] {
             assert!(
-                center >= filter.top() && center <= filter.bottom(),
-                "{id} is not on the filter's line: {:?} vs {:?}",
-                button.bounds(),
-                filter
+                window.try_find(id).is_none(),
+                "{id} should be in the schema menu, not beside the filter"
             );
         }
+        let filter = window.find("object-filter").bounds();
+        let menu = window.find("schema-actions");
+        assert!(menu.visible(), "the schema menu is missing");
+        assert!(
+            menu.bounds().top() >= filter.bottom(),
+            "the schema menu should sit below the filter, on the list's heading: {:?} vs {:?}",
+            menu.bounds(),
+            filter
+        );
     })
     .unwrap();
 }
@@ -974,14 +979,14 @@ fn refresh_reloads_the_schema_and_the_open_table_but_not_a_query_tab(cx: &mut Te
         .expect("could not insert the extra row");
     runtime::block_on(other.close());
 
-    click(cx, &handle, "refresh");
+    refresh_active(cx, &handle);
     cx.run_until_parked();
 
     let after = view.read_with(cx, |view, _| view.loaded_rows_for_test());
     assert_eq!(after, 3, "refresh should reread the table's rows");
 
     // A query tab's buffer is the user's own SQL; refresh must not re-run it.
-    click(cx, &handle, "new-query");
+    new_query(cx, &handle);
     session
         .downgrade()
         .update_in(cx, |session, window, cx| {
@@ -993,7 +998,7 @@ fn refresh_reloads_the_schema_and_the_open_table_but_not_a_query_tab(cx: &mut Te
         })
         .unwrap();
 
-    click(cx, &handle, "refresh");
+    refresh_active(cx, &handle);
     cx.run_until_parked();
 
     let count = runtime::block_on(other_count(&database));
@@ -1128,4 +1133,32 @@ fn the_footers_view_structure_opens_the_structure_tab(cx: &mut TestAppContext) {
             assert!(session.active_schema_view(cx).is_some());
         })
         .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_database_picker_follows_the_list_and_the_current_database(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let current = handle
+        .update(cx, |session, _, _| {
+            session.connection().database().to_string()
+        })
+        .unwrap();
+
+    handle
+        .update(cx, |session, _, cx| {
+            session.set_metadata_for_test(
+                vec!["analytics".into(), current.clone(), "staging".into()],
+                Vec::new(),
+                cx,
+            )
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+
+    let (chosen, offered) = handle
+        .update(cx, |session, _, cx| session.database_picker_for_test(cx))
+        .unwrap();
+    assert_eq!(offered, 3, "the picker should list every database");
+    assert_eq!(chosen.as_deref(), Some(current.as_str()));
 }

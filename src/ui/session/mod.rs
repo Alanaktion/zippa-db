@@ -8,6 +8,7 @@ use gpui_kit::component::dock::{
     TabGroup, panel_handle,
 };
 use gpui_kit::component::input::InputState;
+use gpui_kit::component::select::{SearchableVec, SelectState};
 use gpui_kit::component::tree::TreeState;
 use gpui_kit::component::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::prelude::*;
@@ -75,6 +76,9 @@ actions!(
         OpenMaintenance,
         OpenUserManagement,
         OpenErd,
+        NewTable,
+        SaveQuery,
+        SaveQueryAs,
     ]
 );
 
@@ -106,6 +110,14 @@ pub struct Session {
     /// Sidebar beside the editor and grid.
     columns: Entity<ResizableState>,
     databases: Vec<String>,
+    /// The title bar's database picker: a searchable list, since a server
+    /// can hold more databases than a menu reads comfortably. Its items and
+    /// selection follow `databases` and the current database, synced in
+    /// `render` (see `sync_database_select`).
+    database_select: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// The list `database_select` was last given, so a render only resets
+    /// it when the databases changed.
+    database_select_items: Vec<SharedString>,
     objects: Vec<DatabaseObject>,
     /// Functions, procedures and sequences, listed after the tables.
     stored: Vec<StoredObject>,
@@ -178,6 +190,18 @@ impl Session {
             dock.set_center(DockLayout::tabs(), window, cx)
         });
 
+        let database_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(Vec::<SharedString>::new()),
+                None,
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+        cx.subscribe_in(&database_select, window, Self::on_database_selected)
+            .detach();
+
         let mut session = Self {
             connection,
             shared_pin: None,
@@ -187,6 +211,8 @@ impl Session {
             opened: 0,
             columns: cx.new(|_| ResizableState::default()),
             databases: Vec::new(),
+            database_select,
+            database_select_items: Vec::new(),
             objects: Vec::new(),
             stored: Vec::new(),
             filter,
@@ -389,7 +415,8 @@ impl Session {
                 self.explain(panel, sql.clone(), *analyze, window, cx)
             }
             SessionPanelEvent::OpenFile => self.open_file(cx),
-            SessionPanelEvent::Save => self.save(panel, false, cx),
+            SessionPanelEvent::Save { as_new } => self.save(panel, *as_new, cx),
+            SessionPanelEvent::SaveQuery { as_new } => self.save_query(panel, *as_new, window, cx),
             SessionPanelEvent::EditVariables => self.open_variables_dialog(panel, window, cx),
         }
     }
@@ -442,6 +469,11 @@ impl Session {
     /// keeps the tab and its place in the bar for the next connection. The
     /// workspace asks first when a tab holds unsaved work.
     fn on_disconnect(&mut self, _: &Disconnect, _window: &mut Window, cx: &mut Context<Self>) {
+        self.disconnect(cx);
+    }
+
+    /// Hand the tab back to the connection manager, as `Disconnect` does.
+    pub(crate) fn disconnect(&mut self, cx: &mut Context<Self>) {
         cx.emit(SessionEvent::Disconnected);
     }
 
@@ -541,7 +573,8 @@ impl Session {
 }
 
 impl Render for Session {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_database_select(window, cx);
         div()
             .size_full()
             .key_context("Session")
@@ -578,6 +611,11 @@ impl Render for Session {
             .on_action(cx.listener(|this, _: &OpenErd, window, cx| {
                 this.open_tool(Tool::Erd, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &NewTable, window, cx| {
+                this.open_new_table(window, cx);
+            }))
+            .on_action(cx.listener(Self::on_save_query))
+            .on_action(cx.listener(Self::on_save_query_as))
             .on_action(cx.listener(Self::on_disconnect))
             .on_action(cx.listener(Self::on_reconnect))
             .child(

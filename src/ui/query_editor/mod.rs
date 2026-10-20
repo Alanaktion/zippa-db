@@ -5,15 +5,13 @@
 //! can cancel it. Typing offers completions from the session's catalog and a
 //! list of SQL keywords (see [`crate::ui::completion`]).
 
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_kit::component::input::{Editor, EditorState, Enter, IndentInline};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::separator::Separator;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, EventEmitter, KeyDownEvent, Window, actions, div, px};
+use gpui_kit::{Context, Entity, EventEmitter, KeyDownEvent, SharedString, Window, actions, px};
 
-use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::base::input::{Copy, Cut, Paste, SelectAll};
 
 use std::cell::RefCell;
@@ -25,7 +23,7 @@ use crate::db::params::Variable;
 use crate::db::{Blocker, Engine, statement, transaction_blocker};
 use crate::settings::{self, CompletionKey, Settings};
 use crate::ui::completion::{SharedCatalog, SqlCompletions};
-use crate::ui::session::{OpenFile, SaveFile};
+use crate::ui::session::{OpenFile, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs};
 
 mod editing;
 #[cfg(test)]
@@ -53,6 +51,7 @@ actions!(
         SelectPreviousOccurrence,
         SelectLine,
         SmartHome,
+        EditVariables,
     ]
 );
 
@@ -75,6 +74,13 @@ pub enum QueryEditorEvent {
     Open,
     /// The user asked to write this buffer to its file.
     Save,
+    /// The same, to a file picked first.
+    SaveAs,
+    /// The user asked to keep this buffer in the sidebar's Saved tab,
+    /// updating the saved query it belongs to if it has one.
+    SaveQuery,
+    /// The same, always under a new name.
+    SaveQueryAs,
     /// The user asked to edit this buffer's `:name`/`$name` variables.
     EditVariables,
 }
@@ -97,9 +103,22 @@ pub struct QueryEditor {
     /// with a multi-MB buffer; the key is a hash of the buffer, cursor, and
     /// selection, so an untouched buffer answers without touching the text.
     statement_cache: RefCell<Option<StatementCache>>,
-    /// Memoized statement that would keep the whole buffer out of a
-    /// transaction, keyed by a hash of the buffer alone.
-    blocker_cache: RefCell<Option<(u64, Option<Blocker>)>>,
+    /// Memoized facts about the whole buffer the toolbar shows on every
+    /// render, keyed by a hash of the buffer alone.
+    buffer_cache: RefCell<Option<BufferCache>>,
+    /// The saved query this buffer belongs to, so the menu can say which
+    /// one Save will update. Kept by the tab, mirrored here.
+    saved_name: Option<SharedString>,
+}
+
+/// What the toolbar reads off the whole buffer.
+#[derive(Clone)]
+struct BufferCache {
+    key: u64,
+    /// The statement that would keep a script run out of a transaction.
+    blocker: Option<Blocker>,
+    /// How many distinct `:name`/`$name` variables the buffer uses.
+    variables: usize,
 }
 
 struct StatementCache {
@@ -143,7 +162,8 @@ impl QueryEditor {
             variables: Vec::new(),
             engine,
             statement_cache: RefCell::new(None),
-            blocker_cache: RefCell::new(None),
+            buffer_cache: RefCell::new(None),
+            saved_name: None,
         }
     }
 
@@ -175,6 +195,12 @@ impl QueryEditor {
     /// a button that promises timings.
     pub(crate) fn analyze_supported(&self) -> bool {
         !matches!(self.engine, Engine::Sqlite)
+    }
+
+    /// Name the saved query this buffer belongs to, for the toolbar menu.
+    pub(crate) fn set_saved_name(&mut self, name: Option<SharedString>, cx: &mut Context<Self>) {
+        self.saved_name = name;
+        cx.notify();
     }
 
     pub fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
@@ -381,9 +407,20 @@ impl QueryEditor {
     }
 
     /// The statement that would keep a script run of the whole buffer out of
-    /// a transaction, if there is one — memoized on the buffer's text, since
-    /// the toolbar asks on every render.
+    /// a transaction, if there is one.
     pub(crate) fn transaction_blocker(&self, cx: &gpui_kit::App) -> Option<Blocker> {
+        self.buffer_facts(cx).blocker
+    }
+
+    /// How many distinct `:name`/`$name` variables the buffer uses, which is
+    /// what decides whether the toolbar offers the Variables button.
+    pub(crate) fn variable_count(&self, cx: &gpui_kit::App) -> usize {
+        self.buffer_facts(cx).variables
+    }
+
+    /// The toolbar's facts about the whole buffer — memoized on its text,
+    /// since the toolbar asks on every render.
+    fn buffer_facts(&self, cx: &gpui_kit::App) -> BufferCache {
         let key = {
             let mut hasher = DefaultHasher::new();
             for chunk in self.state.read(cx).text().chunks() {
@@ -391,15 +428,24 @@ impl QueryEditor {
             }
             hasher.finish()
         };
-        if let Some((cached, blocker)) = self.blocker_cache.borrow().as_ref()
-            && *cached == key
+        if let Some(cached) = self.buffer_cache.borrow().as_ref()
+            && cached.key == key
         {
-            return blocker.clone();
+            return cached.clone();
         }
         let sql = self.state.read(cx).value().to_string();
         let blocker = transaction_blocker(self.engine, &statement::split(&sql, self.engine));
-        *self.blocker_cache.borrow_mut() = Some((key, blocker.clone()));
-        blocker
+        let names: std::collections::HashSet<String> = statement::placeholders(&sql, self.engine)
+            .into_iter()
+            .map(|placeholder| placeholder.name)
+            .collect();
+        let facts = BufferCache {
+            key,
+            blocker,
+            variables: names.len(),
+        };
+        *self.buffer_cache.borrow_mut() = Some(facts.clone());
+        facts
     }
 
     /// The uncached statement: the selection verbatim, else the statement
@@ -417,6 +463,269 @@ impl QueryEditor {
     }
 }
 
+impl QueryEditor {
+    fn edit_variables(&mut self, _: &EditVariables, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.running {
+            cx.emit(QueryEditorEvent::EditVariables);
+        }
+    }
+
+    /// The bar above the buffer: the three ways to run it on the leading
+    /// edge, in the order they are reached for, and everything about the
+    /// buffer itself — its file, its variables, its layout — behind one
+    /// menu on the trailing edge. Every button says what it does in words;
+    /// the menus show the shortcuts.
+    fn render_toolbar(
+        &self,
+        writes: bool,
+        can_analyze: bool,
+        blocker: Option<Blocker>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let editor = cx.entity().downgrade();
+        let running = self.running;
+        let saved_name = self.saved_name.clone();
+        let variables = self.variable_count(cx);
+
+        // A buffer a transaction cannot hold says so before it is run, in
+        // words and with its own icon rather than a colour.
+        let script_label = match &blocker {
+            Some(blocker) => format!(
+                "Run every statement without a transaction: {}",
+                blocker.message()
+            ),
+            None if Settings::global(cx).wrap_scripts_in_transaction => {
+                "Run every statement in one transaction, asking about each error".to_string()
+            }
+            None => {
+                "Run every statement without a transaction, asking about each error".to_string()
+            }
+        };
+
+        h_flex()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .justify_between()
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("run")
+                            .primary()
+                            .small()
+                            .icon(IconName::Play)
+                            .label(if self.running { "Running…" } else { "Run" })
+                            .tooltip_with_action(
+                                "Run the selection, or the statement the caret is in",
+                                &RunQuery,
+                                Some("QueryEditor"),
+                            )
+                            .disabled(self.running)
+                            .on_click(cx.listener(|this, _, _window, cx| this.emit_run(cx))),
+                    )
+                    .child(
+                        DropdownButton::new("run-script-split")
+                            .ghost()
+                            .small()
+                            .disabled(self.running)
+                            .menu_accessibility_label("More ways to run all queries")
+                            .button(
+                                Button::new("run-script")
+                                    .when(blocker.is_some(), |this| {
+                                        this.icon(IconName::TriangleAlert)
+                                    })
+                                    .label("Run all queries")
+                                    .accessibility_label(script_label.clone())
+                                    .tooltip_with_action(
+                                        script_label,
+                                        &RunScript,
+                                        Some("QueryEditor"),
+                                    )
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.emit_run_script(false, cx)
+                                    })),
+                            )
+                            .dropdown_menu({
+                                let editor = editor.clone();
+                                move |menu, _window, _cx| {
+                                    let editor = editor.clone();
+                                    menu.item(
+                                        PopupMenuItem::new("Run all queries, skipping errors")
+                                            .action(Box::new(RunScriptIgnoringErrors))
+                                            .on_click(move |_, _window, cx| {
+                                                editor
+                                                    .update(cx, |editor, cx| {
+                                                        editor.emit_run_script(true, cx)
+                                                    })
+                                                    .ok();
+                                            }),
+                                    )
+                                }
+                            }),
+                    )
+                    .child({
+                        let explain = Button::new("explain")
+                            .label("Explain")
+                            .tooltip_with_action(
+                                "Show the plan for the statement the caret is in",
+                                &Explain,
+                                Some("QueryEditor"),
+                            )
+                            .on_click(
+                                cx.listener(|this, _, _window, cx| this.emit_explain(false, cx)),
+                            );
+                        // SQLite has no EXPLAIN ANALYZE, so it gets the plain
+                        // button rather than a menu holding one dead item.
+                        if !can_analyze {
+                            explain
+                                .ghost()
+                                .small()
+                                .disabled(self.running)
+                                .into_any_element()
+                        } else {
+                            let editor = editor.clone();
+                            DropdownButton::new("explain-split")
+                                .ghost()
+                                .small()
+                                .disabled(self.running)
+                                .menu_accessibility_label("More ways to explain")
+                                .button(explain)
+                                .dropdown_menu(move |menu, _window, _cx| {
+                                    let editor = editor.clone();
+                                    // Analyzing a write would run it.
+                                    menu.item(
+                                        PopupMenuItem::new("Explain analyze")
+                                            .action(Box::new(ExplainAnalyze))
+                                            .disabled(writes)
+                                            .on_click(move |_, _window, cx| {
+                                                editor
+                                                    .update(cx, |editor, cx| {
+                                                        editor.emit_explain(true, cx)
+                                                    })
+                                                    .ok();
+                                            }),
+                                    )
+                                })
+                                .into_any_element()
+                        }
+                    }),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    // Only a buffer that uses variables needs a way to fill
+                    // them in on sight; the menu still offers it otherwise.
+                    .when(variables > 0, |this| {
+                        this.child(
+                            Button::new("variables")
+                                .ghost()
+                                .small()
+                                .label(format!("Variables ({variables})"))
+                                .tooltip("Fill in the :name/$name variables this buffer uses")
+                                .disabled(self.running)
+                                .on_click(cx.listener(|_this, _, _window, cx| {
+                                    cx.emit(QueryEditorEvent::EditVariables)
+                                })),
+                        )
+                    })
+                    .child(
+                        Button::new("query-actions")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Ellipsis)
+                            .accessibility_label("More query actions")
+                            .dropdown_menu({
+                                let editor = editor.clone();
+                                move |menu, _window, _cx| {
+                                    // Each item names its action only for the
+                                    // shortcut shown beside it; the click itself
+                                    // goes to this editor, the way the buttons'
+                                    // do.
+                                    let item = |label: SharedString,
+                                                action: Box<dyn gpui_kit::Action>,
+                                                run: fn(
+                                        &mut QueryEditor,
+                                        &mut Window,
+                                        &mut Context<QueryEditor>,
+                                    )| {
+                                        let editor = editor.clone();
+                                        PopupMenuItem::new(label).action(action).on_click(
+                                            move |_, window, cx| {
+                                                editor
+                                                    .update(cx, |editor, cx| {
+                                                        run(editor, window, cx)
+                                                    })
+                                                    .ok();
+                                            },
+                                        )
+                                    };
+                                    menu.item(item(
+                                        "Open File…".into(),
+                                        Box::new(OpenFile),
+                                        |_, _, cx| cx.emit(QueryEditorEvent::Open),
+                                    ))
+                                    .item(item("Save".into(), Box::new(SaveFile), |_, _, cx| {
+                                        cx.emit(QueryEditorEvent::Save)
+                                    }))
+                                    .item(item(
+                                        "Save As…".into(),
+                                        Box::new(SaveFileAs),
+                                        |_, _, cx| cx.emit(QueryEditorEvent::SaveAs),
+                                    ))
+                                    .map(|menu| match &saved_name {
+                                        // A buffer that belongs to a saved
+                                        // query updates it in one step; a
+                                        // new name is the second choice.
+                                        Some(name) => menu
+                                            .item(item(
+                                                format!("Update Saved Query “{name}”").into(),
+                                                Box::new(SaveQuery),
+                                                |_, _, cx| cx.emit(QueryEditorEvent::SaveQuery),
+                                            ))
+                                            .item(item(
+                                                "Save as New Saved Query…".into(),
+                                                Box::new(SaveQueryAs),
+                                                |_, _, cx| cx.emit(QueryEditorEvent::SaveQueryAs),
+                                            )),
+                                        None => menu.item(item(
+                                            "Save to Saved Queries…".into(),
+                                            Box::new(SaveQuery),
+                                            |_, _, cx| cx.emit(QueryEditorEvent::SaveQuery),
+                                        )),
+                                    })
+                                    .separator()
+                                    .item(
+                                        item(
+                                            "Edit Variables…".into(),
+                                            Box::new(EditVariables),
+                                            |editor, window, cx| {
+                                                editor.edit_variables(&EditVariables, window, cx)
+                                            },
+                                        )
+                                        .disabled(running),
+                                    )
+                                    .item(item(
+                                        "Format Query".into(),
+                                        Box::new(FormatQuery),
+                                        |editor, window, cx| {
+                                            editor.format_query(&FormatQuery, window, cx)
+                                        },
+                                    ))
+                                    .item(item(
+                                        "Toggle Comment".into(),
+                                        Box::new(ToggleComment),
+                                        |editor, window, cx| {
+                                            editor.toggle_comment(&ToggleComment, window, cx)
+                                        },
+                                    ))
+                                }
+                            }),
+                    ),
+            )
+    }
+}
+
 impl Render for QueryEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let writes = self.statement_writes(cx);
@@ -431,6 +740,7 @@ impl Render for QueryEditor {
             .on_action(cx.listener(Self::explain))
             .on_action(cx.listener(Self::explain_analyze))
             .on_action(cx.listener(Self::format_query))
+            .on_action(cx.listener(Self::edit_variables))
             .on_action(cx.listener(Self::toggle_comment))
             .on_action(cx.listener(Self::copy_line))
             .on_action(cx.listener(Self::cut_line))
@@ -449,187 +759,7 @@ impl Render for QueryEditor {
             .size_full()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .px_2()
-                    .py_1()
-                    .gap_2()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("QUERY"),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .child(
-                                Button::new("open-file")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::FolderOpen)
-                                    .accessibility_label("Open a SQL file")
-                                    .tooltip_with_action(
-                                        "Open a SQL file…",
-                                        &OpenFile,
-                                        Some("Session"),
-                                    )
-                                    .on_click(cx.listener(|_this, _, _window, cx| {
-                                        cx.emit(QueryEditorEvent::Open)
-                                    })),
-                            )
-                            .child(
-                                Button::new("save-file")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::HardDrive)
-                                    .accessibility_label("Save to a SQL file")
-                                    .tooltip_with_action(
-                                        "Save to a SQL file",
-                                        &SaveFile,
-                                        Some("Session"),
-                                    )
-                                    .on_click(cx.listener(|_this, _, _window, cx| {
-                                        cx.emit(QueryEditorEvent::Save)
-                                    })),
-                            )
-                            .child(Separator::vertical())
-                            .child(
-                                Button::new("variables")
-                                    .ghost()
-                                    .small()
-                                    .icon(AssetIcon::Variable)
-                                    .accessibility_label("Edit query variables")
-                                    .tooltip("Edit the :name/$name variables for this buffer")
-                                    .disabled(self.running)
-                                    .on_click(cx.listener(|_this, _, _window, cx| {
-                                        cx.emit(QueryEditorEvent::EditVariables)
-                                    })),
-                            )
-                            .child(Separator::vertical())
-                            .child(
-                                Button::new("explain")
-                                    .ghost()
-                                    .small()
-                                    .icon(AssetIcon::Route)
-                                    .dropdown_caret(true)
-                                    .accessibility_label("Explain the statement")
-                                    .tooltip(if !can_analyze {
-                                        "SQLite has no EXPLAIN ANALYZE; actual times are not available"
-                                    } else {
-                                        "Show the statement's plan, or run it for actual times"
-                                    })
-                                    .disabled(self.running)
-                                    .dropdown_menu({
-                                        let editor = cx.entity().downgrade();
-                                        move |mut menu, _window, _cx| {
-                                            menu = menu.item(
-                                                PopupMenuItem::new("Explain")
-                                                    .icon(AssetIcon::Route)
-                                                    .on_click({
-                                                        let editor = editor.clone();
-                                                        move |_, _window, cx| {
-                                                            if let Some(editor) = editor.upgrade() {
-                                                                editor.update(cx, |editor, cx| {
-                                                                    editor.emit_explain(false, cx);
-                                                                });
-                                                            }
-                                                        }
-                                                    }),
-                                            );
-                                            menu = menu.item(
-                                                PopupMenuItem::new("Explain Analyze")
-                                                    .icon(AssetIcon::Gauge)
-                                                    .disabled(writes || !can_analyze)
-                                                    .on_click({
-                                                        let editor = editor.clone();
-                                                        move |_, _window, cx| {
-                                                            if let Some(editor) = editor.upgrade() {
-                                                                editor.update(cx, |editor, cx| {
-                                                                    editor.emit_explain(true, cx);
-                                                                });
-                                                            }
-                                                        }
-                                                    }),
-                                            );
-                                            menu
-                                        }
-                                    }),
-                            )
-                            .child(Separator::vertical())
-                            .child({
-                                // A buffer a transaction cannot hold says so
-                                // before it is run, in words and with its
-                                // own icon rather than a colour.
-                                let (icon, label) = match &blocker {
-                                    Some(blocker) => (
-                                        IconName::TriangleAlert,
-                                        format!(
-                                            "Run every statement without a transaction: {}",
-                                            blocker.message()
-                                        ),
-                                    ),
-                                    None if Settings::global(cx).wrap_scripts_in_transaction => (
-                                        IconName::SquareTerminal,
-                                        "Run every statement in one transaction, asking about \
-                                         each error"
-                                            .to_string(),
-                                    ),
-                                    None => (
-                                        IconName::SquareTerminal,
-                                        "Run every statement without a transaction, asking \
-                                         about each error"
-                                            .to_string(),
-                                    ),
-                                };
-                                Button::new("run-script")
-                                    .ghost()
-                                    .small()
-                                    .icon(icon)
-                                    .accessibility_label(label.clone())
-                                    .tooltip_with_action(label, &RunScript, Some("QueryEditor"))
-                                    .disabled(self.running)
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.emit_run_script(false, cx)
-                                    }))
-                            })
-                            .child(
-                                Button::new("run-script-ignoring-errors")
-                                    .ghost()
-                                    .small()
-                                    .icon(AssetIcon::FastForward)
-                                    .accessibility_label(
-                                        "Run every statement without a transaction, skipping errors",
-                                    )
-                                    .tooltip_with_action(
-                                        "Run every statement without a transaction, skipping errors",
-                                        &RunScriptIgnoringErrors,
-                                        Some("QueryEditor"),
-                                    )
-                                    .disabled(self.running)
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.emit_run_script(true, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("run")
-                                    .primary()
-                                    .small()
-                                    .icon(IconName::Play)
-                                    .label(if self.running { "Running…" } else { "Run" })
-                                    .tooltip_with_action(
-                                        "Run the selection, or the statement the caret is in",
-                                        &RunQuery,
-                                        Some("QueryEditor"),
-                                    )
-                                    .disabled(self.running)
-                                    .on_click(
-                                        cx.listener(|this, _, _window, cx| this.emit_run(cx)),
-                                    ),
-                            ),
-                    ),
-            )
+            .child(self.render_toolbar(writes, can_analyze, blocker, cx))
             .child(
                 Editor::new(&self.state)
                     .h_full()

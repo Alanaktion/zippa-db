@@ -22,7 +22,8 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
 - **Connection health:** a dropped connection or an unresponsive server is
   told in words rather than as the driver's error, a statement gives up
   waiting for a free connection after 10 seconds, and Reconnect
-  (`Cmd`/`Ctrl`+`Shift`+`R`, the File menu, or the database picker) opens a
+  (`Cmd`/`Ctrl`+`Shift`+`R`, the Database menu, or the connection's menu in
+  the title bar) opens a
   fresh connection while keeping every tab. Postgres and MySQL connections
   take an optional statement timeout.
 - **Safety modes:** read-only (enforced on the server and client side),
@@ -40,7 +41,7 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   error to roll back, skip it, or skip every error; a script holding a
   statement no transaction can (`LOCK TABLES`, `VACUUM`, MySQL DDL, its own
   `BEGIN`/`COMMIT`) is flagged in the toolbar and asks before running without
-  one. Run Script Ignoring Errors (`Cmd`/`Ctrl`+`Alt`+`Shift`+`Enter`) runs
+  one. Run All Queries, Skipping Errors (`Cmd`/`Ctrl`+`Alt`+`Shift`+`Enter`) runs
   every statement with no transaction and lists the failures afterwards.
   Each query tab runs on a connection of its own, so `BEGIN`/`COMMIT`, `SET`,
   `USE`, temporary tables, and `LOCK TABLES` last between runs; an open
@@ -91,6 +92,28 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   as icon rows; SQLite gets the console and a maintenance tab of integrity
   checks, optimize, analyze, vacuum, and WAL checkpoint). Disconnect leaves
   the sidebar, with the File menu and `Cmd`/`Ctrl`+`D` carrying it instead.
+- Fewer icon-only buttons, and a clear home for every command. The title bar
+  is now the connection and database as two menus plus a "Search tables,
+  tabs, actions…" field; refresh, new query, new connection, and settings
+  left it for the menu bar and the connection's menu. A new **Database**
+  menu holds Refresh, Reconnect, Disconnect, New Table…, Import SQL Dump…,
+  Search Schema…, ER Diagram, and the tools. The sidebar's filter has its
+  line to itself, with the schema commands in one `⋯` menu on the list's
+  heading; the **Management** tab is now **Tools** and lists the ER diagram.
+  The query bar leads with labelled Run, Run all queries ▾ (skipping errors is in
+  its menu), and Explain ▾ (Explain analyze is in its menu); Open, Save,
+  Save to Saved Queries…, Edit Variables…, and Format live in its `⋯` menu,
+  and a "Variables (n)" button appears once the buffer uses one. A table tab
+  puts Structure, Export, and the row-panel toggle above the grid, so the
+  footer keeps only paging and the staged-edit buttons. Result and
+  Results/Plan switches are segmented tabs. The database picker is
+  searchable (creating a database moved to the connection's menu), SQLite's
+  Explain is a plain button, the object list is denser, and the settings
+  window is compact with one-line descriptions.
+- Saved queries: a tab opened from the Saved tab (or saved through the
+  dialog) belongs to that query, so Save to Saved Queries
+  (`Cmd`/`Ctrl`+`Alt`+`S`) updates it in place; Save as New Saved Query…
+  keeps a copy under another name. `Enter` in the save dialog saves.
 - Postgres geometric types (`point`, `line`, `lseg`, `box`, `path`,
   `polygon`, `circle`), `hstore`, the built-in ranges, and `macaddr8` show
   their values and can be edited, rather than standing in as `<POINT>` and

@@ -119,25 +119,6 @@ fn the_settings_window_shows_its_pages(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_toolbar_button_opens_the_settings(cx: &mut TestAppContext) {
-    // The settings used to be reachable only by `Cmd`/`Ctrl` + `,`, which
-    // nothing on screen mentions.
-    let handle = workspace(cx);
-    assert_eq!(
-        cx.update(|cx| cx.windows().len()),
-        1,
-        "only the main window should be open to start with"
-    );
-
-    click(cx, &handle, "settings");
-    assert_eq!(
-        cx.update(|cx| cx.windows().len()),
-        2,
-        "the toolbar button should open the settings window"
-    );
-}
-
-#[gpui_kit::test]
 fn scrollbars_stay_on_screen_unless_the_setting_says_otherwise(cx: &mut TestAppContext) {
     cx.update(init_ui);
     let _handle = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {

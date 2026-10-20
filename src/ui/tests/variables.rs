@@ -187,3 +187,42 @@ fn escape_closes_the_dialog(cx: &mut TestAppContext) {
         |event| matches!(event, VariablesEvent::Dismissed),
     ));
 }
+
+#[gpui_kit::test]
+fn the_variables_button_shows_once_the_buffer_uses_one(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    prepare_editor(cx, handle, "select * from items", 0);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        assert!(
+            window.try_find("variables").is_none(),
+            "a buffer with no variables has nothing to fill in"
+        );
+    })
+    .unwrap();
+
+    // Two uses of one name, and a second name: the button counts names.
+    prepare_editor(
+        cx,
+        handle,
+        "select * from items where name = :name or name = $name or id = :id",
+        0,
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        assert!(
+            window.find("variables").visible(),
+            "a buffer that uses variables should offer to fill them in"
+        );
+    })
+    .unwrap();
+    let count = handle
+        .update(cx, |session, _, cx| {
+            session
+                .active_editor_for_test(cx)
+                .map(|editor| editor.read(cx).variable_count(cx))
+        })
+        .unwrap();
+    assert_eq!(count, Some(2));
+}

@@ -1,15 +1,17 @@
 //! The object sidebar: the open database's tables and views, the tools for
 //! working with the server, and the user's saved queries.
 //!
-//! Three top tabs share it. **Schema** shows the object list and the filter over
-//! it, with the schema search and the SQL dump import inline beside the filter
-//! (both are about the objects below them). **Management** holds the
-//! DBA-facing views — the console, the process list, the server variables, and
-//! the query digest — as icon rows, since they are destinations rather than
-//! actions on the object list. SQLite has no server, so it lists the console
-//! and its own maintenance tab instead. **Saved** lists the queries the user
-//! named and kept, across every connection; clicking one opens it in a new
-//! query tab.
+//! Three tabs share it. **Schema** shows the object list and the filter over
+//! it, with the commands about the whole schema — a new table, an import, the
+//! schema search, the ER diagram, a refresh — behind one `⋯` menu on the
+//! list's heading, each named in words beside its shortcut. **Tools** holds
+//! the views built on the connection — the ER diagram, the console, the
+//! process list, the server variables, the query digest, and the users — as
+//! icon rows, since they are destinations rather than actions on the object
+//! list. SQLite has no server, so it lists the console and its own
+//! maintenance tab instead of the server views. **Saved** lists the queries
+//! the user named and kept, across every connection; clicking one opens it in
+//! a new query tab.
 //!
 //! TODO.md section 4 starts here — a tree of databases, schemas, tables,
 //! views, functions and the rest — so the list and the filter over it are
@@ -20,10 +22,10 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
-use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tree::{TreeItem, tree};
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{Action, ClipboardItem, Context, Entity, Pixels, SharedString, Window, div, px};
 use regex::Regex;
@@ -35,8 +37,8 @@ use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
 use super::{
-    ImportSqlDump, OpenConsole, OpenErd, OpenMaintenance, OpenProcessList, OpenQueryDigest,
-    OpenServerVariables, OpenUserManagement, SearchSchema, Session, Tool,
+    ImportSqlDump, NewTable, OpenConsole, OpenErd, OpenMaintenance, OpenProcessList,
+    OpenQueryDigest, OpenServerVariables, OpenUserManagement, Refresh, SearchSchema, Session, Tool,
 };
 
 impl Session {
@@ -169,11 +171,19 @@ impl Session {
             .min_h_0()
             .gap_1()
             .child(
-                div()
-                    .px_1()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(heading),
+                h_flex()
+                    .pl_1()
+                    .gap_1()
+                    .justify_between()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(heading),
+                    )
+                    .child(self.render_schema_menu(cx)),
             )
             .when_some(notice, |this, (message, color)| {
                 this.child(div().px_1().text_xs().text_color(color).child(message))
@@ -195,6 +205,7 @@ impl Session {
                                         entry.item().id
                                     )))
                                     .selected(selected)
+                                    .map(compact_row)
                                     .child(div().text_sm().truncate().child(label));
                                 }
                                 if let Some(stored) = this
@@ -207,6 +218,7 @@ impl Session {
                                         entry.item().id
                                     )))
                                     .selected(selected)
+                                    .map(compact_row)
                                     .child(div().text_sm().truncate().child(stored.label()));
                                 }
                                 let object = this
@@ -218,6 +230,7 @@ impl Session {
 
                                 ListItem::new(SharedString::from(format!("object-{label}")))
                                     .selected(selected)
+                                    .map(compact_row)
                                     .child(
                                         h_flex()
                                             .w_full()
@@ -279,25 +292,40 @@ impl Session {
                         let open_object = object.clone();
                         let inspect_session = menu_session.clone();
                         let inspect_object = object;
+                        let new_table_session = menu_session.clone();
+                        let read_only = menu_session
+                            .read(cx)
+                            .connection
+                            .config
+                            .safety
+                            .is_read_only();
 
                         menu.item(PopupMenuItem::new("Open").on_click(move |_, window, cx| {
                             open_session.update(cx, |this, cx| {
                                 this.open_object(&open_object, ObjectViewMode::Data, window, cx);
                             });
                         }))
+                        .item(PopupMenuItem::new("Inspect structure").on_click(
+                            move |_, window, cx| {
+                                inspect_session.update(cx, |this, cx| {
+                                    this.open_object(
+                                        &inspect_object,
+                                        ObjectViewMode::Schema,
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            },
+                        ))
+                        .separator()
                         .item(
-                            PopupMenuItem::new("Inspect structure").on_click(
-                                move |_, window, cx| {
-                                    inspect_session.update(cx, |this, cx| {
-                                        this.open_object(
-                                            &inspect_object,
-                                            ObjectViewMode::Schema,
-                                            window,
-                                            cx,
-                                        );
+                            PopupMenuItem::new("New table…")
+                                .disabled(read_only)
+                                .on_click(move |_, window, cx| {
+                                    new_table_session.update(cx, |this, cx| {
+                                        this.open_new_table(window, cx);
                                     });
-                                },
-                            ),
+                                }),
                         )
                     })
                     .size_full(),
@@ -380,75 +408,75 @@ impl Session {
             .child(self.render_objects(cx))
     }
 
-    /// The filter box, with the new-table button, the schema search, and the
-    /// SQL dump import beside it. All three open something about the objects
-    /// below them, so they live on the filter's line rather than as
-    /// full-width buttons of their own.
-    fn render_object_filter(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .gap_1()
-            .child(
-                Input::new(&self.filter)
-                    .id("object-filter")
-                    .small()
-                    .cleanable(true)
-                    .flex_1(),
-            )
-            .child(
-                Button::new("new-table")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Plus)
-                    .accessibility_label("New table")
-                    .tooltip("Create a new table in this database")
-                    .disabled(self.connection.config.safety.is_read_only())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_new_table(window, cx);
-                    })),
-            )
-            .child(
-                Button::new("search-schema")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Binoculars)
-                    .accessibility_label("Find in schema")
-                    .tooltip_with_action(
-                        "Search the current schema…",
-                        &SearchSchema,
-                        Some("Session"),
-                    )
-                    .on_click(cx.listener(|_this, _, window, cx| {
-                        let session = cx.entity().clone();
-                        let _ = crate::ui::schema_search::open(session, window, cx);
-                    })),
-            )
-            .child(
-                Button::new("erd")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Network)
-                    .accessibility_label("ER diagram")
-                    .tooltip_with_action(
-                        "Diagram the tables and their foreign keys",
-                        &OpenErd,
-                        Some("Session"),
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_tool(Tool::Erd, window, cx);
-                    })),
-            )
-            .child(
-                Button::new("import-dump")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Import)
-                    .accessibility_label("Import SQL dump")
-                    .tooltip_with_action("Import a SQL dump…", &ImportSqlDump, Some("Session"))
-                    .on_click(cx.listener(|this, _, _window, cx| this.import_dump(cx))),
-            )
+    /// The filter box, the whole width of the sidebar: the commands that
+    /// used to crowd its line are on the list heading's menu below it.
+    fn render_object_filter(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        Input::new(&self.filter)
+            .id("object-filter")
+            .small()
+            .cleanable(true)
+            .w_full()
     }
 
-    /// The Management tab: the connection's own tools as icon rows, since each
+    /// The list heading's `⋯` menu: the commands about the schema as a
+    /// whole. Clicks rather than dispatched actions, the way the title bar's
+    /// menus work, so each one reaches this session whatever has the focus;
+    /// each still names its action, so the menu shows the shortcut.
+    fn render_schema_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let session = cx.entity().downgrade();
+        let read_only = self.connection.config.safety.is_read_only();
+
+        Button::new("schema-actions")
+            .ghost()
+            .xsmall()
+            .icon(IconName::Ellipsis)
+            .accessibility_label("Schema actions")
+            .dropdown_menu(move |menu, _window, _cx| {
+                let item = |label: &'static str,
+                            action: Box<dyn Action>,
+                            run: fn(&mut Session, &mut Window, &mut Context<Session>)| {
+                    let session = session.clone();
+                    PopupMenuItem::new(label)
+                        .action(action)
+                        .on_click(move |_, window, cx| {
+                            session
+                                .update(cx, |session, cx| run(session, window, cx))
+                                .ok();
+                        })
+                };
+                menu.item(
+                    item("New Table…", Box::new(NewTable), |this, window, cx| {
+                        this.open_new_table(window, cx)
+                    })
+                    // A read-only connection cannot create one; the item
+                    // stays, dimmed, so the menu does not change shape.
+                    .disabled(read_only),
+                )
+                .item(item(
+                    "Import SQL Dump…",
+                    Box::new(ImportSqlDump),
+                    |this, _window, cx| this.import_dump(cx),
+                ))
+                .separator()
+                .item(item(
+                    "Search Schema…",
+                    Box::new(SearchSchema),
+                    |_this, window, cx| {
+                        let session = cx.entity();
+                        let _ = crate::ui::schema_search::open(session, window, cx);
+                    },
+                ))
+                .item(item("ER Diagram", Box::new(OpenErd), |this, window, cx| {
+                    this.open_tool(Tool::Erd, window, cx);
+                }))
+                .separator()
+                .item(item("Refresh", Box::new(Refresh), |this, _window, cx| {
+                    this.refresh(cx)
+                }))
+            })
+    }
+
+    /// The Tools tab: the connection's own tools as icon rows, since each
     /// opens a view rather than acting on an object. SQLite has no server to
     /// ask, so it gets the console and its own maintenance tab instead of the
     /// server views.
@@ -459,6 +487,18 @@ impl Session {
             .flex_1()
             .min_h_0()
             .gap_1()
+            .child(
+                tool_row(
+                    "open-erd",
+                    IconName::Network,
+                    "ER diagram",
+                    "The tables and the foreign keys between them",
+                    &OpenErd,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_tool(Tool::Erd, window, cx);
+                })),
+            )
             .child(
                 tool_row(
                     "open-console",
@@ -514,7 +554,7 @@ impl Session {
                     tool_row(
                         "open-query-digest",
                         IconName::Gauge,
-                        "Query Digest",
+                        "Query digest",
                         "Slow and frequent statements, ranked by mean time",
                         &OpenQueryDigest,
                     )
@@ -539,8 +579,9 @@ impl Session {
 
     /// The Saved tab: the queries the user named and kept, from the app's one
     /// list (the session observes it, so a save or delete from any window
-    /// shows up on the next paint). Clicking a row opens it in a new query
-    /// tab; the × forgets it.
+    /// shows up on the next paint). Clicking a row opens it in a query tab
+    /// tied to it — or brings that tab back — so saving the tab updates the
+    /// query in place; the × forgets it.
     fn render_saved_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let queries = SavedQueries::get(cx).to_vec();
         let error = SavedQueries::error(cx);
@@ -636,10 +677,9 @@ impl Session {
                                     ),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_tab(
-                                    Some(row_name.clone()),
+                                this.open_saved_query(
+                                    row_name.clone(),
                                     row_sql.clone(),
-                                    false,
                                     window,
                                     cx,
                                 );
@@ -649,7 +689,14 @@ impl Session {
     }
 }
 
-/// One tool row in the Management tab.
+/// The object list's row density: a sidebar of names is scanned, not read,
+/// so the rows take the compact padding a table row would rather than the
+/// list's default, and twice as many fit.
+fn compact_row(item: ListItem) -> ListItem {
+    item.py_0().px_2().text_sm()
+}
+
+/// One tool row in the Tools tab.
 ///
 /// The icon sits in a fixed slot before the label so the labels line up down
 /// the panel; the label is left-aligned rather than centred the way a `Button`
@@ -702,7 +749,7 @@ impl SidebarTab {
     fn label(self) -> &'static str {
         match self {
             SidebarTab::Schema => "Schema",
-            SidebarTab::Management => "Management",
+            SidebarTab::Management => "Tools",
             SidebarTab::Saved => "Saved",
         }
     }

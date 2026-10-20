@@ -21,7 +21,7 @@ use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenErd,
     OpenFile, OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables,
     OpenUserManagement, PreviousTab, QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs,
-    SearchSchema,
+    SaveQuery, SearchSchema,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -240,6 +240,9 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-o", OpenFile, Some("Session")),
         KeyBinding::new("secondary-s", SaveFile, Some("Session")),
         KeyBinding::new("secondary-shift-s", SaveFileAs, Some("Session")),
+        // Keep the buffer in the sidebar's Saved tab, updating the saved
+        // query the tab belongs to in place.
+        KeyBinding::new("secondary-alt-s", SaveQuery, Some("Session")),
         // A table tab has staged edits rather than a file, so the save and
         // undo keys apply and discard them. Both are bound on the table view,
         // which sits below the session, so they win while it has focus.

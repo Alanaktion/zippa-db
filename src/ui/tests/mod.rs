@@ -613,6 +613,37 @@ fn active(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> usize {
         .unwrap()
 }
 
+/// Open a connection-manager tab, as File › New Connection does.
+fn new_connection(cx: &mut TestAppContext, handle: &WorkspaceWindow) {
+    handle
+        .update(cx, |workspace, window, cx| {
+            workspace.open_connect_tab_for_test(window, cx)
+        })
+        .unwrap();
+}
+
+/// Refresh the active session, as `Cmd`/`Ctrl`+`R` and Database › Refresh do.
+fn refresh_active(cx: &mut TestAppContext, handle: &WorkspaceWindow) {
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the active tab should be a session");
+    session.update(cx, |session, cx| session.refresh(cx));
+}
+
+/// Open a query tab in the active session, as `Cmd`/`Ctrl`+`T` does.
+fn new_query(cx: &mut TestAppContext, handle: &WorkspaceWindow) {
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("the active tab should be a session");
+    handle
+        .update(cx, |_, window, cx| {
+            session.update(cx, |session, cx| session.new_query_tab(window, cx))
+        })
+        .unwrap();
+}
+
 fn click(cx: &mut TestAppContext, handle: &WorkspaceWindow, id: &'static str) {
     cx.update_window(handle.window.into(), |_, window, cx| {
         window.draw(cx).clear(cx);

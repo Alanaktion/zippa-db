@@ -195,3 +195,38 @@ unopened all session.
   decisions, so dialogs/banners are the right surface per the guide.
 - Success toasts stay only where the outcome isn't otherwise visible
   ("Copied …", "Reconnected.").
+
+## Phase 5 — fewer icon-only buttons (added 2026-10-20, same PR)
+
+Prompted by two complaints: icon-only buttons with guessable-at-best icons,
+and crowded small toolbars (the sidebar's filter row, the title bar, the
+query bar). With the menu bar now drawn on every platform (Phase 0), it can
+carry the low-frequency commands.
+
+- **Title bar** → breadcrumb + search. `[● connection ▾] / [database ▾]`
+  leading, a labelled "Search tables, tabs, actions…" field (the quick
+  switcher) in the middle. The connection menu holds New Connection,
+  Reconnect, Disconnect, Close Connection; Reconnect left the database
+  picker. Refresh, New query, New connection, and Settings icons are gone —
+  shortcuts, the menu bar, the dock `+`, and the connection menu cover them.
+- **Menu bar**: a new Database menu (Refresh, Reconnect, Disconnect, New
+  Table…, Import SQL Dump…, Search Schema…, ER Diagram, the tools); View
+  keeps navigation. New actions `NewTable`, `SaveQuery`, `EditVariables` have
+  no shortcut and are allowlisted in the menu test.
+- **Sidebar**: the filter is full width; the schema commands are one `⋯`
+  menu on the "Tables & views" heading. Management → **Tools**, with the ER
+  diagram as its first row. New table is also on the object right-click menu.
+- **Query bar**: labelled `[▶ Run] [Run script ▾] [Explain ▾]` leading;
+  `[Variables (n)]` (only when the buffer uses one) and `[⋯]` trailing. The
+  `QUERY` eyebrow and the dock's bookmark icon are gone. Kept "Run script"
+  rather than "Run all" so the lexicon matches the menu, shortcuts, and docs.
+  This supersedes Phase 2's "keep the two script buttons separate": the
+  warning icon rides on the split button's main half.
+- **Result switches** (Result N, Results/Plan) are segmented tabs rather
+  than primary-styled buttons.
+- **Table view**: Structure, Export ▾, and the row-panel toggle (now showing
+  its pressed state) moved to a toolbar beside the filters, which resolves
+  Phase 3's footer-overflow note; the footer keeps paging and edits.
+
+Not done: a context menu on Saved-tab rows (the inline × stays the only
+pointer path to delete).

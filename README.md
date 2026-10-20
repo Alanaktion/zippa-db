@@ -23,7 +23,7 @@
 - **Structure.** Edit columns, indexes, and foreign keys with a generated-SQL preview; see every table, its columns, and the foreign keys between them as a pannable, zoomable ER diagram, exportable to SVG.
 - **Import & export.** Results out as CSV, TSV, JSON, Markdown, or SQL `INSERT`; SQL dumps in (plain, gzip, bzip2, zstd) with progress and per-error choices.
 - **Server tools.** A console of every statement sent, process list, server variables, query digest, and user management (Postgres/MySQL), plus SQLite maintenance.
-- **Keyboard first.** Every command has a shortcut — `Ctrl`+`/` lists them all.
+- **Keyboard first.** Every command is in the menu bar, nearly all with a shortcut — `Ctrl`+`/` lists them all.
 
 ## Getting started
 

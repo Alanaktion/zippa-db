@@ -69,6 +69,29 @@ impl Session {
         panel
     }
 
+    /// Open the saved query `name` from the sidebar's Saved tab: the tab
+    /// already holding it comes forward, or a new one opens tied to it, so
+    /// saving the tab updates the query in place.
+    pub(crate) fn open_saved_query(
+        &mut self,
+        name: String,
+        sql: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).saved_as() == Some(name.as_str()))
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return;
+        }
+        let panel = self.open_tab(Some(name.clone()), sql, false, window, cx);
+        panel.update(cx, |panel, cx| panel.set_saved_as(Some(name), cx));
+    }
+
     /// Open a table or view from the sidebar in its own tab, either as its
     /// rows or its own structure.
     ///

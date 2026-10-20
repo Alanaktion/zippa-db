@@ -18,7 +18,7 @@ fn each_connection_opens_in_a_tab_of_its_own(cx: &mut TestAppContext) {
         "connecting should turn the tab it was opened from into the session"
     );
 
-    click(cx, &handle, "new-connection");
+    new_connection(cx, &handle);
     assert_eq!(
         titles(cx, &handle),
         [first.config().display_name(), "New connection".to_string()]
@@ -51,7 +51,7 @@ fn a_connection_tab_names_the_connection_and_its_database(cx: &mut TestAppContex
     );
 
     // Named, the two are different things and both are worth a line.
-    click(cx, &handle, "new-connection");
+    new_connection(cx, &handle);
     let named = connect_named(cx, &handle, "Reporting");
     let named_file = crate::db::file_name(&named.config().database);
     assert_eq!(
@@ -81,7 +81,7 @@ fn the_connection_bar_only_shows_with_more_than_one_tab(cx: &mut TestAppContext)
     let _database = connect(cx, &handle);
     bar(cx, false);
 
-    click(cx, &handle, "new-connection");
+    new_connection(cx, &handle);
     bar(cx, true);
 }
 
@@ -141,7 +141,7 @@ fn switching_connections_leaves_each_session_where_it_was(cx: &mut TestAppContex
 
     type_sql(cx, "select 1");
 
-    click(cx, &handle, "new-connection");
+    new_connection(cx, &handle);
     let _second = connect(cx, &handle);
     type_sql(cx, "select 2");
 
@@ -172,7 +172,7 @@ fn switching_connections_leaves_each_session_where_it_was(cx: &mut TestAppContex
 fn closing_a_connection_tab_leaves_the_others(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let _first = connect(cx, &handle);
-    click(cx, &handle, "new-connection");
+    new_connection(cx, &handle);
     let second = connect(cx, &handle);
 
     click(cx, &handle, "close-connection-0");
@@ -243,7 +243,7 @@ fn closing_a_connection_tab_with_unsaved_changes_asks_first(cx: &mut TestAppCont
 fn disconnecting_returns_the_tab_to_the_manager(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let first = connect(cx, &handle);
-    click(cx, &handle, "new-connection");
+    new_connection(cx, &handle);
     let _second = connect(cx, &handle);
 
     // ⌘D disconnects from outside the query editor; inside it, it selects
@@ -314,43 +314,48 @@ fn disconnecting_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_toolbar_buttons_are_disabled_without_a_connection(cx: &mut TestAppContext) {
+fn the_title_bar_offers_no_search_without_a_connection(cx: &mut TestAppContext) {
     let handle = workspace(cx);
 
-    // Disabled buttons still register a click; only their effect proves the
-    // disabled state, since gpui-component's Button does not surface it to
-    // the accessibility tree that the test harness reads.
-    click(cx, &handle, "refresh");
-    click(cx, &handle, "new-query");
-
-    assert_eq!(
-        titles(cx, &handle),
-        ["New connection"],
-        "refresh and new-query should have no session to act on"
-    );
+    // The launcher has nothing to search, so the field is not drawn rather
+    // than drawn dimmed.
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        assert!(
+            window.try_find("quick-switcher").is_none(),
+            "the search field should wait for a connection"
+        );
+        assert!(
+            window.try_find("connection").is_none(),
+            "there is no connection to name yet"
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
-fn the_toolbar_new_query_button_opens_a_tab(cx: &mut TestAppContext) {
+fn the_title_bar_names_where_we_are_and_nothing_else(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let _database = connect(cx, &handle);
 
-    let session = handle
-        .update(cx, |workspace, _, _| workspace.active_session_for_test())
-        .unwrap()
-        .expect("the active tab should be a session");
-    assert_eq!(
-        session.read_with(cx, |session, cx| session.tab_titles(cx)),
-        ["Query 1"]
-    );
-
-    click(cx, &handle, "new-query");
-
-    assert_eq!(
-        session.read_with(cx, |session, cx| session.tab_titles(cx)),
-        ["Query 1", "Query 2"],
-        "the toolbar button should behave like the session's own new-tab button"
-    );
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        for id in ["connection", "database", "quick-switcher"] {
+            assert!(
+                window.find(id).visible(),
+                "{id} is missing from the title bar"
+            );
+        }
+        // The commands that used to be icons here live in the menu bar, the
+        // breadcrumb menus, and the sidebar's schema menu now.
+        for id in ["refresh", "new-query", "new-connection", "settings"] {
+            assert!(
+                window.try_find(id).is_none(),
+                "{id} should have left the title bar for the menus"
+            );
+        }
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -358,7 +363,7 @@ fn many_connection_tabs_scroll_inside_the_bar(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let _database = connect(cx, &handle);
     for _ in 0..20 {
-        click(cx, &handle, "new-connection");
+        new_connection(cx, &handle);
     }
 
     // The outer bar wraps every screen, so a connection tab strip that grew
@@ -370,7 +375,7 @@ fn many_connection_tabs_scroll_inside_the_bar(cx: &mut TestAppContext) {
             origin: Default::default(),
             size: size(px(WINDOW.0), px(WINDOW.1)),
         };
-        for id in ["new-connection", "welcome-new-connection"] {
+        for id in ["connection-bar", "welcome-new-connection"] {
             let found = window.find(id);
             assert!(
                 contains(viewport, found.bounds()),
@@ -398,12 +403,14 @@ fn restored_connections_reopen_their_tabs_in_order(cx: &mut TestAppContext) {
                     sql: "select 1".into(),
                     file: None,
                     variables: vec![],
+                    saved_as: None,
                 },
                 PanelState::Query {
                     title: "Query 2".into(),
                     sql: "select 2".into(),
                     file: None,
                     variables: vec![],
+                    saved_as: None,
                 },
             ],
         }],
@@ -455,6 +462,7 @@ fn a_restored_file_tab_reads_its_file_to_decide_dirty(cx: &mut TestAppContext) {
                 sql: "select 2;\n".into(),
                 file: Some(file),
                 variables: vec![],
+                saved_as: None,
             }],
         }],
         ..WorkspaceState::default()
@@ -551,6 +559,7 @@ fn a_connection_deleted_since_the_last_run_is_skipped(cx: &mut TestAppContext) {
                     sql: "select 1".into(),
                     file: None,
                     variables: vec![],
+                    saved_as: None,
                 }],
             },
             SessionState {
@@ -562,6 +571,7 @@ fn a_connection_deleted_since_the_last_run_is_skipped(cx: &mut TestAppContext) {
                     sql: "select 2".into(),
                     file: None,
                     variables: vec![],
+                    saved_as: None,
                 }],
             },
         ],
@@ -597,6 +607,7 @@ fn a_failed_reconnect_keeps_its_tabs_for_retrying(cx: &mut TestAppContext) {
                 sql: "select 1".into(),
                 file: None,
                 variables: vec![],
+                saved_as: None,
             }],
         }],
         ..WorkspaceState::default()
@@ -635,6 +646,7 @@ fn a_restored_state_round_trips_through_snapshot(cx: &mut TestAppContext) {
                     sql: "select 1".into(),
                     file: None,
                     variables: vec![],
+                    saved_as: None,
                 },
                 PanelState::Table {
                     object: DatabaseObject {

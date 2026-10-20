@@ -9,7 +9,7 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
-use gpui_kit::component::{ActiveTheme, Disableable, IconName, IndexPath, Sizable, h_flex, v_flex};
+use gpui_kit::component::{Disableable, IconName, IndexPath, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Window, div, px};
 use serde::{Deserialize, Serialize};
@@ -465,13 +465,13 @@ impl Render for FilterBar {
             .map(|index| self.render_row(index, cx).into_any_element())
             .collect();
 
+        // The line under it belongs to the table view's toolbar, which
+        // holds this bar beside its own buttons.
         v_flex()
             .flex_none()
             .px_2()
             .py_1()
             .gap_1()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .children(rows)
             .child(
                 h_flex()

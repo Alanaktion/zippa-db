@@ -77,6 +77,10 @@ pub enum PanelState {
         /// it always did.
         #[serde(default)]
         variables: Vec<Variable>,
+        /// The saved query the tab belongs to, so saving after a restart
+        /// still updates it in place. Older files have none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        saved_as: Option<String>,
     },
     Table {
         object: DatabaseObject,
@@ -177,12 +181,14 @@ mod tests {
                         sql: "select 1".into(),
                         file: None,
                         variables: vec![],
+                        saved_as: Some("Daily report".into()),
                     },
                     PanelState::Query {
                         title: "report.sql".into(),
                         sql: "select 2".into(),
                         file: Some(PathBuf::from("/tmp/report.sql")),
                         variables: vec![],
+                        saved_as: None,
                     },
                     PanelState::Table {
                         object: object(),

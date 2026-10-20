@@ -1,8 +1,8 @@
 //! The Create Database dialog.
 //!
-//! Opened from the database picker menu. A name box and Create/Cancel; the
-//! new database is created with `CREATE DATABASE` and the picker's list is
-//! reloaded on success.
+//! Opened from the connection menu in the title bar. A name box and
+//! Create/Cancel; the new database is created with `CREATE DATABASE` and the
+//! database picker's list is reloaded on success.
 //!
 //! The dialog is `gpui_kit`'s [`Dialog`](gpui_kit::component::dialog::Dialog),
 //! opened by the session, and this view is its body. It emits

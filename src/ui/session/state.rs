@@ -151,8 +151,12 @@ impl Session {
                     sql,
                     file,
                     variables,
+                    saved_as,
                 } => {
                     let panel = self.open_tab(Some(title), sql.clone(), false, window, cx);
+                    if saved_as.is_some() {
+                        panel.update(cx, |panel, cx| panel.set_saved_as(saved_as, cx));
+                    }
                     if !variables.is_empty()
                         && let Some((editor, _)) = panel.read(cx).query_parts()
                     {

@@ -1,17 +1,17 @@
 //! The status line under the grid: paging, the row limit, the staged-change
-//! buttons, and the confirmation a careful connection asks for.
+//! buttons, and the confirmation a careful connection asks for. What the view
+//! shows — its structure, an export, the row panel — is on the bar above the
+//! grid instead (`toolbar.rs`), so this line carries only state and commits.
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::NumberInput;
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, div, px};
 
-use crate::db::export::Format;
 use crate::ui::busy::busy_label;
 
-use super::{ApplyEdits, DiscardEdits, InsertRow, TableView, ToggleRowPanel, change_summary};
+use super::{ApplyEdits, DiscardEdits, InsertRow, TableView, change_summary};
 
 impl TableView {
     /// The changes waiting for an answer, above the footer.
@@ -246,59 +246,6 @@ impl TableView {
                                     .on_click(cx.listener(|this, _, _window, cx| this.commit(cx))),
                             )
                         },
-                    )
-                    .child({
-                        let view = cx.entity().downgrade();
-                        Button::new("export-table")
-                            .ghost()
-                            .xsmall()
-                            .label("Export")
-                            .dropdown_caret(true)
-                            .tooltip("Write the whole table to a file")
-                            .disabled(self.loading || self.committing)
-                            .dropdown_menu(move |mut menu, _window, _cx| {
-                                for format in Format::FILE {
-                                    let view = view.clone();
-                                    menu =
-                                        menu.item(
-                                            PopupMenuItem::new(format!(
-                                                "Export as {}…",
-                                                format.label()
-                                            ))
-                                            .on_click(move |_, _window, cx| {
-                                                if let Some(view) = view.upgrade() {
-                                                    view.update(cx, |view, cx| {
-                                                        view.export(format, cx)
-                                                    });
-                                                }
-                                            }),
-                                        );
-                                }
-                                menu
-                            })
-                    })
-                    .child(
-                        Button::new("view-structure")
-                            .ghost()
-                            .xsmall()
-                            .label("View structure")
-                            .tooltip("See the table's columns, indexes, and keys")
-                            .on_click(cx.listener(|this, _, _window, cx| this.view_structure(cx))),
-                    )
-                    .child(
-                        Button::new("toggle-row-panel")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::PanelRightOpen)
-                            .accessibility_label("Toggle row detail panel")
-                            .tooltip_with_action(
-                                "Show the focused row as fields",
-                                &ToggleRowPanel,
-                                Some("TableView"),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.on_toggle_row_panel(&ToggleRowPanel, window, cx)
-                            })),
                     ),
             )
     }

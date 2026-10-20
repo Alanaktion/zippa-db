@@ -72,6 +72,10 @@ const GROUPS: &[Group] = &[
                 "Save the active tab under a new name",
                 &["secondary-shift-s"],
             ),
+            (
+                "Save to Saved Queries, updating the one the tab came from",
+                &["secondary-alt-s"],
+            ),
         ],
     },
     Group {

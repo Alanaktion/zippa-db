@@ -14,7 +14,7 @@ use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage,
     Settings as SettingsElement,
 };
-use gpui_kit::component::{ActiveTheme, IconName, Root, Theme, ThemeMode};
+use gpui_kit::component::{ActiveTheme, IconName, Root, Sizable, Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Bounds, Context, FocusHandle, Global, SharedString, TitlebarOptions, Window, WindowBounds,
@@ -96,7 +96,9 @@ impl Render for SettingsView {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(SettingsElement::new("settings-pages").pages([
+            // Small, like the rest of the app's chrome: the settings are a
+            // short list to scan, not a form to fill in.
+            .child(SettingsElement::new("settings-pages").small().pages([
                 appearance_page(cx),
                 editor_page(),
                 data_page(),
@@ -107,37 +109,31 @@ impl Render for SettingsView {
 fn appearance_page(cx: &App) -> SettingPage {
     SettingPage::new("Appearance")
         .icon(IconName::Palette)
-        .description("How Zippa looks.")
         .group(
             SettingGroup::new()
                 .title("Theme")
-                .item(
-                    SettingItem::new(
-                        "Appearance",
-                        SettingField::dropdown(
-                            Appearance::ALL
-                                .map(|appearance| {
-                                    (appearance.key().into(), appearance.label().into())
-                                })
-                                .to_vec(),
-                            |cx| Settings::global(cx).appearance.key().into(),
-                            |value, cx| {
-                                settings::update(cx, |settings| {
-                                    settings.appearance = Appearance::from_key(&value)
-                                })
-                            },
-                        )
-                        .default_value(Appearance::default().key()),
+                .description("Theme files in the app's config directory are listed too.")
+                .item(SettingItem::new(
+                    "Appearance",
+                    SettingField::dropdown(
+                        Appearance::ALL
+                            .map(|appearance| (appearance.key().into(), appearance.label().into()))
+                            .to_vec(),
+                        |cx| Settings::global(cx).appearance.key().into(),
+                        |value, cx| {
+                            settings::update(cx, |settings| {
+                                settings.appearance = Appearance::from_key(&value)
+                            })
+                        },
                     )
-                    .description("Matching the system follows it as it switches."),
-                )
+                    .default_value(Appearance::default().key()),
+                ))
                 .item(theme_item(ThemeMode::Light, cx))
                 .item(theme_item(ThemeMode::Dark, cx)),
         )
         .group(
             SettingGroup::new()
                 .title("Fonts")
-                .description("Only monospaced families are a good fit for either.")
                 .item(font_item(
                     "SQL editor",
                     |settings| settings.editor_font.clone(),
@@ -154,19 +150,14 @@ fn appearance_page(cx: &App) -> SettingPage {
         .group(
             SettingGroup::new()
                 .title("Result grid")
-                .item(
-                    SettingItem::new(
-                        "Striped rows",
-                        SettingField::switch(
-                            |cx| Settings::global(cx).stripe_rows,
-                            |value, cx| {
-                                settings::update(cx, |settings| settings.stripe_rows = value)
-                            },
-                        )
-                        .default_value(true),
+                .item(SettingItem::new(
+                    "Striped rows",
+                    SettingField::switch(
+                        |cx| Settings::global(cx).stripe_rows,
+                        |value, cx| settings::update(cx, |settings| settings.stripe_rows = value),
                     )
-                    .description("Tints every other row so a long row is easier to follow."),
-                )
+                    .default_value(true),
+                ))
                 .item(
                     SettingItem::new(
                         "Always show scrollbars",
@@ -180,11 +171,7 @@ fn appearance_page(cx: &App) -> SettingPage {
                         )
                         .default_value(true),
                     )
-                    .description(
-                        "Keeps every scrollbar on screen. A wide result is scrolled sideways \
-                         by dragging one, which a bar that fades out cannot be. Turn this off \
-                         to follow the system instead.",
-                    ),
+                    .description("Off follows the system setting."),
                 ),
         )
 }
@@ -209,17 +196,13 @@ fn editor_page() -> SettingPage {
                     )
                     .default_value(CompletionKey::default().key()),
                 )
-                .description(
-                    "The key that takes the highlighted suggestion from the completion menu. \
-                 The other one keeps its usual job while the menu is open: Enter starts a \
-                 new line, Tab indents.",
-                ),
+                .description("The other key keeps its usual job."),
             ),
         )
         .group(
-            SettingGroup::new().title("Scripts").item(
+            SettingGroup::new().title("Running").item(
                 SettingItem::new(
-                    "Wrap scripts in a transaction",
+                    "Run all queries in one transaction",
                     SettingField::switch(
                         |cx| Settings::global(cx).wrap_scripts_in_transaction,
                         |value, cx| {
@@ -230,17 +213,13 @@ fn editor_page() -> SettingPage {
                     )
                     .default_value(true),
                 )
-                .description(
-                    "Run the whole buffer as a script inside one transaction, so a failed \
-                     statement can be rolled back with the rest. With this off, each \
-                     statement commits as it runs.",
-                ),
+                .description("Off commits each statement as it runs."),
             ),
         )
         .group(
             SettingGroup::new().title("Connections").item(
                 SettingItem::new(
-                    "Share one connection across query buffers",
+                    "Share one session across query tabs",
                     SettingField::switch(
                         |cx| Settings::global(cx).share_connection_across_buffers,
                         |value, cx| {
@@ -251,52 +230,54 @@ fn editor_page() -> SettingPage {
                     )
                     .default_value(false),
                 )
-                .description(
-                    "Query tabs share a single server session instead of each holding its \
-                     own, so a session variable set in one buffer is visible in another. \
-                     Only one query runs at a time.",
-                ),
+                .description("Only one query runs at a time."),
             ),
         )
 }
 
 fn data_page() -> SettingPage {
-    SettingPage::new("Data").icon(IconName::LayoutDashboard).group(
-        SettingGroup::new().title("Tables").item(
-            SettingItem::new(
-                "Rows per page",
-                SettingField::number_input(
-                    NumberFieldOptions {
-                        min: 1.,
-                        max: settings::MAX_PAGE_SIZE as f64,
-                        step: 100.,
-                    },
-                    |cx| Settings::global(cx).page_size as f64,
-                    |value, cx| {
-                        settings::update(cx, |settings| {
-                            settings.page_size =
-                                (value as usize).clamp(1, settings::MAX_PAGE_SIZE)
-                        })
-                    },
+    SettingPage::new("Data")
+        .icon(IconName::LayoutDashboard)
+        .group(
+            SettingGroup::new()
+                .title("Tables")
+                .item(
+                    SettingItem::new(
+                        "Rows per page",
+                        SettingField::number_input(
+                            NumberFieldOptions {
+                                min: 1.,
+                                max: settings::MAX_PAGE_SIZE as f64,
+                                step: 100.,
+                            },
+                            |cx| Settings::global(cx).page_size as f64,
+                            |value, cx| {
+                                settings::update(cx, |settings| {
+                                    settings.page_size =
+                                        (value as usize).clamp(1, settings::MAX_PAGE_SIZE)
+                                })
+                            },
+                        )
+                        .default_value(settings::DEFAULT_PAGE_SIZE as f64),
+                    )
+                    .description("Tables already open keep their limit."),
                 )
-                .default_value(settings::DEFAULT_PAGE_SIZE as f64),
-            )
-            .description("Rows a table opened from the sidebar reads at a time. Tables already open keep the limit they were opened with."),
+                .item(
+                    SettingItem::new(
+                        "Typing NULL stores SQL NULL",
+                        SettingField::switch(
+                            |cx| Settings::global(cx).coerce_null_literal,
+                            |value, cx| {
+                                settings::update(cx, |settings| {
+                                    settings.coerce_null_literal = value
+                                })
+                            },
+                        )
+                        .default_value(true),
+                    )
+                    .description("Off stores the text NULL."),
+                ),
         )
-        .item(
-            SettingItem::new(
-                "Typing NULL means SQL NULL",
-                SettingField::switch(
-                    |cx| Settings::global(cx).coerce_null_literal,
-                    |value, cx| {
-                        settings::update(cx, |settings| settings.coerce_null_literal = value)
-                    },
-                )
-                .default_value(true),
-            )
-            .description("With this off, NULL typed into a cell is stored as the text; the Set Null command stores SQL NULL either way."),
-        ),
-    )
 }
 
 /// The theme picker for one mode, listing the themes that suit it.
@@ -329,7 +310,6 @@ fn theme_item(mode: ThemeMode, cx: &App) -> SettingItem {
             },
         ),
     )
-    .description("Theme files in the app's config directory are listed here too.")
 }
 
 /// A font picker over the families this machine has.

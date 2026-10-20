@@ -90,7 +90,9 @@ fn a_result_tab_shows_that_statements_rows(cx: &mut TestAppContext) {
     press(cx, handle, "secondary-shift-enter");
     cx.run_until_parked();
 
-    click_in_session(cx, handle, "result-1");
+    handle
+        .update(cx, |session, _, cx| session.pick_result_for_test(1, cx))
+        .unwrap();
     cx.run_until_parked();
 
     let (_, shown) = handle

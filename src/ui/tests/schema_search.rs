@@ -142,12 +142,12 @@ fn a_routine_result_copies_its_name(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_sidebar_button_opens_the_dialog(cx: &mut TestAppContext) {
+fn the_shortcut_opens_the_dialog(cx: &mut TestAppContext) {
     let handle = workspace(cx);
     let _database = connect(cx, &handle);
     cx.run_until_parked();
 
-    click(cx, &handle, "search-schema");
+    press_workspace(cx, &handle, "secondary-shift-o");
     cx.run_until_parked();
     // Draw again so the dialog's body — the chips, the list, the rows — is
     // really laid out, not merely queued.

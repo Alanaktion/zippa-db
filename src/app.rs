@@ -15,10 +15,10 @@ use std::sync::Arc;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
-use gpui_kit::component::menu::AppMenuBar;
+use gpui_kit::component::menu::{AppMenuBar, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, Size, TitleBar, WindowExt, h_flex, v_flex,
+    ActiveTheme, Icon, IconName, Sizable, Size, TitleBar, WindowExt, h_flex, v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -31,8 +31,9 @@ use crate::menu::Quit;
 
 use crate::db::{Connection, TagColor, runtime, store};
 use crate::settings;
-use crate::ui::session::{NewTab, QuickSwitcher, Refresh, SearchSchema, Session, SessionEvent};
-use crate::ui::settings_window::{self, OpenSettings};
+use crate::ui::session::{
+    Disconnect, QuickSwitcher, Reconnect, SearchSchema, Session, SessionEvent,
+};
 use crate::ui::shortcuts_dialog::{self, ShowShortcuts};
 use crate::ui::value_dialog::{self, Dismissed, ValueView};
 use crate::ui::welcome::{SavedConnections, Welcome, WelcomeEvent};
@@ -955,150 +956,162 @@ impl Workspace {
         }
     }
 
-    fn on_refresh_click(
-        &mut self,
-        _: &gpui_kit::ClickEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(session) = self.active_session() {
-            session.update(cx, |session, cx| session.refresh(cx));
-        }
-    }
-
-    fn on_new_query_click(
-        &mut self,
-        _: &gpui_kit::ClickEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(session) = self.active_session() {
-            session.update(cx, |session, cx| session.new_query_tab(window, cx));
-        }
-    }
-
-    /// The window's own bar: who we are connected to on the left, the actions
-    /// that apply to it on the right, OS buttons inset by the component.
+    /// The window's own bar: where we are — the connection, then the
+    /// database — on the leading edge, and the one search that reaches
+    /// every table, tab, and command in the middle. Everything else the bar
+    /// used to carry as icons lives in the menu bar and behind the two
+    /// breadcrumb menus, where each command is named in words beside its
+    /// shortcut. OS buttons are inset by the component.
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let session = self.active_session();
-        let connected = session.is_some();
 
+        // The bar starts a window move on mouse-move while held, so every
+        // interactive child swallows its own press to avoid dragging the
+        // window instead. The containers must not: they would swallow the
+        // empty space around the controls too, and the bar would stop
+        // dragging.
         TitleBar::new()
-            .child(h_flex().flex_1().min_w_0().gap_2().when_some(
+            .child(h_flex().flex_1().min_w_0().gap_1().when_some(
                 session.clone(),
                 |this, session| {
-                    let (name, color) = {
-                        let session = session.read(cx);
-                        (session.display_name(), session.connection().config.color)
-                    };
-                    this.when_some(color, |this, color| {
-                        this.child(crate::ui::color_dot(color, cx))
-                    })
-                    .child(div().text_xs().truncate().max_w(px(130.)).child(name))
-                    // The bar starts a window move on mouse-move while
-                    // held, so interactive children swallow their own
-                    // press to avoid dragging the window instead.
+                    this.child(
+                        h_flex()
+                            .min_w_0()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(self.render_connection_menu(&session, cx)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("/"),
+                    )
                     .child(
                         h_flex()
+                            .min_w_0()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .child(Session::render_database_picker(&session, cx)),
                     )
                 },
             ))
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .justify_end()
-                    .gap_1()
-                    .px_1()
-                    // Every button here is icon-only, so each one carries the
-                    // name a screen reader announces: without it there is
-                    // nothing to announce but the icon's file.
-                    //
-                    // The bar starts a window move on mouse-move while held,
-                    // so each button swallows its own press the way the
-                    // database picker does. The container must not: it would
-                    // swallow the empty space between the buttons too, and
-                    // the whole right half of the bar would stop dragging. A
-                    // disabled button is inert space, so it lets the press
-                    // through to the bar instead.
-                    .child(
-                        Button::new("quick-switcher")
-                            .ghost()
-                            .xsmall()
-                            .icon(gpui_kit::assets::IconName::Search)
-                            .accessibility_label("Quick switcher")
-                            .tooltip_with_action("Quick switcher", &QuickSwitcher, Some("Session"))
-                            .disabled(!connected)
-                            .when(connected, |this| {
-                                this.on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                    cx.stop_propagation()
-                                })
-                            })
-                            .on_click(cx.listener(Self::on_quick_switcher_click)),
-                    )
-                    .child(
-                        Button::new("refresh")
-                            .ghost()
-                            .xsmall()
-                            .icon(gpui_kit::assets::IconName::RefreshCw)
-                            .accessibility_label("Refresh")
-                            .tooltip_with_action("Refresh", &Refresh, Some("Session"))
-                            .disabled(!connected)
-                            .when(connected, |this| {
-                                this.on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                    cx.stop_propagation()
-                                })
-                            })
-                            .on_click(cx.listener(Self::on_refresh_click)),
-                    )
-                    .child(
-                        Button::new("new-query")
-                            .ghost()
-                            .xsmall()
-                            .icon(gpui_kit::assets::IconName::FilePlus)
-                            .accessibility_label("New query")
-                            .tooltip_with_action("New query", &NewTab, Some("Session"))
-                            .disabled(!connected)
-                            .when(connected, |this| {
-                                this.on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                    cx.stop_propagation()
-                                })
-                            })
-                            .on_click(cx.listener(Self::on_new_query_click)),
-                    )
-                    .child(
-                        Button::new("new-connection")
-                            .ghost()
-                            .xsmall()
-                            .icon(gpui_kit::assets::IconName::DatabasePlus)
-                            .accessibility_label("Open another connection")
-                            .tooltip_with_action(
-                                "Open another connection",
-                                &NewConnection,
-                                Some("Workspace"),
-                            )
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.open_connect_tab(window, cx)
-                                }),
-                            ),
-                    )
-                    // The settings used to be reachable only by a keystroke
-                    // nobody is told about, so they get a button of their own.
-                    .child(
-                        Button::new("settings")
-                            .ghost()
-                            .xsmall()
-                            .icon(gpui_kit::assets::IconName::Settings)
-                            .accessibility_label("Settings")
-                            .tooltip_with_action("Settings", &OpenSettings, None)
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(|_, _window, cx| settings_window::open(cx)),
-                    ),
+            // The launcher has nothing to search, so the field is only there
+            // once a connection is.
+            .when(session.is_some(), |this| {
+                this.child(
+                    Button::new("quick-switcher")
+                        .outline()
+                        .xsmall()
+                        .flex_none()
+                        .w(px(280.))
+                        .icon(IconName::Search)
+                        .label("Search tables, tabs, actions…")
+                        .accessibility_label("Quick switcher")
+                        .tooltip_with_action("Quick switcher", &QuickSwitcher, Some("Session"))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(Self::on_quick_switcher_click)),
+                )
+            })
+            .child(div().flex_1().min_w_0())
+    }
+
+    /// The connection's name as a menu: the commands about the connection
+    /// itself, beside the database picker that switches what it is pointed
+    /// at.
+    ///
+    /// Clicks rather than dispatched actions, for the same reason as the
+    /// database picker: the bar sits outside the session's own element, so
+    /// a session action would never reach it. Each item still names its
+    /// action, so the menu shows the shortcut.
+    fn render_connection_menu(
+        &self,
+        session: &Entity<Session>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let (name, color, can_create_database) = {
+            let session = session.read(cx);
+            let config = &session.connection().config;
+            (
+                session.display_name(),
+                config.color,
+                // A SQLite file is one database; there is no second to make.
+                !config.engine.is_file_based(),
             )
+        };
+        let workspace = cx.entity().downgrade();
+        let session = session.downgrade();
+
+        let dot = color.map(|color| crate::ui::color_dot(color, cx));
+        let button = Button::new("connection")
+            .custom(crate::ui::subtle_button(cx))
+            .xsmall()
+            .max_w(px(200.))
+            .label(name.clone())
+            .accessibility_label(format!("Connection {name}"))
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _window, _cx| {
+                let new_connection = workspace.clone();
+                let reconnect = session.clone();
+                let disconnect = session.clone();
+                let close = workspace.clone();
+                let create_database = session.clone();
+                let menu = menu.item(
+                    PopupMenuItem::new("New Connection")
+                        .action(Box::new(NewConnection))
+                        .on_click(move |_, window, cx| {
+                            new_connection
+                                .update(cx, |this, cx| this.open_connect_tab(window, cx))
+                                .ok();
+                        }),
+                );
+                let menu = if can_create_database {
+                    menu.item(
+                        PopupMenuItem::new("New Database…").on_click(move |_, window, cx| {
+                            create_database
+                                .update(cx, |session, cx| {
+                                    session.open_create_database_dialog(window, cx)
+                                })
+                                .ok();
+                        }),
+                    )
+                } else {
+                    menu
+                };
+                menu.separator()
+                    .item(
+                        PopupMenuItem::new("Reconnect")
+                            .action(Box::new(Reconnect))
+                            .on_click(move |_, window, cx| {
+                                reconnect
+                                    .update(cx, |session, cx| session.request_reconnect(window, cx))
+                                    .ok();
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new("Disconnect")
+                            .action(Box::new(Disconnect))
+                            .on_click(move |_, _window, cx| {
+                                disconnect
+                                    .update(cx, |session, cx| session.disconnect(cx))
+                                    .ok();
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new("Close Connection")
+                            .action(Box::new(CloseConnection))
+                            .on_click(move |_, window, cx| {
+                                close
+                                    .update(cx, |this, cx| this.close_tab(this.active, window, cx))
+                                    .ok();
+                            }),
+                    )
+            });
+
+        h_flex()
+            .min_w_0()
+            .gap_1()
+            .when_some(dot, |this, dot| this.child(dot))
+            .child(button)
     }
 }
 
@@ -1191,6 +1204,16 @@ impl Workspace {
             .iter()
             .map(|tab| tab.aria_label(cx).to_string())
             .collect()
+    }
+
+    /// Open a connection-manager tab, as File › New Connection and the
+    /// connection menu do.
+    pub(crate) fn open_connect_tab_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_connect_tab(window, cx);
     }
 
     pub(crate) fn active_for_test(&self) -> usize {

@@ -1314,3 +1314,27 @@ fn opening_new_table_twice_brings_the_first_tab_forward(cx: &mut TestAppContext)
         "a second new-table tab should not open"
     );
 }
+
+#[gpui_kit::test]
+fn the_new_table_command_opens_a_tab_except_on_a_read_only_connection(cx: &mut TestAppContext) {
+    for (safety, expected) in [
+        (SafetyMode::Staged, vec!["Query 1", "New table"]),
+        (SafetyMode::ReadOnly, vec!["Query 1"]),
+    ] {
+        let (_database, handle) = session_with_safety(cx, safety);
+        handle
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(crate::ui::session::NewTable), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(
+            handle
+                .update(cx, |session, _, cx| session.tab_titles(cx))
+                .unwrap(),
+            expected,
+            "New Table on a {safety:?} connection"
+        );
+    }
+}

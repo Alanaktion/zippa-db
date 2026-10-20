@@ -11,6 +11,7 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent, PanelId, TabGroup};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, ResizableState, Sizable, h_flex, resizable_panel, v_flex,
     v_resizable,
@@ -39,7 +40,6 @@ use crate::ui::sql_file;
 use crate::ui::table_view::TableView;
 use crate::workspace_state::PanelState;
 
-use super::save_dialog::SaveQueryDialog;
 use super::tab::{ObjectViewMode, Status, TabContent};
 use super::tool::{Tool, ToolView};
 use super::{CloseTab, NewTab};
@@ -94,7 +94,16 @@ pub(crate) enum SessionPanelEvent {
         analyze: bool,
     },
     OpenFile,
-    Save,
+    /// Write the buffer to its file; `as_new` asks for a path first.
+    Save {
+        as_new: bool,
+    },
+    /// Keep the buffer in the sidebar's Saved tab: update the saved query
+    /// the tab belongs to, or — with `as_new`, or when it belongs to none —
+    /// ask for a name.
+    SaveQuery {
+        as_new: bool,
+    },
     /// The user asked to edit this tab's `:name` query variables.
     EditVariables,
 }
@@ -114,6 +123,10 @@ pub(crate) struct SessionPanel {
     /// puts two query panels on screen at once, and a single
     /// `ResizableState` cannot drive two elements.
     panes: Entity<ResizableState>,
+    /// The saved query this tab's buffer belongs to — the one it was opened
+    /// from in the sidebar's Saved tab, or last saved as — so saving again
+    /// updates it in place instead of asking for a name.
+    saved_as: Option<String>,
 }
 
 impl EventEmitter<SessionPanelEvent> for SessionPanel {}
@@ -160,6 +173,7 @@ impl SessionPanel {
             focus: cx.focus_handle(),
             group: None,
             panes: cx.new(|_| ResizableState::default()),
+            saved_as: None,
         }
     }
 
@@ -177,6 +191,7 @@ impl SessionPanel {
             focus: cx.focus_handle(),
             group: None,
             panes: cx.new(|_| ResizableState::default()),
+            saved_as: None,
         }
     }
 
@@ -194,6 +209,7 @@ impl SessionPanel {
             focus: cx.focus_handle(),
             group: None,
             panes: cx.new(|_| ResizableState::default()),
+            saved_as: None,
         }
     }
 
@@ -207,6 +223,7 @@ impl SessionPanel {
             focus: cx.focus_handle(),
             group: None,
             panes: cx.new(|_| ResizableState::default()),
+            saved_as: None,
         }
     }
 
@@ -228,7 +245,10 @@ impl SessionPanel {
                 analyze: *analyze,
             }),
             QueryEditorEvent::Open => cx.emit(SessionPanelEvent::OpenFile),
-            QueryEditorEvent::Save => cx.emit(SessionPanelEvent::Save),
+            QueryEditorEvent::Save => cx.emit(SessionPanelEvent::Save { as_new: false }),
+            QueryEditorEvent::SaveAs => cx.emit(SessionPanelEvent::Save { as_new: true }),
+            QueryEditorEvent::SaveQuery => cx.emit(SessionPanelEvent::SaveQuery { as_new: false }),
+            QueryEditorEvent::SaveQueryAs => cx.emit(SessionPanelEvent::SaveQuery { as_new: true }),
             QueryEditorEvent::EditVariables => cx.emit(SessionPanelEvent::EditVariables),
         }
     }
@@ -377,6 +397,7 @@ impl SessionPanel {
                 sql: editor.read(cx).sql(cx),
                 file: path.clone(),
                 variables: editor.read(cx).variables(),
+                saved_as: self.saved_as.clone(),
             },
             TabContent::Table { view } => PanelState::Table {
                 object: view.read(cx).object().clone(),
@@ -1116,6 +1137,36 @@ impl SessionPanel {
         }
     }
 
+    /// The saved query this tab belongs to, if any.
+    pub(crate) fn saved_as(&self) -> Option<&str> {
+        self.saved_as.as_deref()
+    }
+
+    /// Tie this tab to the saved query `name` (or to none), and let the
+    /// editor's menu say which one Save will update.
+    pub(crate) fn set_saved_as(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        if let TabContent::Query { editor, .. } = &self.content {
+            let label = name.clone().map(SharedString::from);
+            editor.update(cx, |editor, cx| editor.set_saved_name(label, cx));
+        }
+        self.saved_as = name;
+        cx.notify();
+    }
+
+    /// What saving this tab to the sidebar's Saved tab would keep: its SQL
+    /// and the name the dialog suggests. Only a query tab has SQL worth
+    /// keeping, and an empty buffer has nothing to name.
+    pub(crate) fn query_to_save(&self, cx: &App) -> Option<(String, String)> {
+        let TabContent::Query { editor, .. } = &self.content else {
+            return None;
+        };
+        let sql = editor.read(cx).sql(cx);
+        if sql.trim().is_empty() {
+            return None;
+        }
+        Some((sql, default_save_name(&self.title)))
+    }
+
     /// The result pane, given over to a failure: the whole message, in the
     /// space the rows would have filled, scrollable when it is long.
     fn render_pane_error(&self, error: &str, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
@@ -1256,7 +1307,7 @@ impl SessionPanel {
             .child(
                 Button::new("transaction-rollback")
                     .xsmall()
-                    .label("Roll Back")
+                    .label("Roll back")
                     .tooltip("Roll back the open transaction")
                     .disabled(running)
                     .on_click(cx.listener(|_this, _, _window, cx| {
@@ -1265,8 +1316,10 @@ impl SessionPanel {
             )
     }
 
-    /// The bar above the result area: one button per result the last run
-    /// produced, and the Results/Plan switch once a plan has been read.
+    /// The bar above the result area: one segment per result the last run
+    /// produced, and the Results/Plan switch once a plan has been read. Both
+    /// are choices of what the pane shows, so the chosen one is marked by
+    /// its segment the way a tab is, not by a primary button.
     fn render_view_bar(
         &self,
         results: usize,
@@ -1279,52 +1332,43 @@ impl SessionPanel {
             .flex_none()
             .px_2()
             .py_1()
-            .gap_1()
+            .gap_2()
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().status_bar)
-            .children((0..results).map(|index| {
-                let button = Button::new(SharedString::from(format!("result-{index}")))
-                    .xsmall()
-                    .label(format!("Result {}", index + 1))
-                    .disabled(show_plan)
-                    .on_click(cx.listener(move |this, _, _window, cx| this.show_result(index, cx)));
-
-                if index == shown && !show_plan {
-                    button.primary()
-                } else {
-                    button.ghost()
-                }
-            }))
+            // While the plan is showing there is no result to pick between.
+            .when(results > 1 && !show_plan, |this| {
+                this.child(
+                    TabBar::new("result-tabs")
+                        .segmented()
+                        .xsmall()
+                        .selected_index(shown)
+                        .on_click(cx.listener(|this, index: &usize, _window, cx| {
+                            this.show_result(*index, cx)
+                        }))
+                        .children((0..results).map(|index| {
+                            let label = format!("Result {}", index + 1);
+                            Tab::new().aria_label(label.clone()).label(label)
+                        })),
+                )
+            })
             .when(has_plan, |this| {
                 this.child(
-                    h_flex()
-                        .flex_none()
-                        .ml_auto()
-                        .gap_1()
-                        .child(
-                            Button::new("show-results")
-                                .xsmall()
-                                .label("Results")
-                                .when(show_plan, |this| this.ghost())
-                                .when(!show_plan, |this| this.primary())
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.set_show_plan(false, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("show-plan")
-                                .xsmall()
-                                .label("Plan")
-                                .when(show_plan, |this| this.primary())
-                                .when(!show_plan, |this| this.ghost())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.set_show_plan(true, cx);
-                                    if let Some(plan) = this.plan_view() {
-                                        plan.update(cx, |plan, cx| plan.focus(window, cx));
-                                    }
-                                })),
-                        ),
+                    h_flex().flex_none().ml_auto().child(
+                        TabBar::new("plan-tabs")
+                            .segmented()
+                            .xsmall()
+                            .selected_index(usize::from(show_plan))
+                            .on_click(cx.listener(|this, index: &usize, window, cx| {
+                                let plan = *index == 1;
+                                this.set_show_plan(plan, cx);
+                                if plan && let Some(plan) = this.plan_view() {
+                                    plan.update(cx, |plan, cx| plan.focus(window, cx));
+                                }
+                            }))
+                            .child(Tab::new().aria_label("Results").label("Results"))
+                            .child(Tab::new().aria_label("Plan").label("Plan")),
+                    ),
                 )
             })
     }
@@ -1487,7 +1531,7 @@ impl Panel for SessionPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
-        let mut buttons = vec![
+        Some(vec![
             Button::new("new-tab")
                 .ghost()
                 .xsmall()
@@ -1497,27 +1541,7 @@ impl Panel for SessionPanel {
                 .on_click(cx.listener(|_this, _, _window, cx| {
                     cx.emit(SessionPanelEvent::NewTabRequested);
                 })),
-        ];
-        // Only a query tab has SQL worth keeping, and an empty buffer has
-        // nothing to name.
-        if let TabContent::Query { editor, .. } = &self.content {
-            let sql = editor.read(cx).sql(cx);
-            if !sql.trim().is_empty() {
-                let default_name = default_save_name(&self.title);
-                buttons.push(
-                    Button::new("save-query")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Bookmark)
-                        .accessibility_label("Save query")
-                        .tooltip("Save query")
-                        .on_click(move |_, window, cx| {
-                            SaveQueryDialog::open(sql.clone(), default_name.clone(), window, cx);
-                        }),
-                );
-            }
-        }
-        Some(buttons)
+        ])
     }
 
     /// The `…` menu's own Close vanishes when this tab is dirty (see

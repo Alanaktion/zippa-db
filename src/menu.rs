@@ -25,14 +25,14 @@ use crate::ui::data_grid::{
     ClearRowSelection, CopyValue, CopyWithHeaders, SelectAllRows, ViewCell,
 };
 use crate::ui::query_editor::{
-    Explain, ExplainAnalyze, FormatQuery, RunQuery, RunScript, RunScriptIgnoringErrors,
-    ToggleComment,
+    EditVariables, Explain, ExplainAnalyze, FormatQuery, RunQuery, RunScript,
+    RunScriptIgnoringErrors, ToggleComment,
 };
 use crate::ui::session::{
-    CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenErd,
-    OpenFile, OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables,
+    CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NewTable, NextTab, OpenConsole,
+    OpenErd, OpenFile, OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables,
     OpenUserManagement, PreviousTab, QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs,
-    SearchSchema,
+    SaveQuery, SaveQueryAs, SearchSchema,
 };
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -90,6 +90,7 @@ fn menus() -> Vec<Menu> {
         MenuItem::action("Quit Zippa DB", Quit),
     ]));
 
+    #[cfg_attr(target_os = "macos", allow(unused_mut))]
     let mut file = vec![
         MenuItem::action("New Connection", NewConnection),
         MenuItem::action("New Query Tab", NewTab),
@@ -97,13 +98,11 @@ fn menus() -> Vec<Menu> {
         MenuItem::action("Open…", OpenFile),
         MenuItem::action("Save", SaveFile),
         MenuItem::action("Save As…", SaveFileAs),
-        MenuItem::separator(),
-        MenuItem::action("Import SQL Dump…", ImportSqlDump),
+        MenuItem::action("Save to Saved Queries", SaveQuery),
+        MenuItem::action("Save as New Saved Query…", SaveQueryAs),
         MenuItem::separator(),
         MenuItem::action("Close Tab", CloseTab),
         MenuItem::action("Close Connection", CloseConnection),
-        MenuItem::action("Reconnect", Reconnect),
-        MenuItem::action("Disconnect", Disconnect),
     ];
     #[cfg(not(target_os = "macos"))]
     file.extend([
@@ -129,14 +128,15 @@ fn menus() -> Vec<Menu> {
         ]),
         Menu::new("Query").items(vec![
             MenuItem::action("Run Query", RunQuery),
-            MenuItem::action("Run Script", RunScript),
-            MenuItem::action("Run Script Ignoring Errors", RunScriptIgnoringErrors),
+            MenuItem::action("Run All Queries", RunScript),
+            MenuItem::action("Run All Queries, Skipping Errors", RunScriptIgnoringErrors),
             MenuItem::separator(),
             MenuItem::action("Explain", Explain),
             MenuItem::action("Explain Analyze", ExplainAnalyze),
             MenuItem::separator(),
-            MenuItem::action("Toggle Comment", ToggleComment),
+            MenuItem::action("Edit Variables…", EditVariables),
             MenuItem::action("Format Query", FormatQuery),
+            MenuItem::action("Toggle Comment", ToggleComment),
             MenuItem::separator(),
             MenuItem::action("Cancel Query", CancelQuery),
         ]),
@@ -157,19 +157,30 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Select All Rows", SelectAllRows),
             MenuItem::action("Clear Row Selection", ClearRowSelection),
         ]),
-        Menu::new("View").items(vec![
-            MenuItem::action("Quick Switcher…", QuickSwitcher),
-            MenuItem::action("Search Schema…", SearchSchema),
-            MenuItem::separator(),
+        // The open connection and what is in it: the commands that used to
+        // be icons in the title bar and beside the sidebar's filter, and the
+        // tools the sidebar's Tools tab lists.
+        Menu::new("Database").items(vec![
             MenuItem::action("Refresh", Refresh),
-            MenuItem::action("Toggle Row Panel", ToggleRowPanel),
+            MenuItem::action("Reconnect", Reconnect),
+            MenuItem::action("Disconnect", Disconnect),
+            MenuItem::separator(),
+            MenuItem::action("New Table…", NewTable),
+            MenuItem::action("Import SQL Dump…", ImportSqlDump),
+            MenuItem::separator(),
+            MenuItem::action("Search Schema…", SearchSchema),
+            MenuItem::action("ER Diagram", OpenErd),
+            MenuItem::separator(),
             MenuItem::action("Console", OpenConsole),
             MenuItem::action("Processes", OpenProcessList),
             MenuItem::action("Server Variables", OpenServerVariables),
             MenuItem::action("Query Digest", OpenQueryDigest),
             MenuItem::action("Users", OpenUserManagement),
             MenuItem::action("Maintenance", OpenMaintenance),
-            MenuItem::action("ER Diagram", OpenErd),
+        ]),
+        Menu::new("View").items(vec![
+            MenuItem::action("Quick Switcher…", QuickSwitcher),
+            MenuItem::action("Toggle Row Panel", ToggleRowPanel),
             MenuItem::separator(),
             MenuItem::action("Next Tab", NextTab),
             MenuItem::action("Previous Tab", PreviousTab),
@@ -234,9 +245,9 @@ mod tests {
             ("Reconnect", TypeId::of::<Reconnect>()),
             ("Disconnect", TypeId::of::<Disconnect>()),
             ("Run Query", TypeId::of::<RunQuery>()),
-            ("Run Script", TypeId::of::<RunScript>()),
+            ("Run All Queries", TypeId::of::<RunScript>()),
             (
-                "Run Script Ignoring Errors",
+                "Run All Queries, Skipping Errors",
                 TypeId::of::<RunScriptIgnoringErrors>(),
             ),
             ("Explain", TypeId::of::<Explain>()),
@@ -271,6 +282,10 @@ mod tests {
             ("Next Connection", TypeId::of::<NextConnection>()),
             ("Previous Connection", TypeId::of::<PreviousConnection>()),
             ("Settings", TypeId::of::<OpenSettings>()),
+            ("New Table", TypeId::of::<NewTable>()),
+            ("Save to Saved Queries", TypeId::of::<SaveQuery>()),
+            ("Save as New Saved Query", TypeId::of::<SaveQueryAs>()),
+            ("Edit Variables", TypeId::of::<EditVariables>()),
             ("Keyboard Shortcuts", TypeId::of::<ShowShortcuts>()),
             ("Quit", TypeId::of::<Quit>()),
             ("Undo", TypeId::of::<Undo>()),
@@ -344,8 +359,17 @@ mod tests {
     #[gpui_kit::test]
     fn every_menu_item_answers_to_a_keystroke(cx: &mut TestAppContext) {
         // The app-level commands the OS owns the keys for, and which the keymap
-        // therefore does not bind: the menu is still where they belong.
-        let unbound = [TypeId::of::<HideOthers>(), TypeId::of::<ShowAll>()];
+        // therefore does not bind: the menu is still where they belong. And
+        // the commands that left a toolbar for the menu bar without being
+        // frequent enough to spend a chord on: the menu is their keyboard
+        // path.
+        let unbound = [
+            TypeId::of::<HideOthers>(),
+            TypeId::of::<ShowAll>(),
+            TypeId::of::<NewTable>(),
+            TypeId::of::<SaveQueryAs>(),
+            TypeId::of::<EditVariables>(),
+        ];
 
         cx.update(|cx| {
             gpui_kit::component::init(cx);

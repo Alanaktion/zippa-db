@@ -1,6 +1,7 @@
 //! `.sql` files and SQL dumps: open, save, save as, and the import dialog.
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui_kit::component::WindowExt;
 use gpui_kit::prelude::*;
@@ -9,9 +10,12 @@ use gpui_kit::{App, Context, Entity, WeakEntity, Window, px};
 use crate::ui::import_dialog::{ImportEvent, ImportView};
 use crate::ui::sql_file;
 
+use super::save_dialog::{OnSaved, SaveQueryDialog};
 use super::{
-    ImportSqlDump, OpenFile, SaveFile, SaveFileAs, Session, SessionEvent, SessionPanel, Status,
+    ImportSqlDump, OpenFile, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs, Session, SessionEvent,
+    SessionPanel, Status,
 };
+use crate::saved_queries::{self, SavedQueries};
 
 impl Session {
     pub(super) fn on_open_file(
@@ -32,6 +36,75 @@ impl Session {
         if let Some(panel) = self.active_panel() {
             self.save(&panel, false, cx);
         }
+    }
+
+    pub(super) fn on_save_query(
+        &mut self,
+        _: &SaveQuery,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.active_panel() {
+            self.save_query(&panel, false, window, cx);
+        }
+    }
+
+    pub(super) fn on_save_query_as(
+        &mut self,
+        _: &SaveQueryAs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.active_panel() {
+            self.save_query(&panel, true, window, cx);
+        }
+    }
+
+    /// Keep `panel`'s buffer in the sidebar's Saved tab. A tab that belongs
+    /// to a saved query still in the list updates it in place, with nothing
+    /// to answer; otherwise — or with `as_new` — the dialog asks for a name,
+    /// and the tab then belongs to the query saved under it.
+    pub(crate) fn save_query(
+        &mut self,
+        panel: &Entity<SessionPanel>,
+        as_new: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((sql, default_name)) = panel.read(cx).query_to_save(cx) else {
+            return;
+        };
+        let linked = panel
+            .read(cx)
+            .saved_as()
+            .map(str::to_string)
+            .filter(|name| {
+                SavedQueries::get(cx)
+                    .iter()
+                    .any(|query| &query.name == name)
+            });
+
+        if let (Some(name), false) = (linked, as_new) {
+            saved_queries::upsert(&name, &sql, cx);
+            panel.update(cx, |panel, cx| {
+                panel.set_status(Status::Done(format!("Updated saved query “{name}”")));
+                cx.notify();
+            });
+            return;
+        }
+
+        let weak = panel.downgrade();
+        let on_saved: OnSaved = Rc::new(move |name, _window, cx| {
+            weak.update(cx, |panel, cx| {
+                panel.set_status(Status::Done(format!("Saved query “{name}”")));
+                panel.set_saved_as(Some(name), cx);
+            })
+            .ok();
+        });
+        // Saving a linked tab as new starts from an empty name: its own
+        // would only replace the query it is meant to leave alone.
+        let default_name = if as_new { String::new() } else { default_name };
+        SaveQueryDialog::open(sql, default_name, on_saved, window, cx);
     }
 
     pub(super) fn on_save_file_as(

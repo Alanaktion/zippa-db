@@ -7,10 +7,10 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::button::{ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogButtonProps;
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{Disableable, Sizable};
+use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, Window, px};
+use gpui_kit::{Context, Entity, SharedString, Window, div, px};
 
 use crate::db::{Catalog, CatalogEntry, Connection, runtime};
 use crate::ui::create_database_dialog::{CreateDatabaseEvent, CreateDatabaseView};
@@ -408,11 +408,11 @@ impl Session {
         }
     }
 
-    /// The database dropdown, rendered by whoever owns the toolbar.
+    /// The database picker, rendered by whoever owns the toolbar: a
+    /// searchable list of the server's databases, the current one checked.
     ///
-    /// Sized and styled here rather than by the caller: `dropdown_menu`
-    /// wraps the button in a popover that does not itself implement
-    /// [`Sizable`]/[`ButtonVariants`].
+    /// While a switch or a reconnect is under way, or for a SQLite file
+    /// (one file, nothing to switch to), it is a plain label instead.
     pub(crate) fn render_database_picker(
         session: &Entity<Session>,
         cx: &mut gpui_kit::App,
@@ -420,101 +420,91 @@ impl Session {
         let this = session.read(cx);
         let current = this.connection.database().to_string();
 
-        // A SQLite connection is one file: there is nothing to switch to, and
-        // its "databases" (main, plus attachments) are not separate files.
-        if this.connection.config.engine.is_file_based() {
+        let label = if this.reconnecting {
+            Some("Reconnecting…".to_string())
+        } else if this.switching {
+            Some("Switching…".to_string())
+        } else if this.connection.config.engine.is_file_based() {
+            Some(crate::db::file_name(&current))
+        } else {
+            None
+        };
+        if let Some(label) = label {
             return Button::new("database")
                 .custom(crate::ui::subtle_button(cx))
                 .xsmall()
                 .max_w(px(160.))
                 .icon(gpui_kit::assets::IconName::Database)
-                .label(crate::db::file_name(&current))
+                .label(label)
                 .disabled(true)
                 .into_any_element();
         }
 
-        let databases = this.databases.clone();
-        let weak = session.downgrade();
-        // SQLite is one file: there is no second database to create. (The
-        // picker itself is a disabled button for a file-based engine, so this
-        // is belt and braces should that ever change.)
-        let can_create_database = !this.connection.config.engine.is_file_based();
-
-        let label = if this.reconnecting {
-            "Reconnecting…".to_string()
-        } else if this.switching {
-            "Switching…".to_string()
-        } else if current.is_empty() {
-            "No database".to_string()
-        } else {
-            current.clone()
-        };
-
-        Button::new("database")
-            .custom(crate::ui::subtle_button(cx))
-            .xsmall()
-            .max_w(px(160.))
-            .icon(gpui_kit::assets::IconName::Database)
-            .label(label)
-            .dropdown_menu(move |mut menu, _window, _cx| {
-                // First, so it is there however long the list below runs,
-                // and even when the list could not be read because the
-                // connection is what failed.
-                // A click rather than the `Reconnect` action: the picker sits
-                // in the workspace's title bar, outside the session's own
-                // element, so the action would never reach it.
-                let reconnect = weak.clone();
-                menu = menu
-                    .item(
-                        PopupMenuItem::new("Reconnect").on_click(move |_, window, cx| {
-                            if let Some(session) = reconnect.upgrade() {
-                                session.update(cx, |session, cx| {
-                                    session.request_reconnect(window, cx)
-                                });
-                            }
-                        }),
-                    )
-                    .separator();
-                if databases.is_empty() {
-                    menu = menu.label("No databases");
-                } else {
-                    for database in &databases {
-                        let name = database.clone();
-                        let weak = weak.clone();
-
-                        menu = menu.item(
-                            PopupMenuItem::new(database.clone())
-                                .checked(*database == current)
-                                .on_click(move |_, window, cx| {
-                                    let name = name.clone();
-                                    if let Some(session) = weak.upgrade() {
-                                        session.update(cx, |session, cx| {
-                                            session.request_switch_database(name, window, cx)
-                                        });
-                                    }
-                                }),
-                        );
-                    }
-                }
-
-                if can_create_database {
-                    let weak = weak.clone();
-                    menu = menu
-                        .separator()
-                        .item(PopupMenuItem::new("Create database…").on_click(
-                            move |_, window, cx| {
-                                if let Some(session) = weak.upgrade() {
-                                    session.update(cx, |session, cx| {
-                                        session.open_create_database_dialog(window, cx)
-                                    });
-                                }
-                            },
-                        ));
-                }
-
-                menu.scrollable(true).max_h(px(420.))
-            })
+        div()
+            .max_w(px(200.))
+            .child(
+                Select::new(&this.database_select)
+                    .id("database")
+                    .xsmall()
+                    .appearance(false)
+                    .icon(gpui_kit::assets::IconName::Database)
+                    .placeholder("No database")
+                    .search_placeholder("Find a database")
+                    .accessibility_label("Database")
+                    .menu_width(px(260.))
+                    .menu_max_h(px(420.))
+                    .empty(|_, cx| {
+                        div()
+                            .p_2()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("No databases")
+                    }),
+            )
             .into_any_element()
+    }
+
+    /// Bring the picker in line with the database list and the current
+    /// database: after a reload, after a switch, and after a switch the
+    /// user backed out of, which would otherwise leave the picker showing
+    /// the database they did not go to.
+    pub(super) fn sync_database_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = SharedString::from(self.connection.database().to_string());
+        let items: Vec<SharedString> = self.databases.iter().map(SharedString::from).collect();
+        let select = self.database_select.clone();
+        let (stale_items, stale_selection) = {
+            let state = select.read(cx);
+            (
+                self.database_select_items != items,
+                state.selected_value() != Some(&current),
+            )
+        };
+        if !stale_items && !stale_selection {
+            return;
+        }
+        select.update(cx, |state, cx| {
+            if stale_items {
+                state.set_items(SearchableVec::new(items.clone()), window, cx);
+            }
+            state.set_selected_value(&current, window, cx);
+        });
+        self.database_select_items = items;
+    }
+
+    pub(super) fn on_database_selected(
+        &mut self,
+        _: &Entity<SelectState<SearchableVec<SharedString>>>,
+        event: &SelectEvent<SearchableVec<SharedString>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let SelectEvent::Confirm(Some(database)) = event else {
+            return;
+        };
+        if database.as_ref() != self.connection.database() {
+            self.request_switch_database(database.to_string(), window, cx);
+        }
+        cx.notify();
     }
 }
 

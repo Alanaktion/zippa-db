@@ -110,3 +110,100 @@ fn deleting_a_saved_query_forgets_it(cx: &mut TestAppContext) {
     );
     saved_queries::reset_for_test();
 }
+
+/// Open the saved query in row 0 by clicking it, the way the Saved tab does.
+fn open_first_saved(cx: &mut TestAppContext, handle: WindowHandle<Session>) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click(("saved-query", 0usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn saving_a_tab_opened_from_a_saved_query_updates_it_in_place(cx: &mut TestAppContext) {
+    let _lock = saved_queries::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (_database, handle) = saved_session(cx, "Report", "SELECT 1;");
+    open_first_saved(cx, handle);
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.prepare_active_editor_for_test("SELECT 2;", window, cx);
+            window.dispatch_action(Box::new(crate::ui::session::SaveQuery), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    // No name to answer: the tab already belongs to "Report". (This window
+    // has no dialog layer, so a dialog opening would have failed the test.)
+    let saved = cx.update(|cx| SavedQueries::get(cx).to_vec());
+    assert_eq!(saved.len(), 1, "updating should not add a second query");
+    assert_eq!(saved[0].name, "Report");
+    assert_eq!(saved[0].sql, "SELECT 2;");
+
+    saved_queries::reset_for_test();
+}
+
+#[gpui_kit::test]
+fn opening_a_saved_query_twice_brings_its_tab_back(cx: &mut TestAppContext) {
+    let _lock = saved_queries::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (_database, handle) = saved_session(cx, "Report", "SELECT 1;");
+    open_first_saved(cx, handle);
+    let after_first = handle
+        .read_with(cx, |session, cx| session.tab_titles(cx))
+        .unwrap();
+    open_first_saved(cx, handle);
+    let after_second = handle
+        .read_with(cx, |session, cx| session.tab_titles(cx))
+        .unwrap();
+    assert_eq!(
+        after_first, after_second,
+        "the second click should not open a copy"
+    );
+
+    saved_queries::reset_for_test();
+}
+
+#[gpui_kit::test]
+fn enter_in_the_save_dialog_saves_and_ties_the_tab(cx: &mut TestAppContext) {
+    let _lock = saved_queries::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    saved_queries::reset_for_test();
+    let (_database, handle, session) = workspace_session(cx);
+
+    prepare_workspace_editor(cx, &handle, &session, "SELECT 3;");
+    press_workspace(cx, &handle, "secondary-alt-s");
+    assert!(
+        workspace_dialog_open(cx, &handle),
+        "a query that belongs to no saved one should ask for a name"
+    );
+    // The name box has the keyboard; an untitled tab suggests no name.
+    for key in ["t", "h", "i", "r", "d", "s"] {
+        press_workspace(cx, &handle, key);
+    }
+    press_workspace(cx, &handle, "enter");
+
+    assert!(
+        !workspace_dialog_open(cx, &handle),
+        "Enter should save and close"
+    );
+    let saved = cx.update(|cx| SavedQueries::get(cx).to_vec());
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].name, "thirds");
+
+    // The tab now belongs to it, so the next save updates it in place.
+    prepare_workspace_editor(cx, &handle, &session, "SELECT 4;");
+    press_workspace(cx, &handle, "secondary-alt-s");
+    assert!(!workspace_dialog_open(cx, &handle));
+    let saved = cx.update(|cx| SavedQueries::get(cx).to_vec());
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].sql, "SELECT 4;");
+
+    saved_queries::reset_for_test();
+}

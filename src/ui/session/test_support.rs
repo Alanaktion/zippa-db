@@ -50,6 +50,32 @@ impl Session {
         });
     }
 
+    /// What the title bar's database picker shows as chosen, and the list it
+    /// offers.
+    pub(crate) fn database_picker_for_test(&self, cx: &App) -> (Option<String>, usize) {
+        let state = self.database_select.read(cx);
+        (
+            state.selected_value().map(|value| value.to_string()),
+            self.database_select_items.len(),
+        )
+    }
+
+    /// Pick which result the active query tab shows, as its result bar's
+    /// segments do.
+    pub(crate) fn pick_result_for_test(&mut self, which: usize, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_panel_for_test() {
+            panel.update(cx, |panel, cx| panel.show_result(which, cx));
+        }
+    }
+
+    /// Switch the active query tab between its result and its plan, as the
+    /// Results/Plan segments do.
+    pub(crate) fn pick_plan_for_test(&mut self, plan: bool, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_panel_for_test() {
+            panel.update(cx, |panel, cx| panel.set_show_plan(plan, cx));
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn tab_titles(&self, cx: &App) -> Vec<String> {
         self.panels

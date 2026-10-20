@@ -35,6 +35,7 @@ mod row_panel;
 mod sql;
 #[cfg(test)]
 mod test_support;
+mod toolbar;
 
 pub(crate) use row_panel::RowPanel;
 use row_panel::RowPanelEvent;
@@ -1185,7 +1186,7 @@ impl Render for TableView {
             .on_action(cx.listener(Self::on_delete_rows))
             .on_action(cx.listener(Self::on_restore_rows))
             .on_action(cx.listener(Self::on_toggle_row_panel))
-            .child(self.filters.clone())
+            .child(self.render_toolbar(cx))
             .child(div().flex_1().min_h_0().child(if self.row_panel_visible {
                 h_resizable("table-view-columns")
                     .with_state(&self.columns_pane)
