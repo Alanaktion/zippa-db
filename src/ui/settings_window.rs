@@ -228,10 +228,7 @@ fn editor_page() -> SettingPage {
                         )
                         .default_value(true),
                     )
-                    .description(
-                        "Adds a LIMIT to a single SELECT that has none. A tab can change it \
-                         in its status bar.",
-                    ),
+                    .description("Adds a LIMIT to a SELECT that has no explicit limit."),
                 )
                 .item(
                     SettingItem::new(
@@ -252,7 +249,7 @@ fn editor_page() -> SettingPage {
                         )
                         .default_value(settings::DEFAULT_PAGE_SIZE as f64),
                     )
-                    .description("Tabs with their own limit keep it."),
+                    .description("Can be overridden per query tab."),
                 ),
         )
         .group(
