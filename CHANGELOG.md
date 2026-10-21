@@ -95,7 +95,9 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
 - Fewer icon-only buttons, and a clear home for every command. The title bar
   is now the connection and database as two menus plus a "Search tables,
   tabs, actions…" field; refresh, new query, new connection, and settings
-  left it for the menu bar and the connection's menu. A new **Database**
+  left it for the menu bar and the connection's menu. On Linux and Windows
+  the menus sit at the leading edge of the title bar, as in Zed, rather than
+  on a row of their own beneath it. A new **Database**
   menu holds Refresh, Reconnect, Disconnect, New Table…, Import SQL Dump…,
   Search Schema…, ER Diagram, and the tools. The sidebar's filter has its
   line to itself, with the schema commands in one `⋯` menu on the list's

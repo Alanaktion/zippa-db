@@ -209,7 +209,8 @@ pub struct Workspace {
     /// nothing inside a tab has the caret.
     focus: FocusHandle,
     /// The application menu bar on Linux and Windows, where there is no
-    /// native one (see `menu.rs`). Created but never rendered on macOS.
+    /// native one (see `menu.rs`), drawn at the leading edge of the title
+    /// bar. Created but never rendered on macOS.
     menu_bar: Entity<AppMenuBar>,
     /// Tabs a startup restore is reconnecting, keyed by the connection manager
     /// that is connecting them. Their contents are kept here until the session
@@ -962,8 +963,14 @@ impl Workspace {
     /// used to carry as icons lives in the menu bar and behind the two
     /// breadcrumb menus, where each command is named in words beside its
     /// shortcut. OS buttons are inset by the component.
+    ///
+    /// On Linux and Windows, where there is no native menu bar, the app's
+    /// own menus lead the bar, the way Zed merges them into its title bar,
+    /// rather than taking a row of their own under it. macOS keeps the
+    /// native bar at the top of the screen.
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let session = self.active_session();
+        let in_window_menus = cfg!(not(target_os = "macos"));
 
         // The bar starts a window move on mouse-move while held, so every
         // interactive child swallows its own press to avoid dragging the
@@ -971,6 +978,27 @@ impl Workspace {
         // empty space around the controls too, and the bar would stop
         // dragging.
         TitleBar::new()
+            // Each menu's button stops its own press, so the space between
+            // them still drags the window. The wrapper keeps the bar's
+            // full-size root to the width its buttons need.
+            .when(in_window_menus, |this| {
+                this.child(
+                    h_flex()
+                        .id("title-bar-menus")
+                        .test_support()
+                        .flex_none()
+                        .h_full()
+                        .items_center()
+                        .gap_2()
+                        .mr_2()
+                        .child(div().flex_none().child(self.menu_bar.clone()))
+                        // Set off from the breadcrumbs, which the launcher
+                        // does not have.
+                        .when(session.is_some(), |this| {
+                            this.child(div().flex_none().h_4().w_px().bg(cx.theme().border))
+                        }),
+                )
+            })
             .child(h_flex().flex_1().min_w_0().gap_1().when_some(
                 session.clone(),
                 |this, session| {
@@ -1147,13 +1175,6 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(cx))
-            // On Linux and Windows there is no native menu bar, so the app
-            // draws its own below the title bar; macOS keeps the native one.
-            // The bar is wrapped so its own full-size root takes only the
-            // height its buttons need, not the window's.
-            .when(cfg!(not(target_os = "macos")), |this| {
-                this.child(div().flex_none().child(self.menu_bar.clone()))
-            })
             // A strip for a single connection is a title the title bar already
             // carries, so it is only worth the row once there is more than one
             // tab to choose between. Closing the last one still works from

@@ -358,6 +358,38 @@ fn the_title_bar_names_where_we_are_and_nothing_else(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// macOS keeps the native menu bar, so there is nothing in the window to find.
+#[cfg(not(target_os = "macos"))]
+#[gpui_kit::test]
+fn the_menus_lead_the_title_bar_off_macos(cx: &mut TestAppContext) {
+    // The menus have to be in place before the workspace builds its bar,
+    // the way `main` sets them up first.
+    cx.update(|cx| {
+        init_ui(cx);
+        crate::menu::init(cx);
+    });
+    let handle = workspace(cx);
+    let _database = connect(cx, &handle);
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        // Merged into the bar rather than given a row of their own: the
+        // menus sit inside it, ahead of the breadcrumbs.
+        let bar = window.find("title-bar").bounds();
+        let menus = window.find("title-bar-menus").bounds();
+        assert!(
+            menus.size.width > px(100.) && contains(bar, menus),
+            "the menus should sit inside the title bar: {menus:?} in {bar:?}"
+        );
+        let connection = window.find("connection").bounds();
+        assert!(
+            connection.left() >= menus.right(),
+            "the breadcrumbs should follow the menus: {connection:?} after {menus:?}"
+        );
+    })
+    .unwrap();
+}
+
 #[gpui_kit::test]
 fn many_connection_tabs_scroll_inside_the_bar(cx: &mut TestAppContext) {
     let handle = workspace(cx);
