@@ -28,18 +28,17 @@ known defects and risks in the shipped code are tracked in
 
 * Auto-complete: a key to open the menu without typing, and context beyond the statement's own `FROM` (CTE names, subquery aliases)
 * Engine-specific highlighting (today one SQL grammar serves all three)
-* Format SQL ([plan](.agents/plans/format-sql.md))
-* Pinned query tabs, the follow-ups ([plan](.agents/plans/pinned-connections-transactions.md)): run `EXPLAIN` on the tab's own connection so it sees its `SET`/temp tables; ask before quitting with a transaction open; a cancel that leaves the transaction (Postgres: failed) rather than closing the connection; a manual-commit toggle and auto-savepoints
+* Pinned query tabs, the follow-ups ([plan](.agents/plans/pinned-connections-transactions.md)): run `EXPLAIN` on the tab's own connection so it sees its `SET`/temp tables; a cancel that leaves the transaction (Postgres: failed) rather than closing the connection; a manual-commit toggle and auto-savepoints
 * Messages tab: Postgres `NOTICE`, MySQL warnings
 * Query parameters (`:name`, `$1`) prompted for and bound
 * A row-limit guard on unbounded `SELECT`s, with a "Fetched first N rows" banner
 * Middle-mouse drag for a column (multi-line) selection, like Zed
-* Find and replace, multi-cursor, comment toggle (check what `gpui-kit`'s editor already offers)
+* Find and replace, multi-cursor (comment toggle is bound at `secondary-/`)
 
 ## 4. Schema browser & editor
 
 * Tree navigation: databases > schemas > tables / views
-* Read-only DDL text, triggers, and check constraints in the structure tab ([plan](.agents/plans/structure-ddl-view.md))
+* Read-only DDL text for tables, triggers, and check constraints in the structure tab ([plan](.agents/plans/structure-ddl-view.md)) — view definitions already show, via `Connection::view_definition`
 * Search the text of view, routine, and trigger definitions
 * Free-text column types in the structure tab (today a fixed per-engine list)
 * View and routine definition editor
@@ -56,13 +55,11 @@ known defects and risks in the shipped code are tracked in
 
 ## 6. Platform & release
 
-* macOS and Windows builds in CI
 * Signed macOS and Windows builds, and an update check
 * Full audit against a screen reader on each platform
 * Dialog transitions that can be turned off (needs upstream support in `gpui-kit`)
 
 ## Not planned for now
 
-* ER diagram generation — costly, and rarely used day to day.
 * Cloud sync of connections or snippets — the config directory is plain JSON and can be synced by other means.
 * A plugin system, non-SQL databases, and AI query generation — each is a large design decision.

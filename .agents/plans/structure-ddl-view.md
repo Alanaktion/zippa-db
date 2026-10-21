@@ -1,5 +1,8 @@
 # Read-only DDL, triggers, and constraints in the structure view
 
+## Status (updated 2026-10-20)
+The view half shipped: a view's stored `CREATE VIEW` statement shows read-only on its structure tab, via `Connection::view_definition` (issue #53). What remains is the table half below — the `Form | SQL` panel for tables, the Constraints/Triggers sections, and the sidebar `Copy DDL` / `Show DDL` entries.
+
 ## Context
 `SchemaView` (`src/ui/schema_view/`) is an editable form for a table's columns, indexes, and foreign keys that diffs itself into `ALTER` statements; `TableSchema` carries exactly those three things. Missing: the definition as SQL text (`CREATE TABLE …`), triggers, and check/unique/exclusion constraints, and a definition view for views. TODO.md's "View definition viewer and editor" is covered here on the viewer side; a full editor is separate (this plan only offers "Open in query tab", where the user edits and runs `CREATE OR REPLACE VIEW`).
 

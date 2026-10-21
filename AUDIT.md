@@ -1,7 +1,7 @@
 # Audit — Zippa DB — remaining issues
 
 **Revision audited:** `60e7002` "Add schema search dialog with full catalog" (2026-09-19), branch `main`.
-**Audit date:** 2026-09-21. **Last revised:** 2026-09-23, after the 0.1 cleanup.
+**Audit date:** 2026-09-21. **Last revised:** 2026-10-20, backlog cleanup (removed findings since fixed; the removed items and their evidence are in the git history).
 **This revision:** findings that have since been fixed are removed, so only what is still open is listed. The 0.1 cleanup split the largest UI files into submodules (`ui/session/`, `ui/data_grid/`, `ui/table_view/`, `ui/schema_view/`), so anchors are given as `file` plus the function name rather than a line number. The resolved findings and their regression tests are in the git history.
 
 ## How this audit was done
@@ -60,7 +60,7 @@ The "destructive statement" count only sees the first 64 KiB of the dump (`src/d
 - **[M] Timestamps are labelled differently per engine.** Postgres renders `timestamptz` in the local zone with an explicit offset (`src/db/postgres.rs`); MySQL renders `TIMESTAMP` as a bare UTC wall clock (`src/db/mysql.rs`), which happens to be right only because sqlx defaults the MySQL session to `time_zone='+00:00'`. A `TIMESTAMP` and a `DATETIME` therefore look identical while meaning different things.
 - **[L] The `INSERT` export is not schema-qualified** while every other generated statement is: `export_result` passes `self.object.name` (`src/ui/table_view/export.rs`) and `render_sql` quotes it bare (`src/db/export.rs`), whereas `TableView::target()` qualifies with the schema (`src/ui/table_view/sql.rs`). Exporting `myschema.items` writes `insert into items …`.
 - **[L] The editor splitter and the dump splitter are different tools.** `db/statement.rs` has no trigger-body, `DELIMITER`, `\.`-meta-line or `COPY` handling, all of which `db/import/splitter.rs` has. `Cmd+Shift+Enter` on a `CREATE TRIGGER … BEGIN … END;` or a `COPY … FROM stdin` header splits in the wrong place. `import/splitter.rs` notes the editor's version covers "the common cases", but nothing at the editor says so.
-- **[L] The read-only classifier can refuse plain reads.** `statement.rs`'s allowlist omits `WITH`, so a CTE read counts as a write (`src/db/statement.rs`), and any `ANALYZE` anywhere in the words is a write — yet `Connection::explain` deliberately skips `refuse_write` and runs its `EXPLAIN`. The same text is allowed through one entry point and refused through the other (pinned by a test in `src/db/tests.rs`). `EXPLAIN_OPTIONS` is also a fixed list, so an unknown option word silently becomes part of the wrapped statement.
+- **[L] `EXPLAIN_OPTIONS` is a fixed list**, so an unknown option word silently becomes part of the wrapped statement (`src/db/statement.rs`).
 
 ### Behaviour that differs between two paths to the same thing
 
@@ -76,7 +76,6 @@ The "destructive statement" count only sees the first 64 KiB of the dump (`src/d
 - **[L] `store.rs`'s keychain functions are `#[cfg(test)]` no-op stubs** (`src/db/store.rs`), so no test exercises the real contract, and each call site has two code paths to keep right.
 - **[L] `SessionPanel::commit`, `TableView::commit`, and `ApplyEdits` are three names for one operation** (`src/ui/session/panel.rs`, `src/ui/table_view/mod.rs`, `src/keymap.rs`).
 - **[L] "A session always shows one editor" is implemented in three places** with three different orderings — `Session::forget` (`src/ui/session/mod.rs`), `close_tab_now` (`src/ui/session/tabs.rs`), `restore` (`src/ui/session/state.rs`).
-- **[L] Two `#[allow]` suppressions**, both justified in comments: `#[allow(deprecated)]` on `fetch_many` (`src/db/connection.rs`) and `#[allow(clippy::large_enum_variant)]` on `TabContent` (`src/ui/session/tab.rs`).
 - **[L] `WorkspaceState::version` is written but never read** (`src/workspace_state.rs`) — so nothing can detect a file this build cannot safely read.
 
 ### Accessibility (audited against `AGENTS.md` § Accessibility)
@@ -105,7 +104,7 @@ The keychain read, the `connections.json`/settings/dump-pre-flight writes, and t
 ### Durability and races
 
 - **Ignored `Result`s** (all deliberate-looking, listed for completeness): `let _ = tx.send(...)` (`src/db/runtime.rs`), import `ROLLBACK`/`SET FOREIGN_KEY_CHECKS=1`/`SET UNIQUE_CHECKS=1` `.ok()` and `sender.send(...)` (`src/db/import/mod.rs`), SQLite `rollback()`/`PRAGMA foreign_keys = ON` `.ok()` (`src/db/sqlite.rs`), and `update_in(...).ok()` throughout the UI, which hides "the entity is gone" errors.
-- **Errors that reach only stderr.** A failed settings write (`src/settings.rs`) and a failed workspace save (`src/app.rs`) both leave the UI claiming success. (`record_connected`'s failure used to be a third: it now goes through the launcher's own `store_in_background`, the same path `save`/`delete_confirmed` use, which surfaces a failure as a toast — see "Durability" below and the Persistence split section of `AGENTS.md`.)
+- **Errors that reach only stderr.** A failed settings write (`src/settings.rs`) leaves the UI claiming success.
 
 **Fixed since the audit revision** (kept here so the fix and its motivation stay attached to the finding): `record_connected` was a read-modify-write against the file with no locking, so it could overwrite a concurrent save from the connection editor and lose a newly added connection; `mark_connected` now updates the launcher's own in-memory list and writes it through the same `store::save`/`store_in_background` path every other mutation uses, so there is exactly one writer and no second disk read to race. Every JSON file the app writes (`connections.json`, `workspace.json`, `settings.json`) was written with the platform's default permissions — worth noting since a query buffer can hold a pasted secret and `connections.json` carries a database's host and username — and now goes through `store::write_restricted`, which opens with mode `0o600` on Unix from the first byte.
 
@@ -150,14 +149,13 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 
 ## 6. CI
 
-`.github/workflows/ci.yml` runs `cargo test`, `cargo fmt --check`, and `cargo clippy -D warnings` in one `ubuntu-latest` job. `.github/workflows/live-tests.yml` runs the ignored live tests against `compose.yaml`'s MySQL and Postgres; it is not a required check, which is how §10's failure sat red for two days while `ci.yml` stayed green. There is still no macOS or Windows build — on a project whose stated premise is cross-platform and whose build has a documented macOS-only Metal prerequisite. `script/linux` installs the Linux build dependencies; nothing equivalent guards the other two platforms.
+`.github/workflows/ci.yml` runs `cargo test`, `cargo fmt --check`, and `cargo clippy -D warnings` in one `ubuntu-latest` job. `.github/workflows/live-tests.yml` runs the ignored live tests against `compose.yaml`'s MySQL and Postgres; it is not a required check, which is how §10's failure sat red for two days while `ci.yml` stayed green. Release packaging (`.github/workflows/release.yml`) builds installers on macOS, Linux, and Windows on version tags, so the platforms are covered at release time; the `ci.yml` test jobs themselves still run on Linux only. `script/linux` installs the Linux build dependencies; nothing equivalent guards the other two platforms for local development.
 
 ## 7. Suggested triage order
 
 1. **Copy byte cap** (§2) — apply `MAX_COPY_BYTES` to every copy.
 2. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations.
-3. **CI on macOS and Windows** (§6).
-4. **The open design calls in §11.**
+3. **The open design calls in §11.**
 
 ## 8. What this audit did and did not cover
 
@@ -208,7 +206,7 @@ Left open, because each needs a design call:
 - **[L] Environment the driver still reads.** `PGOPTIONS` and, in `Prefer` mode, `PGSSLROOTCERT` reach sqlx from the environment; sqlx offers no way to opt out.
 - **[L] `~/.pgpass` is no longer read** (a side effect of the fix above). If it is wanted back, it should be an explicit per-connection option.
 - **[L] Grid commands bound to plain keys are not in the menu bar** (`EditCell` on `Enter`, `ToggleRow` on `Space`, `ExtendSelectionUp`/`Down` on `Shift+↑`/`↓`): on macOS a menu key equivalent fires before the focused view sees the key, so listing them would take `Enter` and `Space` from text boxes. They are listed in the shortcuts dialog.
-- **[L] Smaller notes.** `REINDEX SCHEMA` and `SET SESSION autocommit` are not in `transaction_blocker`; `typed_placeholder` casts a Postgres `"char"` column to `CHAR`; SQLite maintenance confirmations can stack on a double click; the structure tab's per-row checkboxes share one accessible name; the foreign-key jump uses the loaded value rather than a staged edit; the editor still says "Leave blank to keep the saved one" after the SSH auth method changes.
+- **[L] Smaller notes.** `REINDEX SCHEMA` and `SET SESSION autocommit` are not in `transaction_blocker`; SQLite maintenance confirmations can stack on a double click; the structure tab's per-row checkboxes share one accessible name; the foreign-key jump uses the loaded value rather than a staged edit; the editor still says "Leave blank to keep the saved one" after the SSH auth method changes.
 
 ## 12. Cleanup audit (2026-10-15, revision `64954cc`)
 
@@ -224,6 +222,4 @@ A read of what landed after §11 — query variables, saved queries, create data
 
 Left open:
 
-- **[L] A stale ER diagram load can land after a newer one** (`ui/erd.rs`, `reload`): two reloads in flight (a refresh straight after a database switch) each replace the diagram when they finish, in whatever order. The table views guard against this; the diagram does not.
-- **[L] The save-query dialog does not save on `Enter`,** unlike the other name dialogs.
 - **[L] The Postgres user list shows every role,** the built-in `pg_*` roles included (`postgres::USERS_SQL`).
