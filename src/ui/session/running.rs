@@ -282,6 +282,9 @@ impl Session {
         cx.emit(SessionEvent::Changed);
 
         panel.update(cx, |panel, cx| {
+            // Never limited, so a limit an earlier run went out with must
+            // not label this one's rows.
+            panel.set_applied_limit(None);
             panel.set_status(Status::Running);
             cx.notify();
         });
@@ -777,6 +780,9 @@ impl Session {
             };
 
         panel.update(cx, |panel, cx| {
+            // Never limited, so a limit an earlier run went out with must
+            // not label this one's rows.
+            panel.set_applied_limit(None);
             panel.set_status(Status::Running);
             cx.notify();
         });

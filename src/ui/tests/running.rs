@@ -471,3 +471,23 @@ fn turning_the_setting_off_lifts_the_limit(cx: &mut TestAppContext) {
         "a tab following the setting should not limit: {status}"
     );
 }
+
+#[gpui_kit::test]
+fn a_script_after_a_limited_run_is_not_labelled_limited(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    cx.update(|cx| settings::update(cx, |settings| settings.implicit_limit_rows = 1));
+
+    let status = run_status(cx, handle, "select * from items");
+    assert!(status.ends_with("limited to 1"), "{status}");
+
+    prepare_editor(cx, handle, "select * from items", 0);
+    press(cx, handle, "secondary-shift-enter");
+    cx.run_until_parked();
+    let status = handle
+        .update(cx, |session, _, cx| session.active_status_for_test(cx))
+        .unwrap();
+    assert!(
+        status.starts_with("2 rows in") && !status.contains("limited"),
+        "a script is never limited, so it should not say so: {status}"
+    );
+}
