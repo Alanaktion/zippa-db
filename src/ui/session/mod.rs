@@ -30,6 +30,7 @@ use crate::ui::variables_dialog::VariablesView;
 use crate::workspace_state::SessionState;
 
 mod files;
+mod limit;
 mod metadata;
 mod panel;
 mod running;

@@ -315,6 +315,107 @@ pub fn first_write(sql: &str, engine: Engine) -> Option<String> {
         })
 }
 
+/// Words that already bound a `SELECT`'s rows, or lock them, when they stand
+/// outside every parenthesis: a `LIMIT` there would be a second one, or land
+/// after a `FOR UPDATE` where no engine accepts it. `OFFSET` is here because
+/// SQLite reads `LIMIT` only before it, and MySQL has no `OFFSET` without one.
+const BOUNDED: [&str; 6] = ["LIMIT", "FETCH", "OFFSET", "FOR", "LOCK", "PROCEDURE"];
+
+/// `sql` with `LIMIT rows` added, when it is one `SELECT` — or `WITH ...
+/// SELECT` — that does not bound its own rows; `None` leaves it as written.
+///
+/// Only the outermost query is looked at: a `LIMIT` inside a subquery or a
+/// common table expression bounds that one alone, so it does not stop the
+/// outer one getting its own. Anything else — several statements, a write, a
+/// `SELECT` wrapped in parentheses, one that already has a `LIMIT`, `FETCH`,
+/// `OFFSET`, or a locking clause — is run exactly as typed. The limit goes
+/// after the last thing in the statement that is not a comment, so a trailing
+/// `-- note` cannot swallow it, and a closing semicolon stays where it was.
+pub fn with_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
+    let mut statements = statements(sql, engine)
+        .into_iter()
+        .filter(|(words, _, _)| !words.is_empty());
+    let (words, start, end) = statements.next()?;
+    if statements.next().is_some() || !reads(&words) {
+        return None;
+    }
+
+    let (outer, code_end) = outermost_words(&sql[start..end], engine);
+    let first = outer.first()?;
+    if !(first == "SELECT" || first == "WITH" && outer.iter().any(|word| word == "SELECT"))
+        || outer.iter().any(|word| BOUNDED.contains(&word.as_str()))
+    {
+        return None;
+    }
+
+    let at = start + code_end;
+    Some(format!("{} LIMIT {rows}{}", &sql[..at], &sql[at..]))
+}
+
+/// The words of one statement that stand outside every parenthesis,
+/// upper-cased, and the byte offset just past its last character that is not
+/// a comment or blank space.
+fn outermost_words(sql: &str, engine: Engine) -> (Vec<String>, usize) {
+    let characters: Vec<char> = sql.chars().collect();
+    let offsets: Vec<usize> = sql
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain(std::iter::once(sql.len()))
+        .collect();
+    let byte = |index: usize| offsets.get(index).copied().unwrap_or(sql.len());
+
+    let mut words = Vec::new();
+    let mut depth = 0usize;
+    let mut code_end = 0;
+    let mut index = 0;
+    while index < characters.len() {
+        let character = characters[index];
+        let next = characters.get(index + 1).copied();
+        match character {
+            '-' if next == Some('-') => {
+                index = skip_until(&characters, index, "\n");
+                continue;
+            }
+            '#' if engine == Engine::MySql => {
+                index = skip_until(&characters, index, "\n");
+                continue;
+            }
+            '/' if next == Some('*') => {
+                index = skip_until(&characters, index + 2, "*/");
+                continue;
+            }
+            character if character.is_whitespace() => {
+                index += 1;
+                continue;
+            }
+            '\'' | '"' | '`' => index = skip_quoted(&characters, index, character, engine),
+            '$' if dollar_tag(&characters, index).is_some() => {
+                let tag = dollar_tag(&characters, index).expect("checked just above");
+                index = skip_until(&characters, index + tag.len(), &tag);
+            }
+            '(' => {
+                depth += 1;
+                index += 1;
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            character if character.is_alphanumeric() || character == '_' => {
+                let (word, next) = word_at(&characters, index).expect("a word starts here");
+                if depth == 0 {
+                    words.push(word.to_ascii_uppercase());
+                }
+                index = next;
+            }
+            _ => index += 1,
+        }
+        // Whatever was read here was part of the statement, not trivia.
+        code_end = byte(index);
+    }
+    (words, code_end)
+}
+
 /// The first `limit` words of the first statement in `sql`, upper-cased.
 ///
 /// Comments and quoted text are left out the way [`first_write`] leaves them
@@ -1088,5 +1189,95 @@ mod tests {
         let placeholder = &placeholders[0];
         assert_eq!(placeholder.name, "id");
         assert_eq!(&sql[placeholder.start..placeholder.end], "$id");
+    }
+
+    fn limited(sql: &str) -> Option<String> {
+        super::with_limit(sql, 500, Engine::Postgres)
+    }
+
+    #[test]
+    fn a_lone_select_gets_a_limit() {
+        assert_eq!(
+            limited("select * from items").as_deref(),
+            Some("select * from items LIMIT 500")
+        );
+        assert_eq!(
+            limited("SELECT a FROM t UNION SELECT b FROM u ORDER BY 1").as_deref(),
+            Some("SELECT a FROM t UNION SELECT b FROM u ORDER BY 1 LIMIT 500")
+        );
+    }
+
+    #[test]
+    fn the_limit_goes_before_a_semicolon_and_trailing_comments() {
+        assert_eq!(
+            limited("select 1; -- done\n").as_deref(),
+            Some("select 1 LIMIT 500; -- done\n")
+        );
+        assert_eq!(
+            limited("select 1 -- note\n/* more */").as_deref(),
+            Some("select 1 LIMIT 500 -- note\n/* more */")
+        );
+        assert_eq!(
+            limited("select ')' as x\n").as_deref(),
+            Some("select ')' as x LIMIT 500\n")
+        );
+    }
+
+    #[test]
+    fn a_with_query_is_limited_on_its_outer_select() {
+        assert_eq!(
+            limited("with recent as (select * from t limit 5) select * from recent").as_deref(),
+            Some("with recent as (select * from t limit 5) select * from recent LIMIT 500")
+        );
+        // A subquery's own limit bounds the subquery alone.
+        assert_eq!(
+            limited("select * from (select * from t limit 5) s").as_deref(),
+            Some("select * from (select * from t limit 5) s LIMIT 500")
+        );
+    }
+
+    #[test]
+    fn a_bounded_or_locking_select_is_left_alone() {
+        for sql in [
+            "select * from t limit 10",
+            "select * from t LIMIT :rows",
+            "select * from t offset 10",
+            "select * from t fetch first 5 rows only",
+            "select * from t for update",
+            "select * from t lock in share mode",
+        ] {
+            assert_eq!(limited(sql), None, "{sql}");
+        }
+    }
+
+    #[test]
+    fn anything_but_one_select_runs_as_typed() {
+        for sql in [
+            "",
+            "-- nothing",
+            "select 1; select 2",
+            "(select 1) union (select 2)",
+            "select * into copy from t",
+            "with gone as (delete from t returning *) select * from gone",
+            "insert into t values (1)",
+            "explain select * from t",
+            "values (1), (2)",
+            "show tables",
+        ] {
+            assert_eq!(limited(sql), None, "{sql}");
+        }
+    }
+
+    #[test]
+    fn a_keyword_in_a_string_or_comment_does_not_count() {
+        assert_eq!(
+            limited("select 'limit 5' /* for update */ from t").as_deref(),
+            Some("select 'limit 5' /* for update */ from t LIMIT 500")
+        );
+        // `#` is a comment on MySQL only, so the `limit` after it is too.
+        assert_eq!(
+            super::with_limit("select 1 # limit 5", 500, Engine::MySql).as_deref(),
+            Some("select 1 LIMIT 500 # limit 5")
+        );
     }
 }

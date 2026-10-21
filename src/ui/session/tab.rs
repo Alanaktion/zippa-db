@@ -12,6 +12,7 @@ use crate::ui::query_editor::QueryEditor;
 use crate::ui::schema_view::SchemaView;
 use crate::ui::table_view::TableView;
 
+use super::limit::QueryLimit;
 use super::tool::ToolView;
 
 /// Whether a sidebar object is opened as its rows or its own definition.
@@ -91,6 +92,8 @@ pub(crate) enum TabContent {
         plan: Option<Entity<PlanView>>,
         /// Whether the pane is showing the plan rather than the result grid.
         show_plan: bool,
+        /// The `LIMIT` a lone `SELECT` from this tab goes out with.
+        limit: QueryLimit,
     },
     Table {
         view: Entity<TableView>,

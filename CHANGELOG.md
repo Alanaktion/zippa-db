@@ -50,7 +50,11 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   it back. Two settings change how queries run: scripts can run without the
   wrapping transaction (each statement then commits as it runs), and query
   tabs can share one connection instead of each holding their own, so a
-  session variable set in one buffer is visible in another.
+  session variable set in one buffer is visible in another. A single
+  `SELECT` with no `LIMIT`, `FETCH`, `OFFSET`, or locking clause of its own
+  is sent with an implicit `LIMIT` (500 rows by default, a setting); the
+  status bar's Limit checkbox and row count change or lift it for one tab,
+  and the summary says when a result stopped there.
 - **Query plans:** `EXPLAIN` and `EXPLAIN ANALYZE` as a tree with costs, rows,
   timing, and warnings.
 - **Table view:** paging, row limit, sorting, a filter bar, a row panel, and

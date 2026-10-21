@@ -152,8 +152,15 @@ impl Session {
                     file,
                     variables,
                     saved_as,
+                    limit_enabled,
+                    limit_rows,
                 } => {
                     let panel = self.open_tab(Some(title), sql.clone(), false, window, cx);
+                    if limit_enabled.is_some() || limit_rows.is_some() {
+                        panel.update(cx, |panel, cx| {
+                            panel.restore_limit(limit_enabled, limit_rows, window, cx)
+                        });
+                    }
                     if saved_as.is_some() {
                         panel.update(cx, |panel, cx| panel.set_saved_as(saved_as, cx));
                     }

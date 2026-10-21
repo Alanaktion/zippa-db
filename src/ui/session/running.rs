@@ -587,7 +587,17 @@ impl Session {
         // A run is a natural checkpoint for the buffer text.
         cx.emit(SessionEvent::Changed);
 
+        // A lone `SELECT` with no `LIMIT` of its own goes out with the tab's,
+        // so a quick look at a big table does not read all of it. The SQL
+        // sent is the SQL logged, so the console shows the limit too.
+        let limit = panel.read(cx).implicit_limit(cx);
+        let limited =
+            limit.and_then(|rows| statement::with_limit(&sql, rows, self.connection.config.engine));
+        let applied = limit.filter(|_| limited.is_some());
+        let sql = limited.unwrap_or(sql);
+
         panel.update(cx, |panel, cx| {
+            panel.set_applied_limit(applied);
             panel.set_status(Status::Running);
             cx.notify();
         });

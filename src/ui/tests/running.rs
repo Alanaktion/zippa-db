@@ -408,3 +408,66 @@ fn a_script_rolls_back_a_failed_statement_by_default(cx: &mut TestAppContext) {
         "the wrapping transaction should have rolled back the first statement"
     );
 }
+
+fn run_status(cx: &mut TestAppContext, handle: WindowHandle<Session>, sql: &str) -> String {
+    prepare_editor(cx, handle, sql, 0);
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+    handle
+        .update(cx, |session, _, cx| session.active_status_for_test(cx))
+        .unwrap()
+}
+
+#[gpui_kit::test]
+fn a_lone_select_stops_at_the_implicit_limit(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    cx.update(|cx| settings::update(cx, |settings| settings.implicit_limit_rows = 1));
+
+    let status = run_status(cx, handle, "select * from items");
+    assert!(
+        status.starts_with("1 row in") && status.ends_with("limited to 1"),
+        "the run should stop at the limit and say so: {status}"
+    );
+
+    // A limit the user wrote is theirs, whatever the setting says.
+    let status = run_status(cx, handle, "select * from items limit 2");
+    assert!(
+        status.starts_with("2 rows in") && !status.contains("limited"),
+        "an explicit LIMIT should be left alone: {status}"
+    );
+}
+
+#[gpui_kit::test]
+fn the_limit_checkbox_turns_the_implicit_limit_off_for_the_tab(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    cx.update(|cx| settings::update(cx, |settings| settings.implicit_limit_rows = 1));
+    prepare_editor(cx, handle, "select * from items", 0);
+
+    click_in_session(cx, handle, "implicit-limit-enabled");
+    let status = run_status(cx, handle, "select * from items");
+    assert!(
+        status.starts_with("2 rows in"),
+        "with the box cleared every row should come back: {status}"
+    );
+    assert!(
+        cx.read(|cx| Settings::global(cx).implicit_limit),
+        "the box is the tab's own, not the setting"
+    );
+}
+
+#[gpui_kit::test]
+fn turning_the_setting_off_lifts_the_limit(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    cx.update(|cx| {
+        settings::update(cx, |settings| {
+            settings.implicit_limit_rows = 1;
+            settings.implicit_limit = false;
+        })
+    });
+
+    let status = run_status(cx, handle, "select * from items");
+    assert!(
+        status.starts_with("2 rows in"),
+        "a tab following the setting should not limit: {status}"
+    );
+}
