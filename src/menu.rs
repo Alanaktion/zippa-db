@@ -1,6 +1,6 @@
 //! The OS application menu bar: the native bar at the top of the screen on
 //! macOS, and a per-window bar drawn by `gpui_component::menu::AppMenuBar`
-//! on Linux and Windows.
+//! on Linux and Windows, merged into the leading edge of the title bar.
 //!
 //! Reuses the same actions the keymap already binds in `keymap.rs` — a menu
 //! item is only another way to reach them, not a second implementation — so
