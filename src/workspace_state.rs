@@ -81,6 +81,14 @@ pub enum PanelState {
         /// still updates it in place. Older files have none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         saved_as: Option<String>,
+        /// The tab's own answer to the implicit `LIMIT`, when it gave one;
+        /// `None` follows the settings.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit_enabled: Option<bool>,
+        /// The tab's own row count for that limit; `None` follows the
+        /// settings.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit_rows: Option<usize>,
     },
     Table {
         object: DatabaseObject,
@@ -182,6 +190,8 @@ mod tests {
                         file: None,
                         variables: vec![],
                         saved_as: Some("Daily report".into()),
+                        limit_enabled: Some(false),
+                        limit_rows: None,
                     },
                     PanelState::Query {
                         title: "report.sql".into(),
@@ -189,6 +199,8 @@ mod tests {
                         file: Some(PathBuf::from("/tmp/report.sql")),
                         variables: vec![],
                         saved_as: None,
+                        limit_enabled: None,
+                        limit_rows: Some(50),
                     },
                     PanelState::Table {
                         object: object(),

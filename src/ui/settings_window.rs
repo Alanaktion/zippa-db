@@ -200,21 +200,57 @@ fn editor_page() -> SettingPage {
             ),
         )
         .group(
-            SettingGroup::new().title("Running").item(
-                SettingItem::new(
-                    "Run all queries in one transaction",
-                    SettingField::switch(
-                        |cx| Settings::global(cx).wrap_scripts_in_transaction,
-                        |value, cx| {
-                            settings::update(cx, |settings| {
-                                settings.wrap_scripts_in_transaction = value
-                            })
-                        },
+            SettingGroup::new()
+                .title("Running")
+                .item(
+                    SettingItem::new(
+                        "Run all queries in one transaction",
+                        SettingField::switch(
+                            |cx| Settings::global(cx).wrap_scripts_in_transaction,
+                            |value, cx| {
+                                settings::update(cx, |settings| {
+                                    settings.wrap_scripts_in_transaction = value
+                                })
+                            },
+                        )
+                        .default_value(true),
                     )
-                    .default_value(true),
+                    .description("Off commits each statement as it runs."),
                 )
-                .description("Off commits each statement as it runs."),
-            ),
+                .item(
+                    SettingItem::new(
+                        "Limit SELECT results",
+                        SettingField::switch(
+                            |cx| Settings::global(cx).implicit_limit,
+                            |value, cx| {
+                                settings::update(cx, |settings| settings.implicit_limit = value)
+                            },
+                        )
+                        .default_value(true),
+                    )
+                    .description("Adds a LIMIT to a SELECT that has no explicit limit."),
+                )
+                .item(
+                    SettingItem::new(
+                        "Rows to limit to",
+                        SettingField::number_input(
+                            NumberFieldOptions {
+                                min: 1.,
+                                max: settings::MAX_PAGE_SIZE as f64,
+                                step: 100.,
+                            },
+                            |cx| Settings::global(cx).implicit_limit_rows as f64,
+                            |value, cx| {
+                                settings::update(cx, |settings| {
+                                    settings.implicit_limit_rows =
+                                        (value as usize).clamp(1, settings::MAX_PAGE_SIZE)
+                                })
+                            },
+                        )
+                        .default_value(settings::DEFAULT_PAGE_SIZE as f64),
+                    )
+                    .description("Can be overridden per query tab."),
+                ),
         )
         .group(
             SettingGroup::new().title("Connections").item(

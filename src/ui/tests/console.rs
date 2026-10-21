@@ -29,7 +29,8 @@ fn a_user_run_shows_up_in_the_console(cx: &mut TestAppContext) {
     // Newest first, so the run just sent is row 0.
     let sql = grid.read_with(cx, |grid, cx| grid.column_values_for_test(3, cx));
     let source = grid.read_with(cx, |grid, cx| grid.column_values_for_test(1, cx));
-    assert_eq!(sql[0].as_deref(), Some("select 1"));
+    // What was sent, the implicit limit included.
+    assert_eq!(sql[0].as_deref(), Some("select 1 LIMIT 500"));
     assert_eq!(source[0].as_deref(), Some("User"));
 }
 

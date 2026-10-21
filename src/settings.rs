@@ -152,6 +152,12 @@ pub struct Settings {
     pub always_show_scrollbars: bool,
     /// The key that takes a completion suggestion in the SQL editor.
     pub accept_completion: CompletionKey,
+    /// Whether a query tab adds `LIMIT` to a lone `SELECT` that has none, so
+    /// a quick look at a big table does not read all of it. On by default;
+    /// a tab can turn it off, or change the row count, for itself.
+    pub implicit_limit: bool,
+    /// The rows that limit asks for.
+    pub implicit_limit_rows: usize,
 }
 
 impl Default for Settings {
@@ -169,6 +175,8 @@ impl Default for Settings {
             accept_completion: CompletionKey::default(),
             wrap_scripts_in_transaction: true,
             share_connection_across_buffers: false,
+            implicit_limit: true,
+            implicit_limit_rows: DEFAULT_PAGE_SIZE,
         }
     }
 }

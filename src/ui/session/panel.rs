@@ -40,6 +40,7 @@ use crate::ui::sql_file;
 use crate::ui::table_view::TableView;
 use crate::workspace_state::PanelState;
 
+use super::limit::QueryLimit;
 use super::tab::{ObjectViewMode, Status, TabContent};
 use super::tool::{Tool, ToolView};
 use super::{CloseTab, NewTab};
@@ -114,7 +115,7 @@ pub(crate) struct SessionPanel {
     /// drags the tabs about.
     key: usize,
     title: SharedString,
-    content: TabContent,
+    pub(super) content: TabContent,
     focus: FocusHandle,
     /// The tab group displaying this panel, for bringing it forward. `None`
     /// until the dock has taken it.
@@ -169,6 +170,7 @@ impl SessionPanel {
                 baseline: sql,
                 plan: None,
                 show_plan: false,
+                limit: QueryLimit::new(window, cx),
             },
             focus: cx.focus_handle(),
             group: None,
@@ -392,13 +394,23 @@ impl SessionPanel {
     /// what protects unapplied work instead.
     pub(crate) fn snapshot(&self, cx: &App) -> Option<PanelState> {
         let state = match &self.content {
-            TabContent::Query { editor, path, .. } => PanelState::Query {
-                title: self.title.to_string(),
-                sql: editor.read(cx).sql(cx),
-                file: path.clone(),
-                variables: editor.read(cx).variables(),
-                saved_as: self.saved_as.clone(),
-            },
+            TabContent::Query {
+                editor,
+                path,
+                limit,
+                ..
+            } => {
+                let (limit_enabled, limit_rows) = limit.overrides();
+                PanelState::Query {
+                    title: self.title.to_string(),
+                    sql: editor.read(cx).sql(cx),
+                    file: path.clone(),
+                    variables: editor.read(cx).variables(),
+                    saved_as: self.saved_as.clone(),
+                    limit_enabled,
+                    limit_rows,
+                }
+            }
             TabContent::Table { view } => PanelState::Table {
                 object: view.read(cx).object().clone(),
                 filters: view.read(cx).filters(cx),
@@ -928,8 +940,14 @@ impl SessionPanel {
             return "Nothing to show".to_string();
         };
 
+        // A run that stopped at the tab's limit says so, or a page of rows
+        // would read as the whole table.
+        let summary = match self.limit_note(shown.row_count()) {
+            Some(note) => format!("{} · {note}", shown.summary()),
+            None => shown.summary(),
+        };
         if results.len() == 1 {
-            return shown.summary();
+            return summary;
         }
 
         let total: u128 = results
@@ -941,7 +959,7 @@ impl SessionPanel {
             results.len(),
             result + 1,
             results.len(),
-            shown.summary()
+            summary
         )
     }
 
@@ -1210,6 +1228,7 @@ impl SessionPanel {
             .border_t_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().status_bar)
+            .children(self.render_limit(cx))
             // Errors can be long; cap the bar so it never eats the grid.
             .child(
                 div()
