@@ -1032,6 +1032,7 @@ impl Workspace {
                         .xsmall()
                         .flex_none()
                         .w(px(280.))
+                        .when(in_window_menus, |this| this.mr_2())
                         .icon(IconName::Search)
                         .label("Search tables, tabs, actions…")
                         .accessibility_label("Quick switcher")
@@ -1040,7 +1041,11 @@ impl Workspace {
                         .on_click(cx.listener(Self::on_quick_switcher_click)),
                 )
             })
-            .child(div().flex_1().min_w_0())
+            // Centred under macOS's native menu bar; with the menus in the
+            // bar, it moves to the trailing edge, beside the window controls.
+            .when(!in_window_menus, |this| {
+                this.child(div().flex_1().min_w_0())
+            })
     }
 
     /// The connection's name as a menu: the commands about the connection

@@ -386,6 +386,12 @@ fn the_menus_lead_the_title_bar_off_macos(cx: &mut TestAppContext) {
             connection.left() >= menus.right(),
             "the breadcrumbs should follow the menus: {connection:?} after {menus:?}"
         );
+        // The search moves to the trailing edge, where the bar ends.
+        let search = window.find("quick-switcher").bounds();
+        assert!(
+            bar.right() - search.right() < px(120.),
+            "the search should sit at the end of the bar: {search:?} in {bar:?}"
+        );
     })
     .unwrap();
 }
