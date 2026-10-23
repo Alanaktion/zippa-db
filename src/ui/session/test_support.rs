@@ -364,6 +364,31 @@ impl Session {
         self.active_panel_for_test()?.read(cx).plan_view()
     }
 
+    /// Show the chart pane or the result grid in the active tab.
+    #[cfg(test)]
+    pub(crate) fn pick_chart_for_test(&mut self, show: bool, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_panel_for_test() {
+            panel.update(cx, |panel, cx| panel.set_show_chart(show, cx));
+        }
+    }
+
+    /// Whether the active tab is showing its chart rather than its grid.
+    #[cfg(test)]
+    pub(crate) fn chart_showing_for_test(&self, cx: &App) -> bool {
+        self.active_panel_for_test()
+            .is_some_and(|panel| panel.read(cx).showing_chart())
+    }
+
+    /// The chart the active tab would draw, for tests.
+    #[cfg(test)]
+    pub(crate) fn chart_for_test(
+        &self,
+        cx: &App,
+    ) -> Option<(String, Option<String>, String, usize, usize)> {
+        let panel = self.active_panel_for_test()?;
+        panel.read(cx).chart_summary_for_test()
+    }
+
     /// Whether the active tab is showing its plan rather than its grid.
     #[cfg(test)]
     pub(crate) fn active_plan_showing_for_test(&self, cx: &App) -> bool {

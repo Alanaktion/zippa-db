@@ -37,6 +37,7 @@ use crate::ui::filter_bar::{FilterSpec, Operator};
 use crate::ui::session::{CloseScope, Session};
 use crate::ui::welcome::Welcome;
 
+mod chart;
 mod comments;
 mod completion;
 mod console;
@@ -1120,6 +1121,22 @@ fn prepare_editor(
             }
         })
         .unwrap();
+}
+
+/// Run one statement from a fresh buffer and wait for its result.
+fn run_sql(cx: &mut TestAppContext, handle: WindowHandle<Session>, sql: &str) {
+    prepare_editor(cx, handle, sql, 0);
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+}
+
+/// Draw the session once, so a pane that builds a bad element fails here
+/// rather than only when a human opens it.
+fn draw(cx: &mut TestAppContext, handle: WindowHandle<Session>) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
 }
 
 /// Open the editor on a new connection, and wait for it to draw.

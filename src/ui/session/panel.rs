@@ -40,6 +40,7 @@ use crate::ui::sql_file;
 use crate::ui::table_view::TableView;
 use crate::workspace_state::PanelState;
 
+use super::chart::{ChartConfig, chartable};
 use super::limit::QueryLimit;
 use super::tab::{ObjectViewMode, Status, TabContent};
 use super::tool::{Tool, ToolView};
@@ -170,6 +171,8 @@ impl SessionPanel {
                 baseline: sql,
                 plan: None,
                 show_plan: false,
+                show_chart: false,
+                chart: ChartConfig::default(),
                 limit: QueryLimit::new(window, cx),
             },
             focus: cx.focus_handle(),
@@ -524,10 +527,17 @@ impl SessionPanel {
         )
     }
 
-    /// Show the plan pane or the result grid.
+    /// Show the plan pane or the result grid. The chart and the plan are
+    /// two views of the same pane, so showing one hides the other.
     pub(crate) fn set_show_plan(&mut self, show: bool, cx: &mut Context<Self>) {
-        if let TabContent::Query { show_plan, .. } = &mut self.content {
+        if let TabContent::Query {
+            show_plan,
+            show_chart,
+            ..
+        } = &mut self.content
+        {
             *show_plan = show;
+            *show_chart = false;
             cx.notify();
         }
     }
@@ -539,6 +549,7 @@ impl SessionPanel {
         let TabContent::Query {
             plan: slot,
             show_plan,
+            show_chart,
             status,
             error,
             ..
@@ -557,6 +568,8 @@ impl SessionPanel {
         };
         view.update(cx, |view, cx| view.set_plan(plan, cx));
         *show_plan = true;
+        // The plan is what the pane shows now, not an earlier run's chart.
+        *show_chart = false;
         // The plan is what the pane shows now, not an earlier run's error.
         *error = None;
         *status = Status::Done(summary);
@@ -786,6 +799,7 @@ impl SessionPanel {
             result,
             error,
             show_plan,
+            show_chart,
             ..
         } = &mut self.content
         else {
@@ -801,6 +815,7 @@ impl SessionPanel {
         // A new run is what the user asked to see, so the grid comes back even
         // if a plan was showing.
         *show_plan = false;
+        *show_chart = false;
 
         let summary = self.result_summary();
         self.set_status(Status::Done(summary));
@@ -825,6 +840,7 @@ impl SessionPanel {
             grid,
             results,
             result,
+            show_chart,
             ..
         } = &mut self.content
         else {
@@ -836,6 +852,12 @@ impl SessionPanel {
         };
         let grid = grid.clone();
         *result = which;
+        // The chart follows the result being shown, unless the new one has
+        // nothing to chart — then the grid comes back instead of a chart
+        // pane with no points.
+        if !chartable(&chosen) {
+            *show_chart = false;
+        }
 
         grid.update(cx, |grid, cx| grid.set_result(chosen, cx));
         let summary = self.result_summary();
@@ -1078,6 +1100,7 @@ impl SessionPanel {
                 grid,
                 plan,
                 show_plan,
+                show_chart,
                 pinned,
                 ..
             } => {
@@ -1089,6 +1112,7 @@ impl SessionPanel {
                 // A plan belongs to the connection it was read from.
                 *plan = None;
                 *show_plan = false;
+                *show_chart = false;
                 self.set_status(Status::Idle);
             }
             TabContent::Table { view } => {
@@ -1336,17 +1360,42 @@ impl SessionPanel {
     }
 
     /// The bar above the result area: one segment per result the last run
-    /// produced, and the Results/Plan switch once a plan has been read. Both
-    /// are choices of what the pane shows, so the chosen one is marked by
-    /// its segment the way a tab is, not by a primary button.
-    fn render_view_bar(
-        &self,
-        results: usize,
-        shown: usize,
-        has_plan: bool,
-        show_plan: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    /// produced, and the Results/Chart/Plan switch for what the pane shows.
+    /// Both are choices of what the pane shows, so the chosen one is marked
+    /// by its segment the way a tab is, not by a primary button. It reads
+    /// the tab's own state rather than taking it as arguments, so the
+    /// signature stays short.
+    fn render_view_bar(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let TabContent::Query {
+            results: all,
+            result,
+            plan,
+            ..
+        } = &self.content
+        else {
+            return div().into_any_element();
+        };
+        let count = all.len();
+        let shown = *result;
+        let has_plan = plan.is_some();
+        let showing_plan = self.showing_plan() && has_plan;
+        let chartable = all.get(shown).is_some_and(chartable);
+        // The chart and the plan are two views of the same pane; the plan
+        // wins when both are asked for.
+        let showing_chart = self.showing_chart() && chartable && !showing_plan;
+        // Segments in order: Results, then Chart when the shown result has
+        // numbers in it, then Plan when one has been read.
+        let chart_index = chartable.then_some(1);
+        let plan_index = has_plan.then_some(1 + usize::from(chartable));
+        let selected = if showing_chart {
+            chart_index
+        } else if showing_plan {
+            plan_index
+        } else {
+            Some(0)
+        }
+        .unwrap_or(0);
+
         h_flex()
             .flex_none()
             .px_2()
@@ -1356,7 +1405,7 @@ impl SessionPanel {
             .border_color(cx.theme().border)
             .bg(cx.theme().status_bar)
             // While the plan is showing there is no result to pick between.
-            .when(results > 1 && !show_plan, |this| {
+            .when(count > 1 && !showing_plan, |this| {
                 this.child(
                     TabBar::new("result-tabs")
                         .segmented()
@@ -1365,31 +1414,42 @@ impl SessionPanel {
                         .on_click(cx.listener(|this, index: &usize, _window, cx| {
                             this.show_result(*index, cx)
                         }))
-                        .children((0..results).map(|index| {
+                        .children((0..count).map(|index| {
                             let label = format!("Result {}", index + 1);
                             Tab::new().aria_label(label.clone()).label(label)
                         })),
                 )
             })
-            .when(has_plan, |this| {
+            .when(chartable || has_plan, |this| {
                 this.child(
                     h_flex().flex_none().ml_auto().child(
-                        TabBar::new("plan-tabs")
+                        TabBar::new("view-tabs")
                             .segmented()
                             .xsmall()
-                            .selected_index(usize::from(show_plan))
-                            .on_click(cx.listener(|this, index: &usize, window, cx| {
-                                let plan = *index == 1;
-                                this.set_show_plan(plan, cx);
-                                if plan && let Some(plan) = this.plan_view() {
-                                    plan.update(cx, |plan, cx| plan.focus(window, cx));
+                            .selected_index(selected)
+                            .on_click(cx.listener(move |this, index: &usize, window, cx| {
+                                if Some(*index) == chart_index {
+                                    this.set_show_chart(true, cx);
+                                } else if Some(*index) == plan_index {
+                                    this.set_show_plan(true, cx);
+                                    if let Some(plan) = this.plan_view() {
+                                        plan.update(cx, |plan, cx| plan.focus(window, cx));
+                                    }
+                                } else {
+                                    this.set_show_plan(false, cx);
                                 }
                             }))
                             .child(Tab::new().aria_label("Results").label("Results"))
-                            .child(Tab::new().aria_label("Plan").label("Plan")),
+                            .when(chartable, |this| {
+                                this.child(Tab::new().aria_label("Chart").label("Chart"))
+                            })
+                            .when(has_plan, |this| {
+                                this.child(Tab::new().aria_label("Plan").label("Plan"))
+                            }),
                     ),
                 )
             })
+            .into_any_element()
     }
 }
 
@@ -1609,12 +1669,23 @@ impl Render for SessionPanel {
             } => {
                 let has_plan = plan.is_some();
                 let showing_plan = *show_plan && has_plan;
+                let shown = results.get(*result);
+                let chartable = shown.is_some_and(chartable);
+                // The chart and the plan are two views of the same pane;
+                // the plan wins when both are asked for, and the chart only
+                // shows for a result with numbers in it.
+                let showing_chart = self.showing_chart() && chartable && !showing_plan;
                 // A run that failed outright owns the pane: the error is
                 // shown where its rows would have been, in this tab, for as
                 // long as the tab is kept.
-                let content: gpui_kit::AnyElement = match (error, showing_plan, plan) {
-                    (Some(error), _, _) => self.render_pane_error(error, cx),
-                    (_, true, Some(plan)) => plan.clone().into_any_element(),
+                let content: gpui_kit::AnyElement = match (error, showing_plan, showing_chart, plan)
+                {
+                    (Some(error), _, _, _) => self.render_pane_error(error, cx),
+                    (_, true, _, Some(plan)) => plan.clone().into_any_element(),
+                    (_, _, true, _) => match shown {
+                        Some(result) => self.render_chart(result, cx),
+                        None => grid.clone().into_any_element(),
+                    },
                     _ => grid.clone().into_any_element(),
                 };
 
@@ -1637,23 +1708,18 @@ impl Render for SessionPanel {
                                             v_flex()
                                                 .size_full()
                                                 // A script leaves one result per
-                                                // statement, and a plan leaves the
-                                                // switch; a lone result alone would
-                                                // make the bar say nothing. While
+                                                // statement, a plan leaves the switch,
+                                                // and a chartable result leaves the
+                                                // chart switch; a lone result alone
+                                                // would make the bar say nothing. While
                                                 // the pane shows an error there is
                                                 // nothing to switch between.
                                                 .when(
                                                     error.is_none()
-                                                        && (results.len() > 1 || has_plan),
-                                                    |this| {
-                                                        this.child(self.render_view_bar(
-                                                            results.len(),
-                                                            *result,
-                                                            has_plan,
-                                                            showing_plan,
-                                                            cx,
-                                                        ))
-                                                    },
+                                                        && (results.len() > 1
+                                                            || has_plan
+                                                            || chartable),
+                                                    |this| this.child(self.render_view_bar(cx)),
                                                 )
                                                 .child(div().flex_1().min_h_0().child(content)),
                                         ),
