@@ -3,22 +3,6 @@
 
 use super::*;
 
-/// Run one statement from a fresh buffer and wait for its result.
-fn run_sql(cx: &mut TestAppContext, handle: WindowHandle<Session>, sql: &str) {
-    prepare_editor(cx, handle, sql, 0);
-    press(cx, handle, "secondary-enter");
-    cx.run_until_parked();
-}
-
-/// Draw the session once, so a pane that builds a bad element fails here
-/// rather than only when a human opens it.
-fn draw(cx: &mut TestAppContext, handle: WindowHandle<Session>) {
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.draw(cx).clear(cx);
-    })
-    .unwrap();
-}
-
 #[gpui_kit::test]
 fn a_numeric_result_charts_with_sensible_defaults(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
