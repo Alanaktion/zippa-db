@@ -381,12 +381,30 @@ impl Session {
 
     /// The chart the active tab would draw, for tests.
     #[cfg(test)]
-    pub(crate) fn chart_for_test(
-        &self,
-        cx: &App,
-    ) -> Option<(String, Option<String>, String, usize, usize)> {
+    pub(crate) fn chart_for_test(&self, cx: &App) -> Option<super::chart::ChartSummary> {
         let panel = self.active_panel_for_test()?;
         panel.read(cx).chart_summary_for_test()
+    }
+
+    /// Toggle a column in the active tab's chart y set, the way its Y
+    /// picker's checkable items do.
+    #[cfg(test)]
+    pub(crate) fn toggle_chart_y_for_test(&mut self, column: usize, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_panel_for_test() {
+            panel.update(cx, |panel, cx| panel.toggle_chart_y(column, cx));
+        }
+    }
+
+    /// Set the active tab's chart kind, the way its kind switch does.
+    #[cfg(test)]
+    pub(crate) fn set_chart_kind_for_test(
+        &mut self,
+        kind: super::chart::ChartKind,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.active_panel_for_test() {
+            panel.update(cx, |panel, cx| panel.set_chart_kind(kind, cx));
+        }
     }
 
     /// Whether the active tab is showing its plan rather than its grid.
