@@ -29,7 +29,7 @@ use crate::ui::import_dialog::ImportView;
 use crate::ui::variables_dialog::VariablesView;
 use crate::workspace_state::SessionState;
 
-mod chart;
+pub(crate) mod chart;
 mod files;
 mod limit;
 mod metadata;
