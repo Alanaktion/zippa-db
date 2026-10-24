@@ -95,6 +95,11 @@ pub(crate) enum TabContent {
         show_plan: bool,
         /// Whether the pane is showing the chart rather than the result grid.
         show_chart: bool,
+        /// Whether the pane is showing the shown result's messages rather
+        /// than the result grid. Only set when that result has messages;
+        /// the switch itself only appears then, so a tab without any never
+        /// offers a pane with nothing in it.
+        show_messages: bool,
         /// Which columns the chart draws, and which kind it is.
         chart: ChartConfig,
         /// The `LIMIT` a lone `SELECT` from this tab goes out with.

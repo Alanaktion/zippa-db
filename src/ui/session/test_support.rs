@@ -379,6 +379,45 @@ impl Session {
             .is_some_and(|panel| panel.read(cx).showing_chart())
     }
 
+    /// Put finished results in the active tab, the way a run does — grid,
+    /// status, and which result is showing included — rather than only
+    /// handing the grid a result.
+    #[cfg(test)]
+    pub(crate) fn show_query_results_for_test(
+        &mut self,
+        results: Vec<crate::db::query::QueryResult>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.active_panel_for_test() {
+            panel.update(cx, |panel, cx| panel.show_results(results, cx));
+        }
+    }
+
+    /// Show the messages pane or the result grid in the active tab, as its
+    /// Messages segment does.
+    #[cfg(test)]
+    pub(crate) fn pick_messages_for_test(&mut self, show: bool, cx: &mut Context<Self>) {
+        if let Some(panel) = self.active_panel_for_test() {
+            panel.update(cx, |panel, cx| panel.set_show_messages(show, cx));
+        }
+    }
+
+    /// Whether the active tab is showing its messages rather than its grid.
+    #[cfg(test)]
+    pub(crate) fn messages_showing_for_test(&self, cx: &App) -> bool {
+        self.active_panel_for_test()
+            .is_some_and(|panel| panel.read(cx).showing_messages())
+    }
+
+    /// The messages the active tab's shown result carries, as the messages
+    /// pane would list them — empty when it carries none.
+    #[cfg(test)]
+    pub(crate) fn shown_messages_for_test(&self, cx: &App) -> Vec<String> {
+        self.active_panel_for_test()
+            .map(|panel| panel.read(cx).shown_messages())
+            .unwrap_or_default()
+    }
+
     /// The chart the active tab would draw, for tests.
     #[cfg(test)]
     pub(crate) fn chart_for_test(&self, cx: &App) -> Option<super::chart::ChartSummary> {

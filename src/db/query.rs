@@ -6,6 +6,28 @@ use std::time::Duration;
 /// an empty string.
 pub type Cell = Option<String>;
 
+/// One notice, warning, or note the server reported for a statement — the
+/// things that are neither rows nor an error, so a run used to drop them.
+/// `level` is the server's own word (`Warning`, `Note`, …) and `code` its
+/// number, when it gives one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryMessage {
+    pub level: String,
+    pub code: Option<String>,
+    pub text: String,
+}
+
+impl QueryMessage {
+    /// `"Warning 1265: Data truncated for column 'x'"`, or `"Note: …"`
+    /// when the server gave no number.
+    pub fn display(&self) -> String {
+        match &self.code {
+            Some(code) => format!("{} {code}: {}", self.level, self.text),
+            None => format!("{}: {}", self.level, self.text),
+        }
+    }
+}
+
 /// The outcome of running one statement.
 #[derive(Debug, Clone, Default)]
 pub struct QueryResult {
@@ -19,6 +41,17 @@ pub struct QueryResult {
     /// Rows the statement changed, when the server said. A `select` reports
     /// nothing here; an `insert` or an `update` reports what it wrote.
     pub affected: Option<u64>,
+    /// Notices and warnings the statement produced, in the order the server
+    /// reported them. Empty unless the engine reports them on the
+    /// connection the statement ran on: MySQL, read back with
+    /// `SHOW WARNINGS` on the query tab's pinned connection. A pool read
+    /// cannot carry them — the next statement on another connection would
+    /// answer for a different session — and Postgres cannot carry them at
+    /// all with this stack: sqlx 0.9 decodes a `NoticeResponse` only to
+    /// log it (`sqlx-postgres`'s stream handler) and drops it, with no
+    /// API to capture one per query, so a Postgres run's messages stay
+    /// empty rather than being guessed at.
+    pub messages: Vec<QueryMessage>,
 }
 
 impl QueryResult {
@@ -116,6 +149,25 @@ mod tests {
         assert!(!is_placeholder(&Some("<>".into())));
         // Nor is a Postgres `circle`.
         assert!(!is_placeholder(&Some("<(1,2),3>".into())));
+    }
+
+    #[test]
+    fn messages_say_their_level_and_code() {
+        let warning = QueryMessage {
+            level: "Warning".into(),
+            code: Some("1265".into()),
+            text: "Data truncated for column 'v'".into(),
+        };
+        assert_eq!(
+            warning.display(),
+            "Warning 1265: Data truncated for column 'v'"
+        );
+        let note = QueryMessage {
+            level: "Note".into(),
+            code: None,
+            text: "Table does not exist".into(),
+        };
+        assert_eq!(note.display(), "Note: Table does not exist");
     }
 
     #[test]
