@@ -5,10 +5,11 @@
 //! in a narrow window.
 
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Selectable, Sizable, h_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, div};
+use gpui_kit::{Context, div, px};
 
 use crate::db::export::Format;
 
@@ -30,6 +31,32 @@ impl TableView {
                     .px_2()
                     .py_1()
                     .gap_1()
+                    // The quick search sits with the view's own buttons
+                    // rather than in the filter bar, which only describes
+                    // per-column filters; it applies on Enter, like them.
+                    .child(
+                        div().w(px(200.)).child(
+                            Input::new(&self.search_input)
+                                .id("table-search")
+                                .xsmall()
+                                .aria_label("Search all columns"),
+                        ),
+                    )
+                    .when(!self.search.is_empty(), |this| {
+                        this.child(
+                            Button::new("clear-search")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Close)
+                                .accessibility_label("Clear search")
+                                .tooltip("Clear the table search")
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.clear_search(window, cx)
+                                    }),
+                                ),
+                        )
+                    })
                     .child(
                         Button::new("view-structure")
                             .ghost()
