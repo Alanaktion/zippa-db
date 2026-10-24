@@ -115,6 +115,7 @@ enum Pending {
     Sort(Option<(String, ColumnSort)>),
     Limit(usize),
     Filter,
+    Search,
 }
 
 impl Pending {
@@ -126,6 +127,7 @@ impl Pending {
             Pending::Sort(_) => "Sorting",
             Pending::Limit(_) => "Changing the row limit",
             Pending::Filter => "Filtering",
+            Pending::Search => "Searching",
         }
     }
 }
@@ -150,6 +152,12 @@ impl EventEmitter<TableViewEvent> for TableView {}
 pub struct TableView {
     connection: Arc<Connection>,
     filters: Entity<FilterBar>,
+    /// The quick-search box in the toolbar.
+    search_input: Entity<InputState>,
+    /// The search term as last applied. Empty means no search: the box may
+    /// hold unapplied text, but only this narrows rows. It is kept across
+    /// reloads, pages, and sorts the way the filters are.
+    search: String,
     object: DatabaseObject,
     grid: Entity<DataGrid>,
     /// The side panel that lays the focused row out one field per column.
@@ -235,6 +243,14 @@ impl TableView {
         cx.subscribe_in(&filters, window, Self::on_filters_changed)
             .detach();
 
+        // Applied on Enter rather than per keystroke, like the filter bar's
+        // value boxes and the row limit: a half-typed term never runs a
+        // query of its own.
+        let search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search all columns…"));
+        cx.subscribe_in(&search_input, window, Self::on_search_event)
+            .detach();
+
         // A table takes the page size the settings had when it was opened;
         // changing the setting later leaves open tables where they are.
         let limit = Settings::global(cx)
@@ -268,6 +284,8 @@ impl TableView {
         let mut view = Self {
             connection,
             filters,
+            search_input,
+            search: String::new(),
             object,
             grid,
             row_panel,
@@ -568,6 +586,7 @@ impl TableView {
             Pending::Sort(sort) => self.apply_sort(sort, cx),
             Pending::Limit(limit) => self.set_limit(limit, cx),
             Pending::Filter => self.apply_filters(cx),
+            Pending::Search => self.apply_search(cx),
         }
     }
 
@@ -1075,6 +1094,45 @@ impl TableView {
         // about a different set of rows.
         self.page = 0;
         self.reload(cx);
+    }
+
+    fn on_search_event(
+        &mut self,
+        _input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(event, InputEvent::PressEnter { .. }) {
+            return;
+        }
+
+        self.apply_search(cx);
+    }
+
+    /// Read the table again with the search box's term, from the first page.
+    ///
+    /// A search changes which rows there are, so the page number it had is
+    /// about a different set of rows, and it goes through the same staged-edit
+    /// guard as a filter: an empty term clears the search rather than
+    /// narrowing on nothing.
+    fn apply_search(&mut self, cx: &mut Context<Self>) {
+        if self.hold(Pending::Search, cx) {
+            return;
+        }
+
+        self.search = self.search_input.read(cx).value().trim().to_string();
+        self.page = 0;
+        self.reload(cx);
+    }
+
+    /// Empty the search box and read the table again without a search.
+    fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.search_input.clone();
+        input.update(cx, |input, cx| {
+            input.set_value(String::new(), window, cx);
+        });
+        self.apply_search(cx);
     }
 
     fn on_sort_requested(

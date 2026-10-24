@@ -106,7 +106,48 @@ impl TableView {
             conditions.push(condition);
         }
 
+        // The quick search is one more condition, AND'd with the filters:
+        // a row has to pass the filters and match the search in some column.
+        if let Some(condition) = self.search_condition(engine, &mut params) {
+            conditions.push(condition);
+        }
+
         (conditions, params)
+    }
+
+    /// The quick-search term as one parenthesised condition, or nothing when
+    /// there is no term to search for.
+    ///
+    /// Every column of the loaded page is cast to text — the same cast the
+    /// `LIKE` filter already uses, so a number or a date matches its own
+    /// spelling — and OR'd together, so a match in any column counts. The
+    /// term is a substring, not a pattern: `search_pattern` escapes the
+    /// characters `LIKE` would otherwise read as wildcards, and the pattern
+    /// itself is bound as a parameter, so nothing typed ever reaches the
+    /// statement as text. `lower` on both sides makes the match
+    /// case-insensitive on every engine, where a bare `LIKE` would be
+    /// case-sensitive on Postgres.
+    fn search_condition(&self, engine: Engine, params: &mut Vec<Cell>) -> Option<String> {
+        let term = self.search.trim();
+        if term.is_empty() || self.columns.is_empty() {
+            return None;
+        }
+
+        let pattern = search_pattern(term);
+        let parts: Vec<String> = self
+            .columns
+            .iter()
+            .map(|column| {
+                params.push(Some(pattern.clone()));
+                format!(
+                    "lower(cast({} as {})) like lower({}) escape '!'",
+                    quote_identifier(column, engine),
+                    text_type(engine),
+                    placeholder(engine, params.len())
+                )
+            })
+            .collect();
+        Some(format!("({})", parts.join(" or ")))
     }
 
     /// One filter as a condition, pushing whatever it binds onto `params`.
@@ -420,4 +461,45 @@ pub(super) fn take_row_id(result: &mut QueryResult) -> (Vec<Cell>, Option<String
         values.push(row.remove(0));
     }
     (values, key_type)
+}
+
+/// The `LIKE` pattern for a quick-search term: the term as a substring, with
+/// the characters `LIKE` would read as wildcards escaped.
+///
+/// `!` is the escape character rather than the usual `\`: a backslash needs
+/// doubling inside a MySQL string literal and means something different in a
+/// Postgres one, while `!` is just a character on all three engines, so the
+/// `escape '!'` in the search condition reads the same everywhere.
+fn search_pattern(term: &str) -> String {
+    let mut pattern = String::with_capacity(term.len() + 2);
+    pattern.push('%');
+    for character in term.chars() {
+        if matches!(character, '!' | '%' | '_') {
+            pattern.push('!');
+        }
+        pattern.push(character);
+    }
+    pattern.push('%');
+    pattern
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_search_term_is_wrapped_as_a_substring() {
+        assert_eq!(search_pattern("alpha"), "%alpha%");
+    }
+
+    #[test]
+    fn like_wildcards_in_a_search_term_match_literally() {
+        assert_eq!(search_pattern("100%"), "%100!%%");
+        assert_eq!(search_pattern("a_b"), "%a!_b%");
+    }
+
+    #[test]
+    fn the_escape_character_itself_is_escaped() {
+        assert_eq!(search_pattern("a!b"), "%a!!b%");
+    }
 }

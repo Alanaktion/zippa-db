@@ -67,6 +67,7 @@ mod server_variables;
 mod session;
 mod sorting;
 mod sqlite_maintenance;
+mod table_search;
 mod transactions;
 mod user_management;
 mod value_dialog;
@@ -1028,6 +1029,24 @@ fn saved_connection(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> (TempD
 
 /// Add a filter to the open table view, the way filling in a line of the bar
 /// does, and wait for the page it re-reads.
+/// Type a term into a table view's search box and apply it, the way Enter
+/// in the box does.
+fn set_search(
+    cx: &mut TestAppContext,
+    view: &gpui_kit::Entity<crate::ui::table_view::TableView>,
+    term: &str,
+) {
+    let term = term.to_string();
+    // `set_search_for_test` needs a window, which `update` alone does not
+    // give, so it goes through the view's handle like `add_filter` does.
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.set_search_for_test(&term, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+}
+
 fn add_filter(
     cx: &mut TestAppContext,
     view: &gpui_kit::Entity<crate::ui::table_view::TableView>,
