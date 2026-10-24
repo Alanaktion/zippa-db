@@ -62,7 +62,9 @@ sqlx = { version = "0.9", features = [
     "mac_address",
     "bit-vec",
 ] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "net", "io-util", "macros"] }
+# `process`/`fs`: the database backup runs pg_dump/mysqldump as a child
+# process and streams its output into a file, both asynchronously.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "net", "io-util", "macros", "process", "fs"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zstd = "0.14"
 

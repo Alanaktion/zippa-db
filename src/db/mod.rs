@@ -30,6 +30,7 @@
 //! * [`runtime`] — the Tokio runtime every database call is submitted to.
 //! * [`store`] — connection metadata on disk, passwords in the OS keychain.
 
+pub mod backup;
 pub mod binary;
 pub mod catalog;
 pub mod completion;
@@ -59,6 +60,7 @@ pub(crate) mod tunnel;
 #[cfg(test)]
 pub(crate) mod tests;
 
+pub use backup::{BackupProgress, BackupRequest, BackupSummary, TableSelection};
 pub use catalog::{Catalog, CatalogEntry, CatalogKind, Query};
 pub(crate) use config::file_name;
 pub use config::{

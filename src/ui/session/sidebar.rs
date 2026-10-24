@@ -37,8 +37,9 @@ use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
 use super::{
-    ImportSqlDump, NewTable, OpenConsole, OpenErd, OpenMaintenance, OpenProcessList,
-    OpenQueryDigest, OpenServerVariables, OpenUserManagement, Refresh, SearchSchema, Session, Tool,
+    BackupDatabase, ImportSqlDump, NewTable, OpenConsole, OpenErd, OpenMaintenance,
+    OpenProcessList, OpenQueryDigest, OpenServerVariables, OpenUserManagement, Refresh,
+    SearchSchema, Session, Tool,
 };
 
 impl Session {
@@ -425,6 +426,9 @@ impl Session {
     fn render_schema_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let session = cx.entity().downgrade();
         let read_only = self.connection.config.safety.is_read_only();
+        // Computed up here, like `read_only`: the menu closure outlives
+        // this render, so it cannot borrow `self` for the engine.
+        let sqlite = self.connection.config.engine == Engine::Sqlite;
 
         Button::new("schema-actions")
             .ghost()
@@ -457,6 +461,16 @@ impl Session {
                     Box::new(ImportSqlDump),
                     |this, _window, cx| this.import_dump(cx),
                 ))
+                .item(
+                    item(
+                        "Back Up Database…",
+                        Box::new(BackupDatabase),
+                        |this, window, cx| this.open_backup_dialog(window, cx),
+                    )
+                    // SQLite has no dump tool; the item stays, dimmed, so
+                    // the menu does not change shape.
+                    .disabled(sqlite),
+                )
                 .separator()
                 .item(item(
                     "Search Schema…",
