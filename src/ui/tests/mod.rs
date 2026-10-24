@@ -50,6 +50,7 @@ mod files;
 mod filters;
 mod import;
 mod layout;
+mod messages;
 mod navigation;
 mod paging;
 mod preferences;

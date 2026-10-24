@@ -184,6 +184,7 @@ impl ScriptOutcome {
                 .collect(),
             elapsed: Duration::ZERO,
             affected: None,
+            messages: Vec::new(),
         })
     }
 }

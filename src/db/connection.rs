@@ -15,8 +15,8 @@ use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use sqlx::Either;
 use sqlx::{
-    AssertSqlSafe, Column, Database, Encode, Executor, IntoArguments, Row, SqlSafeStr, Type,
-    TypeInfo,
+    AssertSqlSafe, Column, ColumnIndex, Database, Decode, Encode, Executor, IntoArguments, Row,
+    SqlSafeStr, Type, TypeInfo,
 };
 
 use super::catalog::{Catalog, CatalogEntry, CatalogKind, MAX_ENTRIES};
@@ -25,7 +25,7 @@ use super::dedicated::Dedicated;
 use super::erd::{ErdColumn, ErdRelation, ErdTable};
 use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary};
 use super::plan::{self, Explained, Plan};
-use super::query::{Cell, QueryResult};
+use super::query::{Cell, QueryMessage, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
 use super::tunnel::Tunnel;
 use super::{
@@ -1328,12 +1328,21 @@ impl Connection {
 /// Sibling to [`fetch_all`] for a connection held on its own rather than a
 /// pool — a [`Dedicated`] one, reached through `Deref`/`DerefMut` the same way
 /// `sqlite::rebuild` reaches its own.
+///
+/// `messages_sql` is a follow-up statement whose rows are
+/// (`level`, `code`, `message`) — MySQL's `SHOW WARNINGS` — run on this
+/// same connection straight after the statement, so the messages it reports
+/// are this statement's and not another session's. `None` where the engine
+/// has no such statement; the pool's [`fetch_all`] never takes one, since
+/// a pool cannot promise the follow-up lands on the connection that ran
+/// the statement.
 pub(crate) async fn fetch_on<DB, F>(
     connection: &mut DB::Connection,
     sql: &str,
     params: Vec<Cell>,
     cell: F,
     rows_affected: fn(&DB::QueryResult) -> u64,
+    messages_sql: Option<&str>,
 ) -> Result<QueryResult>
 where
     DB: Database,
@@ -1341,6 +1350,10 @@ where
     <DB as Database>::Arguments: IntoArguments<DB>,
     for<'q> Option<String>: Encode<'q, DB>,
     String: Type<DB>,
+    i64: Type<DB>,
+    for<'r> String: Decode<'r, DB>,
+    for<'r> i64: Decode<'r, DB>,
+    usize: ColumnIndex<DB::Row>,
     F: Fn(&DB::Row, usize) -> Cell,
 {
     let statement = AssertSqlSafe(sql.to_string()).into_sql_str();
@@ -1365,6 +1378,16 @@ where
     drop(results);
     let elapsed = started.elapsed();
 
+    // Before anything else runs on this connection — the describe below
+    // included, which a statement with no rows gets — so the messages are
+    // the statement that just ran, not whatever comes next. Reading them
+    // is best-effort: a failure here never fails a query that already
+    // ran, it just leaves it without messages.
+    let messages = match messages_sql {
+        Some(sql) => read_messages(&mut *connection, sql).await,
+        None => Vec::new(),
+    };
+
     let (columns, column_types): (Vec<String>, Vec<String>) = match rows.first() {
         Some(row) => describe_columns(row.columns()),
         None => Executor::describe(&mut *connection, statement)
@@ -1384,7 +1407,48 @@ where
         rows,
         elapsed,
         affected,
+        messages,
     })
+}
+
+/// Read a follow-up statement's rows as [`QueryMessage`]s: `level`, `code`,
+/// `message` by position. A row that does not read as that shape is skipped,
+/// and a follow-up that fails at all reads as no messages — the caller
+/// already has its query's rows, and losing them over a diagnostic would
+/// be the wrong trade.
+async fn read_messages<DB>(connection: &mut DB::Connection, sql: &str) -> Vec<QueryMessage>
+where
+    DB: Database,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    String: Type<DB>,
+    i64: Type<DB>,
+    for<'r> String: Decode<'r, DB>,
+    for<'r> i64: Decode<'r, DB>,
+    usize: ColumnIndex<DB::Row>,
+{
+    let statement = AssertSqlSafe(sql.to_string()).into_sql_str();
+    let Ok(rows) = sqlx::query(statement).fetch_all(&mut *connection).await else {
+        return Vec::new();
+    };
+    let mut messages = Vec::new();
+    for row in &rows {
+        let Ok(level) = row.try_get::<String, _>(0) else {
+            continue;
+        };
+        let Ok(text) = row.try_get::<String, _>(2) else {
+            continue;
+        };
+        // `SHOW WARNINGS` numbers its codes, but the driver may hand one
+        // back as text or as an integer depending on the protocol, so both
+        // are read and a code that reads as neither still keeps its text.
+        let code = row
+            .try_get::<String, _>(1)
+            .ok()
+            .or_else(|| row.try_get::<i64, _>(1).ok().map(|code| code.to_string()));
+        messages.push(QueryMessage { level, code, text });
+    }
+    messages
 }
 
 /// Run `sql` and turn every value into a display string with `cell`.
@@ -1454,6 +1518,9 @@ where
         rows,
         elapsed,
         affected,
+        // A pool read has no session to ask: see `fetch_on`'s
+        // `messages_sql`, which only a held connection can carry.
+        messages: Vec::new(),
     })
 }
 
