@@ -29,10 +29,10 @@ use crate::ui::query_editor::{
     RunScriptIgnoringErrors, ToggleComment,
 };
 use crate::ui::session::{
-    CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NewTable, NextTab, OpenConsole,
-    OpenErd, OpenFile, OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables,
-    OpenUserManagement, PreviousTab, QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs,
-    SaveQuery, SaveQueryAs, SearchSchema,
+    BackupDatabase, CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NewTable, NextTab,
+    OpenConsole, OpenErd, OpenFile, OpenMaintenance, OpenProcessList, OpenQueryDigest,
+    OpenServerVariables, OpenUserManagement, PreviousTab, QuickSwitcher, Reconnect, Refresh,
+    SaveFile, SaveFileAs, SaveQuery, SaveQueryAs, SearchSchema,
 };
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -167,6 +167,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("New Table…", NewTable),
             MenuItem::action("Import SQL Dump…", ImportSqlDump),
+            MenuItem::action("Back Up Database…", BackupDatabase),
             MenuItem::separator(),
             MenuItem::action("Search Schema…", SearchSchema),
             MenuItem::action("ER Diagram", OpenErd),
@@ -240,6 +241,7 @@ mod tests {
             ("Save", TypeId::of::<SaveFile>()),
             ("Save As", TypeId::of::<SaveFileAs>()),
             ("Import SQL Dump", TypeId::of::<ImportSqlDump>()),
+            ("Back Up Database", TypeId::of::<BackupDatabase>()),
             ("Close Tab", TypeId::of::<CloseTab>()),
             ("Close Connection", TypeId::of::<CloseConnection>()),
             ("Reconnect", TypeId::of::<Reconnect>()),
@@ -369,6 +371,7 @@ mod tests {
             TypeId::of::<NewTable>(),
             TypeId::of::<SaveQueryAs>(),
             TypeId::of::<EditVariables>(),
+            TypeId::of::<BackupDatabase>(),
         ];
 
         cx.update(|cx| {
