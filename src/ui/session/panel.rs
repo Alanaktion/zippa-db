@@ -172,6 +172,7 @@ impl SessionPanel {
                 plan: None,
                 show_plan: false,
                 show_chart: false,
+                show_messages: false,
                 chart: ChartConfig::default(),
                 limit: QueryLimit::new(window, cx),
             },
@@ -527,18 +528,71 @@ impl SessionPanel {
         )
     }
 
-    /// Show the plan pane or the result grid. The chart and the plan are
-    /// two views of the same pane, so showing one hides the other.
+    /// Show the plan pane or the result grid. The chart, the plan, and the
+    /// messages are views of the same pane, so showing one hides the others.
     pub(crate) fn set_show_plan(&mut self, show: bool, cx: &mut Context<Self>) {
         if let TabContent::Query {
             show_plan,
             show_chart,
+            show_messages,
             ..
         } = &mut self.content
         {
             *show_plan = show;
             *show_chart = false;
+            *show_messages = false;
             cx.notify();
+        }
+    }
+
+    /// Whether the pane is showing the shown result's messages rather than
+    /// the result grid.
+    pub(crate) fn showing_messages(&self) -> bool {
+        matches!(
+            &self.content,
+            TabContent::Query {
+                show_messages: true,
+                ..
+            }
+        )
+    }
+
+    /// Show the messages pane or the result grid. Like the plan and the
+    /// chart, it is a view of the same pane, so showing it hides them —
+    /// and it only ever shows for a result that has messages, which the
+    /// switch itself already guarantees.
+    pub(crate) fn set_show_messages(&mut self, show: bool, cx: &mut Context<Self>) {
+        if let TabContent::Query {
+            show_plan,
+            show_chart,
+            show_messages,
+            ..
+        } = &mut self.content
+        {
+            *show_messages = show;
+            *show_plan = false;
+            *show_chart = false;
+            cx.notify();
+        }
+    }
+
+    /// The shown result's messages, if it has any — what the messages pane
+    /// lists, and what the view bar's Messages segment appears for.
+    pub(crate) fn shown_messages(&self) -> Vec<String> {
+        match &self.content {
+            TabContent::Query {
+                results, result, ..
+            } => results
+                .get(*result)
+                .map(|shown| {
+                    shown
+                        .messages
+                        .iter()
+                        .map(|message| message.display())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
         }
     }
 
@@ -550,6 +604,7 @@ impl SessionPanel {
             plan: slot,
             show_plan,
             show_chart,
+            show_messages,
             status,
             error,
             ..
@@ -568,8 +623,10 @@ impl SessionPanel {
         };
         view.update(cx, |view, cx| view.set_plan(plan, cx));
         *show_plan = true;
-        // The plan is what the pane shows now, not an earlier run's chart.
+        // The plan is what the pane shows now, not an earlier run's chart
+        // or messages.
         *show_chart = false;
+        *show_messages = false;
         // The plan is what the pane shows now, not an earlier run's error.
         *error = None;
         *status = Status::Done(summary);
@@ -648,13 +705,17 @@ impl SessionPanel {
         if let TabContent::Query {
             status: slot,
             error,
+            show_messages,
             ..
         } = &mut self.content
         {
             // A fresh run replaces whatever the pane was showing, error
-            // included; its outcome decides what the pane says next.
+            // included; its outcome decides what the pane says next. The
+            // messages go with it: until the new run lands, the pane is
+            // the grid, not the previous run's messages.
             if matches!(status, Status::Running) {
                 *error = None;
+                *show_messages = false;
             }
             *slot = status;
         }
@@ -800,6 +861,7 @@ impl SessionPanel {
             error,
             show_plan,
             show_chart,
+            show_messages,
             ..
         } = &mut self.content
         else {
@@ -813,9 +875,10 @@ impl SessionPanel {
         // error an earlier run left there.
         *error = None;
         // A new run is what the user asked to see, so the grid comes back even
-        // if a plan was showing.
+        // if a plan, a chart, or messages were showing.
         *show_plan = false;
         *show_chart = false;
+        *show_messages = false;
 
         let summary = self.result_summary();
         self.set_status(Status::Done(summary));
@@ -841,6 +904,7 @@ impl SessionPanel {
             results,
             result,
             show_chart,
+            show_messages,
             ..
         } = &mut self.content
         else {
@@ -854,9 +918,13 @@ impl SessionPanel {
         *result = which;
         // The chart follows the result being shown, unless the new one has
         // nothing to chart — then the grid comes back instead of a chart
-        // pane with no points.
+        // pane with no points. Messages follow the same rule: a result
+        // with none leaves no messages pane to show.
         if !chartable(&chosen) {
             *show_chart = false;
+        }
+        if chosen.messages.is_empty() {
+            *show_messages = false;
         }
 
         grid.update(cx, |grid, cx| grid.set_result(chosen, cx));
@@ -967,6 +1035,13 @@ impl SessionPanel {
         let summary = match self.limit_note(shown.row_count()) {
             Some(note) => format!("{} · {note}", shown.summary()),
             None => shown.summary(),
+        };
+        // Messages are easy to miss behind the grid, so the status bar
+        // names them too — the count is what sends the user to the pane.
+        let summary = match shown.messages.len() {
+            0 => summary,
+            1 => format!("{summary} · 1 message"),
+            count => format!("{summary} · {count} messages"),
         };
         if results.len() == 1 {
             return summary;
@@ -1099,8 +1174,11 @@ impl SessionPanel {
             TabContent::Query {
                 grid,
                 plan,
+                results,
+                result,
                 show_plan,
                 show_chart,
+                show_messages,
                 pinned,
                 ..
             } => {
@@ -1111,8 +1189,14 @@ impl SessionPanel {
                 grid.update(cx, |grid, cx| grid.clear(cx));
                 // A plan belongs to the connection it was read from.
                 *plan = None;
+                // So do the results: the view bar offers Messages for
+                // whatever the shown result holds, and the old
+                // connection's warnings must not survive the switch.
+                results.clear();
+                *result = 0;
                 *show_plan = false;
                 *show_chart = false;
+                *show_messages = false;
                 self.set_status(Status::Idle);
             }
             TabContent::Table { view } => {
@@ -1207,6 +1291,33 @@ impl SessionPanel {
             return None;
         }
         Some((sql, default_save_name(&self.title)))
+    }
+
+    /// The result pane, given over to the shown result's messages: one line
+    /// per notice or warning, in the order the server reported them. The
+    /// level is said in words as well as in colour, so nothing here is
+    /// told by colour alone.
+    fn render_messages(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let messages = self.shown_messages();
+        let theme = cx.theme();
+        div()
+            .id("query-messages")
+            .test_support()
+            .size_full()
+            .overflow_y_scroll()
+            .p_4()
+            .children(messages.iter().map(|message| {
+                div()
+                    .text_sm()
+                    .when(message.starts_with("Error"), |this| {
+                        this.text_color(theme.danger)
+                    })
+                    .when(message.starts_with("Warning"), |this| {
+                        this.text_color(theme.warning)
+                    })
+                    .child(message.clone())
+            }))
+            .into_any_element()
     }
 
     /// The result pane, given over to a failure: the whole message, in the
@@ -1380,17 +1491,28 @@ impl SessionPanel {
         let has_plan = plan.is_some();
         let showing_plan = self.showing_plan() && has_plan;
         let chartable = all.get(shown).is_some_and(chartable);
-        // The chart and the plan are two views of the same pane; the plan
-        // wins when both are asked for.
+        let has_messages = all
+            .get(shown)
+            .is_some_and(|shown| !shown.messages.is_empty());
+        // The chart, the plan, and the messages are views of the same pane;
+        // the plan wins when both are asked for, and messages only ever
+        // show for a result that has them.
         let showing_chart = self.showing_chart() && chartable && !showing_plan;
+        let showing_messages =
+            self.showing_messages() && has_messages && !showing_plan && !showing_chart;
         // Segments in order: Results, then Chart when the shown result has
-        // numbers in it, then Plan when one has been read.
+        // numbers in it, then Plan when one has been read, then Messages
+        // when the shown result has any.
         let chart_index = chartable.then_some(1);
         let plan_index = has_plan.then_some(1 + usize::from(chartable));
+        let messages_index =
+            has_messages.then_some(1 + usize::from(chartable) + usize::from(has_plan));
         let selected = if showing_chart {
             chart_index
         } else if showing_plan {
             plan_index
+        } else if showing_messages {
+            messages_index
         } else {
             Some(0)
         }
@@ -1420,7 +1542,7 @@ impl SessionPanel {
                         })),
                 )
             })
-            .when(chartable || has_plan, |this| {
+            .when(chartable || has_plan || has_messages, |this| {
                 this.child(
                     h_flex().flex_none().ml_auto().child(
                         TabBar::new("view-tabs")
@@ -1435,6 +1557,8 @@ impl SessionPanel {
                                     if let Some(plan) = this.plan_view() {
                                         plan.update(cx, |plan, cx| plan.focus(window, cx));
                                     }
+                                } else if Some(*index) == messages_index {
+                                    this.set_show_messages(true, cx);
                                 } else {
                                     this.set_show_plan(false, cx);
                                 }
@@ -1445,6 +1569,9 @@ impl SessionPanel {
                             })
                             .when(has_plan, |this| {
                                 this.child(Tab::new().aria_label("Plan").label("Plan"))
+                            })
+                            .when(has_messages, |this| {
+                                this.child(Tab::new().aria_label("Messages").label("Messages"))
                             }),
                     ),
                 )
@@ -1671,23 +1798,28 @@ impl Render for SessionPanel {
                 let showing_plan = *show_plan && has_plan;
                 let shown = results.get(*result);
                 let chartable = shown.is_some_and(chartable);
-                // The chart and the plan are two views of the same pane;
-                // the plan wins when both are asked for, and the chart only
-                // shows for a result with numbers in it.
+                let has_messages = shown.is_some_and(|shown| !shown.messages.is_empty());
+                // The chart, the plan, and the messages are views of the
+                // same pane; the plan wins when both are asked for, and
+                // the chart and the messages only show for a result that
+                // has numbers in it, or messages, respectively.
                 let showing_chart = self.showing_chart() && chartable && !showing_plan;
+                let showing_messages =
+                    self.showing_messages() && has_messages && !showing_plan && !showing_chart;
                 // A run that failed outright owns the pane: the error is
                 // shown where its rows would have been, in this tab, for as
                 // long as the tab is kept.
-                let content: gpui_kit::AnyElement = match (error, showing_plan, showing_chart, plan)
-                {
-                    (Some(error), _, _, _) => self.render_pane_error(error, cx),
-                    (_, true, _, Some(plan)) => plan.clone().into_any_element(),
-                    (_, _, true, _) => match shown {
-                        Some(result) => self.render_chart(result, cx),
-                        None => grid.clone().into_any_element(),
-                    },
-                    _ => grid.clone().into_any_element(),
-                };
+                let content: gpui_kit::AnyElement =
+                    match (error, showing_plan, showing_chart, showing_messages, plan) {
+                        (Some(error), _, _, _, _) => self.render_pane_error(error, cx),
+                        (_, true, _, _, Some(plan)) => plan.clone().into_any_element(),
+                        (_, _, true, _, _) => match shown {
+                            Some(result) => self.render_chart(result, cx),
+                            None => grid.clone().into_any_element(),
+                        },
+                        (_, _, _, true, _) => self.render_messages(cx),
+                        _ => grid.clone().into_any_element(),
+                    };
 
                 v_flex()
                     .size_full()
@@ -1709,16 +1841,19 @@ impl Render for SessionPanel {
                                                 .size_full()
                                                 // A script leaves one result per
                                                 // statement, a plan leaves the switch,
-                                                // and a chartable result leaves the
-                                                // chart switch; a lone result alone
-                                                // would make the bar say nothing. While
-                                                // the pane shows an error there is
-                                                // nothing to switch between.
+                                                // a chartable result leaves the chart
+                                                // switch, and a result with messages
+                                                // leaves the messages switch; a lone
+                                                // result alone would make the bar say
+                                                // nothing. While the pane shows an
+                                                // error there is nothing to switch
+                                                // between.
                                                 .when(
                                                     error.is_none()
                                                         && (results.len() > 1
                                                             || has_plan
-                                                            || chartable),
+                                                            || chartable
+                                                            || has_messages),
                                                     |this| this.child(self.render_view_bar(cx)),
                                                 )
                                                 .child(div().flex_1().min_h_0().child(content)),

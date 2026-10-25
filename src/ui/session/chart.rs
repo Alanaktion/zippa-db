@@ -265,17 +265,20 @@ impl SessionPanel {
         )
     }
 
-    /// Show the chart pane or the result grid. The chart and the plan are
-    /// two views of the same pane, so showing one hides the other.
+    /// Show the chart pane or the result grid. The chart, the plan, and
+    /// the messages are views of the same pane, so showing one hides the
+    /// others.
     pub(crate) fn set_show_chart(&mut self, show: bool, cx: &mut Context<Self>) {
         if let TabContent::Query {
             show_chart,
             show_plan,
+            show_messages,
             ..
         } = &mut self.content
         {
             *show_chart = show;
             *show_plan = false;
+            *show_messages = false;
             cx.notify();
         }
     }

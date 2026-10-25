@@ -2917,6 +2917,58 @@ async fn live_mysql_an_autocommit_script_can_lock_tables() {
     connection.close().await;
 }
 
+/// A query tab on MySQL reports the warnings its statement produced, read
+/// back with `SHOW WARNINGS` on the tab's pinned connection: division by
+/// zero returns `NULL` with warning 1365 rather than an error, and a clean
+/// statement leaves no messages behind. Runs against `compose.yaml`'s
+/// MySQL:
+///
+/// ```text
+/// ./script/test-db up
+/// cargo test -- --ignored live_mysql_a_pinned_tab_reports_warnings
+/// ```
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_a_pinned_tab_reports_warnings() {
+    let (connection, _pool) = live_mysql().await;
+    let connection = Arc::new(connection);
+    let pinned = PinnedConnection::new(connection.clone());
+
+    let warned = pinned
+        .run_query_with("SELECT 1 / 0 AS quotient", &[])
+        .await
+        .expect("division by zero is a warning, not an error");
+    assert_eq!(warned.rows, [[None]], "division by zero reads back as NULL");
+    assert_eq!(
+        warned.messages.len(),
+        1,
+        "one warning for the division, got {:?}",
+        warned.messages
+    );
+    assert_eq!(warned.messages[0].level, "Warning");
+    assert_eq!(warned.messages[0].code.as_deref(), Some("1365"));
+    assert!(
+        warned.messages[0].text.contains("Division by 0"),
+        "unexpected warning text: {}",
+        warned.messages[0].text
+    );
+
+    // The next statement's clean run does not inherit the last one's
+    // warnings: `SHOW WARNINGS` answers for the statement just run.
+    let clean = pinned
+        .run_query_with("SELECT 1 AS one", &[])
+        .await
+        .expect("a clean statement");
+    assert!(
+        clean.messages.is_empty(),
+        "a clean statement leaves no messages, got {:?}",
+        clean.messages
+    );
+
+    drop(pinned);
+    connection.close().await;
+}
+
 /// A query tab on MySQL can run `BEGIN`, `USE`, and `LOCK TABLES` — statements
 /// the prepared protocol refuses — and they last from one run to the next on
 /// its pinned connection, which follows the transaction from the statements

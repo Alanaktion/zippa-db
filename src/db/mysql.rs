@@ -339,6 +339,15 @@ pub(crate) const ALL_FOREIGN_KEYS_SQL: &str = "SELECT NULL, kcu.table_name, \
        kcu.referenced_table_name, rc.delete_rule, rc.update_rule \
      ORDER BY kcu.table_name, kcu.constraint_name";
 
+/// The warnings and notes the last statement on this connection produced,
+/// as rows of (`Level`, `Code`, `Message`). `SHOW WARNINGS` is per-session,
+/// so it only answers for a statement run on the same connection — the
+/// query tab's pinned one — and never for a pool read, where another
+/// connection would answer for a different session. The statement itself
+/// does not generate warnings, so reading it does not clear the list it
+/// reports.
+pub(crate) const SHOW_WARNINGS_SQL: &str = "SHOW WARNINGS";
+
 pub(crate) fn rows_affected(result: &MySqlQueryResult) -> u64 {
     result.rows_affected()
 }

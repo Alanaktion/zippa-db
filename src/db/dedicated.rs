@@ -105,6 +105,9 @@ impl Dedicated {
                     params,
                     move |row, index| postgres::cell(row, index, scale),
                     postgres::rows_affected,
+                    // Postgres notices cannot be read back on any
+                    // connection: see `QueryResult::messages`.
+                    None,
                 )
                 .await
             }
@@ -116,6 +119,7 @@ impl Dedicated {
                     params,
                     mysql::cell,
                     mysql::rows_affected,
+                    Some(mysql::SHOW_WARNINGS_SQL),
                 )
                 .await;
                 match fetched {
@@ -135,6 +139,11 @@ impl Dedicated {
                             rows: Vec::new(),
                             elapsed: started.elapsed(),
                             affected: Some(mysql::rows_affected(&done)),
+                            // The statements that land here — transaction
+                            // control, `LOCK TABLES`, `USE` — do not
+                            // produce warnings worth a pane, so no
+                            // `SHOW WARNINGS` round trip is spent on them.
+                            messages: Vec::new(),
                         })
                     }
                     fetched => fetched,
@@ -147,6 +156,7 @@ impl Dedicated {
                     params,
                     sqlite::cell,
                     sqlite::rows_affected,
+                    None,
                 )
                 .await
             }
