@@ -1463,13 +1463,19 @@ where
         let Ok(text) = row.try_get::<String, _>(2) else {
             continue;
         };
-        // `SHOW WARNINGS` numbers its codes, but the driver may hand one
-        // back as text or as an integer depending on the protocol, so both
-        // are read and a code that reads as neither still keeps its text.
+        // `SHOW WARNINGS` numbers its codes, but the number's shape
+        // depends on the driver: text on some protocols, a signed integer
+        // on others — and MySQL's Code column is unsigned, which sqlx's
+        // checked `try_get` refuses as both text (a non-text column) and
+        // a signed integer (an unsigned flag). The last resort reads the
+        // raw text-protocol bytes instead, which is sound because the
+        // follow-up above runs as raw SQL; a code that reads as none of
+        // these still keeps its text.
         let code = row
             .try_get::<String, _>(1)
             .ok()
-            .or_else(|| row.try_get::<i64, _>(1).ok().map(|code| code.to_string()));
+            .or_else(|| row.try_get::<i64, _>(1).ok().map(|code| code.to_string()))
+            .or_else(|| row.try_get_unchecked::<String, _>(1).ok());
         messages.push(QueryMessage { level, code, text });
     }
     messages
