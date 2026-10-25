@@ -7,13 +7,14 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, WeakEntity, Window, px};
 
+use crate::ui::backup_dialog::{BackupEvent, BackupView};
 use crate::ui::import_dialog::{ImportEvent, ImportView};
 use crate::ui::sql_file;
 
 use super::save_dialog::{OnSaved, SaveQueryDialog};
 use super::{
-    ImportSqlDump, OpenFile, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs, Session, SessionEvent,
-    SessionPanel, Status,
+    BackupDatabase, ImportSqlDump, OpenFile, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs, Session,
+    SessionEvent, SessionPanel, Status,
 };
 use crate::saved_queries::{self, SavedQueries};
 
@@ -125,6 +126,85 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         self.import_dump(cx);
+    }
+
+    pub(super) fn on_backup_database(
+        &mut self,
+        _: &BackupDatabase,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_backup_dialog(window, cx);
+    }
+
+    /// Build the backup dialog, if one is not already open. The dialog
+    /// itself loads the database and table lists, then asks for the output
+    /// file once the user has picked what to back up.
+    pub(super) fn open_backup_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.backup.is_some() {
+            return;
+        }
+
+        let view = cx.new(|cx| BackupView::new(self.connection.clone(), window, cx));
+        cx.subscribe_in(&view, window, Self::on_backup_event)
+            .detach();
+
+        let session = cx.entity().downgrade();
+        let body = view.clone();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let session = session.clone();
+            dialog
+                .title("Back Up Database")
+                .w(px(560.))
+                .h(px(620.))
+                // The dialog's own keys are off so `enter` cannot dismiss it;
+                // `escape` is bound to `CloseBackup` on the body instead.
+                .keyboard(false)
+                // Closed from outside its body (the overlay, the close
+                // button): a run still going is stopped rather than left
+                // running with nothing on screen to stop it.
+                .on_close(move |_, _window, cx| {
+                    session
+                        .update(cx, |this, cx| {
+                            if let Some(view) = this.backup.take() {
+                                view.update(cx, |view, cx| view.cancel(cx));
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                })
+                .child(body.clone())
+        });
+
+        // Put the keyboard on the body so `escape` reaches `CloseBackup`.
+        view.update(cx, |view, cx| view.focus(window, cx));
+        self.backup = Some(view);
+    }
+
+    /// The dialog's own button: dismiss it. A backup changes nothing on
+    /// the server, so there is no sidebar to refresh afterwards.
+    fn on_backup_event(
+        &mut self,
+        _: &Entity<BackupView>,
+        event: &BackupEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            BackupEvent::Dismissed => {
+                self.backup = None;
+                window.close_dialog(cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Stop a backup in flight, the way [`Self::cancel_import`] gives up
+    /// on an import.
+    pub(crate) fn cancel_backup(&mut self, cx: &mut Context<Self>) {
+        if let Some(view) = self.backup.clone() {
+            view.update(cx, |view, cx| view.cancel(cx));
+        }
     }
 
     /// Ask for a dump file, then open the import dialog over the session.

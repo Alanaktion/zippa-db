@@ -47,7 +47,6 @@ known defects and risks in the shipped code are tracked in
 
 * Stream a large export instead of reading the whole table into memory first
 * Import CSV into an existing table ([plan](.agents/plans/csv-import.md))
-* Backup via `pg_dump` / `mysqldump`
 * Local query history, searchable by date, database, or text ([plan](.agents/plans/query-history.md))
 * Reusable SQL snippets ([plan](.agents/plans/sql-snippets.md))
 * Customizable keyboard shortcuts

@@ -315,6 +315,23 @@ impl Connection {
         &self.config.database
     }
 
+    /// The password held in memory for this connection, if one was supplied.
+    /// For a dump tool's environment only — never printed, never logged.
+    pub(crate) fn stored_password(&self) -> Option<&str> {
+        self.password.as_deref()
+    }
+
+    /// The host and port a dump tool should connect to: the SSH tunnel's
+    /// loopback end when the connection runs through one, the saved host
+    /// and port otherwise. The config keeps the host as the jump host sees
+    /// it, which is not where the tool can reach the server from.
+    pub(crate) fn server_endpoint(&self) -> (String, u16) {
+        match &self.tunnel {
+            Some(tunnel) => ("127.0.0.1".to_string(), tunnel.local_port()),
+            None => (self.config.host.clone(), self.config.port),
+        }
+    }
+
     /// Open a second connection to `database` on the same server.
     ///
     /// Neither engine can move an existing pool to another database, so this

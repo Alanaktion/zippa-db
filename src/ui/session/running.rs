@@ -842,9 +842,10 @@ impl Session {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // An import in flight is the other long-running thing a session owns,
-        // so the same key gives up on it.
+        // An import or a backup in flight is the other long-running thing a
+        // session owns, so the same key gives up on it.
         self.cancel_import(cx);
+        self.cancel_backup(cx);
         if let Some(panel) = self.active_panel() {
             panel.update(cx, |panel, cx| {
                 panel.cancel_running(cx);

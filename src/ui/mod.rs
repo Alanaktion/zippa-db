@@ -3,6 +3,7 @@
 //! Each submodule is a GPUI view (`Entity<T>` where `T: Render`) that owns its
 //! own state and notifies independently of the rest of the window.
 
+pub mod backup_dialog;
 pub mod busy;
 pub mod completion;
 pub mod console;

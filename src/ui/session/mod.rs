@@ -23,6 +23,7 @@ use crate::db::{
     CatalogEntry, CatalogKind, Connection, DatabaseObject, PinnedConnection, StoredObject,
 };
 use crate::saved_queries::SavedQueries;
+use crate::ui::backup_dialog::BackupView;
 use crate::ui::completion::SharedCatalog;
 use crate::ui::create_database_dialog::CreateDatabaseView;
 use crate::ui::import_dialog::ImportView;
@@ -69,6 +70,7 @@ actions!(
         QuickSwitcher,
         Disconnect,
         Reconnect,
+        BackupDatabase,
         ImportSqlDump,
         SearchSchema,
         OpenConsole,
@@ -159,6 +161,8 @@ pub struct Session {
     next_key: usize,
     /// The import dialog, while one is open over the window.
     import: Option<Entity<ImportView>>,
+    /// The backup dialog, while one is open over the window.
+    backup: Option<Entity<BackupView>>,
     /// The create-database dialog, while one is open over the window.
     create_database: Option<Entity<CreateDatabaseView>>,
     /// The query-variables dialog, while one is open over the window, and
@@ -230,6 +234,7 @@ impl Session {
             reconnecting: false,
             next_key: 0,
             import: None,
+            backup: None,
             create_database: None,
             variables_dialog: None,
         };
@@ -590,6 +595,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::cancel_query))
             .on_action(cx.listener(Self::on_import_dump))
+            .on_action(cx.listener(Self::on_backup_database))
             .on_action(cx.listener(Self::on_quick_switcher))
             .on_action(cx.listener(Self::on_search_schema))
             .on_action(cx.listener(|this, _: &OpenConsole, window, cx| {
