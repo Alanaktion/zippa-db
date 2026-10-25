@@ -290,6 +290,9 @@ impl BackupView {
             };
             let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
             let task = runtime::spawn(async move { backup::run(request, sender).await });
+            // The completion task removes a cancelled run's partial file,
+            // so the path survives the dialog resetting itself first.
+            let cleanup_path = path.clone();
 
             this.update(cx, |this, cx| {
                 this.abort = task.abort_handle();
@@ -321,6 +324,14 @@ impl BackupView {
 
             cx.spawn(async move |cx| {
                 let result = task.await;
+                // The run task has settled by now — its file handle is
+                // dropped — so removing the partial file here cannot race
+                // the run the way removing it from `cancel` did. Only the
+                // outer cancellation removes here; a failure the run
+                // returned itself already removed its own file.
+                if result.is_err() {
+                    let _ = std::fs::remove_file(&cleanup_path);
+                }
                 this.update(cx, |this, cx| this.finish(result, cx)).ok();
             })
             .detach();
@@ -348,19 +359,14 @@ impl BackupView {
     }
 
     /// Stop the run in flight, the way `Cmd`/`Ctrl`+`.` does. The partial
-    /// file is removed — a truncated dump that looks complete is worse
-    /// than no file — best effort, since the child may still be dying.
+    /// file is removed by the completion task once the run has settled,
+    /// not here: removing it now would race the run dropping its file,
+    /// and on Windows the removal would fail against the open handle.
     pub(crate) fn cancel(&mut self, cx: &mut Context<Self>) {
         if let Some(abort) = self.abort.take() {
             abort.abort();
         }
         if self.state == State::Running {
-            if let Some(path) = self.output.clone() {
-                // Dropping the task detaches it; the removal runs on its own.
-                let _task = cx.background_spawn(async move {
-                    let _ = std::fs::remove_file(path);
-                });
-            }
             self.state = State::Done;
             self.failure = Some("Cancelled".to_string());
             cx.notify();

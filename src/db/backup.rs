@@ -12,15 +12,19 @@
 //! so no external `gzip` binary is needed. SQLite is out of scope: it has
 //! no equivalent dump tool, and copying its file is a different feature.
 //!
-//! Secrets never reach a command line: both tools take the password from
-//! the environment (`PGPASSWORD` / `MYSQL_PWD`), which does not show up in
-//! a process listing the way a `--password=…` argument would. Anything a
-//! failed tool prints is redacted against the password before it is shown,
-//! on the off chance a server error echoes it back.
+//! Secrets never reach a command line: the password travels in a temporary
+//! credentials file the run creates and deletes (`PGPASSFILE` for
+//! `pg_dump`, `--defaults-extra-file` for `mysqldump`), never in the
+//! environment a process listing or a crash report could inherit — except
+//! a password with a line break, which neither file format can hold and
+//! which keeps the old environment path. Anything a failed tool prints is
+//! redacted against the password before it is shown, on the off chance a
+//! server error echoes it back.
 
 use std::fmt;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context as _, Result};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -77,8 +81,9 @@ pub struct TableSelection {
 }
 
 /// One dump-tool invocation: the program, its arguments, and the database
-/// it dumps. The password is deliberately not here — it travels in the
-/// child process's environment (see [`run`]).
+/// it dumps. The password is deliberately not here — it travels in a
+/// temporary credentials file the run creates (see [`run`]), or, for a
+/// password with a line break, in the child process's environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DumpCommand {
     pub program: &'static str,
@@ -162,6 +167,73 @@ fn mysql_ssl_mode(mode: SslMode) -> &'static str {
     }
 }
 
+/// Which `mysqldump` is installed: Oracle's understands `--ssl-mode`,
+/// MariaDB's does not (MDEV-22129) and needs the legacy flags instead.
+/// A MariaDB client exposed as `mysqldump` would otherwise reject every
+/// backup before connecting, whatever the connection's SSL mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MysqldumpFlavor {
+    Oracle,
+    MariaDb,
+}
+
+/// The flavor from a `mysqldump --version` line: MariaDB's says so, and
+/// anything else is treated as Oracle's — which is also the fallback when
+/// the probe fails, since the backup then fails with the missing-tool
+/// error anyway and existing MySQL users keep today's behavior.
+fn flavor_from_version(output: &str) -> MysqldumpFlavor {
+    if output.to_lowercase().contains("mariadb") {
+        MysqldumpFlavor::MariaDb
+    } else {
+        MysqldumpFlavor::Oracle
+    }
+}
+
+async fn mysqldump_flavor() -> MysqldumpFlavor {
+    let Ok(output) = tokio::process::Command::new("mysqldump")
+        .arg("--version")
+        .output()
+        .await
+    else {
+        return MysqldumpFlavor::Oracle;
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let text = if stdout.trim().is_empty() {
+        String::from_utf8_lossy(&output.stderr)
+    } else {
+        stdout
+    };
+    flavor_from_version(&text)
+}
+
+/// The SSL arguments for a `mysqldump` of `flavor`: Oracle's `--ssl-mode`
+/// form, or MariaDB's legacy flags. MariaDB cannot tell Prefer from
+/// Require with these — both ask for encryption — nor VerifyCa without
+/// hostname verification, so both verify modes verify the name too:
+/// fail-closed rather than silently weaker. Prefer is never mapped to
+/// nothing: omitting the flags would run the backup unencrypted.
+fn mysql_ssl_args(mode: SslMode, flavor: MysqldumpFlavor) -> Vec<String> {
+    match flavor {
+        MysqldumpFlavor::Oracle => vec!["--ssl-mode".to_string(), mysql_ssl_mode(mode).to_string()],
+        MysqldumpFlavor::MariaDb => match mode {
+            SslMode::Disable => vec!["--skip-ssl".to_string()],
+            SslMode::Prefer | SslMode::Require => vec!["--ssl".to_string()],
+            SslMode::VerifyCa | SslMode::VerifyFull => {
+                vec!["--ssl-verify-server-cert".to_string()]
+            }
+        },
+    }
+}
+
+/// One part of a `pg_dump -t` pattern, quoted: `-t` takes a pattern, not
+/// an identifier, so an unquoted part is folded to lower case and `*`,
+/// `?`, and `.` read as pattern characters. Inside quotes the case stands
+/// and pattern characters are literal — which is what a table picked from
+/// the sidebar means.
+fn pg_pattern(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
 /// The dump invocations for a selection, one per database in order.
 ///
 /// The rules the dialog enforces, checked again here so a caller that skips
@@ -231,7 +303,10 @@ pub fn commands_for(
                 args.extend(["-d".to_string(), database.clone()]);
                 for table in tables.iter().filter(|table| &table.database == database) {
                     let schema = table.schema.as_deref().unwrap_or("public");
-                    args.extend(["-t".to_string(), format!("{schema}.{}", table.name)]);
+                    args.extend([
+                        "-t".to_string(),
+                        format!("{}.{}", pg_pattern(schema), pg_pattern(&table.name)),
+                    ]);
                 }
             }
             Engine::MySql => {
@@ -247,10 +322,20 @@ pub fn commands_for(
                 // Set explicitly rather than inherited: the tool's default
                 // is PREFERRED, but saying so keeps the dump's encryption
                 // from depending on the environment the app was launched in.
-                args.extend([
-                    "--ssl-mode".to_string(),
-                    mysql_ssl_mode(ssl_mode).to_string(),
-                ]);
+                // MariaDB's client does not understand `--ssl-mode`; the
+                // run rewrites these for it (see
+                // `rewrite_mysql_ssl_for_mariadb`).
+                args.extend(mysql_ssl_args(ssl_mode, MysqldumpFlavor::Oracle));
+                // A consistent InnoDB snapshot without LOCK TABLES:
+                // `--opt` locks tables by default, which needs a privilege
+                // read-only accounts do not have and blocks writes for the
+                // whole dump. `--routines` is not in `--opt`, so without it
+                // a restored backup lacks every stored procedure and
+                // function. `--events` is deliberately left out: it needs
+                // the EVENT privilege, which would break those same
+                // read-only backups.
+                args.push("--single-transaction".to_string());
+                args.push("--routines".to_string());
                 if multiple {
                     args.push("--databases".to_string());
                 }
@@ -362,11 +447,145 @@ const STDERR_KEEP: usize = 32 * 1024;
 /// The child processes are killed if the task running this is aborted —
 /// [`tokio::process::Command::kill_on_drop`] — which is how the dialog's
 /// Cancel reaches a dump already in flight.
+/// A temporary credentials file for the dump children, deleted when it
+/// drops — which covers success, failure, and an aborted run, since
+/// dropping the run future drops this with it. Created with mode 0600
+/// where the platform has one; the file lives in the per-user temp
+/// directory either way.
+struct CredentialsFile {
+    path: PathBuf,
+}
+
+impl CredentialsFile {
+    /// Build the file for `engine`'s dump tool, or `None` when there is no
+    /// password to carry. A password with a line break cannot live in
+    /// either file format, so it keeps the old environment path instead
+    /// (see `run_commands`).
+    fn create(
+        engine: Engine,
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &str,
+        databases: &[String],
+    ) -> std::io::Result<Option<Self>> {
+        if password.contains(['\n', '\r']) {
+            return Ok(None);
+        }
+        let contents = match engine {
+            Engine::Postgres => pgpass_contents(host, port, username, password, databases),
+            Engine::MySql => mysql_options_contents(password),
+            Engine::Sqlite => return Ok(None),
+        };
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        for _ in 0..100 {
+            let id = CREDENTIALS_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("zippa-db-backup-{}-{id}", std::process::id()));
+            match options.open(&path) {
+                Ok(mut file) => {
+                    file.write_all(contents.as_bytes())?;
+                    return Ok(Some(Self { path }));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not find a free credentials file name",
+        ))
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for CredentialsFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+static CREDENTIALS_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// One `PGPASSFILE` line per database: `host:port:database:user:password`,
+/// with `:` and `\` escaped. An omitted host means a socket connection,
+/// which libpq matches as `localhost`; an omitted port means 5432.
+fn pgpass_contents(
+    host: &str,
+    port: u16,
+    username: &str,
+    password: &str,
+    databases: &[String],
+) -> String {
+    let host = if host.is_empty() { "localhost" } else { host };
+    let port = if port == 0 { 5432 } else { port };
+    let escape = |field: &str| field.replace('\\', "\\\\").replace(':', "\\:");
+    let mut lines = String::new();
+    for database in databases {
+        lines.push_str(&format!(
+            "{}:{}:{}:{}:{}\n",
+            escape(host),
+            port,
+            escape(database),
+            escape(username),
+            escape(password)
+        ));
+    }
+    lines
+}
+
+/// A MySQL options file: `[client]` with the password double-quoted, so
+/// spaces, `#`, and quotes in it survive. `\"` and `\\` are the escapes
+/// inside a quoted value.
+fn mysql_options_contents(password: &str) -> String {
+    let escaped = password.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("[client]\npassword=\"{escaped}\"\n")
+}
+
+/// Prepend the credentials-file argument to MySQL dump commands: it must
+/// be the dump's first argument. Kept apart from `commands_for` so the
+/// pure builder stays free of the run's temporary file.
+fn prepend_mysql_credentials(commands: &mut [DumpCommand], path: &Path) {
+    let arg = format!("--defaults-extra-file={}", path.display());
+    for command in commands {
+        command.args.insert(0, arg.clone());
+    }
+}
+
+/// Rewrite the `--ssl-mode` pair `commands_for` built for a MariaDB
+/// client, which rejects that flag: each command's pair becomes the legacy
+/// flags for the same mode (see `mysql_ssl_args`). Commands without the
+/// pair — Postgres ones — are left alone. Kept apart from `commands_for`
+/// so the builder stays at seven arguments.
+fn rewrite_mysql_ssl_for_mariadb(commands: &mut [DumpCommand], ssl_mode: SslMode) {
+    let replacement = mysql_ssl_args(ssl_mode, MysqldumpFlavor::MariaDb);
+    for command in commands {
+        if let Some(position) = command.args.iter().position(|arg| arg == "--ssl-mode")
+            && position + 2 <= command.args.len()
+        {
+            command
+                .args
+                .splice(position..position + 2, replacement.iter().cloned());
+        }
+    }
+}
+
 pub async fn run(
     request: BackupRequest,
     progress: tokio::sync::mpsc::UnboundedSender<BackupProgress>,
 ) -> Result<BackupSummary> {
-    let commands = commands_for(
+    let mysqldump_flavor = if request.engine == Engine::MySql {
+        mysqldump_flavor().await
+    } else {
+        MysqldumpFlavor::Oracle
+    };
+    let mut commands = commands_for(
         request.engine,
         &request.host,
         request.port,
@@ -375,11 +594,58 @@ pub async fn run(
         &request.databases,
         &request.tables,
     )?;
+    if mysqldump_flavor == MysqldumpFlavor::MariaDb {
+        rewrite_mysql_ssl_for_mariadb(&mut commands, request.ssl_mode);
+    }
 
-    let mut file = tokio::fs::File::create(&request.output)
-        .await
+    // The password's file, if it has one: created before any child
+    // starts and deleted when this future ends, abort included, by the
+    // drop guard — so no child outlives it and no path outlives the run.
+    let credentials = match request.password.as_deref() {
+        Some(password) => CredentialsFile::create(
+            request.engine,
+            &request.host,
+            request.port,
+            &request.username,
+            password,
+            &request.databases,
+        )
+        .with_context(|| "could not write the backup credentials file")?,
+        None => None,
+    };
+    if request.engine == Engine::MySql
+        && let Some(credentials) = &credentials
+    {
+        prepend_mysql_credentials(&mut commands, credentials.path());
+    }
+    let password_via_env = request
+        .password
+        .as_deref()
+        .is_some_and(|password| password.contains(['\n', '\r']));
+    let pgpass = if request.engine == Engine::Postgres {
+        credentials
+            .as_ref()
+            .map(|credentials| credentials.path().to_path_buf())
+    } else {
+        None
+    };
+
+    // Created synchronously, not through tokio's blocking pool: creation
+    // is not part of the abortable work, so a cancel cannot leave a
+    // create finishing after cleanup removed the path (see the dialog's
+    // cancel).
+    let file = std::fs::File::create(&request.output)
         .with_context(|| format!("could not create {}", request.output.display()))?;
-    let result = run_commands(&request, &commands, &mut file, &progress).await;
+    let mut file = tokio::fs::File::from_std(file);
+    let result = run_commands(
+        &request,
+        &commands,
+        &mut file,
+        &progress,
+        pgpass.as_deref(),
+        password_via_env,
+    )
+    .await;
     match result {
         Ok(bytes_written) => Ok(BackupSummary {
             output: request.output.clone(),
@@ -403,6 +669,8 @@ async fn run_commands(
     commands: &[DumpCommand],
     file: &mut tokio::fs::File,
     progress: &tokio::sync::mpsc::UnboundedSender<BackupProgress>,
+    pgpass: Option<&Path>,
+    password_via_env: bool,
 ) -> Result<u64> {
     let mut sink = request.compress.then(GzipSink::new);
     let mut bytes_written: u64 = 0;
@@ -415,19 +683,20 @@ async fn run_commands(
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .env("PGSSLMODE", pg_ssl_mode(request.ssl_mode));
-        // The password travels only in the environment, never on the
-        // command line. When the connection has none stored, both
-        // variables are removed rather than emptied, so a password the
-        // app itself was launched with cannot leak into the child.
-        match request.password.as_deref() {
-            Some(password) => {
+        // The password travels in the credentials file, never on the
+        // command line. The environment variables are removed either
+        // way, so a password the app itself was launched with cannot
+        // leak into the child; a password with a line break, which
+        // neither file format can hold, keeps the old environment path.
+        cmd.env_remove("PGPASSWORD");
+        cmd.env_remove("MYSQL_PWD");
+        if password_via_env {
+            if let Some(password) = request.password.as_deref() {
                 cmd.env("PGPASSWORD", password);
                 cmd.env("MYSQL_PWD", password);
             }
-            None => {
-                cmd.env_remove("PGPASSWORD");
-                cmd.env_remove("MYSQL_PWD");
-            }
+        } else if let Some(pgpass) = pgpass {
+            cmd.env("PGPASSFILE", pgpass);
         }
         let mut child = cmd
             .spawn()
@@ -602,9 +871,9 @@ mod tests {
                 "-d",
                 "app",
                 "-t",
-                "public.users",
+                "\"public\".\"users\"",
                 "-t",
-                "audit.events",
+                "\"audit\".\"events\"",
             ]
         );
     }
@@ -789,6 +1058,167 @@ mod tests {
         assert_eq!(
             decoded,
             "CREATE TABLE t (id int);\nINSERT INTO t VALUES (7);\n"
+        );
+    }
+
+    #[test]
+    fn pg_dump_table_patterns_are_quoted_so_case_and_wildcards_survive() {
+        let commands = commands_for(
+            Engine::Postgres,
+            "localhost",
+            5432,
+            "alan",
+            SslMode::Prefer,
+            &["app".to_string()],
+            &[
+                TableSelection {
+                    database: "app".to_string(),
+                    schema: Some("Sales".to_string()),
+                    name: "Users".to_string(),
+                },
+                TableSelection {
+                    database: "app".to_string(),
+                    schema: None,
+                    name: "user*data".to_string(),
+                },
+                TableSelection {
+                    database: "app".to_string(),
+                    schema: None,
+                    name: "we\"ird".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            commands[0].args,
+            vec![
+                "-h",
+                "localhost",
+                "-p",
+                "5432",
+                "-U",
+                "alan",
+                "--no-password",
+                "-d",
+                "app",
+                "-t",
+                "\"Sales\".\"Users\"",
+                "-t",
+                "\"public\".\"user*data\"",
+                "-t",
+                "\"public\".\"we\"\"ird\"",
+            ]
+        );
+    }
+
+    #[test]
+    fn mysql_backups_take_a_consistent_snapshot_with_routines() {
+        let commands = commands_for(
+            Engine::MySql,
+            "localhost",
+            3306,
+            "alan",
+            SslMode::Prefer,
+            &["app".to_string()],
+            &[],
+        )
+        .unwrap();
+        assert!(
+            commands[0]
+                .args
+                .contains(&"--single-transaction".to_string())
+        );
+        assert!(commands[0].args.contains(&"--routines".to_string()));
+        assert!(commands[0].args.contains(&"--ssl-mode".to_string()));
+        assert!(commands[0].args.contains(&"PREFERRED".to_string()));
+    }
+
+    #[test]
+    fn mariadb_ssl_modes_use_legacy_flags_not_ssl_mode() {
+        for (mode, expected) in [
+            (SslMode::Disable, "--skip-ssl"),
+            (SslMode::Prefer, "--ssl"),
+            (SslMode::Require, "--ssl"),
+            (SslMode::VerifyCa, "--ssl-verify-server-cert"),
+            (SslMode::VerifyFull, "--ssl-verify-server-cert"),
+        ] {
+            let mut commands = commands_for(
+                Engine::MySql,
+                "localhost",
+                3306,
+                "alan",
+                mode,
+                &["app".to_string()],
+                &[],
+            )
+            .unwrap();
+            rewrite_mysql_ssl_for_mariadb(&mut commands, mode);
+            assert!(
+                commands[0].args.contains(&expected.to_string()),
+                "{mode:?} should pass {expected}, got {:?}",
+                commands[0].args
+            );
+            assert!(
+                !commands[0].args.iter().any(|arg| arg == "--ssl-mode"),
+                "{mode:?} must not pass --ssl-mode to MariaDB, got {:?}",
+                commands[0].args
+            );
+        }
+    }
+
+    #[test]
+    fn mysqldump_flavor_comes_from_its_version_line() {
+        assert_eq!(
+            flavor_from_version(
+                "mysqldump  Ver 8.0.36 for Linux on x86_64 (MySQL Community Server - GPL)"
+            ),
+            MysqldumpFlavor::Oracle
+        );
+        assert_eq!(
+            flavor_from_version("mysqldump  Ver 10.11.6-MariaDB, for Linux on x86_64"),
+            MysqldumpFlavor::MariaDb
+        );
+        assert_eq!(flavor_from_version(""), MysqldumpFlavor::Oracle);
+    }
+
+    #[test]
+    fn pgpass_lines_escape_colons_and_backslashes_and_default_host_and_port() {
+        assert_eq!(
+            pgpass_contents(
+                "",
+                0,
+                "al:an",
+                "p\\a:ss",
+                &["app".to_string(), "other".to_string()]
+            ),
+            "localhost:5432:app:al\\:an:p\\\\a\\:ss\nlocalhost:5432:other:al\\:an:p\\\\a\\:ss\n"
+        );
+    }
+
+    #[test]
+    fn mysql_options_quote_the_password() {
+        assert_eq!(
+            mysql_options_contents("sec ret#\"\\"),
+            "[client]\npassword=\"sec ret#\\\"\\\\\"\n"
+        );
+    }
+
+    #[test]
+    fn mysql_credentials_file_argument_goes_first() {
+        let mut commands = commands_for(
+            Engine::MySql,
+            "localhost",
+            3306,
+            "alan",
+            SslMode::Prefer,
+            &["app".to_string()],
+            &[],
+        )
+        .unwrap();
+        prepend_mysql_credentials(&mut commands, Path::new("/tmp/creds"));
+        assert_eq!(
+            commands[0].args.first().unwrap(),
+            "--defaults-extra-file=/tmp/creds"
         );
     }
 
