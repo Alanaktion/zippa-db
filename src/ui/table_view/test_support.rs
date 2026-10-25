@@ -71,11 +71,21 @@ impl TableView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.set_search_input_for_test(term, window, cx);
+        self.apply_search(cx);
+    }
+
+    /// Put text in the search box without applying it, the way typing does.
+    pub(crate) fn set_search_input_for_test(
+        &mut self,
+        term: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let input = self.search_input.clone();
         input.update(cx, |input, cx| {
             input.set_value(term.to_string(), window, cx);
         });
-        self.apply_search(cx);
     }
 
     pub(crate) fn row_panel_for_test(&self) -> Entity<RowPanel> {

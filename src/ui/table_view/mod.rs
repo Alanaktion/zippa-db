@@ -115,7 +115,9 @@ enum Pending {
     Sort(Option<(String, ColumnSort)>),
     Limit(usize),
     Filter,
-    Search,
+    /// The term as submitted: the box may hold different text by the time
+    /// the answer comes, and only the submitted term is applied.
+    Search(String),
 }
 
 impl Pending {
@@ -127,7 +129,7 @@ impl Pending {
             Pending::Sort(_) => "Sorting",
             Pending::Limit(_) => "Changing the row limit",
             Pending::Filter => "Filtering",
-            Pending::Search => "Searching",
+            Pending::Search(_) => "Searching",
         }
     }
 }
@@ -498,6 +500,11 @@ impl TableView {
         self.grid.update(cx, |grid, cx| grid.set_loading(true, cx));
         cx.notify();
 
+        // Whether this read carries the applied search: it cannot when the
+        // columns are not known yet, and the page it lands then has to be
+        // read again once they are, or the search box would show a term
+        // the rows do not answer to.
+        let searched = !self.search.trim().is_empty() && !self.columns.is_empty();
         let (sql, params) = self.query_with_params(cx);
         let connection = self.connection.clone();
         let task = runtime::spawn(async move { connection.run_query_with(&sql, params).await });
@@ -535,11 +542,18 @@ impl TableView {
                             grid.set_sorted_result(query_result, sort, cx)
                         });
                         this.apply_reveal(cx);
+                        if !searched && !this.search.trim().is_empty() {
+                            this.reload(cx);
+                        }
                     }
                     Ok(Err(error)) => {
                         this.loaded_rows = 0;
-                        this.columns.clear();
-                        this.column_types.clear();
+                        // A failed read does not change the table's shape,
+                        // so the last known columns stand: clearing them
+                        // would drop the applied search — and the filters'
+                        // types — from the retry query, and the table
+                        // would come back unfiltered while the box still
+                        // shows the term.
                         let message = format!("{error:#}");
                         this.error = Some(message.clone());
                         this.grid.update(cx, |grid, cx| grid.clear(cx));
@@ -586,7 +600,7 @@ impl TableView {
             Pending::Sort(sort) => self.apply_sort(sort, cx),
             Pending::Limit(limit) => self.set_limit(limit, cx),
             Pending::Filter => self.apply_filters(cx),
-            Pending::Search => self.apply_search(cx),
+            Pending::Search(term) => self.apply_search_term(term, cx),
         }
     }
 
@@ -1115,13 +1129,20 @@ impl TableView {
     /// A search changes which rows there are, so the page number it had is
     /// about a different set of rows, and it goes through the same staged-edit
     /// guard as a filter: an empty term clears the search rather than
-    /// narrowing on nothing.
+    /// narrowing on nothing. The term is read once, here, so a retype while
+    /// the guard's question is open does not replace what was submitted.
     fn apply_search(&mut self, cx: &mut Context<Self>) {
-        if self.hold(Pending::Search, cx) {
+        let term = self.search_input.read(cx).value().trim().to_string();
+        if self.hold(Pending::Search(term.clone()), cx) {
             return;
         }
+        self.apply_search_term(term, cx);
+    }
 
-        self.search = self.search_input.read(cx).value().trim().to_string();
+    /// Apply a term already submitted: the guard has answered, so this runs
+    /// straight through rather than asking again.
+    fn apply_search_term(&mut self, term: String, cx: &mut Context<Self>) {
+        self.search = term;
         self.page = 0;
         self.reload(cx);
     }
