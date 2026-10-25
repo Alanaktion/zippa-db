@@ -116,6 +116,7 @@ impl Tool {
             PanelState::Query { .. }
             | PanelState::Table { .. }
             | PanelState::Schema { .. }
+            | PanelState::Dashboard { .. }
             | PanelState::Unknown => None,
         }
     }

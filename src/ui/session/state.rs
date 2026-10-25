@@ -184,6 +184,14 @@ impl Session {
                     self.open_object(&object, ObjectViewMode::Schema, window, cx);
                     restored += 1;
                 }
+                // A restored dashboard is not run, the way a restored
+                // buffer is not: a restore at launch must not repeat
+                // writes unattended.
+                PanelState::Dashboard { name } => {
+                    if self.restore_dashboard(name, window, cx) {
+                        restored += 1;
+                    }
+                }
                 // Written by a newer build; leave it out rather than guess.
                 PanelState::Unknown => {}
                 // A tool the engine does not offer (the server views on

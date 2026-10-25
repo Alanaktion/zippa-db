@@ -5,6 +5,7 @@
 
 mod app;
 mod crash_log;
+mod dashboards;
 mod db;
 mod keymap;
 mod menu;

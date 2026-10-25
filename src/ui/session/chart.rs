@@ -21,6 +21,8 @@ use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Hsla, div};
 
+use serde::{Deserialize, Serialize};
+
 use crate::db::query::QueryResult;
 
 use super::panel::SessionPanel;
@@ -28,14 +30,14 @@ use super::tab::TabContent;
 
 /// Kept rows are capped: a bar chart of ten thousand bars is mush, and a
 /// line chart of them is a paint cost the grid does not pay.
-const MAX_CHART_POINTS: usize = 5_000;
+pub(crate) const MAX_CHART_POINTS: usize = 5_000;
 
 /// How many x labels a chart aims to show: with more points than this,
 /// every n-th label is kept and the rest of the data still plots, the way
 /// the toolkit's own Visitors chart thins a quarter of daily values.
 const TARGET_X_LABELS: usize = 12;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub(crate) enum ChartKind {
     #[default]
     Line,
@@ -251,6 +253,110 @@ pub(crate) fn resolve(
     }
     let x = config.x.filter(|&x| x < result.columns.len()).or(default_x);
     Some((config.kind, x, ys.clone(), chart_series(result, x, &ys)))
+}
+
+/// Map a dashboard widget's stored column *names* to the result's indices,
+/// or name the ones that are not there. Names are the dashboard's stable
+/// reference — indices would break silently when a query's output columns
+/// change — so a missing name is the widget's own error state, not a quiet
+/// fallback: any missing name poisons the whole resolution. An empty pick
+/// set still means "not picked yet" and comes back empty, for the caller to
+/// fill from [`default_picks`] the way [`resolve`] does. The indices that
+/// do come back go straight into [`resolve`], so the numeric, dedupe, and
+/// default rules there still apply.
+pub(crate) fn resolve_names(
+    result: &QueryResult,
+    x: Option<&str>,
+    ys: &[String],
+) -> Result<(Option<usize>, Vec<usize>), Vec<String>> {
+    let mut missing = Vec::new();
+    let x = match x {
+        None => None,
+        Some(name) => match result.columns.iter().position(|column| column == name) {
+            Some(index) => Some(index),
+            None => {
+                missing.push(name.to_string());
+                None
+            }
+        },
+    };
+    let mut indices = Vec::new();
+    for name in ys {
+        match result.columns.iter().position(|column| column == name) {
+            Some(index) => indices.push(index),
+            None => missing.push(name.clone()),
+        }
+    }
+    if missing.is_empty() {
+        Ok((x, indices))
+    } else {
+        Err(missing)
+    }
+}
+
+/// The chart element itself, without the bar above it: bars for one series,
+/// lines for one series, the multi-series element otherwise — lines are its
+/// strokes with the fill turned transparent, areas keep the translucent
+/// fill. The caller truncates `data` to [`MAX_CHART_POINTS`] first and
+/// derives the label stride from what survived. The id must be unique
+/// across the window: a dashboard holds one chart per widget, where a
+/// query tab holds one.
+pub(crate) fn chart_element(
+    id: String,
+    kind: ChartKind,
+    data: &ChartData,
+    margin: usize,
+    palette: &[Hsla],
+) -> AnyElement {
+    let multi = data.series.len() > 1;
+    match (kind, multi) {
+        (ChartKind::Bar, false) => {
+            let points = data
+                .series
+                .first()
+                .map(|series| series.points.clone())
+                .unwrap_or_default();
+            BarChart::new(points)
+                .id(id)
+                .band(|point: &ChartPoint| point.label.clone())
+                .value(|point: &ChartPoint| point.value)
+                .tick_margin(margin)
+                .into_any_element()
+        }
+        (ChartKind::Line, false) => {
+            let points = data
+                .series
+                .first()
+                .map(|series| series.points.clone())
+                .unwrap_or_default();
+            LineChart::new(points)
+                .id(id)
+                .x(|point: &ChartPoint| point.label.clone())
+                .y(|point: &ChartPoint| point.value)
+                .tick_margin(margin)
+                .into_any_element()
+        }
+        _ => {
+            let fill_opacity = match kind {
+                ChartKind::Area => 0.4,
+                _ => 0.,
+            };
+            let rows = chart_rows(data);
+            let mut element = AreaChart::new(rows)
+                .id(id)
+                .x(|row: &ChartRow| row.label.clone())
+                .tick_margin(margin);
+            for (index, series) in data.series.iter().enumerate() {
+                let color = series_color(index, palette);
+                element = element
+                    .y(move |row: &ChartRow| row.values[index])
+                    .stroke(color)
+                    .fill(color.opacity(fill_opacity))
+                    .name(series.name.clone());
+            }
+            element.into_any_element()
+        }
+    }
 }
 
 impl SessionPanel {
@@ -749,6 +855,32 @@ mod tests {
         let (_kind, _x, ys, data) = resolve(&result, &config).expect("chartable");
         assert_eq!(ys, vec![1]);
         assert_eq!(data.series.len(), 1);
+    }
+
+    #[test]
+    fn names_resolve_to_indices_and_missing_names_poison_the_widget() {
+        let result = result(
+            &["day", "desktop", "mobile"],
+            vec![vec![Some("mon"), Some("10"), Some("4")]],
+        );
+        assert_eq!(
+            resolve_names(
+                &result,
+                Some("day"),
+                &["desktop".to_string(), "mobile".to_string()]
+            ),
+            Ok((Some(0), vec![1, 2]))
+        );
+        assert_eq!(
+            resolve_names(&result, Some("gone"), &["desktop".to_string()]),
+            Err(vec!["gone".to_string()])
+        );
+        assert_eq!(
+            resolve_names(&result, None, &["desktop".to_string(), "gone".to_string()]),
+            Err(vec!["gone".to_string()])
+        );
+        // Empty picks come back empty, for the caller to fill from defaults.
+        assert_eq!(resolve_names(&result, None, &[]), Ok((None, Vec::new())));
     }
 
     #[test]

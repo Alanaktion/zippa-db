@@ -4,6 +4,8 @@
 //! [`Session::close_tab_now`], which opens a fresh one before the last tab
 //! leaves.
 
+use std::collections::BTreeMap;
+
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::dialog::DialogButtonProps;
@@ -11,11 +13,13 @@ use gpui_kit::component::dock::PanelId;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, Window};
 
+use crate::dashboards::{self, Dashboard};
 use crate::db::{DatabaseObject, PinnedConnection};
 use crate::ui::filter_bar::FilterSpec;
 use crate::ui::schema_view::{SchemaView, SchemaViewEvent};
 use crate::ui::table_view::{TableView, TableViewEvent};
 
+use super::dashboard::{DashboardView, NewDashboardDialog, NewDashboardEvent};
 use super::tool::{Tool, ToolView};
 use super::{
     CloseScope, CloseTab, NewTab, NextTab, ObjectViewMode, PreviousTab, Session, SessionEvent,
@@ -28,7 +32,7 @@ impl Session {
     /// would still commit after the user had disconnected.
     pub(crate) fn stop_runs(&mut self, cx: &mut Context<Self>) {
         for panel in self.panels.clone() {
-            panel.update(cx, |panel, _| panel.abort_running());
+            panel.update(cx, |panel, cx| panel.abort_running(cx));
         }
     }
 
@@ -90,6 +94,132 @@ impl Session {
         }
         let panel = self.open_tab(Some(name.clone()), sql, false, window, cx);
         panel.update(cx, |panel, cx| panel.set_saved_as(Some(name), cx));
+    }
+
+    /// Open the "New dashboard" dialog from the sidebar's Saved tab: saving
+    /// stores an empty dashboard under the name and opens it, so widgets
+    /// are added from the tab itself.
+    pub(crate) fn open_new_dashboard_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let view = NewDashboardDialog::open(window, cx);
+        cx.subscribe_in(&view, window, Self::on_new_dashboard_event)
+            .detach();
+    }
+
+    fn on_new_dashboard_event(
+        &mut self,
+        _: &Entity<NewDashboardDialog>,
+        event: &NewDashboardEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            NewDashboardEvent::Saved(name) => {
+                let dashboard = Dashboard {
+                    name: name.clone(),
+                    widgets: Vec::new(),
+                    variables: BTreeMap::new(),
+                };
+                dashboards::upsert(&dashboard, cx);
+                // A tab already showing this name holds the replaced
+                // dashboard's snapshot; reload it to the empty one instead
+                // of bringing the stale tab forward, or an edit there
+                // would resurrect the replaced widgets. The dialog closes
+                // itself after this event, the way the save-query dialog
+                // does; the empty dashboard's refresh is a no-op, so the
+                // still-open dialog never suppresses a run here.
+                if let Some(panel) = self
+                    .panels
+                    .iter()
+                    .find(|panel| panel.read(cx).dashboard_name(cx) == Some(name.clone()))
+                    .cloned()
+                {
+                    panel.update(cx, |panel, cx| {
+                        if let Some(view) = panel.dashboard_view() {
+                            view.update(cx, |view, cx| view.set_dashboard(dashboard, window, cx));
+                        }
+                    });
+                    self.activate_panel(&panel, window, cx);
+                    return;
+                }
+                self.open_dashboard(name.clone(), window, cx);
+            }
+        }
+    }
+
+    /// Open the dashboard `name` from the sidebar's Saved tab: the tab
+    /// already showing it comes forward, or a new one opens and runs —
+    /// opening a dashboard always runs it, the way the sidebar opens a
+    /// table.
+    pub(crate) fn open_dashboard(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_dashboard_inner(name, true, window, cx);
+    }
+
+    /// Reopen a dashboard from the saved workspace without running it: a
+    /// restore at launch must not repeat writes unattended. The Refresh
+    /// button runs it. Reports whether a tab is showing it now, so a
+    /// dashboard deleted since the workspace was saved does not count as
+    /// restored.
+    pub(crate) fn restore_dashboard(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.open_dashboard_inner(name, false, window, cx)
+    }
+
+    fn open_dashboard_inner(
+        &mut self,
+        name: String,
+        run: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| panel.read(cx).dashboard_name(cx) == Some(name.clone()))
+            .cloned()
+        {
+            self.activate_panel(&panel, window, cx);
+            return true;
+        }
+        let Some(dashboard) = dashboards::Dashboards::find(cx, &name) else {
+            // Deleted since the sidebar listed it: nothing to open.
+            return false;
+        };
+        let key = self.next_key;
+        self.next_key += 1;
+        let panel = cx.new(|cx| {
+            let view = cx.new(|cx| {
+                DashboardView::new(
+                    dashboard,
+                    self.connection.clone(),
+                    self.catalog.clone(),
+                    window,
+                    cx,
+                )
+            });
+            SessionPanel::dashboard(key, name, view, cx)
+        });
+        self.install(panel.clone(), window, cx);
+        if run {
+            panel.update(cx, |panel, cx| panel.dashboard_refresh(window, cx));
+        }
+        cx.notify();
+        true
     }
 
     /// Open a table or view from the sidebar in its own tab, either as its
