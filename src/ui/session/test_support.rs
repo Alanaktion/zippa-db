@@ -358,6 +358,19 @@ impl Session {
         editor.update(cx, |editor, cx| editor.set_running(true, cx));
     }
 
+    /// Point the active tab at this session's connection again, the way a
+    /// database switch repoints it. The tab's stored results belong to
+    /// the connection being left, so they must not survive the repoint —
+    /// which connection it is pointed at does not change that.
+    #[cfg(test)]
+    pub(crate) fn repoint_active_tab_for_test(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = self.active_panel_for_test() else {
+            return;
+        };
+        let connection = self.connection.clone();
+        panel.update(cx, |panel, cx| panel.set_connection(connection, cx));
+    }
+
     /// The plan viewer in the active tab, if one has been built.
     #[cfg(test)]
     pub(crate) fn active_plan_view_for_test(&self, cx: &App) -> Option<Entity<PlanView>> {

@@ -1416,6 +1416,11 @@ where
 /// and a follow-up that fails at all reads as no messages — the caller
 /// already has its query's rows, and losing them over a diagnostic would
 /// be the wrong trade.
+///
+/// The follow-up runs as raw SQL, not a prepared statement: MySQL's
+/// prepared protocol refuses `SHOW WARNINGS` (error 1295, the class
+/// `mysql::unpreparable` names), so a prepared call fails here and every
+/// MySQL result reads as having no messages at all.
 async fn read_messages<DB>(connection: &mut DB::Connection, sql: &str) -> Vec<QueryMessage>
 where
     DB: Database,
@@ -1427,8 +1432,10 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
-    let statement = AssertSqlSafe(sql.to_string()).into_sql_str();
-    let Ok(rows) = sqlx::query(statement).fetch_all(&mut *connection).await else {
+    let Ok(rows) = sqlx::raw_sql(AssertSqlSafe(sql.to_string()))
+        .fetch_all(&mut *connection)
+        .await
+    else {
         return Vec::new();
     };
     let mut messages = Vec::new();

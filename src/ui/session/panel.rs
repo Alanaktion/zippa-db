@@ -705,13 +705,17 @@ impl SessionPanel {
         if let TabContent::Query {
             status: slot,
             error,
+            show_messages,
             ..
         } = &mut self.content
         {
             // A fresh run replaces whatever the pane was showing, error
-            // included; its outcome decides what the pane says next.
+            // included; its outcome decides what the pane says next. The
+            // messages go with it: until the new run lands, the pane is
+            // the grid, not the previous run's messages.
             if matches!(status, Status::Running) {
                 *error = None;
+                *show_messages = false;
             }
             *slot = status;
         }
@@ -1170,6 +1174,8 @@ impl SessionPanel {
             TabContent::Query {
                 grid,
                 plan,
+                results,
+                result,
                 show_plan,
                 show_chart,
                 show_messages,
@@ -1183,6 +1189,11 @@ impl SessionPanel {
                 grid.update(cx, |grid, cx| grid.clear(cx));
                 // A plan belongs to the connection it was read from.
                 *plan = None;
+                // So do the results: the view bar offers Messages for
+                // whatever the shown result holds, and the old
+                // connection's warnings must not survive the switch.
+                results.clear();
+                *result = 0;
                 *show_plan = false;
                 *show_chart = false;
                 *show_messages = false;
