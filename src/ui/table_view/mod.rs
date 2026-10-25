@@ -115,6 +115,9 @@ enum Pending {
     Sort(Option<(String, ColumnSort)>),
     Limit(usize),
     Filter,
+    /// The term as submitted: the box may hold different text by the time
+    /// the answer comes, and only the submitted term is applied.
+    Search(String),
 }
 
 impl Pending {
@@ -126,6 +129,7 @@ impl Pending {
             Pending::Sort(_) => "Sorting",
             Pending::Limit(_) => "Changing the row limit",
             Pending::Filter => "Filtering",
+            Pending::Search(_) => "Searching",
         }
     }
 }
@@ -150,6 +154,12 @@ impl EventEmitter<TableViewEvent> for TableView {}
 pub struct TableView {
     connection: Arc<Connection>,
     filters: Entity<FilterBar>,
+    /// The quick-search box in the toolbar.
+    search_input: Entity<InputState>,
+    /// The search term as last applied. Empty means no search: the box may
+    /// hold unapplied text, but only this narrows rows. It is kept across
+    /// reloads, pages, and sorts the way the filters are.
+    search: String,
     object: DatabaseObject,
     grid: Entity<DataGrid>,
     /// The side panel that lays the focused row out one field per column.
@@ -235,6 +245,14 @@ impl TableView {
         cx.subscribe_in(&filters, window, Self::on_filters_changed)
             .detach();
 
+        // Applied on Enter rather than per keystroke, like the filter bar's
+        // value boxes and the row limit: a half-typed term never runs a
+        // query of its own.
+        let search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search all columns…"));
+        cx.subscribe_in(&search_input, window, Self::on_search_event)
+            .detach();
+
         // A table takes the page size the settings had when it was opened;
         // changing the setting later leaves open tables where they are.
         let limit = Settings::global(cx)
@@ -268,6 +286,8 @@ impl TableView {
         let mut view = Self {
             connection,
             filters,
+            search_input,
+            search: String::new(),
             object,
             grid,
             row_panel,
@@ -480,6 +500,11 @@ impl TableView {
         self.grid.update(cx, |grid, cx| grid.set_loading(true, cx));
         cx.notify();
 
+        // Whether this read carries the applied search: it cannot when the
+        // columns are not known yet, and the page it lands then has to be
+        // read again once they are, or the search box would show a term
+        // the rows do not answer to.
+        let searched = !self.search.trim().is_empty() && !self.columns.is_empty();
         let (sql, params) = self.query_with_params(cx);
         let connection = self.connection.clone();
         let task = runtime::spawn(async move { connection.run_query_with(&sql, params).await });
@@ -517,11 +542,18 @@ impl TableView {
                             grid.set_sorted_result(query_result, sort, cx)
                         });
                         this.apply_reveal(cx);
+                        if !searched && !this.search.trim().is_empty() {
+                            this.reload(cx);
+                        }
                     }
                     Ok(Err(error)) => {
                         this.loaded_rows = 0;
-                        this.columns.clear();
-                        this.column_types.clear();
+                        // A failed read does not change the table's shape,
+                        // so the last known columns stand: clearing them
+                        // would drop the applied search — and the filters'
+                        // types — from the retry query, and the table
+                        // would come back unfiltered while the box still
+                        // shows the term.
                         let message = format!("{error:#}");
                         this.error = Some(message.clone());
                         this.grid.update(cx, |grid, cx| grid.clear(cx));
@@ -568,6 +600,7 @@ impl TableView {
             Pending::Sort(sort) => self.apply_sort(sort, cx),
             Pending::Limit(limit) => self.set_limit(limit, cx),
             Pending::Filter => self.apply_filters(cx),
+            Pending::Search(term) => self.apply_search_term(term, cx),
         }
     }
 
@@ -1075,6 +1108,52 @@ impl TableView {
         // about a different set of rows.
         self.page = 0;
         self.reload(cx);
+    }
+
+    fn on_search_event(
+        &mut self,
+        _input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(event, InputEvent::PressEnter { .. }) {
+            return;
+        }
+
+        self.apply_search(cx);
+    }
+
+    /// Read the table again with the search box's term, from the first page.
+    ///
+    /// A search changes which rows there are, so the page number it had is
+    /// about a different set of rows, and it goes through the same staged-edit
+    /// guard as a filter: an empty term clears the search rather than
+    /// narrowing on nothing. The term is read once, here, so a retype while
+    /// the guard's question is open does not replace what was submitted.
+    fn apply_search(&mut self, cx: &mut Context<Self>) {
+        let term = self.search_input.read(cx).value().trim().to_string();
+        if self.hold(Pending::Search(term.clone()), cx) {
+            return;
+        }
+        self.apply_search_term(term, cx);
+    }
+
+    /// Apply a term already submitted: the guard has answered, so this runs
+    /// straight through rather than asking again.
+    fn apply_search_term(&mut self, term: String, cx: &mut Context<Self>) {
+        self.search = term;
+        self.page = 0;
+        self.reload(cx);
+    }
+
+    /// Empty the search box and read the table again without a search.
+    fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.search_input.clone();
+        input.update(cx, |input, cx| {
+            input.set_value(String::new(), window, cx);
+        });
+        self.apply_search(cx);
     }
 
     fn on_sort_requested(

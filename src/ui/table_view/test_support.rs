@@ -1,7 +1,7 @@
 //! Test-only reach-ins, for `src/ui/tests/`.
 
 use gpui_kit::component::table::ColumnSort;
-use gpui_kit::{Context, Entity};
+use gpui_kit::{Context, Entity, Window};
 
 use crate::db::RowKey;
 use crate::ui::data_grid::DataGrid;
@@ -57,6 +57,35 @@ impl TableView {
 
     pub(crate) fn filters_for_test(&self) -> Entity<FilterBar> {
         self.filters.clone()
+    }
+
+    /// The search term as last applied.
+    pub(crate) fn search_for_test(&self) -> String {
+        self.search.clone()
+    }
+
+    /// Type a term into the search box and apply it, the way Enter does.
+    pub(crate) fn set_search_for_test(
+        &mut self,
+        term: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_search_input_for_test(term, window, cx);
+        self.apply_search(cx);
+    }
+
+    /// Put text in the search box without applying it, the way typing does.
+    pub(crate) fn set_search_input_for_test(
+        &mut self,
+        term: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.search_input.clone();
+        input.update(cx, |input, cx| {
+            input.set_value(term.to_string(), window, cx);
+        });
     }
 
     pub(crate) fn row_panel_for_test(&self) -> Entity<RowPanel> {
