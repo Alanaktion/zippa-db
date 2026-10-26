@@ -378,3 +378,100 @@ fn saving_variables_from_the_dialog_re_runs_the_dashboard(cx: &mut TestAppContex
     );
     dashboards::reset_for_test();
 }
+
+/// Saving variables while a refresh is still running re-runs the
+/// dashboard with the new values: without the cancel first, `refresh`
+/// returns early while `refreshing` and the widgets keep the results
+/// of the snapshot the in-flight run took.
+#[gpui_kit::test]
+fn saving_variables_during_a_refresh_re_runs_with_the_new_values(cx: &mut TestAppContext) {
+    let _lock = dashboards::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    dashboards::reset_for_test();
+    cx.update(|cx| {
+        dashboards::upsert(
+            &dashboard(
+                "Filtered",
+                vec![grid_widget("select id, name from items where name = :who;")],
+                &[],
+            ),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let database = runtime::block_on(TempDatabase::new());
+    let connection = runtime::block_on(Connection::open(database.config(), None))
+        .expect("could not open the test database");
+    cx.update(|cx| {
+        init_ui(cx);
+        crate::keymap::bind(cx);
+    });
+    let handle = {
+        let connection = Arc::new(connection);
+        cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
+            let session = cx.new(|cx| Session::new(connection, window, cx));
+            Root::new(session, window, cx)
+        })
+    };
+    let session = handle
+        .read_with(cx, |root, _| root.view().clone().downcast::<Session>())
+        .unwrap()
+        .expect("the test window's root wraps a Session");
+
+    // No variable set yet, so the widget errors naming it.
+    cx.update_window(handle.into(), |_, window, cx| {
+        session.update(cx, |session, cx| {
+            session.open_dashboard("Filtered".to_string(), window, cx)
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let summaries = cx
+        .update(|cx| session.read(cx).dashboard_for_test(cx))
+        .expect("the dashboard tab should be active");
+    assert_eq!(
+        summaries[0].status, "error: no value for variable 'who'",
+        "the missing variable should be named"
+    );
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click("dashboard-variables", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let dialog = cx
+        .update(|cx| session.read(cx).dashboard_variables_dialog_for_test(cx))
+        .expect("the variables dialog should be open");
+    cx.update_window(handle.into(), |_, window, cx| {
+        dialog.update(cx, |view, cx| {
+            view.set_row_for_test(0, "who", "alpha", window, cx)
+        });
+    })
+    .unwrap();
+    // A refresh is still running when the save lands: its snapshot has
+    // no value for `who`, so only a cancel-then-refresh re-runs with it.
+    // Through `update`, not `read`: marking needs `cx` mutably, which a
+    // read guard would still be borrowing.
+    let marked = cx.update(|cx| {
+        session.update(cx, |session, cx| {
+            session.mark_dashboard_refreshing_for_test(cx)
+        })
+    });
+    assert!(marked, "the dashboard tab should be active");
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click("variables-save", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let summaries = cx
+        .update(|cx| session.read(cx).dashboard_for_test(cx))
+        .expect("the dashboard tab should be active");
+    assert_eq!(summaries[0].status, "done");
+    assert_eq!(summaries[0].rows, Some(1));
+    dashboards::reset_for_test();
+}

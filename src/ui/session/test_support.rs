@@ -465,6 +465,21 @@ impl Session {
             .and_then(|view| view.read(cx).variables_dialog_for_test())
     }
 
+    /// Mark the active tab's dashboard as mid-refresh, for tests: true
+    /// when the active tab is a dashboard, so a test that needs the
+    /// in-flight state fails loudly instead of passing vacuously.
+    #[cfg(test)]
+    pub(crate) fn mark_dashboard_refreshing_for_test(&self, cx: &mut App) -> bool {
+        let Some(panel) = self.active_panel_for_test() else {
+            return false;
+        };
+        let Some(view) = panel.read(cx).dashboard_view() else {
+            return false;
+        };
+        view.update(cx, |view, _| view.mark_refreshing_for_test());
+        true
+    }
+
     /// Toggle a column in the active tab's chart y set, the way its Y
     /// picker's checkable items do.
     #[cfg(test)]

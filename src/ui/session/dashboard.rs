@@ -314,10 +314,25 @@ impl DashboardView {
                 let connection = connection.clone();
                 let task =
                     runtime::spawn(async move { connection.run_query_with(&sql, params).await });
-                this.update_in(cx, |view, _, _| view.running = task.abort_handle())
-                    .ok();
+                // A cancel between the spawn and this store must not hand
+                // the stale handle to the new driver, the way the landing
+                // below must not hand the new driver stale results.
+                this.update_in(cx, |view, _, _| {
+                    if view.generation == generation {
+                        view.running = task.abort_handle();
+                    }
+                })
+                .ok();
                 let result = task.await;
                 let landed = this.update_in(cx, |view, _, cx| {
+                    if view.generation != generation {
+                        // Cancelled while this query ran: the canceller
+                        // already reset the cells, and `running` belongs to
+                        // the new driver now. Landing here would put rows
+                        // from SQL the widget no longer runs — or, after a
+                        // delete, onto the widget the index now names.
+                        return false;
+                    }
                     view.running = None;
                     match result {
                         Ok(Ok(result)) => {
@@ -480,6 +495,13 @@ impl DashboardView {
                     .collect();
                 dashboards::upsert(&self.dashboard, cx);
                 self.variables_dialog = None;
+                // A refresh in flight holds the old snapshot, and
+                // `refresh` below returns early while one runs — so cancel
+                // first, the way an edit does, or the new values would sit
+                // unrun until the next manual refresh.
+                if self.refreshing {
+                    self.cancel_refresh(cx);
+                }
                 // Close first, so a write confirmation for the re-run can open.
                 window.close_dialog(cx);
                 self.refresh(window, cx);
@@ -1239,6 +1261,12 @@ impl DashboardView {
 
     pub(crate) fn variables_dialog_for_test(&self) -> Option<Entity<VariablesView>> {
         self.variables_dialog.clone()
+    }
+
+    /// Pretend a refresh is in flight, for tests: the state a save
+    /// from the variables dialog meets when a refresh is still running.
+    pub(crate) fn mark_refreshing_for_test(&mut self) {
+        self.refreshing = true;
     }
 }
 
