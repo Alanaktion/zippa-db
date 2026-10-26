@@ -37,3 +37,48 @@ pub fn skeleton_rows(rows: usize) -> impl IntoElement {
             .w(gpui_kit::relative(WIDTHS[ix % WIDTHS.len()]))
     }))
 }
+
+/// Bars standing in for a chart that has not arrived yet: columns of varied
+/// height rising from a shared baseline, filling the space the chart will.
+pub fn skeleton_chart() -> impl IntoElement {
+    // Fixed heights, as in `skeleton_rows`, so a reload does not reshuffle.
+    const HEIGHTS: [f32; 10] = [0.45, 0.7, 0.55, 0.85, 0.6, 0.4, 0.75, 0.5, 0.65, 0.35];
+    h_flex()
+        .size_full()
+        .gap_2()
+        .px_2()
+        .items_end()
+        .children(HEIGHTS.iter().map(|height| {
+            Skeleton::new()
+                .flex_1()
+                .h(gpui_kit::relative(*height))
+                .rounded_sm()
+        }))
+}
+
+/// A header row and `rows` rows of `columns` cells standing in for a data
+/// grid that has not arrived yet, each cell a bar of varied width.
+pub fn skeleton_grid(rows: usize, columns: usize) -> impl IntoElement {
+    const WIDTHS: [f32; 5] = [0.8, 0.55, 0.7, 0.45, 0.65];
+    v_flex()
+        .size_full()
+        .gap_3()
+        .p_2()
+        .children((0..=rows).map(move |row| {
+            h_flex().gap_3().children((0..columns).map(move |column| {
+                // The header row is a little taller and darker than the body.
+                let bar = Skeleton::new()
+                    .h(if row == 0 {
+                        gpui_kit::px(14.)
+                    } else {
+                        gpui_kit::px(10.)
+                    })
+                    .rounded_sm()
+                    .w(gpui_kit::relative(WIDTHS[(row + column) % WIDTHS.len()]));
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(if row == 0 { bar } else { bar.secondary() })
+            }))
+        }))
+}

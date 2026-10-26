@@ -40,7 +40,7 @@ use crate::db::query::QueryResult;
 use crate::db::runtime;
 use crate::db::{Connection, Engine, params, statement};
 use crate::settings::Settings;
-use crate::ui::busy::{busy_label, skeleton_rows};
+use crate::ui::busy::{busy_label, skeleton_chart, skeleton_grid};
 use crate::ui::completion::SharedCatalog;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
@@ -780,20 +780,35 @@ enum WidgetChart {
 }
 
 fn widget_chart(result: &QueryResult, display: &WidgetDisplay) -> WidgetChart {
-    let WidgetDisplay::Chart { kind, x, y } = display else {
+    let WidgetDisplay::Chart { kind, x, y, group } = display else {
         return WidgetChart::NotChartable;
     };
     if !chartable(result) {
         return WidgetChart::NotChartable;
     }
-    let (x, ys) = match resolve_names(result, x.as_deref(), y) {
-        Ok(resolved) => resolved,
-        Err(missing) => return WidgetChart::Missing(missing),
+    let names = resolve_names(result, x.as_deref(), y);
+    let group_index = group.as_deref().map(|name| {
+        result
+            .columns
+            .iter()
+            .position(|column| column == name)
+            .ok_or(name)
+    });
+    let (x, ys) = match (names, group_index) {
+        (Ok(resolved), None | Some(Ok(_))) => resolved,
+        (names, group_index) => {
+            let mut missing = names.err().unwrap_or_default();
+            if let Some(Err(name)) = group_index {
+                missing.push(name.to_string());
+            }
+            return WidgetChart::Missing(missing);
+        }
     };
     let config = ChartConfig {
         kind: *kind,
         x,
         y: ys,
+        group: group_index.and_then(Result::ok),
     };
     match resolve(result, &config) {
         Some((kind, _x, _ys, data)) => WidgetChart::Draw { kind, data },
@@ -909,12 +924,18 @@ impl DashboardView {
                 .text_color(cx.theme().muted_foreground)
                 .child("Waiting for another widget…")
                 .into_any_element(),
+            // The placeholder is shaped like what will replace it: bars for
+            // a chart, header and rows for a grid.
             WidgetStatus::Running => v_flex()
                 .flex_1()
+                .min_h_0()
                 .p_3()
                 .gap_3()
                 .child(busy_label("Running…", cx.theme().muted_foreground))
-                .child(skeleton_rows(6))
+                .child(div().flex_1().min_h_0().child(match &widget.display {
+                    WidgetDisplay::Grid => skeleton_grid(8, 4).into_any_element(),
+                    WidgetDisplay::Chart { .. } => skeleton_chart().into_any_element(),
+                }))
                 .into_any_element(),
             WidgetStatus::Error(message) => div()
                 .id(("dashboard-widget-error", index))
@@ -1090,7 +1111,15 @@ impl DashboardView {
                     }
                     note.push_str(&format!("showing first {MAX_CHART_POINTS} of {total} rows"));
                 }
-                if let Some(limit) = state.applied_limit {
+                // Only a result that reached the limit was cut short by it; a
+                // smaller one is whole, so it needs no note.
+                let cut_short = state.applied_limit.filter(|&limit| {
+                    state
+                        .result
+                        .as_ref()
+                        .is_some_and(|result| result.rows.len() >= limit)
+                });
+                if let Some(limit) = cut_short {
                     if !note.is_empty() {
                         note.push_str(" · ");
                     }
@@ -1164,6 +1193,7 @@ pub(crate) struct WidgetEditDialog {
     kind: ChartKind,
     x: Entity<InputState>,
     y: Entity<InputState>,
+    group: Entity<InputState>,
     focus: FocusHandle,
 }
 
@@ -1177,12 +1207,23 @@ impl WidgetEditDialog {
         cx: &mut App,
     ) -> Entity<Self> {
         let view = cx.new(|cx| {
-            let (chart, kind, x_value, y_value) = match widget.as_ref().map(|w| &w.display) {
-                Some(WidgetDisplay::Chart { kind, x, y }) => {
-                    (true, *kind, x.clone().unwrap_or_default(), y.join(", "))
-                }
-                _ => (false, ChartKind::Line, String::new(), String::new()),
-            };
+            let (chart, kind, x_value, y_value, group_value) =
+                match widget.as_ref().map(|w| &w.display) {
+                    Some(WidgetDisplay::Chart { kind, x, y, group }) => (
+                        true,
+                        *kind,
+                        x.clone().unwrap_or_default(),
+                        y.join(", "),
+                        group.clone().unwrap_or_default(),
+                    ),
+                    _ => (
+                        false,
+                        ChartKind::Line,
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                    ),
+                };
             let width = widget
                 .as_ref()
                 .map_or(WidgetWidth::Full, Widget::effective_width);
@@ -1214,6 +1255,12 @@ impl WidgetEditDialog {
                 state.set_placeholder("y columns, comma-separated", window, cx);
                 state
             });
+            let group = cx.new(|cx| {
+                let mut state = InputState::new(window, cx);
+                state.set_value(group_value, window, cx);
+                state.set_placeholder("group column", window, cx);
+                state
+            });
             Self {
                 index,
                 name,
@@ -1223,6 +1270,7 @@ impl WidgetEditDialog {
                 kind,
                 x,
                 y,
+                group,
                 focus: cx.focus_handle(),
             }
         });
@@ -1286,6 +1334,10 @@ impl WidgetEditDialog {
                     .map(|part| part.trim().to_string())
                     .filter(|part| !part.is_empty())
                     .collect(),
+                group: {
+                    let name = self.group.read(cx).value().trim().to_string();
+                    (self.kind == ChartKind::StackedBar && !name.is_empty()).then_some(name)
+                },
             }
         } else {
             WidgetDisplay::Grid
@@ -1477,6 +1529,7 @@ impl Render for WidgetEditDialog {
                                     (ChartKind::Line, "Line"),
                                     (ChartKind::Bar, "Bar"),
                                     (ChartKind::Area, "Area"),
+                                    (ChartKind::StackedBar, "Stacked bar"),
                                 ],
                                 self.kind,
                                 kind,
@@ -1509,7 +1562,18 @@ impl Render for WidgetEditDialog {
                                         cx,
                                     )),
                                 ),
-                        ),
+                        )
+                        .when(self.kind == ChartKind::StackedBar, |this| {
+                            this.child(field(
+                                "Group column",
+                                Some("Splits the first Y column into one segment per value."),
+                                Input::new(&self.group)
+                                    .id("widget-group")
+                                    .aria_label("Group column")
+                                    .small(),
+                                cx,
+                            ))
+                        }),
                 )
             })
     }
@@ -1551,6 +1615,7 @@ impl DashboardView {
                                         ChartKind::Line => "Line",
                                         ChartKind::Bar => "Bar",
                                         ChartKind::Area => "Area",
+                                        ChartKind::StackedBar => "StackedBar",
                                     };
                                     // The effective x: the stored name when
                                     // there is one, the default pick otherwise —
@@ -1767,6 +1832,7 @@ mod tests {
             kind: ChartKind::Line,
             x: None,
             y: Vec::new(),
+            group: None,
         }
     }
 

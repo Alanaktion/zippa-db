@@ -24,6 +24,7 @@ fn chart_widget(sql: &str, kind: ChartKind, x: Option<&str>, y: &[&str]) -> Widg
             kind,
             x: x.map(str::to_string),
             y: y.iter().map(|name| name.to_string()).collect(),
+            group: None,
         },
     }
 }

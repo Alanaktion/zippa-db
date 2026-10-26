@@ -78,6 +78,11 @@ pub enum WidgetDisplay {
         kind: ChartKind,
         x: Option<String>,
         y: Vec<String>,
+        /// The column a stacked bar chart splits its first y by, one
+        /// segment per distinct value. Other kinds ignore it; files from
+        /// before it existed read back without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
     },
     Grid,
 }
@@ -213,6 +218,7 @@ mod tests {
                         kind: ChartKind::Line,
                         x: Some("name".to_string()),
                         y: vec!["score".to_string()],
+                        group: None,
                     },
                 },
                 Widget {

@@ -10,16 +10,30 @@
 //! do not read are skipped and counted, never plotted as zero: a gap is
 //! honest, a zero is a lie. Lines and areas chart any number of series;
 //! bars chart one, so picking a second y column turns a bar chart into
-//! lines.
+//! lines. A stacked bar chart is the exception: it stacks any number of
+//! series, either one per picked y column or — when a group column is
+//! picked — one per distinct value of that column, pivoted out of rows of
+//! (x, group, value). A group with no row at an x stacks nothing there,
+//! which is a zero because the query counted nothing.
 
 use gpui_kit::SharedString;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::chart::{AreaChart, BarChart, LineChart};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::plot::{
+    AxisText, Grid, IntoPlot, Plot, PlotAxis, axis_gutter,
+    label::TEXT_SIZE,
+    scale::{Scale, ScaleBand, ScaleLinear},
+    shape::{Bar, Stack, StackSeries},
+    tooltip::{CrossLine, Tooltip as PlotTooltip, TooltipState},
+};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Hsla, div};
+use gpui_kit::{
+    AnyElement, App, Bounds, Context, ElementId, Hsla, Pixels, Point, TextAlign, Window, div,
+    point, px,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -43,18 +57,22 @@ pub(crate) enum ChartKind {
     Line,
     Bar,
     Area,
+    StackedBar,
 }
 
 /// Which columns a tab charts. `x` is `None` for "not picked yet", and
 /// resolves to the defaults below: the first numeric column for y, the
 /// first other column for x — or the row number, when the numeric column
 /// stands alone. `y` is the picked set in pick order; empty is "not picked
-/// yet" and resolves to the first numeric column alone.
+/// yet" and resolves to the first numeric column alone. `group` is the
+/// column a stacked bar chart splits its first y column by; other kinds
+/// ignore it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ChartConfig {
     pub(crate) kind: ChartKind,
     pub(crate) x: Option<usize>,
     pub(crate) y: Vec<usize>,
+    pub(crate) group: Option<usize>,
 }
 
 /// One plotted row.
@@ -182,6 +200,77 @@ pub(crate) fn chart_series(result: &QueryResult, x: Option<usize>, ys: &[usize])
     ChartData { series, skipped }
 }
 
+/// The series a stacked bar chart makes when it splits `y` by `group`:
+/// one series per distinct group value (in first-seen order), all over the
+/// same x labels (also in first-seen order), with zero where a group has no
+/// row at an x. Rows whose `y` does not read are skipped and counted; a row
+/// repeating an (x, group) pair adds to it.
+pub(crate) fn grouped_series(
+    result: &QueryResult,
+    x: Option<usize>,
+    y: usize,
+    group: usize,
+) -> ChartData {
+    let mut labels: Vec<SharedString> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    let mut cells: std::collections::HashMap<(usize, usize), f64> = Default::default();
+    let mut skipped = 0;
+    for (index, row) in result.rows.iter().enumerate() {
+        let value = row
+            .get(y)
+            .and_then(|cell| cell.as_deref())
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite());
+        let Some(value) = value else {
+            skipped += 1;
+            continue;
+        };
+        let label: SharedString = match x {
+            Some(column) => row
+                .get(column)
+                .and_then(|cell| cell.clone())
+                .unwrap_or_default()
+                .into(),
+            None => (index + 1).to_string().into(),
+        };
+        let name = row
+            .get(group)
+            .and_then(|cell| cell.clone())
+            .unwrap_or_else(|| "NULL".to_string());
+        let at = labels
+            .iter()
+            .position(|seen| *seen == label)
+            .unwrap_or_else(|| {
+                labels.push(label);
+                labels.len() - 1
+            });
+        let series = names
+            .iter()
+            .position(|seen| *seen == name)
+            .unwrap_or_else(|| {
+                names.push(name);
+                names.len() - 1
+            });
+        *cells.entry((series, at)).or_insert(0.) += value;
+    }
+    let series = names
+        .into_iter()
+        .enumerate()
+        .map(|(series, name)| ChartSeries {
+            name,
+            points: labels
+                .iter()
+                .enumerate()
+                .map(|(at, label)| ChartPoint {
+                    label: label.clone(),
+                    value: cells.get(&(series, at)).copied().unwrap_or(0.),
+                })
+                .collect(),
+        })
+        .collect();
+    ChartData { series, skipped }
+}
+
 /// The rows behind a multi-series chart: one datum per kept row, with one
 /// value per series. The chart element reads every series off the same
 /// datums, which is what keeps the series aligned.
@@ -252,7 +341,19 @@ pub(crate) fn resolve(
         ys.push(default_y);
     }
     let x = config.x.filter(|&x| x < result.columns.len()).or(default_x);
-    Some((config.kind, x, ys.clone(), chart_series(result, x, &ys)))
+    let group = config
+        .group
+        .filter(|&group| config.kind == ChartKind::StackedBar && group < result.columns.len())
+        .filter(|group| !ys.contains(group));
+    let data = match group {
+        // Splitting by a group stacks the first y alone.
+        Some(group) => {
+            ys.truncate(1);
+            grouped_series(result, x, ys[0], group)
+        }
+        None => chart_series(result, x, &ys),
+    };
+    Some((config.kind, x, ys, data))
 }
 
 /// Map a dashboard widget's stored column *names* to the result's indices,
@@ -310,6 +411,9 @@ pub(crate) fn chart_element(
 ) -> AnyElement {
     let multi = data.series.len() > 1;
     match (kind, multi) {
+        (ChartKind::StackedBar, _) => {
+            StackedBarChart::new(id, data, margin, palette).into_any_element()
+        }
         (ChartKind::Bar, false) => {
             let points = data
                 .series
@@ -356,6 +460,183 @@ pub(crate) fn chart_element(
             }
             element.into_any_element()
         }
+    }
+}
+
+/// The room under the plot kept for the x-axis labels.
+fn axis_gap() -> f32 {
+    axis_gutter(px(TEXT_SIZE))
+}
+
+/// A band scale over the chart's columns, shared by painting and the
+/// tooltip so a hover lands on the bar it is over.
+fn column_scale(count: usize, width: f32) -> ScaleBand<usize> {
+    ScaleBand::new(0..count, [0., width])
+        .max_band_width(30.)
+        .padding_inner(0.4)
+        .padding_outer(0.2)
+}
+
+/// Stacked bars, drawn the way the toolkit's own stacked-bar story does
+/// (it has no stacking chart of its own): a band per x label, a [`Stack`]
+/// of the series over it, dashed grid lines, a column highlight and a
+/// tooltip with one row per series and a total. Negatives stack as zero.
+#[derive(IntoPlot)]
+struct StackedBarChart {
+    id: ElementId,
+    rows: Vec<ChartRow>,
+    names: Vec<String>,
+    colors: Vec<Hsla>,
+    margin: usize,
+    series: Vec<StackSeries<usize>>,
+}
+
+impl StackedBarChart {
+    fn new(id: String, data: &ChartData, margin: usize, palette: &[Hsla]) -> Self {
+        let rows = chart_rows(data);
+        let names: Vec<String> = data
+            .series
+            .iter()
+            .map(|series| series.name.clone())
+            .collect();
+        let colors = (0..names.len())
+            .map(|index| series_color(index, palette))
+            .collect();
+        let values: Vec<Vec<f32>> = rows
+            .iter()
+            .map(|row| {
+                row.values
+                    .iter()
+                    .map(|value| value.max(0.) as f32)
+                    .collect()
+            })
+            .collect();
+        let series = Stack::new()
+            .data(0..rows.len())
+            .keys((0..names.len()).map(|index| index.to_string()))
+            .value(move |&row: &usize, key: &str| {
+                values[row].get(key.parse::<usize>().ok()?).copied()
+            })
+            .series();
+        Self {
+            id: ElementId::Name(id.into()),
+            rows,
+            names,
+            colors,
+            margin: margin.max(1),
+            series,
+        }
+    }
+}
+
+impl Plot for StackedBarChart {
+    fn paint(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        let width = bounds.size.width.as_f32();
+        let height = bounds.size.height.as_f32() - axis_gap();
+        let x = column_scale(self.rows.len(), width);
+        let band_width = x.band_width();
+        let max = self
+            .series
+            .iter()
+            .flat_map(|series| series.points.iter().map(|point| point.y1))
+            .fold(0., f32::max) as f64;
+        let y = ScaleLinear::new(vec![0., max], [height, 10.]);
+
+        let margin = self.margin;
+        let labels = self.rows.iter().enumerate().filter_map(|(at, row)| {
+            if at % margin != 0 {
+                return None;
+            }
+            x.tick(&at).map(|tick| {
+                AxisText::new(
+                    row.label.clone(),
+                    tick + band_width / 2.,
+                    cx.theme().muted_foreground,
+                )
+                .align(TextAlign::Center)
+            })
+        });
+        PlotAxis::new()
+            .x(height)
+            .x_label(labels)
+            .stroke(cx.theme().border)
+            .paint(&bounds, window, cx);
+
+        Grid::new()
+            .y((0..=3).map(|i| height * i as f32 / 4.0))
+            .stroke(cx.theme().border)
+            .dash_array(&[px(4.), px(2.)])
+            .paint(&bounds, window);
+
+        for series in &self.series {
+            let (x, y0, y1) = (x.clone(), y.clone(), y.clone());
+            let fill = self.colors.get(series.index).copied().unwrap_or_default();
+            Bar::new()
+                .data(&series.points)
+                .band_width(band_width)
+                .cross(move |point| x.tick(&point.data))
+                .base(move |point| y0.tick(&(point.y0 as f64)).unwrap_or(height))
+                .value(move |point| y1.tick(&(point.y1 as f64)))
+                .fill(move |_, _, _| fill)
+                .paint(&bounds, window, cx);
+        }
+    }
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn tooltip_state(
+        &self,
+        position: Point<Pixels>,
+        bounds: Bounds<Pixels>,
+        _cx: &App,
+    ) -> Option<TooltipState> {
+        // Hovering the label gutter shows nothing.
+        if position.y.as_f32() > bounds.size.height.as_f32() - axis_gap() {
+            return None;
+        }
+        let x = column_scale(self.rows.len(), bounds.size.width.as_f32());
+        let index = x.nearest_index(position.x.as_f32());
+        self.rows.get(index)?;
+        let center = x.tick(&index)? + x.band_width() / 2.;
+        Some(TooltipState::new(
+            index,
+            point(px(center), position.y),
+            vec![],
+        ))
+    }
+
+    fn tooltip(
+        &self,
+        state: &TooltipState,
+        cursor: Point<Pixels>,
+        bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<AnyElement> {
+        let row = self.rows.get(state.index)?;
+        let band = column_scale(self.rows.len(), bounds.size.width.as_f32()).band_width();
+        let mut tooltip = PlotTooltip::new(cursor, bounds.size)
+            .gap(px(8.))
+            .cross_line(
+                CrossLine::new(state.cross_line)
+                    .height(bounds.size.height.as_f32() - axis_gap())
+                    .band(px(band)),
+            )
+            .title(row.label.clone());
+        let mut total = 0.;
+        for (index, name) in self.names.iter().enumerate() {
+            let value = row.values.get(index).copied().unwrap_or(0.);
+            total += value.max(0.);
+            let color = self.colors.get(index).copied().unwrap_or_default();
+            tooltip = tooltip.row(color, name.clone(), value.to_string());
+        }
+        Some(
+            tooltip
+                .plain_row("total", total.to_string())
+                .into_any_element(),
+        )
     }
 }
 
@@ -418,6 +699,15 @@ impl SessionPanel {
         }
     }
 
+    /// The column a stacked bar chart splits by, or `None` for one stack
+    /// segment per picked y column.
+    pub(crate) fn set_chart_group(&mut self, group: Option<usize>, cx: &mut Context<Self>) {
+        if let TabContent::Query { chart, .. } = &mut self.content {
+            chart.group = group;
+            cx.notify();
+        }
+    }
+
     /// Toggle a column in the tab's y set. The toggle runs against the
     /// set the chart actually draws — the stored picks where they fit,
     /// defaults where they do not — so toggling a second column adds to
@@ -465,6 +755,7 @@ impl SessionPanel {
             ChartKind::Line => "Line",
             ChartKind::Bar => "Bar",
             ChartKind::Area => "Area",
+            ChartKind::StackedBar => "StackedBar",
         };
         let points = data
             .series
@@ -540,59 +831,13 @@ impl SessionPanel {
             .when(multi, |this| {
                 this.child(self.render_chart_legend(&data, &palette))
             })
-            .child(div().flex_1().min_h_0().p_2().child(match (kind, multi) {
-                (ChartKind::Bar, false) => {
-                    let points = data
-                        .series
-                        .first()
-                        .map(|series| series.points.clone())
-                        .unwrap_or_default();
-                    BarChart::new(points)
-                        .id("result-chart")
-                        .band(|point: &ChartPoint| point.label.clone())
-                        .value(|point: &ChartPoint| point.value)
-                        .tick_margin(margin)
-                        .into_any_element()
-                }
-                (ChartKind::Line, false) => {
-                    let points = data
-                        .series
-                        .first()
-                        .map(|series| series.points.clone())
-                        .unwrap_or_default();
-                    LineChart::new(points)
-                        .id("result-chart")
-                        .x(|point: &ChartPoint| point.label.clone())
-                        .y(|point: &ChartPoint| point.value)
-                        .tick_margin(margin)
-                        .into_any_element()
-                }
-                // Areas, and lines of several series, share the
-                // toolkit's multi-series element: AreaChart holds every
-                // series off one datum list, with a tooltip row per
-                // series. Lines are its strokes with the fill turned
-                // transparent; areas keep the translucent fill.
-                _ => {
-                    let fill_opacity = match kind {
-                        ChartKind::Area => 0.4,
-                        _ => 0.,
-                    };
-                    let rows = chart_rows(&data);
-                    let mut element = AreaChart::new(rows)
-                        .id("result-chart")
-                        .x(|row: &ChartRow| row.label.clone())
-                        .tick_margin(margin);
-                    for (index, series) in data.series.iter().enumerate() {
-                        let color = series_color(index, &palette);
-                        element = element
-                            .y(move |row: &ChartRow| row.values[index])
-                            .stroke(color)
-                            .fill(color.opacity(fill_opacity))
-                            .name(series.name.clone());
-                    }
-                    element.into_any_element()
-                }
-            }))
+            .child(div().flex_1().min_h_0().p_2().child(chart_element(
+                "result-chart".to_string(),
+                kind,
+                &data,
+                margin,
+                &palette,
+            )))
             .into_any_element()
     }
 
@@ -642,6 +887,16 @@ impl SessionPanel {
         };
         let columns = result.columns.clone();
         let x_columns = columns.clone();
+        let group_columns = columns.clone();
+        let weak_group = weak.clone();
+        let group = match &self.content {
+            TabContent::Query { chart, .. } => chart.group,
+            _ => None,
+        };
+        let group_label = match group {
+            Some(column) => result.columns.get(column).cloned().unwrap_or_default(),
+            None => "None".to_string(),
+        };
         let numeric = numeric_columns(result);
         let picked = ys.to_vec();
         let note = note.to_string();
@@ -663,13 +918,15 @@ impl SessionPanel {
                         let kind = match *index {
                             1 => ChartKind::Bar,
                             2 => ChartKind::Area,
+                            3 => ChartKind::StackedBar,
                             _ => ChartKind::Line,
                         };
                         this.set_chart_kind(kind, cx);
                     }))
                     .child(Tab::new().aria_label("Line").label("Line"))
                     .child(Tab::new().aria_label("Bar").label("Bar"))
-                    .child(Tab::new().aria_label("Area").label("Area")),
+                    .child(Tab::new().aria_label("Area").label("Area"))
+                    .child(Tab::new().aria_label("Stacked").label("Stacked")),
             )
             .child(
                 Button::new("chart-x")
@@ -729,6 +986,46 @@ impl SessionPanel {
                         }
                     }),
             )
+            .when(kind == ChartKind::StackedBar, |this| {
+                let group_columns = group_columns.clone();
+                this.child(
+                    Button::new("chart-group")
+                        .outline()
+                        .xsmall()
+                        .label(format!("Group: {group_label}"))
+                        .dropdown_caret(true)
+                        .dropdown_menu(move |mut menu, _window, _cx| {
+                            let none = {
+                                let weak = weak_group.clone();
+                                PopupMenuItem::new("None")
+                                    .checked(group.is_none())
+                                    .on_click(move |_, _window, cx| {
+                                        if let Some(view) = weak.upgrade() {
+                                            view.update(cx, |view, cx| {
+                                                view.set_chart_group(None, cx)
+                                            });
+                                        }
+                                    })
+                            };
+                            menu = menu.item(none);
+                            for (column, name) in group_columns.iter().enumerate() {
+                                let weak = weak_group.clone();
+                                menu = menu.item(
+                                    PopupMenuItem::new(name.clone())
+                                        .checked(group == Some(column))
+                                        .on_click(move |_, _window, cx| {
+                                            if let Some(view) = weak.upgrade() {
+                                                view.update(cx, |view, cx| {
+                                                    view.set_chart_group(Some(column), cx)
+                                                });
+                                            }
+                                        }),
+                                );
+                            }
+                            menu
+                        }),
+                )
+            })
             .when(!note.is_empty(), |this| {
                 this.child(div().text_xs().child(note))
             })
@@ -753,6 +1050,46 @@ mod tests {
                 .collect(),
             ..QueryResult::default()
         }
+    }
+
+    #[test]
+    fn grouping_pivots_rows_into_aligned_series() {
+        let result = result(
+            &["site", "day", "count"],
+            vec![
+                vec![Some("re"), Some("mon"), Some("3")],
+                vec![Some("rt"), Some("mon"), Some("5")],
+                vec![Some("re"), Some("tue"), Some("2")],
+                vec![Some("se"), Some("tue"), Some("x")],
+            ],
+        );
+        let data = grouped_series(&result, Some(1), 2, 0);
+        assert_eq!(data.skipped, 1);
+        let names: Vec<_> = data.series.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["re", "rt"]);
+        let values =
+            |i: usize| -> Vec<f64> { data.series[i].points.iter().map(|p| p.value).collect() };
+        assert_eq!(values(0), [3., 2.]);
+        // rt has nothing on tue: it stacks zero, not a gap.
+        assert_eq!(values(1), [5., 0.]);
+        assert_eq!(data.series[1].points[1].label.as_ref(), "tue");
+    }
+
+    #[test]
+    fn only_a_stacked_chart_groups() {
+        let result = result(
+            &["site", "day", "count"],
+            vec![vec![Some("re"), Some("mon"), Some("3")]],
+        );
+        let mut config = ChartConfig {
+            kind: ChartKind::Bar,
+            x: Some(1),
+            y: vec![2],
+            group: Some(0),
+        };
+        assert_eq!(resolve(&result, &config).unwrap().3.series[0].name, "count");
+        config.kind = ChartKind::StackedBar;
+        assert_eq!(resolve(&result, &config).unwrap().3.series[0].name, "re");
     }
 
     #[test]
@@ -835,6 +1172,7 @@ mod tests {
             kind: ChartKind::Bar,
             x: Some(9),
             y: vec![9],
+            ..ChartConfig::default()
         };
         let (kind, x, ys, data) = resolve(&result, &config).expect("chartable");
         assert_eq!(kind, ChartKind::Bar);
@@ -851,6 +1189,7 @@ mod tests {
             kind: ChartKind::Line,
             x: None,
             y: vec![0, 1, 1, 9],
+            ..ChartConfig::default()
         };
         let (_kind, _x, ys, data) = resolve(&result, &config).expect("chartable");
         assert_eq!(ys, vec![1]);
