@@ -17,6 +17,7 @@ use crate::ui::query_editor::{
     FormatQuery, MoveLineDown, MoveLineUp, RunQuery, RunScript, RunScriptIgnoringErrors,
     SelectLine, SelectNextOccurrence, SelectPreviousOccurrence, SmartHome, ToggleComment,
 };
+use crate::ui::session::dashboard::CloseWidgetDialog;
 use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenErd,
     OpenFile, OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables,
@@ -183,6 +184,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("escape", CloseCreateDatabase, Some("CreateDatabaseDialog")),
         KeyBinding::new("escape", CloseUserDialog, Some("UserDialog")),
         KeyBinding::new("escape", CloseVariablesDialog, Some("VariablesDialog")),
+        KeyBinding::new("escape", CloseWidgetDialog, Some("WidgetDialog")),
         // The caret is usually in the editor, whose own context claims keys
         // before the session sees them.
         KeyBinding::new("secondary-.", CancelQuery, Some("QueryEditor > Input")),

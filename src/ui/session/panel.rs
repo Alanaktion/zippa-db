@@ -41,6 +41,7 @@ use crate::ui::table_view::TableView;
 use crate::workspace_state::PanelState;
 
 use super::chart::{ChartConfig, chartable};
+use super::dashboard::DashboardView;
 use super::limit::QueryLimit;
 use super::tab::{ObjectViewMode, Status, TabContent};
 use super::tool::{Tool, ToolView};
@@ -233,6 +234,25 @@ impl SessionPanel {
         }
     }
 
+    /// A dashboard tab over an already-built [`DashboardView`]. The view
+    /// owns its dashboard snapshot; the panel only renders it.
+    pub(crate) fn dashboard(
+        key: usize,
+        title: impl Into<SharedString>,
+        view: Entity<DashboardView>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            key,
+            title: title.into(),
+            content: TabContent::Dashboard { view },
+            focus: cx.focus_handle(),
+            group: None,
+            panes: cx.new(|_| ResizableState::default()),
+            saved_as: None,
+        }
+    }
+
     fn on_editor_event(
         &mut self,
         _: &Entity<QueryEditor>,
@@ -311,6 +331,7 @@ impl SessionPanel {
             TabContent::Table { .. } => IconName::Table,
             TabContent::Schema { .. } => IconName::ListTree,
             TabContent::Tool(view) => view.tool().icon(),
+            TabContent::Dashboard { .. } => IconName::LayoutDashboard,
         }
     }
 
@@ -325,6 +346,7 @@ impl SessionPanel {
             TabContent::Table { .. } => "table",
             TabContent::Schema { .. } => "table structure",
             TabContent::Tool(view) => view.tool().kind(),
+            TabContent::Dashboard { .. } => "dashboard",
         }
     }
 
@@ -378,7 +400,7 @@ impl SessionPanel {
         match &self.content {
             TabContent::Table { view } => Some(view.read(cx).object().clone()),
             TabContent::Schema { view } => Some(view.read(cx).object().clone()),
-            TabContent::Query { .. } | TabContent::Tool(_) => None,
+            TabContent::Query { .. } | TabContent::Tool(_) | TabContent::Dashboard { .. } => None,
         }
     }
 
@@ -387,7 +409,7 @@ impl SessionPanel {
         match &self.content {
             TabContent::Table { .. } => Some(ObjectViewMode::Data),
             TabContent::Schema { .. } => Some(ObjectViewMode::Schema),
-            TabContent::Query { .. } | TabContent::Tool(_) => None,
+            TabContent::Query { .. } | TabContent::Tool(_) | TabContent::Dashboard { .. } => None,
         }
     }
 
@@ -424,6 +446,9 @@ impl SessionPanel {
                 object: view.read(cx).object().clone(),
             },
             TabContent::Tool(view) => view.tool().state(),
+            TabContent::Dashboard { view } => PanelState::Dashboard {
+                name: view.read(cx).name().to_string(),
+            },
         };
         Some(state)
     }
@@ -447,7 +472,7 @@ impl SessionPanel {
             }
             TabContent::Table { view } => view.read(cx).has_staged_edits(cx),
             TabContent::Schema { view } => view.read(cx).is_dirty(cx),
-            TabContent::Tool(_) => false,
+            TabContent::Tool(_) | TabContent::Dashboard { .. } => false,
         }
     }
 
@@ -483,6 +508,33 @@ impl SessionPanel {
         match &self.content {
             TabContent::Tool(view) => Some(view),
             _ => None,
+        }
+    }
+
+    /// The dashboard's name, for bringing an already-open dashboard
+    /// forward instead of opening a second tab for it.
+    pub(crate) fn dashboard_name(&self, cx: &App) -> Option<String> {
+        match &self.content {
+            TabContent::Dashboard { view } => Some(view.read(cx).name().to_string()),
+            _ => None,
+        }
+    }
+
+    /// The dashboard tab's view, for the session's refresh path and tests.
+    pub(crate) fn dashboard_view(&self) -> Option<Entity<DashboardView>> {
+        match &self.content {
+            TabContent::Dashboard { view } => Some(view.clone()),
+            _ => None,
+        }
+    }
+
+    /// Run the dashboard tab's own refresh: the session's `Cmd+R` never
+    /// does this, since re-running could repeat a write and there is no
+    /// window for a confirmation dialog there.
+    pub(crate) fn dashboard_refresh(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let TabContent::Dashboard { view } = &self.content {
+            let view = view.clone();
+            view.update(cx, |view, cx| view.refresh(window, cx));
         }
     }
 
@@ -662,9 +714,10 @@ impl SessionPanel {
     pub(crate) fn status_message(&self) -> String {
         match &self.content {
             TabContent::Query { status, .. } => status.message(),
-            TabContent::Table { .. } | TabContent::Schema { .. } | TabContent::Tool(_) => {
-                String::new()
-            }
+            TabContent::Table { .. }
+            | TabContent::Schema { .. }
+            | TabContent::Tool(_)
+            | TabContent::Dashboard { .. } => String::new(),
         }
     }
 
@@ -686,7 +739,10 @@ impl SessionPanel {
             TabContent::Query {
                 results, result, ..
             } => (results.len(), *result),
-            TabContent::Table { .. } | TabContent::Schema { .. } | TabContent::Tool(_) => (0, 0),
+            TabContent::Table { .. }
+            | TabContent::Schema { .. }
+            | TabContent::Tool(_)
+            | TabContent::Dashboard { .. } => (0, 0),
         }
     }
 
@@ -1137,7 +1193,7 @@ impl SessionPanel {
     /// The server is asked to stop the statement too: dropping the socket
     /// alone does not, and an `UPDATE` left running would still commit after
     /// the user had closed the tab it was started from.
-    pub(crate) fn abort_running(&mut self) {
+    pub(crate) fn abort_running(&mut self, cx: &mut Context<Self>) {
         if let TabContent::Query {
             running, pinned, ..
         } = &mut self.content
@@ -1152,6 +1208,10 @@ impl SessionPanel {
         }
         if let Some(run) = self.take_script() {
             close_script(run);
+        }
+        if let TabContent::Dashboard { view } = &self.content {
+            let view = view.clone();
+            view.update(cx, |view, cx| view.abort_running(cx));
         }
     }
 
@@ -1207,13 +1267,20 @@ impl SessionPanel {
                 let view = view.clone();
                 view.update(cx, |view, cx| view.set_connection(connection, cx));
             }
+            TabContent::Dashboard { view } => {
+                let view = view.clone();
+                view.update(cx, |view, cx| view.set_connection(connection, cx));
+            }
             TabContent::Tool(view) => view.set_connection(connection, cx),
         }
     }
 
     /// Reread a table tab's rows, or what a tool tab shows. A query tab's
     /// buffer is the user's own SQL and is left alone; a structure tab has
-    /// nothing to refresh this way.
+    /// nothing to refresh this way; a dashboard tab is left alone too —
+    /// its own Refresh button is its run path, since re-running could
+    /// repeat a write and there is no window for a confirmation dialog
+    /// here.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         match &self.content {
             TabContent::Table { view } => {
@@ -1221,7 +1288,8 @@ impl SessionPanel {
                 view.update(cx, |view, cx| view.refresh(cx));
             }
             TabContent::Tool(view) => view.refresh(cx),
-            TabContent::Query { .. } | TabContent::Schema { .. } => {}
+            TabContent::Query { .. } | TabContent::Schema { .. } | TabContent::Dashboard { .. } => {
+            }
         }
     }
 
@@ -1602,6 +1670,9 @@ impl Focusable for SessionPanel {
             TabContent::Schema { .. } => self.focus.clone(),
             // A tool's grid or canvas, for the same reason.
             TabContent::Tool(view) => view.focus_handle(cx),
+            // The dashboard's own handle: its buttons and widget dialogs
+            // are what the keyboard is for there.
+            TabContent::Dashboard { view } => view.read(cx).focus_handle(),
         }
     }
 }
@@ -1635,7 +1706,7 @@ impl BasePanel for SessionPanel {
 
     /// A tab that leaves takes its running query with it.
     fn on_removed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.abort_running();
+        self.abort_running(cx);
         cx.emit(SessionPanelEvent::Removed);
     }
 }
@@ -1868,6 +1939,7 @@ impl Render for SessionPanel {
             // the pane.
             TabContent::Table { view } => view.clone().into_any_element(),
             TabContent::Schema { view } => view.clone().into_any_element(),
+            TabContent::Dashboard { view } => view.clone().into_any_element(),
             TabContent::Tool(view) => view.element(),
         };
 

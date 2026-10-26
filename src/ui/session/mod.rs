@@ -31,6 +31,7 @@ use crate::ui::variables_dialog::VariablesView;
 use crate::workspace_state::SessionState;
 
 pub(crate) mod chart;
+pub(crate) mod dashboard;
 mod files;
 mod limit;
 mod metadata;

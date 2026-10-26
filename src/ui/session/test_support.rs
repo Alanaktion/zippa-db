@@ -438,6 +438,48 @@ impl Session {
         panel.read(cx).chart_summary_for_test()
     }
 
+    /// The active tab's dashboard widgets, for tests: one summary per
+    /// widget, in order, or nothing when the active tab is not a dashboard.
+    #[cfg(test)]
+    pub(crate) fn dashboard_for_test(
+        &self,
+        cx: &App,
+    ) -> Option<Vec<super::dashboard::WidgetSummary>> {
+        let panel = self.active_panel_for_test()?;
+        panel
+            .read(cx)
+            .dashboard_view()
+            .map(|view| view.read(cx).widget_summaries())
+    }
+
+    /// The active tab's dashboard variables dialog, when one is open.
+    #[cfg(test)]
+    pub(crate) fn dashboard_variables_dialog_for_test(
+        &self,
+        cx: &App,
+    ) -> Option<Entity<crate::ui::variables_dialog::VariablesView>> {
+        let panel = self.active_panel_for_test()?;
+        panel
+            .read(cx)
+            .dashboard_view()
+            .and_then(|view| view.read(cx).variables_dialog_for_test())
+    }
+
+    /// Mark the active tab's dashboard as mid-refresh, for tests: true
+    /// when the active tab is a dashboard, so a test that needs the
+    /// in-flight state fails loudly instead of passing vacuously.
+    #[cfg(test)]
+    pub(crate) fn mark_dashboard_refreshing_for_test(&self, cx: &mut App) -> bool {
+        let Some(panel) = self.active_panel_for_test() else {
+            return false;
+        };
+        let Some(view) = panel.read(cx).dashboard_view() else {
+            return false;
+        };
+        view.update(cx, |view, _| view.mark_refreshing_for_test());
+        true
+    }
+
     /// Toggle a column in the active tab's chart y set, the way its Y
     /// picker's checkable items do.
     #[cfg(test)]

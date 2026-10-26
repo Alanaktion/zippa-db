@@ -13,6 +13,7 @@ use crate::ui::schema_view::SchemaView;
 use crate::ui::table_view::TableView;
 
 use super::chart::ChartConfig;
+use super::dashboard::DashboardView;
 use super::limit::QueryLimit;
 use super::tool::ToolView;
 
@@ -110,6 +111,10 @@ pub(crate) enum TabContent {
     },
     Schema {
         view: Entity<SchemaView>,
+    },
+    /// A dashboard tab: a named set of widgets, each running its own SQL.
+    Dashboard {
+        view: Entity<DashboardView>,
     },
     /// One of the session's tools — the console, a server view, and so on.
     Tool(ToolView),

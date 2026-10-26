@@ -122,6 +122,12 @@ pub enum PanelState {
     /// The ER diagram tab. Carries nothing of its own — it re-reads the
     /// schema on open, the same as the process list.
     Erd,
+    /// A dashboard tab. Carries only the dashboard's name — the dashboard
+    /// itself lives in `dashboards.json`, and restoring one reopens it
+    /// without running it; the Refresh button runs it.
+    Dashboard {
+        name: String,
+    },
     /// A panel kind a newer build wrote. It is skipped rather than failing the
     /// whole file, so a newer version's workspace still opens in an older one.
     #[serde(other)]

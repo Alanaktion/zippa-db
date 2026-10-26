@@ -11,7 +11,8 @@
 //! list. SQLite has no server, so it lists the console and its own
 //! maintenance tab instead of the server views. **Saved** lists the queries
 //! the user named and kept, across every connection; clicking one opens it in
-//! a new query tab.
+//! a new query tab. The Saved tab's lower section lists the saved dashboards
+//! the same way; clicking one opens it in a dashboard tab and runs it.
 //!
 //! TODO.md section 4 starts here — a tree of databases, schemas, tables,
 //! views, functions and the rest — so the list and the filter over it are
@@ -30,6 +31,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Action, ClipboardItem, Context, Entity, Pixels, SharedString, Window, div, px};
 use regex::Regex;
 
+use crate::dashboards::{self, Dashboards};
 use crate::db::{DatabaseObject, Engine, ObjectKind, StoredKind, StoredObject};
 use crate::saved_queries::{self, SavedQueries};
 use crate::ui::busy::skeleton_rows;
@@ -599,6 +601,8 @@ impl Session {
     fn render_saved_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let queries = SavedQueries::get(cx).to_vec();
         let error = SavedQueries::error(cx);
+        let dashboards = Dashboards::get(cx).to_vec();
+        let dashboard_error = Dashboards::error(cx);
 
         v_flex()
             .flex_1()
@@ -698,6 +702,103 @@ impl Session {
                                     cx,
                                 );
                             }))
+                    })),
+            )
+            .child(
+                div()
+                    .px_1()
+                    .pt_2()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("DASHBOARDS"),
+            )
+            .when_some(dashboard_error, |this, error| {
+                this.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(format!("Error: {error}")),
+                )
+            })
+            .when(dashboards.is_empty(), |this| {
+                this.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("No dashboards yet — create one below."),
+                )
+            })
+            .child(
+                div()
+                    .id("dashboards")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(dashboards.into_iter().enumerate().map(|(ix, dashboard)| {
+                        let row_name = dashboard.name.clone();
+                        let delete_name = row_name.clone();
+                        let count = dashboard.widgets.len();
+                        ListItem::new(("dashboard", ix))
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .min_w_0()
+                                    .gap_2()
+                                    .justify_between()
+                                    .child(
+                                        v_flex()
+                                            .min_w_0()
+                                            .flex_1()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                                    .truncate()
+                                                    .child(row_name.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .truncate()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(format!(
+                                                        "{} widget{}",
+                                                        count,
+                                                        if count == 1 { "" } else { "s" }
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new(("dashboard-delete", ix))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::X)
+                                            .accessibility_label(format!(
+                                                "Delete dashboard {row_name}"
+                                            ))
+                                            .tooltip(format!("Delete {row_name}"))
+                                            .on_click(move |_, _window, cx| {
+                                                dashboards::remove(&delete_name, cx);
+                                                // The row itself opens the dashboard on click; a
+                                                // delete must not bubble up to it.
+                                                cx.stop_propagation();
+                                            }),
+                                    ),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_dashboard(row_name.clone(), window, cx);
+                            }))
+                    })),
+            )
+            .child(
+                Button::new("new-dashboard")
+                    .ghost()
+                    .small()
+                    .label("New dashboard…")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_new_dashboard_dialog(window, cx)
                     })),
             )
     }
