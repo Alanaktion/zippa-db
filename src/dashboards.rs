@@ -38,8 +38,35 @@ pub struct Dashboard {
 /// One widget: its own SQL, and how its result is shown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Widget {
+    /// The title the user gave it; none shows a number and the SQL's first
+    /// line instead. Files from before widgets could be named read back
+    /// unnamed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// How much of a row it takes; none leaves it to the display (a data
+    /// grid is as wide as its columns, a chart is not).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<WidgetWidth>,
     pub sql: String,
     pub display: WidgetDisplay,
+}
+
+/// How much of a dashboard row a widget takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WidgetWidth {
+    Half,
+    Full,
+}
+
+impl Widget {
+    /// The width it is drawn at: the one chosen, else full for a data grid
+    /// and half for a chart.
+    pub fn effective_width(&self) -> WidgetWidth {
+        self.width.unwrap_or(match self.display {
+            WidgetDisplay::Grid => WidgetWidth::Full,
+            WidgetDisplay::Chart { .. } => WidgetWidth::Half,
+        })
+    }
 }
 
 /// How a widget shows its result. A chart's column picks are names, not
@@ -179,6 +206,8 @@ mod tests {
             name: name.to_string(),
             widgets: vec![
                 Widget {
+                    name: Some("Scores".to_string()),
+                    width: Some(WidgetWidth::Full),
                     sql: "SELECT name, score FROM items;".to_string(),
                     display: WidgetDisplay::Chart {
                         kind: ChartKind::Line,
@@ -187,6 +216,8 @@ mod tests {
                     },
                 },
                 Widget {
+                    name: None,
+                    width: None,
                     sql: "SELECT id, name FROM items;".to_string(),
                     display: WidgetDisplay::Grid,
                 },
@@ -203,6 +234,17 @@ mod tests {
         save(&dashboards, store::ticket()).expect("save should succeed");
         assert_eq!(load().expect("load should succeed"), dashboards);
         reset_for_test();
+    }
+
+    /// A file written before widgets had names still loads, and an unnamed
+    /// widget does not write a `name` key back.
+    #[test]
+    fn a_widget_without_a_name_reads_back_unnamed() {
+        let widget: Widget =
+            serde_json::from_str(r#"{"sql":"SELECT 1","display":"Grid"}"#).expect("should parse");
+        assert_eq!(widget.name, None);
+        let written = serde_json::to_string(&widget).expect("should write");
+        assert!(!written.contains("name"), "{written}");
     }
 
     #[gpui_kit::test]

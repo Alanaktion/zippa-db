@@ -109,6 +109,10 @@ pub struct QueryEditor {
     /// The saved query this buffer belongs to, so the menu can say which
     /// one Save will update. Kept by the tab, mirrored here.
     saved_name: Option<SharedString>,
+    /// Whether the run/save/format toolbar is drawn. Off where the editor
+    /// only holds text for an owner that has its own Save, such as a
+    /// dashboard widget's dialog.
+    toolbar: bool,
 }
 
 /// What the toolbar reads off the whole buffer.
@@ -164,7 +168,14 @@ impl QueryEditor {
             statement_cache: RefCell::new(None),
             buffer_cache: RefCell::new(None),
             saved_name: None,
+            toolbar: true,
         }
+    }
+
+    /// Draw only the text area, without the toolbar. Shortcuts still work.
+    pub(crate) fn without_toolbar(mut self) -> Self {
+        self.toolbar = false;
+        self
     }
 
     /// This buffer's `:name`/`$name` variables.
@@ -759,13 +770,16 @@ impl Render for QueryEditor {
             .size_full()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(self.render_toolbar(writes, can_analyze, blocker, cx))
+            .when(self.toolbar, |this| {
+                this.child(self.render_toolbar(writes, can_analyze, blocker, cx))
+            })
             .child(
                 Editor::new(&self.state)
                     .h_full()
                     .appearance(false)
-                    .border_t_1()
-                    .border_color(cx.theme().border)
+                    .when(self.toolbar, |editor| {
+                        editor.border_t_1().border_color(cx.theme().border)
+                    })
                     // Refines over the editor's own monospace default.
                     .font_family(settings::editor_font(cx))
                     // The built-in menu is replaced wholesale, so the

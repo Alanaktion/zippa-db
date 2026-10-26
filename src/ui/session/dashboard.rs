@@ -12,28 +12,35 @@
 //! The run path is the query tab's, one widget at a time: substitute the
 //! dashboard's variables, apply the implicit limit, refuse writes the
 //! session refuses, and run through [`Connection::run_query_with`] on the
-//! runtime thread. A refresh in flight is cancelled by any edit — a
-//! generation counter, checked between widgets and before the epilogue,
-//! keeps a cancelled driver's results from landing on edited widgets.
+//! runtime thread. Widgets run one at a time from a queue, each named by a
+//! stable id rather than a position. Editing a widget queues it behind
+//! whatever is running; only that widget's own run in flight is dropped,
+//! and a per-run token keeps the dropped run's rows from landing. Changes
+//! that invalidate everything — a new connection, new variables — cancel
+//! the whole queue instead.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::{DialogButtonProps, DialogFooter};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable, h_flex, v_flex};
+use gpui_kit::component::radio::{Radio, RadioGroup};
+use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Window, actions, div, px,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, FontWeight, SharedString, Window,
+    actions, div, px,
 };
 
-use crate::dashboards::{self, Dashboard, Widget, WidgetDisplay};
+use crate::dashboards::{self, Dashboard, Widget, WidgetDisplay, WidgetWidth};
 use crate::db::params::Variable;
 use crate::db::query::QueryResult;
 use crate::db::runtime;
 use crate::db::{Connection, Engine, params, statement};
 use crate::settings::Settings;
+use crate::ui::busy::{busy_label, skeleton_rows};
 use crate::ui::completion::SharedCatalog;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
@@ -53,6 +60,8 @@ actions!(zippa_db, [CloseWidgetDialog]);
 #[derive(Clone, PartialEq)]
 enum WidgetStatus {
     Idle,
+    /// Waiting its turn behind the widget that is running.
+    Queued,
     Running,
     Done,
     Error(String),
@@ -62,27 +71,65 @@ enum WidgetStatus {
 /// grid, so flipping a widget's display never has to build one mid-render;
 /// it just stops being shown.
 struct WidgetState {
+    /// Stable for the widget's life, unlike its position, which a delete or
+    /// a move changes under a queued run.
+    id: u64,
     grid: Entity<DataGrid>,
     status: WidgetStatus,
     result: Option<QueryResult>,
     applied_limit: Option<usize>,
 }
 
+impl WidgetState {
+    fn new(id: u64, engine: Engine, window: &mut Window, cx: &mut App) -> Self {
+        Self {
+            id,
+            grid: cx.new(|cx| DataGrid::new(engine, window, cx)),
+            status: WidgetStatus::Idle,
+            result: None,
+            applied_limit: None,
+        }
+    }
+
+    /// Forget the result, e.g. when the SQL or connection behind it changed.
+    fn reset(&mut self, cx: &mut App) {
+        self.status = WidgetStatus::Idle;
+        self.result = None;
+        self.applied_limit = None;
+        self.grid.update(cx, |grid, cx| grid.clear(cx));
+    }
+}
+
+/// A widget taken off the queue, with what it runs.
+struct Job {
+    id: u64,
+    token: u64,
+    sql: String,
+    variables: Vec<Variable>,
+}
+
 pub(crate) struct DashboardView {
-    name: String,
     dashboard: Dashboard,
     connection: Arc<Connection>,
     engine: Engine,
     catalog: SharedCatalog,
     focus: FocusHandle,
     widgets: Vec<WidgetState>,
-    /// A refresh driver is running. Edits cancel it first; the Refresh
-    /// button while one runs is a no-op, so two drivers never interleave.
+    /// A driver is working through `queue`. There is at most one, so two
+    /// never interleave; the Refresh button while it runs is a no-op.
     refreshing: bool,
-    /// Bumped on every cancel. The driver captures its generation at start
-    /// and checks it between widgets and before its epilogue, so a
-    /// superseded driver cannot land results on edited widgets.
-    generation: u64,
+    /// Widgets waiting to run, by id, in the order they were asked for.
+    queue: VecDeque<u64>,
+    /// The widget whose query is in flight.
+    current: Option<u64>,
+    /// Bumped whenever the run in flight is dropped or a new one starts. A
+    /// run lands its rows only if the token it started with is still
+    /// current.
+    job: u64,
+    /// Bumped by a cancel of everything. The driver exits when it sees a
+    /// different epoch than it started in.
+    epoch: u64,
+    next_id: u64,
     running: Option<tokio::task::AbortHandle>,
     variables_dialog: Option<Entity<VariablesView>>,
 }
@@ -96,19 +143,11 @@ impl DashboardView {
         cx: &mut Context<Self>,
     ) -> Self {
         let engine = connection.config.engine;
-        let name = dashboard.name.clone();
-        let widgets = dashboard
-            .widgets
-            .iter()
-            .map(|_| WidgetState {
-                grid: cx.new(|cx| DataGrid::new(engine, window, cx)),
-                status: WidgetStatus::Idle,
-                result: None,
-                applied_limit: None,
-            })
+        let dashboard_len = dashboard.widgets.len() as u64;
+        let widgets = (0..dashboard.widgets.len() as u64)
+            .map(|id| WidgetState::new(id, engine, window, cx))
             .collect();
         Self {
-            name,
             dashboard,
             connection,
             engine,
@@ -116,14 +155,18 @@ impl DashboardView {
             focus: cx.focus_handle(),
             widgets,
             refreshing: false,
-            generation: 0,
+            queue: VecDeque::new(),
+            current: None,
+            job: 0,
+            epoch: 0,
+            next_id: dashboard_len,
             running: None,
             variables_dialog: None,
         }
     }
 
     pub(crate) fn name(&self) -> &str {
-        &self.name
+        &self.dashboard.name
     }
 
     pub(crate) fn focus_handle(&self) -> FocusHandle {
@@ -138,11 +181,7 @@ impl DashboardView {
         self.connection = connection.clone();
         self.engine = connection.config.engine;
         for widget in &mut self.widgets {
-            widget.status = WidgetStatus::Idle;
-            widget.result = None;
-            widget.applied_limit = None;
-            let grid = widget.grid.clone();
-            grid.update(cx, |grid, cx| grid.clear(cx));
+            widget.reset(cx);
         }
         cx.notify();
     }
@@ -158,18 +197,13 @@ impl DashboardView {
         cx: &mut Context<Self>,
     ) {
         self.cancel_refresh(cx);
-        self.name = dashboard.name.clone();
         self.dashboard = dashboard;
         let engine = self.engine;
-        self.widgets = self
-            .dashboard
-            .widgets
-            .iter()
-            .map(|_| WidgetState {
-                grid: cx.new(|cx| DataGrid::new(engine, window, cx)),
-                status: WidgetStatus::Idle,
-                result: None,
-                applied_limit: None,
+        self.widgets = (0..self.dashboard.widgets.len())
+            .map(|_| {
+                let id = self.next_id;
+                self.next_id += 1;
+                WidgetState::new(id, engine, window, cx)
             })
             .collect();
         cx.notify();
@@ -181,18 +215,42 @@ impl DashboardView {
         self.cancel_refresh(cx);
     }
 
+    /// Drop everything queued and in flight. Results stay; cells that were
+    /// waiting or running go back to idle.
     fn cancel_refresh(&mut self, cx: &mut Context<Self>) {
-        self.generation += 1;
+        self.epoch += 1;
         self.refreshing = false;
-        if let Some(running) = self.running.take() {
-            running.abort();
-        }
+        self.queue.clear();
+        self.discard_current();
         for widget in &mut self.widgets {
-            if widget.status == WidgetStatus::Running {
+            if matches!(widget.status, WidgetStatus::Running | WidgetStatus::Queued) {
                 widget.status = WidgetStatus::Idle;
             }
         }
         cx.notify();
+    }
+
+    /// Drop the run in flight, if any, so its rows never land. The driver
+    /// carries on with the queue.
+    fn discard_current(&mut self) {
+        self.job += 1;
+        self.current = None;
+        if let Some(running) = self.running.take() {
+            running.abort();
+        }
+    }
+
+    /// Take widget `id` out of the queue and out of flight, as when it is
+    /// edited or deleted and whatever it was about to run is stale.
+    fn withdraw(&mut self, id: u64) {
+        self.queue.retain(|queued| *queued != id);
+        if self.current == Some(id) {
+            self.discard_current();
+        }
+    }
+
+    fn index_of(&self, id: u64) -> Option<usize> {
+        self.widgets.iter().position(|widget| widget.id == id)
     }
 
     /// The Refresh button's run path: one confirmation for the whole
@@ -241,28 +299,76 @@ impl DashboardView {
         self.start_refresh_all(cx);
     }
 
-    fn start_refresh_all(&mut self, cx: &mut Context<Self>) {
-        let indices = (0..self.widgets.len()).collect();
-        self.start_refresh(indices, cx);
+    fn variables(&self) -> Vec<Variable> {
+        self.dashboard
+            .variables
+            .iter()
+            .map(|(name, value)| Variable {
+                name: name.clone(),
+                value: value.clone(),
+            })
+            .collect()
     }
 
-    /// Run a subset of widgets, one at a time, on the runtime thread. The
-    /// SQL and variables are snapshotted up front, so an edit mid-refresh
-    /// cannot change what a running widget runs — and the generation check
-    /// between widgets stops the driver once an edit has cancelled it.
-    fn start_refresh(&mut self, indices: Vec<usize>, cx: &mut Context<Self>) {
-        if self.refreshing {
-            return;
-        }
-        self.generation += 1;
-        let generation = self.generation;
-        self.refreshing = true;
-        for &index in &indices {
-            if let Some(widget) = self.widgets.get_mut(index) {
-                widget.status = WidgetStatus::Running;
+    fn start_refresh_all(&mut self, cx: &mut Context<Self>) {
+        let ids = self.widgets.iter().map(|widget| widget.id).collect();
+        self.start_refresh(ids, cx);
+    }
+
+    /// Queue widgets to run, one at a time, on the runtime thread. A widget
+    /// already waiting keeps its place; one whose query is in flight has
+    /// that query dropped and goes to the back, since its SQL or variables
+    /// are what changed. Every other widget's run is left alone.
+    fn start_refresh(&mut self, ids: Vec<u64>, cx: &mut Context<Self>) {
+        for id in ids {
+            let Some(index) = self.index_of(id) else {
+                continue;
+            };
+            self.withdraw_if_running(id);
+            if !self.queue.contains(&id) {
+                self.queue.push_back(id);
             }
+            self.widgets[index].status = WidgetStatus::Queued;
         }
         cx.notify();
+        if !self.refreshing && !self.queue.is_empty() {
+            self.refreshing = true;
+            self.drive(cx);
+        }
+    }
+
+    fn withdraw_if_running(&mut self, id: u64) {
+        if self.current == Some(id) {
+            self.discard_current();
+        }
+    }
+
+    /// The next widget to run: its SQL and variables are read now, at its
+    /// turn, so an edit made while it waited is what runs. `None` when the
+    /// queue is empty or everything was cancelled.
+    fn next_job(&mut self, epoch: u64) -> Option<Job> {
+        if self.epoch != epoch {
+            return None;
+        }
+        while let Some(id) = self.queue.pop_front() {
+            let Some(index) = self.index_of(id) else {
+                continue;
+            };
+            self.job += 1;
+            self.current = Some(id);
+            self.widgets[index].status = WidgetStatus::Running;
+            return Some(Job {
+                id,
+                token: self.job,
+                sql: self.dashboard.widgets[index].sql.clone(),
+                variables: self.variables(),
+            });
+        }
+        None
+    }
+
+    fn drive(&mut self, cx: &mut Context<Self>) {
+        let epoch = self.epoch;
         let (limit_on, limit_rows) = {
             let settings = Settings::global(cx);
             (settings.implicit_limit, settings.implicit_limit_rows)
@@ -270,33 +376,23 @@ impl DashboardView {
         let limit = limit_on.then_some(limit_rows);
         let engine = self.engine;
         let connection = self.connection.clone();
-        let jobs: Vec<(usize, String, Vec<Variable>)> = indices
-            .iter()
-            .filter_map(|&index| {
-                self.dashboard.widgets.get(index).map(|widget| {
-                    (
-                        index,
-                        widget.sql.clone(),
-                        self.dashboard
-                            .variables
-                            .iter()
-                            .map(|(name, value)| Variable {
-                                name: name.clone(),
-                                value: value.clone(),
-                            })
-                            .collect(),
-                    )
-                })
-            })
-            .collect();
         cx.spawn(async move |this, cx| {
-            for (index, sql, variables) in jobs {
-                let alive = this.update_in(cx, |view, _, _| view.generation == generation);
-                if !matches!(alive, Ok(true)) {
+            loop {
+                let job = this.update_in(cx, |view, _, cx| {
+                    let job = view.next_job(epoch);
+                    cx.notify();
+                    job
+                });
+                let Ok(Some(Job {
+                    id,
+                    token,
+                    sql,
+                    variables,
+                })) = job
+                else {
                     break;
-                }
-                let substituted = params::substitute(&sql, &variables, engine);
-                let (sql, params, applied) = match substituted {
+                };
+                let (sql, params, applied) = match params::substitute(&sql, &variables, engine) {
                     Ok((sql, params)) => {
                         let limited =
                             limit.and_then(|rows| statement::with_limit(&sql, rows, engine));
@@ -305,7 +401,10 @@ impl DashboardView {
                     }
                     Err(error) => {
                         this.update_in(cx, |view, _, cx| {
-                            view.set_widget_error(index, format!("{error:#}"), cx)
+                            if view.job == token {
+                                view.current = None;
+                                view.set_widget_error(id, format!("{error:#}"), cx);
+                            }
                         })
                         .ok();
                         continue;
@@ -314,45 +413,36 @@ impl DashboardView {
                 let connection = connection.clone();
                 let task =
                     runtime::spawn(async move { connection.run_query_with(&sql, params).await });
-                // A cancel between the spawn and this store must not hand
-                // the stale handle to the new driver, the way the landing
-                // below must not hand the new driver stale results.
+                // A drop between the spawn and this store must not hand the
+                // stale handle to the next run.
                 this.update_in(cx, |view, _, _| {
-                    if view.generation == generation {
+                    if view.job == token {
                         view.running = task.abort_handle();
                     }
                 })
                 .ok();
                 let result = task.await;
                 let landed = this.update_in(cx, |view, _, cx| {
-                    if view.generation != generation {
-                        // Cancelled while this query ran: the canceller
-                        // already reset the cells, and `running` belongs to
-                        // the new driver now. Landing here would put rows
-                        // from SQL the widget no longer runs — or, after a
-                        // delete, onto the widget the index now names.
-                        return false;
+                    if view.job != token {
+                        // Dropped while it ran: whoever dropped it already
+                        // reset the cell, and the rows are for SQL the
+                        // widget may no longer run.
+                        return;
                     }
+                    view.current = None;
                     view.running = None;
                     match result {
-                        Ok(Ok(result)) => {
-                            view.set_widget_result(index, result, applied, cx);
-                            true
-                        }
-                        Ok(Err(error)) => {
-                            view.set_widget_error(index, format!("{error:#}"), cx);
-                            true
-                        }
-                        // Aborted: the canceller already reset the cells.
-                        Err(_) => false,
+                        Ok(Ok(result)) => view.set_widget_result(id, result, applied, cx),
+                        Ok(Err(error)) => view.set_widget_error(id, format!("{error:#}"), cx),
+                        Err(_) => view.set_widget_error(id, "Cancelled".to_string(), cx),
                     }
                 });
-                if !matches!(landed, Ok(true)) {
-                    break;
+                if landed.is_err() {
+                    return;
                 }
             }
             this.update_in(cx, |view, _, cx| {
-                if view.generation == generation {
+                if view.epoch == epoch {
                     view.refreshing = false;
                     cx.notify();
                 }
@@ -362,16 +452,13 @@ impl DashboardView {
         .detach();
     }
 
-    /// Re-run one widget after an edit, with its own confirmation when it
-    /// writes. Cancels a full refresh first, so the full refresh's stale
-    /// snapshot cannot overwrite the edited widget.
+    /// Run one widget after an edit, with its own confirmation when it
+    /// writes. It queues behind whatever is running rather than stopping it.
     fn refresh_one(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.refreshing {
-            self.cancel_refresh(cx);
-        }
         let Some(widget) = self.dashboard.widgets.get(index) else {
             return;
         };
+        let id = self.widgets[index].id;
         if self.connection.config.safety.confirms_writes()
             && statement::first_write(&widget.sql, self.engine).is_some()
         {
@@ -396,24 +483,24 @@ impl DashboardView {
                     )
                     .on_ok(move |_, _, cx| {
                         if let Some(view) = view.upgrade() {
-                            view.update(cx, |view, cx| view.start_refresh(vec![index], cx));
+                            view.update(cx, |view, cx| view.start_refresh(vec![id], cx));
                         }
                         true
                     })
             });
             return;
         }
-        self.start_refresh(vec![index], cx);
+        self.start_refresh(vec![id], cx);
     }
 
     fn set_widget_result(
         &mut self,
-        index: usize,
+        id: u64,
         result: QueryResult,
         applied: Option<usize>,
         cx: &mut Context<Self>,
     ) {
-        let Some(widget) = self.widgets.get_mut(index) else {
+        let Some(widget) = self.widgets.iter_mut().find(|widget| widget.id == id) else {
             return;
         };
         widget.status = WidgetStatus::Done;
@@ -424,15 +511,12 @@ impl DashboardView {
         cx.notify();
     }
 
-    fn set_widget_error(&mut self, index: usize, message: String, cx: &mut Context<Self>) {
-        let Some(widget) = self.widgets.get_mut(index) else {
+    fn set_widget_error(&mut self, id: u64, message: String, cx: &mut Context<Self>) {
+        let Some(widget) = self.widgets.iter_mut().find(|widget| widget.id == id) else {
             return;
         };
+        widget.reset(cx);
         widget.status = WidgetStatus::Error(message);
-        widget.result = None;
-        widget.applied_limit = None;
-        let grid = widget.grid.clone();
-        grid.update(cx, |grid, cx| grid.clear(cx));
         cx.notify();
     }
 
@@ -442,15 +526,7 @@ impl DashboardView {
         if self.variables_dialog.is_some() {
             return;
         }
-        let variables: Vec<Variable> = self
-            .dashboard
-            .variables
-            .iter()
-            .map(|(name, value)| Variable {
-                name: name.clone(),
-                value: value.clone(),
-            })
-            .collect();
+        let variables = self.variables();
         let view = cx.new(|cx| VariablesView::new(variables, window, cx));
         cx.subscribe_in(&view, window, Self::on_variables_event)
             .detach();
@@ -548,12 +624,9 @@ impl DashboardView {
     fn add_widget(&mut self, widget: Widget, window: &mut Window, cx: &mut Context<Self>) {
         self.dashboard.widgets.push(widget);
         let engine = self.engine;
-        self.widgets.push(WidgetState {
-            grid: cx.new(|cx| DataGrid::new(engine, window, cx)),
-            status: WidgetStatus::Idle,
-            result: None,
-            applied_limit: None,
-        });
+        let id = self.next_id;
+        self.next_id += 1;
+        self.widgets.push(WidgetState::new(id, engine, window, cx));
         dashboards::upsert(&self.dashboard, cx);
         cx.notify();
         let index = self.widgets.len() - 1;
@@ -571,18 +644,74 @@ impl DashboardView {
             return;
         };
         *slot = widget;
+        // The old rows belong to the old SQL; if the re-run is declined
+        // they must not stay on screen under the new one.
+        // Whatever it had queued or in flight was for the old SQL, and if
+        // the re-run is declined it must not run unasked.
+        let id = self.widgets[index].id;
+        self.withdraw(id);
+        self.widgets[index].reset(cx);
         dashboards::upsert(&self.dashboard, cx);
         cx.notify();
         self.refresh_one(index, window, cx);
     }
 
-    fn delete_widget(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.refreshing {
-            self.cancel_refresh(cx);
+    /// Ask first, since the widget's SQL and picks go with it.
+    fn confirm_delete_widget(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(widget) = self.dashboard.widgets.get(index) else {
+            return;
+        };
+        if window.has_active_dialog(cx) {
+            return;
         }
+        let title = widget_title(widget, index);
+        let view = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let view = view.clone();
+            alert
+                .title("Delete this widget?")
+                .description(format!("“{title}” will be removed from the dashboard."))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Delete")
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    if let Some(view) = view.upgrade() {
+                        view.update(cx, |view, cx| view.delete_widget(index, cx));
+                    }
+                    true
+                })
+        });
+    }
+
+    /// Swap the widget with its neighbour, `later` or earlier in the list.
+    /// Results travel with their widgets, and a run in flight is left alone,
+    /// since the queue addresses widgets by id.
+    fn move_widget(&mut self, index: usize, later: bool, cx: &mut Context<Self>) {
+        let other = if later {
+            index + 1
+        } else {
+            match index.checked_sub(1) {
+                Some(other) => other,
+                None => return,
+            }
+        };
+        if other >= self.dashboard.widgets.len() {
+            return;
+        }
+        self.dashboard.widgets.swap(index, other);
+        self.widgets.swap(index, other);
+        dashboards::upsert(&self.dashboard, cx);
+        cx.notify();
+    }
+
+    fn delete_widget(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.dashboard.widgets.len() {
             return;
         }
+        self.withdraw(self.widgets[index].id);
         self.dashboard.widgets.remove(index);
         self.widgets.remove(index);
         dashboards::upsert(&self.dashboard, cx);
@@ -603,6 +732,40 @@ fn widget_header_summary(sql: &str) -> String {
         summary.push('…');
     }
     summary
+}
+
+/// A widget's title: the name the user gave it, else its number and the
+/// SQL's first line.
+fn widget_title(widget: &Widget, index: usize) -> String {
+    match widget.name.as_deref().map(str::trim) {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => format!(
+            "Widget {} · {}",
+            index + 1,
+            widget_header_summary(&widget.sql)
+        ),
+    }
+}
+
+/// Which widgets share a row. A full-width widget takes a whole row; half-
+/// width ones pair up two to a row, in list order, and a full-width one ends
+/// the pair in progress.
+fn layout_rows(widgets: &[Widget]) -> Vec<Vec<usize>> {
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut pending: Vec<usize> = Vec::new();
+    for (index, widget) in widgets.iter().enumerate() {
+        if widget.effective_width() == WidgetWidth::Full {
+            rows.extend((!pending.is_empty()).then(|| std::mem::take(&mut pending)));
+            rows.push(vec![index]);
+        } else {
+            pending.push(index);
+            if pending.len() == 2 {
+                rows.push(std::mem::take(&mut pending));
+            }
+        }
+    }
+    rows.extend((!pending.is_empty()).then_some(pending));
+    rows
 }
 
 /// What a chart widget draws with, or why it draws none. Names resolve
@@ -657,7 +820,7 @@ impl DashboardView {
         h_flex()
             .gap_2()
             .justify_between()
-            .child(div().text_lg().child(self.name.clone()))
+            .child(div().text_lg().child(self.dashboard.name.clone()))
             .child(
                 h_flex()
                     .gap_2()
@@ -688,6 +851,7 @@ impl DashboardView {
                             } else {
                                 "Refresh"
                             })
+                            .loading(refreshing)
                             .disabled(refreshing)
                             .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
                     ),
@@ -701,19 +865,34 @@ impl DashboardView {
                 .child("No widgets yet — add one above.")
                 .into_any_element();
         }
+        let rows = layout_rows(&self.dashboard.widgets);
+
+        // The dashboard scrolls under its header, so widgets past the
+        // window's height are reachable.
         v_flex()
+            .id("dashboard-widgets")
+            .flex_1()
+            .min_h_0()
             .gap_4()
-            .children((0..self.widgets.len().div_ceil(2)).map(|row| {
-                let first = row * 2;
-                let mut cells = vec![self.render_widget(first, cx)];
-                if first + 1 < self.widgets.len() {
-                    cells.push(self.render_widget(first + 1, cx));
-                } else {
-                    // An odd cell still takes half the row, so the grid
-                    // stays two columns wide instead of stretching.
-                    cells.push(div().flex_1().into_any_element());
+            .overflow_y_scroll()
+            .children(rows.into_iter().map(|row| {
+                let alone = row.len() == 1;
+                let wide =
+                    alone && self.dashboard.widgets[row[0]].effective_width() == WidgetWidth::Full;
+                let mut cells: Vec<AnyElement> = row
+                    .into_iter()
+                    .map(|index| self.render_widget(index, cx))
+                    .collect();
+                if alone && !wide {
+                    // A lone half-width widget still takes half the row,
+                    // so it keeps one width instead of stretching.
+                    cells.push(div().flex_1().min_w_0().into_any_element());
                 }
-                h_flex().gap_4().children(cells).into_any_element()
+                h_flex()
+                    .flex_none()
+                    .gap_4()
+                    .children(cells)
+                    .into_any_element()
             }))
             .into_any_element()
     }
@@ -721,17 +900,21 @@ impl DashboardView {
     fn render_widget(&mut self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let widget = &self.dashboard.widgets[index];
         let state = &self.widgets[index];
-        let title = format!(
-            "Widget {} · {}",
-            index + 1,
-            widget_header_summary(&widget.sql)
-        );
+        let title = widget_title(widget, index);
+        let count = self.widgets.len();
         let body = match &state.status {
-            WidgetStatus::Running => div()
+            WidgetStatus::Queued => div()
                 .flex_1()
-                .p_2()
+                .p_3()
                 .text_color(cx.theme().muted_foreground)
-                .child("Running…")
+                .child("Waiting for another widget…")
+                .into_any_element(),
+            WidgetStatus::Running => v_flex()
+                .flex_1()
+                .p_3()
+                .gap_3()
+                .child(busy_label("Running…", cx.theme().muted_foreground))
+                .child(skeleton_rows(6))
                 .into_any_element(),
             WidgetStatus::Error(message) => div()
                 .id(("dashboard-widget-error", index))
@@ -751,14 +934,21 @@ impl DashboardView {
                 WidgetDisplay::Grid => div()
                     .flex_1()
                     .min_h_0()
+                    .min_w_0()
+                    .w_full()
                     .child(state.grid.clone())
                     .into_any_element(),
                 WidgetDisplay::Chart { .. } => self.render_widget_chart(index, cx),
             },
         };
+        // `min_w_0` and `overflow_hidden` keep a wide result inside its cell,
+        // where the grid's own scrollbars take over, rather than stretching
+        // the cell past the window.
         div()
             .flex_1()
+            .min_w_0()
             .h(px(320.))
+            .overflow_hidden()
             .border_1()
             .border_color(cx.theme().border)
             .child(
@@ -772,15 +962,47 @@ impl DashboardView {
                             .py_1()
                             .border_b_1()
                             .border_color(cx.theme().border)
-                            .child(div().flex_1().text_sm().child(title))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .child(title.clone()),
+                            )
                             .child(
                                 h_flex()
                                     .gap_1()
+                                    .child(
+                                        Button::new(("dashboard-widget-earlier", index))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::ChevronUp)
+                                            .disabled(index == 0)
+                                            .tooltip("Move earlier")
+                                            .accessibility_label(format!("Move {title} earlier"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.move_widget(index, false, cx)
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new(("dashboard-widget-later", index))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::ChevronDown)
+                                            .disabled(index + 1 >= count)
+                                            .tooltip("Move later")
+                                            .accessibility_label(format!("Move {title} later"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.move_widget(index, true, cx)
+                                            })),
+                                    )
                                     .child(
                                         Button::new(("dashboard-widget-edit", index))
                                             .ghost()
                                             .xsmall()
                                             .label("Edit")
+                                            .accessibility_label(format!("Edit {title}"))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.open_widget_dialog(Some(index), window, cx)
                                             })),
@@ -790,8 +1012,9 @@ impl DashboardView {
                                             .ghost()
                                             .xsmall()
                                             .label("Delete")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.delete_widget(index, cx)
+                                            .accessibility_label(format!("Delete {title}"))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.confirm_delete_widget(index, window, cx)
                                             })),
                                     ),
                             ),
@@ -934,8 +1157,10 @@ impl EventEmitter<WidgetEditEvent> for WidgetEditDialog {}
 /// change does not silently chart the wrong ones.
 pub(crate) struct WidgetEditDialog {
     index: Option<usize>,
+    name: Entity<InputState>,
     editor: Entity<QueryEditor>,
     chart: bool,
+    width: WidgetWidth,
     kind: ChartKind,
     x: Entity<InputState>,
     y: Entity<InputState>,
@@ -958,10 +1183,25 @@ impl WidgetEditDialog {
                 }
                 _ => (false, ChartKind::Line, String::new(), String::new()),
             };
+            let width = widget
+                .as_ref()
+                .map_or(WidgetWidth::Full, Widget::effective_width);
             let sql = widget.as_ref().map(|w| w.sql.clone()).unwrap_or_default();
-            let editor = cx.new(|cx| QueryEditor::with_text(sql, engine, catalog, window, cx));
+            let editor = cx.new(|cx| {
+                QueryEditor::with_text(sql, engine, catalog, window, cx).without_toolbar()
+            });
             cx.subscribe_in(&editor, window, Self::on_editor_event)
                 .detach();
+            let name_value = widget
+                .as_ref()
+                .and_then(|w| w.name.clone())
+                .unwrap_or_default();
+            let name = cx.new(|cx| {
+                let mut state = InputState::new(window, cx);
+                state.set_value(name_value, window, cx);
+                state.set_placeholder("Name (optional)", window, cx);
+                state
+            });
             let x = cx.new(|cx| {
                 let mut state = InputState::new(window, cx);
                 state.set_value(x_value, window, cx);
@@ -976,8 +1216,10 @@ impl WidgetEditDialog {
             });
             Self {
                 index,
+                name,
                 editor,
                 chart,
+                width,
                 kind,
                 x,
                 y,
@@ -995,7 +1237,7 @@ impl WidgetEditDialog {
                 } else {
                     "Edit widget"
                 })
-                .w(px(640.))
+                .w(px(760.))
                 .keyboard(false)
                 .on_close(|_, _, _| {})
                 .child(body.clone())
@@ -1014,7 +1256,7 @@ impl WidgetEditDialog {
                             Button::new("widget-save")
                                 .primary()
                                 .small()
-                                .label("Save")
+                                .label("Save and run")
                                 .on_click(move |_, window, cx| {
                                     save.update(cx, |this, cx| this.save_and_close(window, cx));
                                 }),
@@ -1048,7 +1290,13 @@ impl WidgetEditDialog {
         } else {
             WidgetDisplay::Grid
         };
-        Widget { sql, display }
+        let name = self.name.read(cx).value().trim().to_string();
+        Widget {
+            name: (!name.is_empty()).then_some(name),
+            width: Some(self.width),
+            sql,
+            display,
+        }
     }
 
     /// Save, then close: saving runs the widget, and a write needs its own
@@ -1084,95 +1332,183 @@ impl WidgetEditDialog {
     }
 }
 
+/// A labelled form field: the label above its control, and help beneath
+/// when the control alone does not say what to type.
+fn field(
+    label: &'static str,
+    help: Option<&'static str>,
+    control: impl IntoElement,
+    cx: &App,
+) -> impl IntoElement {
+    v_flex()
+        .gap_1()
+        .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(label))
+        .child(control)
+        .when_some(help, |this, help| {
+            this.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(help),
+            )
+        })
+}
+
+/// A small visible set of choices on one line.
+fn choice<T: Copy + PartialEq + 'static>(
+    id: &'static str,
+    options: &[(T, &'static str)],
+    selected: T,
+    on_change: impl Fn(T, &mut Window, &mut App) + 'static,
+) -> RadioGroup {
+    let values: Vec<T> = options.iter().map(|(value, _)| *value).collect();
+    RadioGroup::horizontal(id)
+        .selected_index(values.iter().position(|value| *value == selected))
+        .on_change(move |index, window, cx| {
+            if let Some(value) = values.get(*index) {
+                on_change(*value, window, cx);
+            }
+        })
+        .children(options.iter().enumerate().map(|(index, (_, label))| {
+            Radio::new(SharedString::from(format!("{id}-{index}")))
+                .label(SharedString::from(*label))
+        }))
+}
+
 impl Render for WidgetEditDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let chart = self.chart;
-        let selected_kind = self.kind;
+        let view = cx.entity().downgrade();
+        let show = {
+            let view = view.clone();
+            move |chart: bool, _: &mut Window, cx: &mut App| {
+                view.update(cx, |this, cx| {
+                    this.chart = chart;
+                    cx.notify();
+                })
+                .ok();
+            }
+        };
+        let size = {
+            let view = view.clone();
+            move |width: WidgetWidth, _: &mut Window, cx: &mut App| {
+                view.update(cx, |this, cx| {
+                    this.width = width;
+                    cx.notify();
+                })
+                .ok();
+            }
+        };
+        let kind = move |kind: ChartKind, _: &mut Window, cx: &mut App| {
+            view.update(cx, |this, cx| {
+                this.kind = kind;
+                cx.notify();
+            })
+            .ok();
+        };
+
         v_flex()
             .id("widget-dialog")
             .size_full()
-            .gap_2()
+            .gap_4()
             .track_focus(&self.focus)
             .key_context("WidgetDialog")
             .on_action(cx.listener(Self::on_close))
-            .child(
+            .child(field(
+                "Name",
+                None,
+                Input::new(&self.name)
+                    .id("widget-name")
+                    .aria_label("Widget name")
+                    .small(),
+                cx,
+            ))
+            .child(field(
+                "Query",
+                Some("Runs when the dashboard refreshes. Use :name for dashboard variables."),
                 div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Each widget runs its own SQL when the dashboard refreshes."),
-            )
-            .child(div().h(px(240.)).child(self.editor.clone()))
+                    .h(px(240.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius)
+                    .overflow_hidden()
+                    .child(self.editor.clone()),
+                cx,
+            ))
             .child(
                 h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("widget-display-chart")
-                            .small()
-                            .label("Chart")
-                            .when(chart, |button| button.primary())
-                            .when(!chart, |button| button.ghost())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.chart = true;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("widget-display-grid")
-                            .small()
-                            .label("Data grid")
-                            .when(!chart, |button| button.primary())
-                            .when(chart, |button| button.ghost())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.chart = false;
-                                cx.notify();
-                            })),
-                    ),
+                    .gap_8()
+                    .child(field(
+                        "Show as",
+                        None,
+                        choice(
+                            "widget-display",
+                            &[(true, "Chart"), (false, "Data grid")],
+                            chart,
+                            show,
+                        ),
+                        cx,
+                    ))
+                    .child(field(
+                        "Width",
+                        None,
+                        choice(
+                            "widget-width",
+                            &[(WidgetWidth::Half, "Half"), (WidgetWidth::Full, "Full")],
+                            self.width,
+                            size,
+                        ),
+                        cx,
+                    )),
             )
             .when(chart, |this| {
                 this.child(
-                    h_flex().gap_2().children(
-                        [ChartKind::Line, ChartKind::Bar, ChartKind::Area]
-                            .iter()
-                            .enumerate()
-                            .map(|(index, kind)| {
-                                let kind = *kind;
-                                let label = match kind {
-                                    ChartKind::Line => "Line",
-                                    ChartKind::Bar => "Bar",
-                                    ChartKind::Area => "Area",
-                                };
-                                Button::new(("widget-chart-kind", index))
-                                    .small()
-                                    .label(label)
-                                    .when(kind == selected_kind, |button| button.primary())
-                                    .when(kind != selected_kind, |button| button.ghost())
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.kind = kind;
-                                        cx.notify();
-                                    }))
-                            }),
-                    ),
-                )
-            })
-            .when(chart, |this| {
-                this.child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            div().w(px(160.)).child(
-                                Input::new(&self.x)
-                                    .id("widget-x")
-                                    .aria_label("X column")
-                                    .small(),
+                    v_flex()
+                        .gap_4()
+                        .p_3()
+                        .rounded(cx.theme().radius)
+                        .bg(cx.theme().muted.opacity(0.4))
+                        .child(field(
+                            "Chart type",
+                            None,
+                            choice(
+                                "widget-chart-kind",
+                                &[
+                                    (ChartKind::Line, "Line"),
+                                    (ChartKind::Bar, "Bar"),
+                                    (ChartKind::Area, "Area"),
+                                ],
+                                self.kind,
+                                kind,
                             ),
-                        )
+                            cx,
+                        ))
                         .child(
-                            div().flex_1().child(
-                                Input::new(&self.y)
-                                    .id("widget-y")
-                                    .aria_label("Y columns")
-                                    .small(),
-                            ),
+                            h_flex()
+                                .gap_4()
+                                .items_start()
+                                .child(
+                                    div().w(px(220.)).child(field(
+                                        "X column",
+                                        Some("Optional; the first column by default."),
+                                        Input::new(&self.x)
+                                            .id("widget-x")
+                                            .aria_label("X column")
+                                            .small(),
+                                        cx,
+                                    )),
+                                )
+                                .child(
+                                    div().flex_1().child(field(
+                                        "Y columns",
+                                        Some("Comma-separated; the numeric columns by default."),
+                                        Input::new(&self.y)
+                                            .id("widget-y")
+                                            .aria_label("Y columns")
+                                            .small(),
+                                        cx,
+                                    )),
+                                ),
                         ),
                 )
             })
@@ -1181,6 +1517,7 @@ impl Render for WidgetEditDialog {
 
 #[cfg(test)]
 pub(crate) struct WidgetSummary {
+    pub(crate) title: String,
     pub(crate) status: String,
     pub(crate) chart: Option<super::chart::ChartSummary>,
     /// The chart column names that were not in the result, if the widget
@@ -1200,6 +1537,7 @@ impl DashboardView {
             .map(|(index, state)| {
                 let status = match &state.status {
                     WidgetStatus::Idle => "idle".to_string(),
+                    WidgetStatus::Queued => "queued".to_string(),
                     WidgetStatus::Running => "running".to_string(),
                     WidgetStatus::Done => "done".to_string(),
                     WidgetStatus::Error(message) => format!("error: {message}"),
@@ -1249,6 +1587,7 @@ impl DashboardView {
                         _ => (None, Vec::new()),
                     };
                 WidgetSummary {
+                    title: widget_title(&self.dashboard.widgets[index], index),
                     status,
                     chart,
                     chart_missing,
@@ -1257,6 +1596,28 @@ impl DashboardView {
                 }
             })
             .collect()
+    }
+
+    pub(crate) fn move_widget_for_test(
+        &mut self,
+        index: usize,
+        later: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_widget(index, later, cx);
+    }
+
+    /// Start a full refresh and, before it has run anything, replace widget
+    /// `index`: the state an edit meets when other widgets are still loading.
+    pub(crate) fn edit_during_refresh_for_test(
+        &mut self,
+        index: usize,
+        widget: Widget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.refresh(window, cx);
+        self.replace_widget(index, widget, window, cx);
     }
 
     pub(crate) fn variables_dialog_for_test(&self) -> Option<Entity<VariablesView>> {
@@ -1385,5 +1746,75 @@ impl Render for NewDashboardDialog {
                         "A dashboard to fill with widgets."
                     }),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn widget(name: Option<&str>, display: WidgetDisplay) -> Widget {
+        Widget {
+            name: name.map(str::to_string),
+            width: None,
+            sql: "\n  select 1\nfrom t".to_string(),
+            display,
+        }
+    }
+
+    fn chart() -> WidgetDisplay {
+        WidgetDisplay::Chart {
+            kind: ChartKind::Line,
+            x: None,
+            y: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_name_is_the_title_and_a_blank_one_falls_back() {
+        assert_eq!(
+            widget_title(&widget(Some(" Revenue "), chart()), 0),
+            "Revenue"
+        );
+        assert_eq!(
+            widget_title(&widget(Some("  "), chart()), 1),
+            "Widget 2 · select 1"
+        );
+        assert_eq!(
+            widget_title(&widget(None, WidgetDisplay::Grid), 0),
+            "Widget 1 · select 1"
+        );
+    }
+
+    #[test]
+    fn a_chosen_width_overrides_the_display_default() {
+        let mut wide_chart = widget(None, chart());
+        wide_chart.width = Some(WidgetWidth::Full);
+        let mut narrow_grid = widget(None, WidgetDisplay::Grid);
+        narrow_grid.width = Some(WidgetWidth::Half);
+        let widgets = [
+            narrow_grid.clone(),
+            narrow_grid,
+            wide_chart,
+            widget(None, chart()),
+        ];
+        assert_eq!(layout_rows(&widgets), vec![vec![0, 1], vec![2], vec![3]]);
+    }
+
+    #[test]
+    fn grids_take_a_row_and_charts_pair_up() {
+        let widgets = [
+            widget(None, chart()),
+            widget(None, WidgetDisplay::Grid),
+            widget(None, chart()),
+            widget(None, chart()),
+            widget(None, chart()),
+            widget(None, WidgetDisplay::Grid),
+        ];
+        assert_eq!(
+            layout_rows(&widgets),
+            vec![vec![0], vec![1], vec![2, 3], vec![4], vec![5]]
+        );
+        assert!(layout_rows(&[]).is_empty());
     }
 }

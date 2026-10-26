@@ -452,6 +452,42 @@ impl Session {
             .map(|view| view.read(cx).widget_summaries())
     }
 
+    /// Edit the active dashboard's widget `index` while a refresh of the
+    /// rest is still queued, for tests.
+    #[cfg(test)]
+    pub(crate) fn edit_dashboard_during_refresh_for_test(
+        &self,
+        index: usize,
+        widget: crate::dashboards::Widget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = self
+            .active_panel_for_test()
+            .and_then(|panel| panel.read(cx).dashboard_view());
+        if let Some(view) = view {
+            view.update(cx, |view, cx| {
+                view.edit_during_refresh_for_test(index, widget, window, cx)
+            });
+        }
+    }
+
+    /// Move the active dashboard's widget `index` one place, for tests.
+    #[cfg(test)]
+    pub(crate) fn move_dashboard_widget_for_test(
+        &self,
+        index: usize,
+        later: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let view = self
+            .active_panel_for_test()
+            .and_then(|panel| panel.read(cx).dashboard_view());
+        if let Some(view) = view {
+            view.update(cx, |view, cx| view.move_widget_for_test(index, later, cx));
+        }
+    }
+
     /// The active tab's dashboard variables dialog, when one is open.
     #[cfg(test)]
     pub(crate) fn dashboard_variables_dialog_for_test(

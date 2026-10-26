@@ -8,6 +8,8 @@ use crate::ui::session::dashboard::WidgetSummary;
 
 fn grid_widget(sql: &str) -> Widget {
     Widget {
+        name: None,
+        width: None,
         sql: sql.to_string(),
         display: WidgetDisplay::Grid,
     }
@@ -15,6 +17,8 @@ fn grid_widget(sql: &str) -> Widget {
 
 fn chart_widget(sql: &str, kind: ChartKind, x: Option<&str>, y: &[&str]) -> Widget {
     Widget {
+        name: None,
+        width: None,
         sql: sql.to_string(),
         display: WidgetDisplay::Chart {
             kind,
@@ -473,5 +477,105 @@ fn saving_variables_during_a_refresh_re_runs_with_the_new_values(cx: &mut TestAp
         .expect("the dashboard tab should be active");
     assert_eq!(summaries[0].status, "done");
     assert_eq!(summaries[0].rows, Some(1));
+    dashboards::reset_for_test();
+}
+
+#[gpui_kit::test]
+fn a_named_widget_shows_its_name(cx: &mut TestAppContext) {
+    let _lock = dashboards::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut named = grid_widget("select id from items;");
+    named.name = Some("Item ids".to_string());
+    let (_database, handle) = dashboard_session(
+        cx,
+        vec![dashboard(
+            "Ops",
+            vec![named, grid_widget("select name from items;")],
+            &[],
+        )],
+    );
+    open_dashboard(cx, handle, "Ops");
+    let titles: Vec<String> = summaries(cx, handle)
+        .into_iter()
+        .map(|summary| summary.title)
+        .collect();
+    assert_eq!(titles[0], "Item ids");
+    assert_eq!(titles[1], "Widget 2 · select name from items;");
+    draw(cx, handle);
+    dashboards::reset_for_test();
+}
+
+#[gpui_kit::test]
+fn moving_a_widget_takes_its_result_and_is_saved(cx: &mut TestAppContext) {
+    let _lock = dashboards::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (_database, handle) = dashboard_session(
+        cx,
+        vec![dashboard(
+            "Ops",
+            vec![
+                grid_widget("select id from items;"),
+                grid_widget("select id, name from items limit 1;"),
+            ],
+            &[],
+        )],
+    );
+    open_dashboard(cx, handle, "Ops");
+    handle
+        .update(cx, |session, _, cx| {
+            session.move_dashboard_widget_for_test(0, true, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let rows: Vec<Option<usize>> = summaries(cx, handle)
+        .into_iter()
+        .map(|summary| summary.rows)
+        .collect();
+    assert_eq!(rows, [Some(1), Some(2)]);
+    let saved = cx.update(|cx| Dashboards::find(cx, "Ops")).unwrap();
+    assert!(saved.widgets[0].sql.contains("limit 1"));
+    draw(cx, handle);
+    dashboards::reset_for_test();
+}
+
+/// Editing one widget while the others are still queued must not drop the
+/// others: only the edited widget's own run is replaced.
+#[gpui_kit::test]
+fn editing_a_widget_queues_it_instead_of_dropping_the_others(cx: &mut TestAppContext) {
+    let _lock = dashboards::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (_database, handle) = dashboard_session(
+        cx,
+        vec![dashboard(
+            "Ops",
+            vec![
+                grid_widget("select id from items;"),
+                grid_widget("select id, name from items;"),
+                grid_widget("select name from items;"),
+            ],
+            &[],
+        )],
+    );
+    open_dashboard(cx, handle, "Ops");
+    handle
+        .update(cx, |session, window, cx| {
+            session.edit_dashboard_during_refresh_for_test(
+                0,
+                grid_widget("select id from items limit 1;"),
+                window,
+                cx,
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let summaries = summaries(cx, handle);
+    assert!(summaries.iter().all(|summary| summary.status == "done"));
+    // The edited widget ran its new SQL; the others still ran.
+    assert_eq!(summaries[0].rows, Some(1));
+    assert_eq!(summaries[1].rows, Some(2));
+    assert_eq!(summaries[2].rows, Some(2));
     dashboards::reset_for_test();
 }
