@@ -918,25 +918,31 @@ impl DashboardView {
         let title = widget_title(widget, index);
         let count = self.widgets.len();
         let body = match &state.status {
-            WidgetStatus::Queued => div()
-                .flex_1()
-                .p_3()
-                .text_color(cx.theme().muted_foreground)
-                .child("Waiting for another widget…")
-                .into_any_element(),
             // The placeholder is shaped like what will replace it: bars for
-            // a chart, header and rows for a grid.
-            WidgetStatus::Running => v_flex()
-                .flex_1()
-                .min_h_0()
-                .p_3()
-                .gap_3()
-                .child(busy_label("Running…", cx.theme().muted_foreground))
-                .child(div().flex_1().min_h_0().child(match &widget.display {
-                    WidgetDisplay::Grid => skeleton_grid(8, 4).into_any_element(),
-                    WidgetDisplay::Chart { .. } => skeleton_chart().into_any_element(),
-                }))
-                .into_any_element(),
+            // a chart, header and rows for a grid. A queued widget gets the
+            // same shape as a running one, with a still label in place of
+            // the busy one.
+            WidgetStatus::Queued | WidgetStatus::Running => {
+                let label = if matches!(state.status, WidgetStatus::Queued) {
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Waiting for another widget…")
+                        .into_any_element()
+                } else {
+                    busy_label("Running…", cx.theme().muted_foreground).into_any_element()
+                };
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .p_3()
+                    .gap_3()
+                    .child(label)
+                    .child(div().flex_1().min_h_0().child(match &widget.display {
+                        WidgetDisplay::Grid => skeleton_grid(8, 4).into_any_element(),
+                        WidgetDisplay::Chart { .. } => skeleton_chart().into_any_element(),
+                    }))
+                    .into_any_element()
+            }
             WidgetStatus::Error(message) => div()
                 .id(("dashboard-widget-error", index))
                 .flex_1()
