@@ -148,10 +148,10 @@ pub async fn run_with_events(
 
     loop {
         let base = tool_base;
-        let reply =
+        let round =
             match collect_reply(provider, &thread, &tool_json, stream_supported, base, &emit).await
             {
-                Ok(reply) => reply,
+                Ok(round) => round,
                 Err(RoundError::DegradeTools) => {
                     // Degrade to a conversation: SQL comes back in words and the
                     // user sends it to a tab.
@@ -179,6 +179,7 @@ pub async fn run_with_events(
                 }
             };
 
+        let reply = round.reply;
         let assistant = Message::Assistant {
             content: reply.content.clone(),
             tool_calls: reply.tool_calls.clone(),
@@ -190,10 +191,12 @@ pub async fn run_with_events(
             outcome.answer = reply.content;
             return outcome;
         }
-        tool_base = base + reply.tool_calls.len();
+        // Advance by the calls seen this round, not by the calls kept:
+        // a malformed call dropped below keeps its placeholder's index,
+        // so the next round cannot reuse it.
+        tool_base = base + round.positions;
 
-        for (index, call) in reply.tool_calls.iter().enumerate() {
-            let index = base + index;
+        for (call, index) in reply.tool_calls.iter().zip(round.tool_indices) {
             let result = if calls_made >= MAX_TOOL_CALLS {
                 outcome.hit_limit = true;
                 tools::ToolOutput {
@@ -254,6 +257,16 @@ struct AssemblingCall {
     pending_emitted: bool,
 }
 
+/// One provider round, with the turn-global indices of its tool calls.
+/// `positions` is the number of distinct calls the round saw, before any
+/// malformed ones were dropped, so the next round's base cannot reuse a
+/// dropped placeholder's index.
+struct RoundReply {
+    reply: super::provider::Reply,
+    tool_indices: Vec<usize>,
+    positions: usize,
+}
+
 /// Collect one provider round into a reply, forwarding its text and tool
 /// calls as [`TurnEvent`]s while they arrive.
 ///
@@ -271,12 +284,17 @@ async fn collect_reply(
     stream_supported: bool,
     tool_base: usize,
     emit: &(dyn Fn(TurnEvent) + Send + Sync),
-) -> Result<super::provider::Reply, RoundError> {
+) -> Result<RoundReply, RoundError> {
     if !stream_supported {
         return collect_complete(provider, thread, tool_json, tool_base, emit).await;
     }
     let mut content = String::new();
     let mut calls: Vec<AssemblingCall> = Vec::new();
+    // Server index -> dense position in `calls`, assigned on first sight.
+    // A server may number its calls sparsely (or start above 0); indexing
+    // `calls` by the server index would allocate by that index and, after
+    // filtering, shift every later call's placeholder away from its result.
+    let mut positions: Vec<usize> = Vec::new();
     let mut saw_event = false;
     let mut stream = provider.stream(thread, tool_json);
     while let Some(item) = stream.next().await {
@@ -295,9 +313,14 @@ async fn collect_reply(
                 arguments,
             }) => {
                 saw_event = true;
-                while calls.len() <= index {
-                    calls.push(AssemblingCall::default());
-                }
+                let index = match positions.iter().position(|&seen| seen == index) {
+                    Some(position) => position,
+                    None => {
+                        positions.push(index);
+                        calls.push(AssemblingCall::default());
+                        calls.len() - 1
+                    }
+                };
                 let call = &mut calls[index];
                 if let Some(id) = id {
                     call.id = id;
@@ -335,7 +358,12 @@ async fn collect_reply(
                         arguments: call.arguments.clone(),
                     });
                 }
-                return Ok(reply);
+                let positions = reply.tool_calls.len();
+                return Ok(RoundReply {
+                    tool_indices: (0..positions).map(|index| tool_base + index).collect(),
+                    positions,
+                    reply,
+                });
             }
             Ok(StreamEvent::Finished { .. }) => break,
             Err(ProviderError::StreamUnsupported) if !saw_event => {
@@ -347,27 +375,35 @@ async fn collect_reply(
             Err(error) => return Err(RoundError::Failed(error)),
         }
     }
-    let tool_calls = calls
-        .into_iter()
-        .enumerate()
-        .filter(|(_, call)| !call.name.is_empty() || !call.arguments.is_empty())
-        .map(|(index, call)| ToolCall {
+    let positions = calls.len();
+    let mut tool_calls = Vec::new();
+    let mut tool_indices = Vec::new();
+    for (position, call) in calls.into_iter().enumerate() {
+        if call.name.is_empty() && call.arguments.is_empty() {
+            continue;
+        }
+        tool_indices.push(tool_base + position);
+        tool_calls.push(ToolCall {
             id: if call.id.is_empty() {
-                format!("call_{index}")
+                format!("call_{position}")
             } else {
                 call.id
             },
             name: call.name,
             arguments: call.arguments,
-        })
-        .collect();
-    Ok(super::provider::Reply {
-        content: if content.is_empty() {
-            None
-        } else {
-            Some(content)
+        });
+    }
+    Ok(RoundReply {
+        reply: super::provider::Reply {
+            content: if content.is_empty() {
+                None
+            } else {
+                Some(content)
+            },
+            tool_calls,
         },
-        tool_calls,
+        tool_indices,
+        positions,
     })
 }
 
@@ -379,7 +415,7 @@ async fn collect_complete(
     tool_json: &[Value],
     tool_base: usize,
     emit: &(dyn Fn(TurnEvent) + Send + Sync),
-) -> Result<super::provider::Reply, RoundError> {
+) -> Result<RoundReply, RoundError> {
     match provider.complete(thread, tool_json).await {
         Ok(reply) => {
             if let Some(text) = &reply.content
@@ -394,7 +430,12 @@ async fn collect_complete(
                     arguments: call.arguments.clone(),
                 });
             }
-            Ok(reply)
+            let positions = reply.tool_calls.len();
+            Ok(RoundReply {
+                tool_indices: (0..positions).map(|index| tool_base + index).collect(),
+                positions,
+                reply,
+            })
         }
         Err(ProviderError::ToolsUnsupported) if !tool_json.is_empty() => {
             Err(RoundError::DegradeTools)
@@ -654,6 +695,80 @@ mod tests {
                 ],
                 "the second reply's first call is index 1, not a second index 0"
             );
+        });
+    }
+
+    #[test]
+    fn sparse_server_indices_map_to_dense_positions() {
+        run_blocking(async {
+            let context = context(AgentAccess::Schema).await;
+            let provider = StreamingScript::new(
+                vec![
+                    vec![
+                        Ok(StreamEvent::ToolCallDelta {
+                            index: 5,
+                            id: Some("1".into()),
+                            name: Some("list_tables".into()),
+                            arguments: "{}".into(),
+                        }),
+                        Ok(StreamEvent::ToolCallDelta {
+                            index: 9,
+                            id: Some("2".into()),
+                            name: Some("list_tables".into()),
+                            arguments: "{}".into(),
+                        }),
+                        Ok(StreamEvent::Finished {
+                            finish_reason: Some("tool_calls".into()),
+                        }),
+                    ],
+                    vec![
+                        Ok(StreamEvent::ToolCallDelta {
+                            index: 0,
+                            id: Some("3".into()),
+                            name: Some("list_tables".into()),
+                            arguments: "{}".into(),
+                        }),
+                        Ok(StreamEvent::Finished {
+                            finish_reason: Some("tool_calls".into()),
+                        }),
+                    ],
+                    vec![Ok(StreamEvent::ContentDelta("done".into()))],
+                ],
+                vec![],
+            );
+            let (events_tx, events_rx) = futures::channel::mpsc::unbounded();
+            let outcome = run_with_events(
+                &provider,
+                &context,
+                &tools::NeverApprove,
+                &[],
+                "go",
+                true,
+                true,
+                Some(events_tx),
+            )
+            .await;
+            assert_eq!(outcome.events.len(), 3);
+            let events = drain_events(events_rx);
+            let pendings: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    TurnEvent::ToolPending { index, .. } => Some(*index),
+                    _ => None,
+                })
+                .collect();
+            // Dense positions, not server indices, and the second round
+            // starts after the two calls the first round saw — not after
+            // server index 9.
+            assert_eq!(pendings, vec![0, 1, 2]);
+            let finished: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    TurnEvent::ToolFinished { index, .. } => Some(*index),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(finished, vec![0, 1, 2]);
         });
     }
 

@@ -233,7 +233,7 @@ fn tool_placeholders_fill_in_in_place_and_text_streams(cx: &mut TestAppContext) 
     let tools = agents.read_with(cx, |agents, _| agents.tools_for_test());
     assert_eq!(tools.len(), 1, "a pending tool is drawn at once");
     assert_eq!(tools[0].2, None, "no result yet");
-    assert!(!tools[0].3, "pending is not running");
+    assert_eq!(tools[0].3, "waiting");
 
     agents.update(cx, |agents, cx| {
         agents.apply_turn_event_for_test(TurnEvent::ToolRunning { index: 0 }, cx);
@@ -254,10 +254,36 @@ fn tool_placeholders_fill_in_in_place_and_text_streams(cx: &mut TestAppContext) 
         "the result fills the placeholder, not a second item"
     );
     assert_eq!(tools[0].2.as_deref(), Some("table items"));
-    assert!(!tools[0].3);
+    assert_eq!(tools[0].3, "done");
     // Full order: streamed text, tool, final text.
     let lines = agents.read_with(cx, |agents, _| agents.lines_for_test());
     assert_eq!(lines, vec!["Hello", "tool list_tables", "Done"]);
+}
+
+#[gpui_kit::test]
+fn a_stopped_tool_does_not_stay_running(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    agents.update(cx, |agents, cx| {
+        agents.apply_turn_event_for_test(
+            TurnEvent::ToolPending {
+                index: 0,
+                name: "list_tables".into(),
+                arguments: "{}".into(),
+            },
+            cx,
+        );
+        agents.apply_turn_event_for_test(TurnEvent::ToolRunning { index: 0 }, cx);
+        agents.set_running_for_test(cx);
+        agents.stop(cx);
+    });
+    let tools = agents.read_with(cx, |agents, _| agents.tools_for_test());
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].3, "stopped");
+    assert_eq!(tools[0].2.as_deref(), Some("stopped"));
 }
 
 #[gpui_kit::test]

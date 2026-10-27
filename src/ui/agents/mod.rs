@@ -55,24 +55,56 @@ pub enum AgentEvent {
     ProposeQuery(String),
 }
 
+/// Where a tool item is in its life: triggered and waiting its turn,
+/// running, finished (with a result), failed (with an error result), or
+/// stopped without a result because the turn ended or the user stopped it.
+/// The summary shows this in words, never colour alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolStatus {
+    Waiting,
+    Running,
+    Done,
+    Failed,
+    Stopped,
+}
+
+impl ToolStatus {
+    fn summary(self) -> &'static str {
+        match self {
+            ToolStatus::Waiting => " — waiting",
+            ToolStatus::Running => " — running",
+            ToolStatus::Done => "",
+            ToolStatus::Failed => " — failed",
+            ToolStatus::Stopped => " — stopped",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ToolStatus::Waiting => ", waiting",
+            ToolStatus::Running => ", running",
+            ToolStatus::Done => "",
+            ToolStatus::Failed => ", failed",
+            ToolStatus::Stopped => ", stopped",
+        }
+    }
+}
+
 /// One line of the thread as the panel draws it.
 enum Item {
     User(String),
     Assistant(String),
     /// A tool call, drawn as soon as the model triggers it and filled in
-    /// as it runs: `result` is `None` until it finishes, and `running`
-    /// says whether it is running now (as opposed to merely triggered and
-    /// waiting its turn). `index` is the call's position in the turn as a
-    /// whole, counting across replies, so a placeholder, its running
-    /// state, and its result address the same item. The status is in words
-    /// in the summary, never colour alone.
+    /// as it runs: `result` is `None` until it finishes. `index` is the
+    /// call's position in the turn as a whole, counting across replies, so
+    /// a placeholder, its running state, and its result address the same
+    /// item.
     Tool {
         index: usize,
         name: String,
         arguments: String,
         result: Option<String>,
-        is_error: bool,
-        running: bool,
+        status: ToolStatus,
         open: bool,
     },
     /// Something the panel itself says; `error` ones are prefixed in words.
@@ -296,7 +328,12 @@ impl AgentPanel {
 
         // Turn events arrive here until the turn ends and its sender is
         // dropped. A stopped turn's events are guarded by generation, like
-        // the approval requests below.
+        // the approval requests below. `finish` runs only after this loop
+        // drains: finishing as soon as the turn task resolves could set
+        // `running = false` before the final assistant delta was drawn,
+        // and a send in that gap would drop the rest of the old turn.
+        // The sender is dropped when the turn returns or is aborted, so
+        // this loop always ends.
         cx.spawn(async move |this, cx| {
             while let Some(event) = events.next().await {
                 let shown = this.update(cx, |this, cx| {
@@ -310,6 +347,9 @@ impl AgentPanel {
                     break;
                 }
             }
+            let outcome = task.await;
+            this.update(cx, |this, cx| this.finish(generation, outcome, cx))
+                .ok();
         })
         .detach();
 
@@ -332,12 +372,6 @@ impl AgentPanel {
         })
         .detach();
 
-        cx.spawn(async move |this, cx| {
-            let outcome = task.await;
-            this.update(cx, |this, cx| this.finish(generation, outcome, cx))
-                .ok();
-        })
-        .detach();
         cx.notify();
     }
 
@@ -354,10 +388,15 @@ impl AgentPanel {
         self.abort = None;
         self.pending = None;
         let Ok(outcome) = outcome else {
+            self.settle_tools("stopped");
             self.notice("Stopped.", false);
             cx.notify();
             return;
         };
+        // A turn that ended without a tool's result — a stream failed
+        // after its placeholder, say — leaves that item terminal, not
+        // waiting or running for the rest of the thread.
+        self.settle_tools("not run");
 
         self.thread.extend(outcome.messages);
         if outcome.tools_unsupported {
@@ -421,8 +460,7 @@ impl AgentPanel {
                         name,
                         arguments,
                         result: None,
-                        is_error: false,
-                        running: false,
+                        status: ToolStatus::Waiting,
                         open: false,
                     });
                 }
@@ -437,8 +475,10 @@ impl AgentPanel {
                 }
             }
             TurnEvent::ToolRunning { index } => {
-                if let Some(Item::Tool { running, .. }) = self.tool_item_mut(index) {
-                    *running = true;
+                if let Some(Item::Tool { status, .. }) = self.tool_item_mut(index)
+                    && *status == ToolStatus::Waiting
+                {
+                    *status = ToolStatus::Running;
                 }
             }
             TurnEvent::ToolFinished {
@@ -448,21 +488,26 @@ impl AgentPanel {
             } => match self.tool_item_mut(index) {
                 Some(Item::Tool {
                     result: existing,
-                    is_error: error,
-                    running,
+                    status,
                     ..
                 }) => {
                     *existing = Some(result);
-                    *error = is_error;
-                    *running = false;
+                    *status = if is_error {
+                        ToolStatus::Failed
+                    } else {
+                        ToolStatus::Done
+                    };
                 }
                 _ => self.items.push(Item::Tool {
                     index,
                     name: String::new(),
                     arguments: String::new(),
                     result: Some(result),
-                    is_error,
-                    running: false,
+                    status: if is_error {
+                        ToolStatus::Failed
+                    } else {
+                        ToolStatus::Done
+                    },
                     open: false,
                 }),
             },
@@ -475,6 +520,22 @@ impl AgentPanel {
         self.items.iter_mut().find(
             |item| matches!(item, Item::Tool { index: item_index, .. } if *item_index == index),
         )
+    }
+
+    /// Give every tool item that never finished a terminal state, with
+    /// `reason` as its result if it has none. A placeholder from a failed
+    /// stream is "not run"; a tool cut off by Stop is "stopped".
+    fn settle_tools(&mut self, reason: &str) {
+        for item in self.items.iter_mut() {
+            if let Item::Tool { result, status, .. } = item
+                && matches!(status, ToolStatus::Waiting | ToolStatus::Running)
+            {
+                *status = ToolStatus::Stopped;
+                if result.is_none() {
+                    *result = Some(reason.to_string());
+                }
+            }
+        }
     }
 
     fn notice(&mut self, text: &str, error: bool) {
@@ -496,6 +557,7 @@ impl AgentPanel {
         // Dropping the answer is a rejection if a write was waiting.
         self.pending = None;
         self.running = false;
+        self.settle_tools("stopped");
         self.notice("Stopped.", false);
         cx.notify();
     }
@@ -732,24 +794,14 @@ impl AgentPanel {
                 name,
                 arguments,
                 result,
-                is_error,
-                running,
+                status,
                 open,
                 ..
             } => {
                 let open = *open;
-                let running = *running;
-                let is_error = *is_error;
+                let status = *status;
+                let status_text = status.summary();
                 let preview: String = arguments.chars().take(40).collect();
-                let status = if is_error {
-                    " — failed"
-                } else if running {
-                    " — running"
-                } else if result.is_none() {
-                    " — waiting"
-                } else {
-                    ""
-                };
                 let summary = format!(
                     "{} {}{}{}",
                     if open { "▾" } else { "▸" },
@@ -759,12 +811,18 @@ impl AgentPanel {
                     } else {
                         format!(" {preview}")
                     },
-                    status,
+                    status_text,
                 );
                 let expanded = match result {
                     Some(result) => format!("{arguments}\n→ {result}"),
-                    None if running => format!("{arguments}\n→ running…"),
-                    None => format!("{arguments}\n→ waiting…"),
+                    None => format!(
+                        "{arguments}\n→ {}",
+                        match status {
+                            ToolStatus::Running => "running…",
+                            ToolStatus::Stopped => "stopped",
+                            _ => "waiting…",
+                        }
+                    ),
                 };
                 v_flex()
                     .items_start()
@@ -773,18 +831,7 @@ impl AgentPanel {
                             .custom(crate::ui::subtle_button(cx))
                             .xsmall()
                             .label(summary)
-                            .accessibility_label(format!(
-                                "Tool call {name}{}",
-                                if is_error {
-                                    ", failed"
-                                } else if running {
-                                    ", running"
-                                } else if result.is_none() {
-                                    ", waiting"
-                                } else {
-                                    ""
-                                }
-                            ))
+                            .accessibility_label(format!("Tool call {name}{}", status.label()))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(Item::Tool { open, .. }) = this.items.get_mut(ix) {
                                     *open = !*open;

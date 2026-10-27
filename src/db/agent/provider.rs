@@ -344,6 +344,12 @@ impl ChatProvider for HttpProvider {
             }
             let mut bytes = response.bytes_stream();
             let mut parser = SseParser::new();
+            // Bytes, not text, cross chunk boundaries: a chunk can split a
+            // multi-byte UTF-8 character, and decoding each chunk on its
+            // own would turn each half into U+FFFD — silently corrupting
+            // replies and tool arguments. So incomplete trailing sequences
+            // stay in `pending` until the next chunk completes them.
+            let mut pending: Vec<u8> = Vec::new();
             use futures::StreamExt as _;
             while let Some(chunk) = bytes.next().await {
                 let chunk = match chunk {
@@ -353,15 +359,50 @@ impl ChatProvider for HttpProvider {
                         return;
                     }
                 };
-                let text = String::from_utf8_lossy(&chunk);
+                pending.extend_from_slice(&chunk);
+                let text = decode_valid_prefix(&mut pending);
                 for event in parser.feed(&text) {
-                    if !send(Ok(event)) {
+                    let event = event.map_err(|error| match error {
+                        ProviderError::Other(message) => ProviderError::Other(scrub(&message)),
+                        error => error,
+                    });
+                    let is_error = event.is_err();
+                    if !send(event) {
+                        return;
+                    }
+                    if is_error {
+                        return;
+                    }
+                }
+            }
+            if !pending.is_empty() {
+                // Whatever is left is the end of the stream, so decode it
+                // lossily rather than dropping it.
+                let text = String::from_utf8_lossy(&pending).into_owned();
+                for event in parser.feed(&text) {
+                    let event = event.map_err(|error| match error {
+                        ProviderError::Other(message) => ProviderError::Other(scrub(&message)),
+                        error => error,
+                    });
+                    let is_error = event.is_err();
+                    if !send(event) {
+                        return;
+                    }
+                    if is_error {
                         return;
                     }
                 }
             }
             for event in parser.finish() {
-                if !send(Ok(event)) {
+                let event = event.map_err(|error| match error {
+                    ProviderError::Other(message) => ProviderError::Other(scrub(&message)),
+                    error => error,
+                });
+                let is_error = event.is_err();
+                if !send(event) {
+                    return;
+                }
+                if is_error {
                     return;
                 }
             }
@@ -391,6 +432,26 @@ fn classify_stream_failure(status: u16, body: &str) -> Option<ProviderError> {
 /// next chunk completes it. A server that ignores `stream: true` and answers
 /// with one whole JSON reply instead is handled by `finish`, which reads a
 /// buffered complete reply as [`StreamEvent::Complete`].
+/// The valid UTF-8 prefix of `pending`, as text, with that prefix drained
+/// out of `pending`. A trailing incomplete sequence stays for the next
+/// chunk; a genuinely invalid byte is decoded lossily (as U+FFFD) and
+/// drained, so one bad byte cannot hold the rest of the stream hostage.
+fn decode_valid_prefix(pending: &mut Vec<u8>) -> String {
+    let valid = match std::str::from_utf8(pending) {
+        Ok(_) => pending.len(),
+        Err(error) => match error.error_len() {
+            // Incomplete: the tail is a character still arriving.
+            None => error.valid_up_to(),
+            // Invalid: decode up to and including the bad byte, and keep
+            // whatever follows for the next chunk.
+            Some(len) => error.valid_up_to() + len,
+        },
+    };
+    let text = String::from_utf8_lossy(&pending[..valid]).into_owned();
+    pending.drain(..valid);
+    text
+}
+
 pub struct SseParser {
     buffer: String,
 }
@@ -403,7 +464,8 @@ impl SseParser {
     }
 
     /// Events completed by `text`. Incomplete tails stay buffered.
-    pub fn feed(&mut self, text: &str) -> Vec<StreamEvent> {
+    /// An in-stream error payload is an `Err` item, not a skipped event.
+    pub fn feed(&mut self, text: &str) -> Vec<Result<StreamEvent, ProviderError>> {
         self.buffer.push_str(text);
         self.buffer = self.buffer.replace("\r\n", "\n");
         let mut events = Vec::new();
@@ -417,7 +479,7 @@ impl SseParser {
     /// Events in whatever is left when the stream closes: a final event
     /// without its trailing blank line, or a whole JSON reply from a server
     /// that ignored `stream: true`.
-    pub fn finish(mut self) -> Vec<StreamEvent> {
+    pub fn finish(mut self) -> Vec<Result<StreamEvent, ProviderError>> {
         let raw = std::mem::take(&mut self.buffer);
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -428,7 +490,7 @@ impl SseParser {
             return events;
         }
         match parse_reply(trimmed) {
-            Ok(reply) => vec![StreamEvent::Complete(reply)],
+            Ok(reply) => vec![Ok(StreamEvent::Complete(reply))],
             Err(_) => Vec::new(),
         }
     }
@@ -442,8 +504,11 @@ impl Default for SseParser {
 
 /// The events one raw SSE event (data lines, blank line already consumed by
 /// the caller) carries, in order: its deltas first, then `Finished` if it
-/// carried a finish reason.
-fn parse_sse_event(raw: &str) -> Vec<StreamEvent> {
+/// carried a finish reason. A server that reports a failure inside a 200
+/// stream as `data: {"error": ...}` is an `Err` item: without it the stream
+/// would close on an empty reply and the user could not tell the request
+/// had failed. The message is unscrubbed here; the reader scrubs it.
+fn parse_sse_event(raw: &str) -> Vec<Result<StreamEvent, ProviderError>> {
     let mut events = Vec::new();
     let mut finish_reason = None;
     for line in raw.lines() {
@@ -452,14 +517,24 @@ fn parse_sse_event(raw: &str) -> Vec<StreamEvent> {
         };
         let data = data.strip_prefix(' ').unwrap_or(data);
         if data == "[DONE]" {
-            events.push(StreamEvent::Finished {
+            events.push(Ok(StreamEvent::Finished {
                 finish_reason: None,
-            });
+            }));
             return events;
         }
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             continue;
         };
+        if let Some(error) = value.get("error") {
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| error.as_str())
+                .unwrap_or("the model endpoint reported an error")
+                .to_string();
+            events.push(Err(ProviderError::Other(message)));
+            return events;
+        }
         let delta = match value.pointer("/choices/0/delta") {
             Some(delta) => delta,
             None => continue,
@@ -467,11 +542,11 @@ fn parse_sse_event(raw: &str) -> Vec<StreamEvent> {
         if let Some(text) = delta.get("content").and_then(Value::as_str)
             && !text.is_empty()
         {
-            events.push(StreamEvent::ContentDelta(text.to_string()));
+            events.push(Ok(StreamEvent::ContentDelta(text.to_string())));
         }
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
-                events.push(StreamEvent::ToolCallDelta {
+                events.push(Ok(StreamEvent::ToolCallDelta {
                     index: call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
                     id: call.get("id").and_then(Value::as_str).map(String::from),
                     name: call
@@ -485,7 +560,7 @@ fn parse_sse_event(raw: &str) -> Vec<StreamEvent> {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string(),
-                });
+                }));
             }
         }
         if let Some(reason) = value
@@ -496,9 +571,9 @@ fn parse_sse_event(raw: &str) -> Vec<StreamEvent> {
         }
     }
     if let Some(finish_reason) = finish_reason {
-        events.push(StreamEvent::Finished {
+        events.push(Ok(StreamEvent::Finished {
             finish_reason: Some(finish_reason),
-        });
+        }));
     }
     events
 }
@@ -606,10 +681,14 @@ mod tests {
     #[test]
     fn sse_events_are_parsed_in_order() {
         let mut parser = SseParser::new();
-        let events = parser.feed(
-            "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n\
+        let events: Vec<_> = parser
+            .feed(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n\
              data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"list_tables\",\"arguments\":\"{\\\"\"}}]}}]}\n\n",
-        );
+            )
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], StreamEvent::ContentDelta(text) if text == "Hel"));
         match &events[1] {
@@ -636,7 +715,11 @@ mod tests {
                 .feed("data: {\"choices\":[{\"delta\":{\"content\":\"Hel")
                 .is_empty()
         );
-        let events = parser.feed("lo\"}}]}\n\n");
+        let events: Vec<_> = parser
+            .feed("lo\"}}]}\n\n")
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], StreamEvent::ContentDelta(text) if text == "Hello"));
     }
@@ -647,18 +730,55 @@ mod tests {
         let events = parser.feed("data: [DONE]\n\n");
         assert_eq!(
             events,
-            vec![StreamEvent::Finished {
+            vec![Ok(StreamEvent::Finished {
                 finish_reason: None
-            }]
+            })]
         );
 
         let mut parser = SseParser::new();
         parser.feed("{\"choices\":[{\"message\":{\"content\":\"hi\",\"tool_calls\":[]}}]}");
-        let events = parser.finish();
+        let events: Vec<_> = parser.finish().into_iter().map(Result::unwrap).collect();
         assert_eq!(events.len(), 1);
         assert!(
             matches!(&events[0], StreamEvent::Complete(reply) if reply.content.as_deref() == Some("hi"))
         );
+    }
+
+    #[test]
+    fn utf8_split_across_chunks_is_not_corrupted() {
+        // "a" plus the first byte of "é" (0xC3 0xA9).
+        let mut pending = vec![0x61, 0xC3];
+        assert_eq!(decode_valid_prefix(&mut pending), "a");
+        assert_eq!(pending, vec![0xC3]);
+        pending.push(0xA9);
+        assert_eq!(decode_valid_prefix(&mut pending), "é");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn an_invalid_byte_is_replaced_not_held() {
+        // The bad byte is decoded (as U+FFFD) at once; what follows it
+        // stays for the next chunk, so it can still join a character
+        // arriving later.
+        let mut pending = vec![0x61, 0xFF, 0x62];
+        assert_eq!(decode_valid_prefix(&mut pending), "a\u{FFFD}");
+        assert_eq!(pending, vec![0x62]);
+        assert_eq!(decode_valid_prefix(&mut pending), "b");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn an_in_stream_error_is_reported_not_dropped() {
+        let mut parser = SseParser::new();
+        let events = parser.feed("data: {\"error\":{\"message\":\"model overloaded\"}}\n\n");
+        assert_eq!(
+            events,
+            vec![Err(ProviderError::Other("model overloaded".into()))]
+        );
+
+        let mut parser = SseParser::new();
+        let events = parser.feed("data: {\"error\":\"boom\"}\n\n");
+        assert_eq!(events, vec![Err(ProviderError::Other("boom".into()))]);
     }
 
     #[test]

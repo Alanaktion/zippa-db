@@ -20,8 +20,9 @@ impl AgentPanel {
             .collect()
     }
 
-    /// Tool items as (name, arguments, result, running, failed), in order.
-    pub(crate) fn tools_for_test(&self) -> Vec<(String, String, Option<String>, bool, bool)> {
+    /// Tool items as (name, arguments, result, status), in order, where
+    /// status is "waiting", "running", "done", "failed", or "stopped".
+    pub(crate) fn tools_for_test(&self) -> Vec<(String, String, Option<String>, &'static str)> {
         self.items
             .iter()
             .filter_map(|item| match item {
@@ -29,15 +30,19 @@ impl AgentPanel {
                     name,
                     arguments,
                     result,
-                    is_error,
-                    running,
+                    status,
                     ..
                 } => Some((
                     name.clone(),
                     arguments.clone(),
                     result.clone(),
-                    *running,
-                    *is_error,
+                    match status {
+                        super::ToolStatus::Waiting => "waiting",
+                        super::ToolStatus::Running => "running",
+                        super::ToolStatus::Done => "done",
+                        super::ToolStatus::Failed => "failed",
+                        super::ToolStatus::Stopped => "stopped",
+                    },
                 )),
                 _ => None,
             })
