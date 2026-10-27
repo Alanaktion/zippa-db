@@ -1,7 +1,7 @@
 //! Reaching into the Agents panel from a test.
 
 use futures::channel::oneshot;
-use gpui_kit::Context;
+use gpui_kit::{Context, Focusable as _};
 
 use super::{AgentPanel, Item, Pending};
 use crate::db::AgentAccess;
@@ -36,6 +36,28 @@ impl AgentPanel {
         self.pending = Some(Pending { request, answer });
         cx.notify();
         response
+    }
+
+    pub(crate) fn say_for_test(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.items.push(Item::Assistant(text.to_string()));
+        cx.notify();
+    }
+
+    /// Type into the message box and put the focus there.
+    pub(crate) fn type_for_test(
+        &mut self,
+        text: &str,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer
+            .update(cx, |input, cx| input.set_value(text, window, cx));
+        let handle = self.composer.read(cx).focus_handle(cx);
+        handle.focus(window, cx);
+    }
+
+    pub(crate) fn composer_text_for_test(&self, cx: &gpui_kit::App) -> String {
+        self.composer.read(cx).value().to_string()
     }
 
     pub(crate) fn set_running_for_test(&mut self, cx: &mut Context<Self>) {

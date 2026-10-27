@@ -17,13 +17,16 @@ use std::sync::Arc;
 use futures::StreamExt;
 use futures::channel::{mpsc, oneshot};
 use futures::future::BoxFuture;
+use gpui_kit::assets::IconName;
+use gpui_kit::base::TextView;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Sizable, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Window, actions, div,
+    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString,
+    Window, actions, div,
 };
 
 use crate::db::agent::context::{self, ContextInfo};
@@ -38,6 +41,9 @@ use crate::ui::completion::SharedCatalog;
 
 #[cfg(test)]
 mod test_support;
+
+/// Lines the message box grows to before it scrolls.
+const COMPOSER_LINES: usize = 6;
 
 actions!(zippa_db, [ToggleAgents, ApproveWrite, RejectWrite]);
 
@@ -95,7 +101,7 @@ pub struct AgentPanel {
     /// What goes back to the model each turn, system prompt excluded.
     thread: Vec<Message>,
     items: Vec<Item>,
-    composer: Entity<InputState>,
+    composer: Entity<TextareaState>,
     running: bool,
     /// Bumped by every send and Stop, so a turn that was stopped cannot
     /// write into the thread it was cut from.
@@ -115,13 +121,19 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let composer =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Ask about this database"));
+        // Enter sends and Shift+Enter starts a new line; the box grows with
+        // what is typed, up to a few lines.
+        let composer = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(1, COMPOSER_LINES)
+                .submit_on_enter(true)
+                .placeholder("Ask about this database")
+        });
         cx.subscribe_in(
             &composer,
             window,
             |this, _, event: &InputEvent, window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
+                if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
                     this.send(window, cx);
                 }
             },
@@ -445,7 +457,7 @@ impl AgentPanel {
         let access = Button::new("agent-access")
             .ghost()
             .xsmall()
-            .label(format!("Access: {}", self.access.label()))
+            .label(self.access.label())
             .accessibility_label(format!("Agent access level: {}", self.access.label()))
             .tooltip("What the assistant may do on this connection")
             .dropdown_caret(true)
@@ -504,41 +516,61 @@ impl AgentPanel {
                 h_flex()
                     .gap_2()
                     .child(
-                        div()
+                        h_flex()
+                            .gap_2()
                             .flex_1()
                             .min_w_0()
                             .text_sm()
                             .overflow_hidden()
-                            .child(format!(
-                                "Agents · {} · {}",
-                                self.connection.config.display_name(),
-                                self.connection.database()
-                            )),
+                            .child("Agent")
+                            .child(access)
+                            .when(self.access.writes_rows(), |this| this.child(approval)),
                     )
                     .child(
                         Button::new("agent-new-thread")
                             .ghost()
                             .xsmall()
-                            .label("New thread")
-                            .tooltip("Start over with an empty conversation")
+                            .icon(IconName::Plus)
+                            .accessibility_label("New thread")
+                            .tooltip("New thread: start over with an empty conversation")
                             .on_click(cx.listener(|this, _, _, cx| this.new_thread(cx))),
                     ),
             )
+    }
+
+    /// One message's words, as Markdown: models answer in it, and a reader can
+    /// select and copy from the result.
+    fn message_text(&self, ix: usize, text: &str, _cx: &App) -> impl IntoElement {
+        div().text_sm().child(TextView::markdown(
+            SharedString::from(format!("agent-message-{ix}")),
+            text.to_string(),
+        ))
+    }
+
+    /// A message's sender, with a button that copies its raw Markdown.
+    fn message_header(
+        &self,
+        ix: usize,
+        sender: &'static str,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let raw = text.to_string();
+        h_flex()
+            .justify_between()
+            .child(div().text_xs().text_color(muted).child(sender))
             .child(
-                h_flex()
-                    .gap_1()
-                    .flex_wrap()
-                    .child(access)
-                    .when(self.access.writes_rows(), |this| this.child(approval))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(format!(
-                                "Connection: {}",
-                                self.connection.config.safety.label()
-                            )),
-                    ),
+                Button::new(SharedString::from(format!("agent-copy-{ix}")))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Copy)
+                    .accessibility_label(format!("Copy {} message", sender.to_lowercase()))
+                    .tooltip("Copy the message as Markdown")
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()));
+                        crate::ui::notify_info(window, cx, "Copied");
+                    })),
             )
     }
 
@@ -547,23 +579,19 @@ impl AgentPanel {
         match item {
             Item::User(text) => v_flex()
                 .gap_0p5()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child("You"),
-                )
-                .child(div().text_sm().child(text.clone()))
+                .px_2()
+                .py_1()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.muted)
+                .child(self.message_header(ix, "You", text, cx))
+                .child(self.message_text(ix, text, cx))
                 .into_any_element(),
             Item::Assistant(text) => v_flex()
                 .gap_0p5()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child("Assistant"),
-                )
-                .child(div().text_sm().child(text.clone()))
+                .child(self.message_header(ix, "Assistant", text, cx))
+                .child(self.message_text(ix, text, cx))
                 .into_any_element(),
             Item::Notice { text, error } => div()
                 .text_xs()
@@ -580,23 +608,29 @@ impl AgentPanel {
                 .into_any_element(),
             Item::Tool { event, open } => {
                 let open = *open;
-                let summary = if event.is_error {
-                    format!("{} — failed", event.name)
-                } else {
-                    event.name.clone()
-                };
+                let preview: String = event.arguments.chars().take(40).collect();
+                let summary = format!(
+                    "{} {}{}{}",
+                    if open { "▾" } else { "▸" },
+                    event.name,
+                    if preview.trim() == "{}" || preview.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {preview}")
+                    },
+                    if event.is_error { " — failed" } else { "" },
+                );
                 v_flex()
-                    .gap_0p5()
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded_md()
-                    .p_1()
                     .child(
                         Button::new(SharedString::from(format!("agent-tool-{ix}")))
-                            .ghost()
+                            .custom(crate::ui::subtle_button(cx))
                             .xsmall()
-                            .label(format!("{} {summary}", if open { "▾" } else { "▸" }))
-                            .accessibility_label(format!("Tool call {summary}"))
+                            .label(summary)
+                            .accessibility_label(format!(
+                                "Tool call {}{}",
+                                event.name,
+                                if event.is_error { ", failed" } else { "" }
+                            ))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(Item::Tool { open, .. }) = this.items.get_mut(ix) {
                                     *open = !*open;
@@ -607,8 +641,9 @@ impl AgentPanel {
                     .when(open, |this| {
                         this.child(
                             div()
-                                .px_1()
-                                .text_xs()
+                                .pl_3()
+                                .text_size(gpui_kit::px(11.))
+                                .text_color(theme.muted_foreground)
                                 .font_family("monospace")
                                 .child(format!("{}\n→ {}", event.arguments, event.result)),
                         )
@@ -762,20 +797,27 @@ impl Render for AgentPanel {
                     .p_2()
                     .border_t_1()
                     .border_color(border)
-                    .child(div().flex_1().min_w_0().child(Input::new(&self.composer)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Textarea::new(&self.composer).small()),
+                    )
                     .child(if running {
                         Button::new("agent-stop")
                             .outline()
                             .small()
-                            .label("Stop")
+                            .icon(IconName::Square)
+                            .accessibility_label("Stop")
                             .tooltip("Stop the request and any tool call")
                             .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
                     } else {
                         Button::new("agent-send")
                             .primary()
                             .small()
-                            .label("Send")
-                            .tooltip("Send the message")
+                            .icon(IconName::SendHorizontal)
+                            .accessibility_label("Send")
+                            .tooltip("Send message")
                             .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
                     }),
             )

@@ -47,7 +47,11 @@ pub fn system_prompt(info: &ContextInfo) -> String {
          - SQL you write is checked before it runs; writes are shown to the user for approval \
            unless they have turned that off. A rejected statement is the user's decision: \
            propose something else rather than retrying it.\n\
-         - Prefer propose_query to put SQL in front of the user when they only asked for a draft.\n\n",
+         - Prefer propose_query to put SQL in front of the user when they only asked for a draft.\n\
+         - You are shown in a narrow side panel. Keep answers brief: a few short sentences or \
+           a short list, no preamble or recap. Never use Markdown tables; use short lists or \
+           one line per row instead. Be longer or more detailed only when the user asks for \
+           detail, an explanation, or a full listing.\n\n",
     );
     out.push_str(&format!(
         "Engine: {}\nDatabase: {}\nAgent access: {}\nWrite approval: {}\nConnection safety: {}\n",
@@ -148,5 +152,13 @@ mod tests {
         assert!(prompt.contains("and 440 more"));
         assert!(!prompt.contains("t499"));
         assert!(prompt.contains("select 1"));
+    }
+
+    #[test]
+    fn the_prompt_asks_for_short_answers_without_tables() {
+        let catalog = Catalog::default();
+        let prompt = system_prompt(&info(&catalog));
+        assert!(prompt.contains("narrow side panel"));
+        assert!(prompt.contains("Never use Markdown tables"));
     }
 }

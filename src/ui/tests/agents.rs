@@ -163,3 +163,87 @@ fn auto_approval_is_taken_at_once_on_an_ordinary_connection(cx: &mut TestAppCont
         WriteApproval::Auto
     );
 }
+
+#[gpui_kit::test]
+fn replies_draw_as_markdown(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    handle
+        .update(cx, |session, window, cx| {
+            session.toggle_agents_for_test(window, cx)
+        })
+        .unwrap();
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+    agents.update(cx, |agents, cx| {
+        agents.say_for_test("**bold** and `code`", cx)
+    });
+    // Drawing must not panic on a rich-text message.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_message_copies_as_its_raw_markdown(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    handle
+        .update(cx, |session, window, cx| {
+            session.toggle_agents_for_test(window, cx)
+        })
+        .unwrap();
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+    agents.update(cx, |agents, cx| {
+        agents.say_for_test("**bold** and `code`", cx)
+    });
+    click_in_session(cx, handle, "agent-copy-0");
+    assert_eq!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("**bold** and `code`")
+    );
+}
+
+#[gpui_kit::test]
+fn enter_sends_and_shift_enter_adds_a_line(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    handle
+        .update(cx, |session, window, cx| {
+            session.toggle_agents_for_test(window, cx)
+        })
+        .unwrap();
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    handle
+        .update(cx, |_, window, cx| {
+            agents.update(cx, |agents, cx| agents.type_for_test("first", window, cx))
+        })
+        .unwrap();
+    press(cx, handle, "shift-enter");
+    assert!(
+        agents
+            .read_with(cx, |agents, cx| agents.composer_text_for_test(cx))
+            .contains('\n'),
+        "Shift+Enter should start a new line"
+    );
+    assert!(
+        agents
+            .read_with(cx, |agents, _| agents.lines_for_test())
+            .is_empty()
+    );
+
+    press(cx, handle, "enter");
+    cx.run_until_parked();
+    let lines = agents.read_with(cx, |agents, _| agents.lines_for_test());
+    assert!(lines[0].starts_with("first"), "{lines:?}");
+    assert_eq!(
+        agents.read_with(cx, |agents, cx| agents.composer_text_for_test(cx)),
+        ""
+    );
+}
