@@ -3,6 +3,7 @@
 use super::*;
 use crate::db::agent::gate::Kind;
 use crate::db::agent::tools::WriteRequest;
+use crate::db::agent::turn::TurnEvent;
 use crate::db::{AgentAccess, WriteApproval};
 
 fn delete_request() -> WriteRequest {
@@ -206,6 +207,83 @@ fn a_message_copies_as_its_raw_markdown(cx: &mut TestAppContext) {
             .as_deref(),
         Some("**bold** and `code`")
     );
+}
+
+#[gpui_kit::test]
+fn tool_placeholders_fill_in_in_place_and_text_streams(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    // Text streams into one assistant item, then a second round's text
+    // starts a new one after the tool item between them.
+    agents.update(cx, |agents, cx| {
+        agents.apply_turn_event_for_test(TurnEvent::AssistantDelta("Hel".into()), cx);
+        agents.apply_turn_event_for_test(TurnEvent::AssistantDelta("lo".into()), cx);
+        agents.apply_turn_event_for_test(
+            TurnEvent::ToolPending {
+                index: 0,
+                name: "list_tables".into(),
+                arguments: "{}".into(),
+            },
+            cx,
+        );
+    });
+    let tools = agents.read_with(cx, |agents, _| agents.tools_for_test());
+    assert_eq!(tools.len(), 1, "a pending tool is drawn at once");
+    assert_eq!(tools[0].2, None, "no result yet");
+    assert_eq!(tools[0].3, "waiting");
+
+    agents.update(cx, |agents, cx| {
+        agents.apply_turn_event_for_test(TurnEvent::ToolRunning { index: 0 }, cx);
+        agents.apply_turn_event_for_test(
+            TurnEvent::ToolFinished {
+                index: 0,
+                result: "table items".into(),
+                is_error: false,
+            },
+            cx,
+        );
+        agents.apply_turn_event_for_test(TurnEvent::AssistantDelta("Done".into()), cx);
+    });
+    let tools = agents.read_with(cx, |agents, _| agents.tools_for_test());
+    assert_eq!(
+        tools.len(),
+        1,
+        "the result fills the placeholder, not a second item"
+    );
+    assert_eq!(tools[0].2.as_deref(), Some("table items"));
+    assert_eq!(tools[0].3, "done");
+    // Full order: streamed text, tool, final text.
+    let lines = agents.read_with(cx, |agents, _| agents.lines_for_test());
+    assert_eq!(lines, vec!["Hello", "tool list_tables", "Done"]);
+}
+
+#[gpui_kit::test]
+fn a_stopped_tool_does_not_stay_running(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    agents.update(cx, |agents, cx| {
+        agents.apply_turn_event_for_test(
+            TurnEvent::ToolPending {
+                index: 0,
+                name: "list_tables".into(),
+                arguments: "{}".into(),
+            },
+            cx,
+        );
+        agents.apply_turn_event_for_test(TurnEvent::ToolRunning { index: 0 }, cx);
+        agents.set_running_for_test(cx);
+        agents.stop(cx);
+    });
+    let tools = agents.read_with(cx, |agents, _| agents.tools_for_test());
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].3, "stopped");
+    assert_eq!(tools[0].2.as_deref(), Some("stopped"));
 }
 
 #[gpui_kit::test]

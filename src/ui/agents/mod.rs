@@ -33,7 +33,7 @@ use gpui_kit::{
 use crate::db::agent::context::{self, ContextInfo};
 use crate::db::agent::provider::{Endpoint, HttpProvider, Message, ProviderError};
 use crate::db::agent::tools::{Approver, ToolContext, UiAction, WriteRequest};
-use crate::db::agent::turn::{self, ToolEvent, TurnOutcome};
+use crate::db::agent::turn::{self, TurnEvent, TurnOutcome};
 use crate::db::{
     AgentAccess, Connection, DatabaseObject, WriteApproval, is_risky_agent, runtime, store,
 };
@@ -55,12 +55,56 @@ pub enum AgentEvent {
     ProposeQuery(String),
 }
 
+/// Where a tool item is in its life: triggered and waiting its turn,
+/// running, finished (with a result), failed (with an error result), or
+/// stopped without a result because the turn ended or the user stopped it.
+/// The summary shows this in words, never colour alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolStatus {
+    Waiting,
+    Running,
+    Done,
+    Failed,
+    Stopped,
+}
+
+impl ToolStatus {
+    fn summary(self) -> &'static str {
+        match self {
+            ToolStatus::Waiting => " — waiting",
+            ToolStatus::Running => " — running",
+            ToolStatus::Done => "",
+            ToolStatus::Failed => " — failed",
+            ToolStatus::Stopped => " — stopped",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ToolStatus::Waiting => ", waiting",
+            ToolStatus::Running => ", running",
+            ToolStatus::Done => "",
+            ToolStatus::Failed => ", failed",
+            ToolStatus::Stopped => ", stopped",
+        }
+    }
+}
+
 /// One line of the thread as the panel draws it.
 enum Item {
     User(String),
     Assistant(String),
+    /// A tool call, drawn as soon as the model triggers it and filled in
+    /// as it runs: `result` is `None` until it finishes. `index` is the
+    /// call's position in the turn as a whole, counting across replies, so
+    /// a placeholder, its running state, and its result address the same
+    /// item.
     Tool {
-        event: ToolEvent,
+        index: usize,
+        name: String,
+        arguments: String,
+        result: Option<String>,
+        status: ToolStatus,
         open: bool,
     },
     /// Something the panel itself says; `error` ones are prefixed in words.
@@ -109,6 +153,10 @@ pub struct AgentPanel {
     generation: u64,
     abort: Option<tokio::task::AbortHandle>,
     tools_supported: bool,
+    /// Whether the endpoint streams, as the panel last learned it. A turn
+    /// that falls back to whole replies sets this false, so later turns do
+    /// not waste a request asking for a stream that will be refused.
+    stream_supported: bool,
     pending: Option<Pending>,
     focus: FocusHandle,
 }
@@ -152,6 +200,7 @@ impl AgentPanel {
             generation: 0,
             abort: None,
             tools_supported: true,
+            stream_supported: true,
             pending: None,
             focus: cx.focus_handle(),
         }
@@ -237,7 +286,12 @@ impl AgentPanel {
             approval: self.approval,
         };
         let tools_supported = self.tools_supported;
+        let stream_supported = self.stream_supported;
         let (asks, mut requests) = mpsc::unbounded();
+        // Turn events arrive here as they happen — text fragments, tool
+        // placeholders, running states, results — and the listener below
+        // draws them at once, rather than waiting for the turn to finish.
+        let (events_tx, mut events) = mpsc::unbounded();
 
         self.generation += 1;
         let generation = self.generation;
@@ -258,17 +312,46 @@ impl AgentPanel {
                     };
                 }
             };
-            turn::run(
+            turn::run_with_events(
                 &provider,
                 &tool_context,
                 &Bridge(asks),
                 &history,
                 &text,
                 tools_supported,
+                stream_supported,
+                Some(events_tx),
             )
             .await
         });
         self.abort = task.abort_handle();
+
+        // Turn events arrive here until the turn ends and its sender is
+        // dropped. A stopped turn's events are guarded by generation, like
+        // the approval requests below. `finish` runs only after this loop
+        // drains: finishing as soon as the turn task resolves could set
+        // `running = false` before the final assistant delta was drawn,
+        // and a send in that gap would drop the rest of the old turn.
+        // The sender is dropped when the turn returns or is aborted, so
+        // this loop always ends.
+        cx.spawn(async move |this, cx| {
+            while let Some(event) = events.next().await {
+                let shown = this.update(cx, |this, cx| {
+                    if this.generation != generation {
+                        return false;
+                    }
+                    this.apply_turn_event(event, cx);
+                    true
+                });
+                if !matches!(shown, Ok(true)) {
+                    break;
+                }
+            }
+            let outcome = task.await;
+            this.update(cx, |this, cx| this.finish(generation, outcome, cx))
+                .ok();
+        })
+        .detach();
 
         // Requests the turn makes for approval arrive here until it ends and
         // its sender is dropped.
@@ -289,12 +372,6 @@ impl AgentPanel {
         })
         .detach();
 
-        cx.spawn(async move |this, cx| {
-            let outcome = task.await;
-            this.update(cx, |this, cx| this.finish(generation, outcome, cx))
-                .ok();
-        })
-        .detach();
         cx.notify();
     }
 
@@ -311,10 +388,15 @@ impl AgentPanel {
         self.abort = None;
         self.pending = None;
         let Ok(outcome) = outcome else {
+            self.settle_tools("stopped");
             self.notice("Stopped.", false);
             cx.notify();
             return;
         };
+        // A turn that ended without a tool's result — a stream failed
+        // after its placeholder, say — leaves that item terminal, not
+        // waiting or running for the rest of the thread.
+        self.settle_tools("not run");
 
         self.thread.extend(outcome.messages);
         if outcome.tools_unsupported {
@@ -325,12 +407,14 @@ impl AgentPanel {
                 false,
             );
         }
-        for event in outcome.events {
-            self.items.push(Item::Tool { event, open: false });
+        if outcome.stream_unsupported {
+            // Silent: the next turn simply uses whole replies, and its
+            // tool placeholders still arrive as the tools run.
+            self.stream_supported = false;
         }
-        if let Some(answer) = outcome.answer {
-            self.items.push(Item::Assistant(answer));
-        }
+        // No items are pushed here: assistant text and tool calls already
+        // arrived item by item through the turn-events listener above, and
+        // pushing the outcome's copy again would duplicate them.
         if outcome.hit_limit {
             self.notice(
                 "Stopped calling tools: the limit for one message was reached.",
@@ -347,6 +431,111 @@ impl AgentPanel {
             }
         }
         cx.notify();
+    }
+
+    /// Draw one turn event at once. Text appends to the current assistant
+    /// item (a new round starts a new one, because a tool item sits between
+    /// rounds); a tool event finds its item by index, creating it if an
+    /// event arrived out of order, so a placeholder, its running state, and
+    /// its result never become three separate items.
+    fn apply_turn_event(&mut self, event: TurnEvent, cx: &mut Context<Self>) {
+        match event {
+            TurnEvent::AssistantDelta(text) => {
+                if text.is_empty() {
+                    return;
+                }
+                match self.items.last_mut() {
+                    Some(Item::Assistant(existing)) => existing.push_str(&text),
+                    _ => self.items.push(Item::Assistant(text)),
+                }
+            }
+            TurnEvent::ToolPending {
+                index,
+                name,
+                arguments,
+            } => {
+                if !self.tool_item_mut(index).is_some() {
+                    self.items.push(Item::Tool {
+                        index,
+                        name,
+                        arguments,
+                        result: None,
+                        status: ToolStatus::Waiting,
+                        open: false,
+                    });
+                }
+            }
+            TurnEvent::ToolArguments { index, arguments } => {
+                if let Some(Item::Tool {
+                    arguments: existing,
+                    ..
+                }) = self.tool_item_mut(index)
+                {
+                    *existing = arguments;
+                }
+            }
+            TurnEvent::ToolRunning { index } => {
+                if let Some(Item::Tool { status, .. }) = self.tool_item_mut(index)
+                    && *status == ToolStatus::Waiting
+                {
+                    *status = ToolStatus::Running;
+                }
+            }
+            TurnEvent::ToolFinished {
+                index,
+                result,
+                is_error,
+            } => match self.tool_item_mut(index) {
+                Some(Item::Tool {
+                    result: existing,
+                    status,
+                    ..
+                }) => {
+                    *existing = Some(result);
+                    *status = if is_error {
+                        ToolStatus::Failed
+                    } else {
+                        ToolStatus::Done
+                    };
+                }
+                _ => self.items.push(Item::Tool {
+                    index,
+                    name: String::new(),
+                    arguments: String::new(),
+                    result: Some(result),
+                    status: if is_error {
+                        ToolStatus::Failed
+                    } else {
+                        ToolStatus::Done
+                    },
+                    open: false,
+                }),
+            },
+        }
+        cx.notify();
+    }
+
+    /// The tool item for `index`, if one is already drawn.
+    fn tool_item_mut(&mut self, index: usize) -> Option<&mut Item> {
+        self.items.iter_mut().find(
+            |item| matches!(item, Item::Tool { index: item_index, .. } if *item_index == index),
+        )
+    }
+
+    /// Give every tool item that never finished a terminal state, with
+    /// `reason` as its result if it has none. A placeholder from a failed
+    /// stream is "not run"; a tool cut off by Stop is "stopped".
+    fn settle_tools(&mut self, reason: &str) {
+        for item in self.items.iter_mut() {
+            if let Item::Tool { result, status, .. } = item
+                && matches!(status, ToolStatus::Waiting | ToolStatus::Running)
+            {
+                *status = ToolStatus::Stopped;
+                if result.is_none() {
+                    *result = Some(reason.to_string());
+                }
+            }
+        }
     }
 
     fn notice(&mut self, text: &str, error: bool) {
@@ -368,6 +557,7 @@ impl AgentPanel {
         // Dropping the answer is a rejection if a write was waiting.
         self.pending = None;
         self.running = false;
+        self.settle_tools("stopped");
         self.notice("Stopped.", false);
         cx.notify();
     }
@@ -378,6 +568,7 @@ impl AgentPanel {
         self.thread.clear();
         self.items.clear();
         self.tools_supported = true;
+        self.stream_supported = true;
         cx.notify();
     }
 
@@ -599,20 +790,40 @@ impl AgentPanel {
                     text.clone()
                 })
                 .into_any_element(),
-            Item::Tool { event, open } => {
+            Item::Tool {
+                name,
+                arguments,
+                result,
+                status,
+                open,
+                ..
+            } => {
                 let open = *open;
-                let preview: String = event.arguments.chars().take(40).collect();
+                let status = *status;
+                let status_text = status.summary();
+                let preview: String = arguments.chars().take(40).collect();
                 let summary = format!(
                     "{} {}{}{}",
                     if open { "▾" } else { "▸" },
-                    event.name,
+                    name,
                     if preview.trim() == "{}" || preview.is_empty() {
                         String::new()
                     } else {
                         format!(" {preview}")
                     },
-                    if event.is_error { " — failed" } else { "" },
+                    status_text,
                 );
+                let expanded = match result {
+                    Some(result) => format!("{arguments}\n→ {result}"),
+                    None => format!(
+                        "{arguments}\n→ {}",
+                        match status {
+                            ToolStatus::Running => "running…",
+                            ToolStatus::Stopped => "stopped",
+                            _ => "waiting…",
+                        }
+                    ),
+                };
                 v_flex()
                     .items_start()
                     .child(
@@ -620,11 +831,7 @@ impl AgentPanel {
                             .custom(crate::ui::subtle_button(cx))
                             .xsmall()
                             .label(summary)
-                            .accessibility_label(format!(
-                                "Tool call {}{}",
-                                event.name,
-                                if event.is_error { ", failed" } else { "" }
-                            ))
+                            .accessibility_label(format!("Tool call {name}{}", status.label()))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(Item::Tool { open, .. }) = this.items.get_mut(ix) {
                                     *open = !*open;
@@ -639,7 +846,7 @@ impl AgentPanel {
                                 .text_size(gpui_kit::px(11.))
                                 .text_color(theme.muted_foreground)
                                 .font_family("monospace")
-                                .child(format!("{}\n→ {}", event.arguments, event.result)),
+                                .child(expanded),
                         )
                     })
                     .into_any_element()
