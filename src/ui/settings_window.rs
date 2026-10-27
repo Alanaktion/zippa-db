@@ -102,6 +102,7 @@ impl Render for SettingsView {
                 appearance_page(cx),
                 editor_page(),
                 data_page(),
+                agents_page(),
             ]))
     }
 }
@@ -269,6 +270,78 @@ fn editor_page() -> SettingPage {
                 .description("Only one query runs at a time."),
             ),
         )
+}
+
+/// What the key box shows in place of a stored key. The key itself is never
+/// read back into the window.
+const KEY_MASK: &str = "••••••••";
+
+static KEY_SET: std::sync::OnceLock<std::sync::atomic::AtomicBool> = std::sync::OnceLock::new();
+
+fn key_set() -> &'static std::sync::atomic::AtomicBool {
+    KEY_SET.get_or_init(|| {
+        std::sync::atomic::AtomicBool::new(matches!(crate::db::store::api_key(), Ok(Some(_))))
+    })
+}
+
+fn agents_page() -> SettingPage {
+    SettingPage::new("Agents").icon(IconName::Bot).group(
+        SettingGroup::new()
+            .title("Model endpoint")
+            .description(
+                "Any OpenAI-compatible chat endpoint. When you send a message in the \
+                     Agents panel, schema names, query text, and result rows go to this \
+                     endpoint. A local one (Ollama, LM Studio) keeps them on this machine; \
+                     a hosted one is a data-sharing choice. Nothing is sent until you do.",
+            )
+            .item(SettingItem::new(
+                "Base URL",
+                SettingField::input(
+                    |cx| Settings::global(cx).agent_base_url.clone().into(),
+                    |value, cx| {
+                        settings::update(cx, |settings| {
+                            settings.agent_base_url = value.trim().to_string()
+                        })
+                    },
+                ),
+            ))
+            .item(SettingItem::new(
+                "Model",
+                SettingField::input(
+                    |cx| Settings::global(cx).agent_model.clone().into(),
+                    |value, cx| {
+                        settings::update(cx, |settings| {
+                            settings.agent_model = value.trim().to_string()
+                        })
+                    },
+                ),
+            ))
+            .item(
+                SettingItem::new(
+                    "API key",
+                    SettingField::input(
+                        |_| {
+                            if key_set().load(std::sync::atomic::Ordering::Relaxed) {
+                                KEY_MASK.into()
+                            } else {
+                                "".into()
+                            }
+                        },
+                        |value, _| {
+                            if value.as_ref() == KEY_MASK {
+                                return;
+                            }
+                            let key = value.trim();
+                            if crate::db::store::set_api_key(key).is_ok() {
+                                key_set()
+                                    .store(!key.is_empty(), std::sync::atomic::Ordering::Relaxed);
+                            }
+                        },
+                    ),
+                )
+                .description("Kept in the OS keychain, never in a settings file."),
+            ),
+    )
 }
 
 fn data_page() -> SettingPage {

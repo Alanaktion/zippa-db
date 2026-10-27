@@ -342,6 +342,9 @@ impl Session {
             let connection = connection.clone();
             panel.update(cx, |panel, cx| panel.set_connection(connection, cx));
         }
+        let connection = self.connection.clone();
+        self.agents
+            .update(cx, |agents, cx| agents.set_connection(connection, cx));
         self.reload_metadata(cx);
     }
 

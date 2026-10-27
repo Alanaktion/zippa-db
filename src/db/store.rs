@@ -296,6 +296,51 @@ pub fn credentials(
     Ok(Credentials { password, ssh })
 }
 
+/// The keychain account the Agents panel's API key is kept under. One key for
+/// the whole app, so no connection id: it is the model endpoint's, not a
+/// database's.
+#[cfg(not(test))]
+fn api_key_entry() -> Result<keyring::Entry> {
+    keyring::Entry::new(SERVICE, "agents/api-key").context("no OS credential store available")
+}
+
+/// The stored API key for the model endpoint, if any.
+pub fn api_key() -> Result<Option<String>> {
+    #[cfg(not(test))]
+    {
+        match api_key_entry()?.get_password() {
+            Ok(key) => Ok(Some(key)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+    #[cfg(test)]
+    {
+        Ok(None)
+    }
+}
+
+/// Store the API key; an empty one forgets it.
+pub fn set_api_key(key: &str) -> Result<()> {
+    #[cfg(not(test))]
+    {
+        if key.is_empty() {
+            return match api_key_entry()?.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(error) => Err(error.into()),
+            };
+        }
+        api_key_entry()?
+            .set_password(key)
+            .context("could not save the API key to the OS credential store")
+    }
+    #[cfg(test)]
+    {
+        let _ = key;
+        Ok(())
+    }
+}
+
 /// The keychain account an SSH tunnel's password or key passphrase is kept
 /// under: beside the database password, under the same connection id.
 #[cfg(not(test))]

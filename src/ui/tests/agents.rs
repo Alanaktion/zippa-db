@@ -1,0 +1,165 @@
+//! The Agents panel: placement, the approval prompt, and the gates around it.
+
+use super::*;
+use crate::db::agent::gate::Kind;
+use crate::db::agent::tools::WriteRequest;
+use crate::db::{AgentAccess, WriteApproval};
+
+fn delete_request() -> WriteRequest {
+    WriteRequest {
+        sql: "delete from items where id = 1".into(),
+        kind: Kind::Dml,
+        access: AgentAccess::Crud,
+        approval: WriteApproval::Ask,
+    }
+}
+
+#[gpui_kit::test]
+fn the_panel_toggles_and_keeps_its_thread(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.toggle_agents_for_test(window, cx)
+        })
+        .unwrap();
+    assert!(
+        handle
+            .update(cx, |s, _, _| s.agents_open_for_test())
+            .unwrap()
+    );
+
+    // A message typed with no endpoint configured says so and sends nothing.
+    agents.update(cx, |agents, cx| {
+        agents.start_turn("what tables are here?".into(), Vec::new(), None, cx)
+    });
+    let lines = agents.read_with(cx, |agents, _| agents.lines_for_test());
+    assert_eq!(lines[0], "what tables are here?");
+    assert!(lines[1].contains("Settings"), "{lines:?}");
+    assert!(!agents.read_with(cx, |agents, _| agents.is_running()));
+
+    handle
+        .update(cx, |session, window, cx| {
+            session.toggle_agents_for_test(window, cx)
+        })
+        .unwrap();
+    assert!(
+        !handle
+            .update(cx, |s, _, _| s.agents_open_for_test())
+            .unwrap()
+    );
+    assert_eq!(
+        agents.read_with(cx, |agents, _| agents.lines_for_test().len()),
+        2,
+        "hiding the panel must not end the thread"
+    );
+}
+
+#[gpui_kit::test]
+fn a_connection_starts_at_schema_access_asking_for_writes(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+    agents.read_with(cx, |agents, _| {
+        assert_eq!(agents.access(), AgentAccess::Schema);
+        assert_eq!(agents.approval(), WriteApproval::Ask);
+    });
+}
+
+#[gpui_kit::test]
+fn a_write_waits_for_an_answer_and_runs_only_on_approve(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    let mut answer = agents.update(cx, |agents, cx| {
+        agents.offer_write_for_test(delete_request(), cx)
+    });
+    assert_eq!(
+        agents
+            .read_with(cx, |agents, _| agents.pending_sql_for_test())
+            .as_deref(),
+        Some("delete from items where id = 1")
+    );
+    assert_eq!(
+        answer.try_recv().unwrap(),
+        None,
+        "nothing is decided until the user answers"
+    );
+
+    agents.update(cx, |agents, cx| agents.answer_for_test(true, cx));
+    assert_eq!(answer.try_recv().unwrap(), Some(true));
+    assert_eq!(
+        agents.read_with(cx, |agents, _| agents.pending_sql_for_test()),
+        None
+    );
+
+    // Approval was for that one statement: the next is asked about afresh.
+    let mut second = agents.update(cx, |agents, cx| {
+        agents.offer_write_for_test(delete_request(), cx)
+    });
+    agents.update(cx, |agents, cx| agents.answer_for_test(false, cx));
+    assert_eq!(second.try_recv().unwrap(), Some(false));
+}
+
+#[gpui_kit::test]
+fn stopping_rejects_a_waiting_write(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+    let mut answer = agents.update(cx, |agents, cx| {
+        agents.offer_write_for_test(delete_request(), cx)
+    });
+    // Stop only acts on a running turn; one that is not running leaves the
+    // question up, so run state is set the way a turn would.
+    agents.update(cx, |agents, cx| agents.set_running_for_test(cx));
+    agents.update(cx, |agents, cx| agents.stop(cx));
+    assert!(
+        answer.try_recv().is_err(),
+        "the dropped answer reads as a rejection"
+    );
+}
+
+#[gpui_kit::test]
+fn the_panel_says_when_it_is_off(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+    agents.update(cx, |agents, cx| {
+        agents.set_access_for_test(AgentAccess::None, cx)
+    });
+    agents.update(cx, |agents, cx| {
+        agents.start_turn("hi".into(), Vec::new(), None, cx)
+    });
+    // A turn is still refused when it is somehow asked for: no model call.
+    assert!(!agents.read_with(cx, |agents, _| agents.is_running()));
+}
+
+#[gpui_kit::test]
+fn auto_approval_is_taken_at_once_on_an_ordinary_connection(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+    agents.update(cx, |agents, cx| {
+        agents.set_access_for_test(AgentAccess::Crud, cx)
+    });
+    handle
+        .update(cx, |_, window, cx| {
+            agents.update(cx, |agents, cx| {
+                agents.choose_approval_for_test(WriteApproval::Auto, window, cx)
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        agents.read_with(cx, |agents, _| agents.approval()),
+        WriteApproval::Auto
+    );
+}

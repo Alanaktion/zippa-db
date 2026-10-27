@@ -158,6 +158,11 @@ pub struct Settings {
     pub implicit_limit: bool,
     /// The rows that limit asks for.
     pub implicit_limit_rows: usize,
+    /// The OpenAI-compatible endpoint the Agents panel talks to, up to but
+    /// not including `/chat/completions`. Empty until the user sets one.
+    pub agent_base_url: String,
+    /// The model name sent with each request.
+    pub agent_model: String,
 }
 
 impl Default for Settings {
@@ -177,6 +182,8 @@ impl Default for Settings {
             share_connection_across_buffers: false,
             implicit_limit: true,
             implicit_limit_rows: DEFAULT_PAGE_SIZE,
+            agent_base_url: String::new(),
+            agent_model: String::new(),
         }
     }
 }

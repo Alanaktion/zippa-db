@@ -19,8 +19,8 @@ use uuid::Uuid;
 
 use crate::db::store::SecretEdits;
 use crate::db::{
-    Connection, ConnectionConfig, Engine, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode,
-    TagColor, is_risky_auto_apply, runtime, store,
+    AgentAccess, Connection, ConnectionConfig, Engine, SafetyMode, SshAuth, SshConfig, SslConfig,
+    SslMode, TagColor, WriteApproval, is_risky_agent, is_risky_auto_apply, runtime, store,
 };
 use crate::ui::busy::spinner;
 
@@ -54,6 +54,8 @@ pub struct ConnectionEditor {
     id: Option<Uuid>,
     engine: Engine,
     safety: SafetyMode,
+    agent_access: AgentAccess,
+    agent_approval: WriteApproval,
     color: Option<TagColor>,
     name: Entity<InputState>,
     host: Entity<InputState>,
@@ -137,6 +139,11 @@ impl ConnectionEditor {
             id: config.as_ref().map(|c| c.id),
             engine,
             safety: config.as_ref().map(|c| c.safety).unwrap_or_default(),
+            agent_access: config.as_ref().map(|c| c.agent_access).unwrap_or_default(),
+            agent_approval: config
+                .as_ref()
+                .map(|c| c.agent_approval)
+                .unwrap_or_default(),
             color: config.as_ref().and_then(|c| c.color),
             name: cx.new(|cx| InputState::new(window, cx)),
             host: cx.new(|cx| InputState::new(window, cx).default_value("localhost")),
@@ -307,6 +314,8 @@ impl ConnectionEditor {
     fn load(&mut self, config: &ConnectionConfig, window: &mut Window, cx: &mut Context<Self>) {
         self.engine = config.engine;
         self.safety = config.safety;
+        self.agent_access = config.agent_access;
+        self.agent_approval = config.agent_approval;
         self.color = config.color;
         self.set_field(&self.name.clone(), &config.name, window, cx);
         self.set_field(&self.host.clone(), &config.host, window, cx);
@@ -362,6 +371,8 @@ impl ConnectionEditor {
             username: self.username.read(cx).value().trim().to_string(),
             database: self.database.read(cx).value().trim().to_string(),
             safety: self.safety,
+            agent_access: self.agent_access,
+            agent_approval: self.agent_approval,
             color: self.color,
             last_connected: None,
             // Blank and `0` both mean no limit; SQLite has no server to
@@ -726,6 +737,76 @@ impl ConnectionEditor {
             )
     }
 
+    /// Pick what the Agents panel may do here and when its writes need a yes.
+    fn render_agent_access(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = self.name.read(cx).value().trim().to_string();
+        let hint = is_risky_agent(&name, self.color, self.agent_access, self.agent_approval);
+
+        v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Agents access"),
+            )
+            .when(hint, |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().warning)
+                        .child("Warning: the agent can change a production connection."),
+                )
+            })
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .children(AgentAccess::ALL.map(|access| {
+                        let button =
+                            Button::new(SharedString::from(format!("agent-access-{access:?}")))
+                                .label(access.label())
+                                .tooltip(access.description())
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.agent_access = access;
+                                    cx.notify();
+                                }));
+
+                        if self.agent_access == access {
+                            button.primary()
+                        } else {
+                            button.outline()
+                        }
+                    })),
+            )
+            .when(self.agent_access.writes_rows(), |this| {
+                this.child(
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .children(WriteApproval::ALL.map(|approval| {
+                            let button = Button::new(SharedString::from(format!(
+                                "agent-approval-{approval:?}"
+                            )))
+                            .label(approval.label())
+                            .tooltip(approval.description())
+                            .on_click(cx.listener(
+                                move |this, _, _window, cx| {
+                                    this.agent_approval = approval;
+                                    cx.notify();
+                                },
+                            ));
+
+                            if self.agent_approval == approval {
+                                button.primary()
+                            } else {
+                                button.outline()
+                            }
+                        })),
+                )
+            })
+    }
+
     /// Pick how the connection is encrypted, with the certificate files once
     /// the mode insists on encryption (`SslMode::uses_files`); below that they
     /// are neither shown nor sent.
@@ -901,6 +982,7 @@ impl ConnectionEditor {
             })
             .child(self.render_colors(cx))
             .child(self.render_safety(cx))
+            .child(self.render_agent_access(cx))
     }
 
     /// The test's progress or outcome, or why the inputs were refused. Told in

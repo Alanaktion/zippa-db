@@ -23,6 +23,7 @@ use crate::db::{
     CatalogEntry, CatalogKind, Connection, DatabaseObject, PinnedConnection, StoredObject,
 };
 use crate::saved_queries::SavedQueries;
+use crate::ui::agents::{AgentEvent, AgentPanel, ToggleAgents};
 use crate::ui::backup_dialog::BackupView;
 use crate::ui::completion::SharedCatalog;
 use crate::ui::create_database_dialog::CreateDatabaseView;
@@ -55,6 +56,7 @@ pub(crate) use tool::Tool;
 
 /// Starting pane sizes; the user drags from here.
 const SIDEBAR_WIDTH: f32 = 260.;
+const AGENTS_WIDTH: f32 = 340.;
 
 actions!(
     zippa_db,
@@ -114,6 +116,12 @@ pub struct Session {
     opened: usize,
     /// Sidebar beside the editor and grid.
     columns: Entity<ResizableState>,
+    /// The Agents panel's width, beside the dock.
+    agents_columns: Entity<ResizableState>,
+    /// The Agents panel. Built with the session so its thread lives as long
+    /// as the connection; only drawn while `agents_open`.
+    agents: Entity<AgentPanel>,
+    agents_open: bool,
     databases: Vec<String>,
     /// The title bar's database picker: a searchable list, since a server
     /// can hold more databases than a menu reads comfortably. Its items and
@@ -209,6 +217,11 @@ impl Session {
         cx.subscribe_in(&database_select, window, Self::on_database_selected)
             .detach();
 
+        let catalog = SharedCatalog::default();
+        let agents = cx.new(|cx| AgentPanel::new(connection.clone(), catalog.clone(), window, cx));
+        cx.subscribe_in(&agents, window, Self::on_agent_event)
+            .detach();
+
         let mut session = Self {
             connection,
             shared_pin: None,
@@ -217,6 +230,9 @@ impl Session {
             active: None,
             opened: 0,
             columns: cx.new(|_| ResizableState::default()),
+            agents_columns: cx.new(|_| ResizableState::default()),
+            agents,
+            agents_open: false,
             databases: Vec::new(),
             database_select,
             database_select_items: Vec::new(),
@@ -227,7 +243,7 @@ impl Session {
             sidebar_tab: SidebarTab::Schema,
             objects_tree: cx.new(|cx| TreeState::new(cx)),
             metadata_error: None,
-            catalog: SharedCatalog::default(),
+            catalog,
             catalog_loading: true,
             catalog_error: None,
             switching: false,
@@ -580,6 +596,71 @@ impl Session {
     }
 }
 
+impl Session {
+    /// The dock, with the Agents panel beside it while that is open.
+    fn render_workspace_area(&self) -> gpui_kit::AnyElement {
+        let dock = div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .size_full()
+            .child(self.dock.clone());
+        if !self.agents_open {
+            return dock.into_any_element();
+        }
+        h_resizable("session-agents")
+            .with_state(&self.agents_columns)
+            .child(resizable_panel().child(dock))
+            .child(
+                resizable_panel()
+                    .size(px(AGENTS_WIDTH))
+                    .size_range(px(280.)..px(720.))
+                    .child(self.agents.clone()),
+            )
+            .into_any_element()
+    }
+
+    fn toggle_agents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.agents_open = !self.agents_open;
+        if self.agents_open {
+            let handle = self.agents.read(cx).focus_handle(cx);
+            handle.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn on_agent_event(
+        &mut self,
+        _: &Entity<AgentPanel>,
+        event: &AgentEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            AgentEvent::Send(text) => {
+                let titles: Vec<String> = self
+                    .panels
+                    .iter()
+                    .map(|panel| panel.read(cx).title().to_string())
+                    .collect();
+                let buffer = self
+                    .active_panel()
+                    .and_then(|panel| panel.read(cx).editor())
+                    .map(|editor| editor.read(cx).sql(cx));
+                let text = text.clone();
+                self.agents
+                    .update(cx, |agents, cx| agents.start_turn(text, titles, buffer, cx));
+            }
+            AgentEvent::OpenTable(object) => {
+                self.open_object(object, ObjectViewMode::Data, window, cx);
+            }
+            AgentEvent::ProposeQuery(sql) => {
+                self.open_tab(Some("Agent".into()), sql.clone(), false, window, cx);
+            }
+        }
+    }
+}
+
 impl Render for Session {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_database_select(window, cx);
@@ -623,6 +704,9 @@ impl Render for Session {
             .on_action(cx.listener(|this, _: &NewTable, window, cx| {
                 this.open_new_table(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &ToggleAgents, window, cx| {
+                this.toggle_agents(window, cx);
+            }))
             .on_action(cx.listener(Self::on_save_query))
             .on_action(cx.listener(Self::on_save_query_as))
             .on_action(cx.listener(Self::on_disconnect))
@@ -636,10 +720,7 @@ impl Render for Session {
                             .size_range(px(180.)..px(560.))
                             .child(self.render_sidebar(cx)),
                     )
-                    .child(
-                        resizable_panel()
-                            .child(div().flex_1().min_w_0().min_h_0().child(self.dock.clone())),
-                    ),
+                    .child(resizable_panel().child(self.render_workspace_area())),
             )
     }
 }

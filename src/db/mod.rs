@@ -30,6 +30,7 @@
 //! * [`runtime`] — the Tokio runtime every database call is submitted to.
 //! * [`store`] — connection metadata on disk, passwords in the OS keychain.
 
+pub mod agent;
 pub mod backup;
 pub mod binary;
 pub mod catalog;
@@ -64,8 +65,8 @@ pub use backup::{BackupProgress, BackupRequest, BackupSummary, TableSelection};
 pub use catalog::{Catalog, CatalogEntry, CatalogKind, Query};
 pub(crate) use config::file_name;
 pub use config::{
-    ConnectionConfig, Engine, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode, TagColor,
-    is_risky_auto_apply,
+    AgentAccess, ConnectionConfig, Engine, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode,
+    TagColor, WriteApproval, is_risky_agent, is_risky_auto_apply,
 };
 pub(crate) use connection::pool_options;
 pub use connection::{

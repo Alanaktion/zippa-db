@@ -818,6 +818,37 @@ fn change_saved(
     (saved.list.clone(), store::ticket())
 }
 
+/// Record a connection's agent settings in the saved list and on disk.
+///
+/// The Agents panel changes them in place; this is what makes the choice
+/// survive a restart and follow the connection. A connection that was never
+/// saved (connected without saving) has no entry, and keeps the choice for the
+/// session only.
+pub(crate) fn remember_agent_settings(
+    id: Uuid,
+    access: crate::db::AgentAccess,
+    approval: crate::db::WriteApproval,
+    cx: &mut App,
+) {
+    let mut found = false;
+    let (connections, ticket) = change_saved(cx, |list| {
+        if let Some(config) = list.iter_mut().find(|config| config.id == id) {
+            config.agent_access = access;
+            config.agent_approval = approval;
+            found = true;
+        }
+    });
+    if !found {
+        return;
+    }
+    cx.background_spawn(async move {
+        if let Err(error) = store::save(&connections, ticket) {
+            eprintln!("could not save the agent settings: {error:#}");
+        }
+    })
+    .detach();
+}
+
 fn store_in_background<F>(work: F, cx: &mut Context<Welcome>)
 where
     F: FnOnce() -> anyhow::Result<()> + Send + 'static,

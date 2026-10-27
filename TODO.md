@@ -49,6 +49,7 @@ known defects and risks in the shipped code are tracked in
 * Import CSV into an existing table ([plan](.agents/plans/csv-import.md))
 * Local query history, searchable by date, database, or text ([plan](.agents/plans/query-history.md))
 * Reusable SQL snippets ([plan](.agents/plans/sql-snippets.md))
+* Agents panel: a per-connection chat with a small database-only tool API ([plan](.agents/plans/agents-panel.md))
 * Customizable keyboard shortcuts
 * "Copy diagnostics" in the Help menu: version, OS, recent errors
 
@@ -61,4 +62,4 @@ known defects and risks in the shipped code are tracked in
 ## Not planned for now
 
 * Cloud sync of connections or snippets — the config directory is plain JSON and can be synced by other means.
-* A plugin system, non-SQL databases, and AI query generation — each is a large design decision.
+* A plugin system and non-SQL databases — each is a large design decision.

@@ -21,6 +21,7 @@ use gpui_kit::base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use gpui_kit::{App, KeyBinding, Menu, MenuItem, OsAction, actions};
 
 use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
+use crate::ui::agents::ToggleAgents;
 use crate::ui::data_grid::{
     ClearRowSelection, CopyValue, CopyWithHeaders, SelectAllRows, ViewCell,
 };
@@ -182,6 +183,7 @@ fn menus() -> Vec<Menu> {
         Menu::new("View").items(vec![
             MenuItem::action("Quick Switcher…", QuickSwitcher),
             MenuItem::action("Toggle Row Panel", ToggleRowPanel),
+            MenuItem::action("Toggle Agents Panel", ToggleAgents),
             MenuItem::separator(),
             MenuItem::action("Next Tab", NextTab),
             MenuItem::action("Previous Tab", PreviousTab),
@@ -272,6 +274,7 @@ mod tests {
             ("Search Schema", TypeId::of::<SearchSchema>()),
             ("Refresh", TypeId::of::<Refresh>()),
             ("Toggle Row Panel", TypeId::of::<ToggleRowPanel>()),
+            ("Toggle Agents Panel", TypeId::of::<ToggleAgents>()),
             ("Console", TypeId::of::<OpenConsole>()),
             ("Processes", TypeId::of::<OpenProcessList>()),
             ("Server Variables", TypeId::of::<OpenServerVariables>()),

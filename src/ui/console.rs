@@ -180,6 +180,7 @@ fn source_label(source: QuerySource) -> &'static str {
     match source {
         QuerySource::User => "User",
         QuerySource::Internal => "Internal",
+        QuerySource::Agent => "Agent",
     }
 }
 

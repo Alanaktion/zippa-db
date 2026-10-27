@@ -743,6 +743,13 @@ impl Connection {
             .await
     }
 
+    /// [`Self::run_query`] for a statement the Agents panel's model asked for,
+    /// logged as such.
+    pub(crate) async fn run_query_as_agent(&self, sql: &str) -> Result<QueryResult> {
+        self.run_query_tagged(sql, Vec::new(), QuerySource::Agent)
+            .await
+    }
+
     async fn run_query_tagged(
         &self,
         sql: &str,
@@ -1096,7 +1103,8 @@ impl Connection {
         let sql = sql::create_user_sql(name, host, password, engine)
             .ok_or_else(|| anyhow::anyhow!("a valid name is required to create a user"))?;
         let shown = sql::create_user_sql(name, host, REDACTED, engine).unwrap_or_default();
-        self.execute_logged_as(&sql, Vec::new(), &shown).await?;
+        self.execute_logged_as(&sql, Vec::new(), &shown, QuerySource::Internal)
+            .await?;
         Ok(())
     }
 
@@ -1121,7 +1129,8 @@ impl Connection {
         let sql = sql::set_user_password_sql(name, host, password, engine)
             .ok_or_else(|| anyhow::anyhow!("a valid name is required to set a password"))?;
         let shown = sql::set_user_password_sql(name, host, REDACTED, engine).unwrap_or_default();
-        self.execute_logged_as(&sql, Vec::new(), &shown).await?;
+        self.execute_logged_as(&sql, Vec::new(), &shown, QuerySource::Internal)
+            .await?;
         Ok(())
     }
 
@@ -1230,13 +1239,27 @@ impl Connection {
     /// Every parameter is bound as text or `NULL`; see
     /// [`typed_placeholder`](super::typed_placeholder) for why that is enough.
     pub async fn execute(&self, sql: &str, params: Vec<Cell>) -> Result<u64> {
-        self.execute_logged_as(sql, params, sql).await
+        self.execute_logged_as(sql, params, sql, QuerySource::Internal)
+            .await
+    }
+
+    /// [`Self::execute`] for a write the Agents panel's model asked for,
+    /// logged as such.
+    pub(crate) async fn execute_as_agent(&self, sql: &str) -> Result<u64> {
+        self.execute_logged_as(sql, Vec::new(), sql, QuerySource::Agent)
+            .await
     }
 
     /// [`Self::execute`], recording `shown` in the query log in place of
     /// `sql` — for a statement that carries a secret, such as a password,
     /// which the console must not show.
-    async fn execute_logged_as(&self, sql: &str, params: Vec<Cell>, shown: &str) -> Result<u64> {
+    async fn execute_logged_as(
+        &self,
+        sql: &str,
+        params: Vec<Cell>,
+        shown: &str,
+        source: QuerySource,
+    ) -> Result<u64> {
         self.refuse_read_only("the change was not made")?;
         let started = Instant::now();
         let result = match &self.pool {
@@ -1249,7 +1272,7 @@ impl Connection {
             Ok(affected) => QueryOutcome::Affected(*affected),
             Err(error) => QueryOutcome::Error(format!("{error:#}")),
         };
-        self.log(shown, QuerySource::Internal, started.elapsed(), outcome);
+        self.log(shown, source, started.elapsed(), outcome);
         result
     }
 

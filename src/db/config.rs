@@ -100,6 +100,113 @@ impl SafetyMode {
     }
 }
 
+/// What the Agents panel may do on a connection: which tools exist for it.
+///
+/// One scale, narrowest first. This is only the ceiling the tools are offered
+/// under — [`SafetyMode`] and [`WriteApproval`] can lower what a write may do,
+/// never raise it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentAccess {
+    /// The panel is disabled for this connection.
+    None,
+    /// Catalog tools only: no row data, no query execution.
+    #[default]
+    Schema,
+    /// Schema tools, plus single-statement reads and `EXPLAIN`.
+    ReadOnlySql,
+    /// Read tools, plus single-statement `INSERT`/`UPDATE`/`DELETE`.
+    Crud,
+    /// CRUD, plus DDL, grants, and user-management SQL.
+    Full,
+}
+
+impl AgentAccess {
+    pub const ALL: [AgentAccess; 5] = [
+        AgentAccess::None,
+        AgentAccess::Schema,
+        AgentAccess::ReadOnlySql,
+        AgentAccess::Crud,
+        AgentAccess::Full,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AgentAccess::None => "None",
+            AgentAccess::Schema => "Schema",
+            AgentAccess::ReadOnlySql => "Read-only SQL",
+            AgentAccess::Crud => "CRUD",
+            AgentAccess::Full => "Full",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            AgentAccess::None => "The Agents panel is off for this connection",
+            AgentAccess::Schema => "Sees tables and columns, never rows",
+            AgentAccess::ReadOnlySql => "Also runs bounded SELECT and EXPLAIN",
+            AgentAccess::Crud => "Also inserts, updates, and deletes",
+            AgentAccess::Full => "Also changes schema, grants, and users",
+        }
+    }
+
+    pub fn enabled(self) -> bool {
+        self > AgentAccess::None
+    }
+
+    pub fn reads_rows(self) -> bool {
+        self >= AgentAccess::ReadOnlySql
+    }
+
+    pub fn writes_rows(self) -> bool {
+        self >= AgentAccess::Crud
+    }
+
+    pub fn changes_schema(self) -> bool {
+        self >= AgentAccess::Full
+    }
+}
+
+/// When a write the agent is allowed to make needs a person's yes.
+///
+/// Separate from [`AgentAccess`] (does the tool exist) and [`SafetyMode`] (does
+/// the connection allow writes at all).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WriteApproval {
+    /// Every write shows its SQL and waits for Approve or Reject.
+    #[default]
+    Ask,
+    /// Allowed writes run without a prompt.
+    Auto,
+    /// Writes are refused whatever the access level says.
+    Never,
+}
+
+impl WriteApproval {
+    pub const ALL: [WriteApproval; 3] = [
+        WriteApproval::Ask,
+        WriteApproval::Auto,
+        WriteApproval::Never,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            WriteApproval::Ask => "Ask for writes",
+            WriteApproval::Auto => "Auto-approve writes",
+            WriteApproval::Never => "Never allow writes",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            WriteApproval::Ask => "Shows each statement and waits for approval",
+            WriteApproval::Auto => "Runs allowed writes without asking",
+            WriteApproval::Never => "Refuses writes even if access allows them",
+        }
+    }
+}
+
 /// Whether, and how strictly, a server connection is encrypted.
 ///
 /// One scale for both servers, named the way libpq names it; each engine maps
@@ -404,6 +511,14 @@ pub struct ConnectionConfig {
     /// enforce it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statement_timeout: Option<u32>,
+    /// Which tools the Agents panel gets here. Absent in files written before
+    /// the panel existed, which read back as schema-only.
+    #[serde(default)]
+    pub agent_access: AgentAccess,
+    /// When an agent write needs a person's yes. Absent in older files, which
+    /// read back as asking.
+    #[serde(default)]
+    pub agent_approval: WriteApproval,
 }
 
 impl ConnectionConfig {
@@ -422,6 +537,8 @@ impl ConnectionConfig {
             ssl: SslConfig::default(),
             ssh: SshConfig::default(),
             statement_timeout: None,
+            agent_access: AgentAccess::default(),
+            agent_approval: WriteApproval::default(),
         }
     }
 
@@ -464,6 +581,20 @@ impl ConnectionConfig {
 /// mentions "prod" (case-insensitively).
 pub fn is_risky_auto_apply(name: &str, color: Option<TagColor>, safety: SafetyMode) -> bool {
     safety.auto_applies() && (color == Some(TagColor::Red) || name.to_lowercase().contains("prod"))
+}
+
+/// Whether a connection that reads as production (see
+/// [`is_risky_auto_apply`]) hands the agent full SQL access or lets its writes
+/// run unasked.
+pub fn is_risky_agent(
+    name: &str,
+    color: Option<TagColor>,
+    access: AgentAccess,
+    approval: WriteApproval,
+) -> bool {
+    let production = color == Some(TagColor::Red) || name.to_lowercase().contains("prod");
+    production
+        && (access.changes_schema() || (access.writes_rows() && approval == WriteApproval::Auto))
 }
 
 impl Default for ConnectionConfig {
@@ -623,5 +754,27 @@ mod tests {
             Some(TagColor::Orange),
             SafetyMode::AutoApply
         ));
+    }
+
+    #[test]
+    fn a_file_from_before_the_agents_panel_reads_back_cautious() {
+        let old = serde_json::to_value(ConnectionConfig::default()).unwrap();
+        let mut old = old.as_object().unwrap().clone();
+        old.remove("agent_access");
+        old.remove("agent_approval");
+        let config: ConnectionConfig = serde_json::from_value(old.into()).unwrap();
+        assert_eq!(config.agent_access, AgentAccess::Schema);
+        assert_eq!(config.agent_approval, WriteApproval::Ask);
+    }
+
+    #[test]
+    fn full_access_or_auto_writes_on_production_are_risky() {
+        use AgentAccess::{Crud, Full, Schema};
+        let risky = is_risky_agent;
+        assert!(risky("prod-db", None, Full, WriteApproval::Ask));
+        assert!(risky("x", Some(TagColor::Red), Crud, WriteApproval::Auto));
+        assert!(!risky("prod-db", None, Crud, WriteApproval::Ask));
+        assert!(!risky("prod-db", None, Schema, WriteApproval::Auto));
+        assert!(!risky("dev", None, Full, WriteApproval::Auto));
     }
 }

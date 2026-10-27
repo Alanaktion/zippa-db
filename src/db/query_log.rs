@@ -26,6 +26,9 @@ pub enum QuerySource {
     /// paging/sort/filter reads, a staged edit going out as a write, DDL from
     /// the structure tab.
     Internal,
+    /// A statement the Agents panel's model asked for, whether it read or
+    /// wrote, so it can be told apart from what the user typed.
+    Agent,
 }
 
 /// How a logged statement ended.

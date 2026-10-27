@@ -6,6 +6,7 @@
 use gpui_kit::{App, KeyBinding, NoAction};
 
 use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
+use crate::ui::agents::{ApproveWrite, RejectWrite, ToggleAgents};
 use crate::ui::create_database_dialog::CloseCreateDatabase;
 use crate::ui::data_grid::{
     ClearRowSelection, CopyValue, CopyWithHeaders, ExtendSelectionDown, ExtendSelectionUp,
@@ -205,6 +206,13 @@ pub fn bind(cx: &mut App) {
         // The backtick is the terminal/console toggle in several other
         // editors, which is the habit this borrows.
         KeyBinding::new("secondary-`", OpenConsole, Some("Session")),
+        // The Agents panel beside the session: shown or hidden, with the
+        // thread kept either way.
+        KeyBinding::new("secondary-alt-a", ToggleAgents, Some("Session")),
+        // A write the assistant asked for waits on these. Approving takes the
+        // modifier so a stray Enter cannot run a statement.
+        KeyBinding::new("secondary-enter", ApproveWrite, Some("AgentApproval")),
+        KeyBinding::new("escape", RejectWrite, Some("AgentApproval")),
         // The process list: who is connected to the server and what they're
         // running, with a way to end one.
         KeyBinding::new("secondary-shift-p", OpenProcessList, Some("Session")),

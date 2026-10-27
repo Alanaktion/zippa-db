@@ -31,6 +31,18 @@ use super::tab::Status;
 use super::tool::ToolView;
 
 impl Session {
+    pub(crate) fn toggle_agents_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_agents(window, cx);
+    }
+
+    pub(crate) fn agents_open_for_test(&self) -> bool {
+        self.agents_open
+    }
+
+    pub(crate) fn agents_for_test(&self) -> Entity<crate::ui::agents::AgentPanel> {
+        self.agents.clone()
+    }
+
     /// Feed the grid a result without going through a live query.
     #[cfg(test)]
     pub(crate) fn show_result_for_test(
