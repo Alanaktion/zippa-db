@@ -43,7 +43,7 @@ libsqlite3-sys = "0.37"
 # version gpui-kit's editor is built against.
 lsp-types = { version = "0.97", features = ["proposed"] }
 regex = "1"
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls", "stream"] }
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

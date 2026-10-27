@@ -3,10 +3,22 @@
 //! One code path covers OpenAI, Ollama, LM Studio, OpenRouter and the gateways
 //! that copy the shape. [`ChatProvider`] is the seam tests replace with a
 //! script, so nothing above this file needs a network.
+//!
+//! A provider answers in two shapes. [`ChatProvider::complete`] is one whole
+//! reply, the shape v1 used. [`ChatProvider::stream`] is the first-class
+//! shape: a stream of [`StreamEvent`]s — text as it arrives, tool calls as
+//! their arguments arrive — so the panel can show a tool call the moment the
+//! model triggers it, long before the turn finishes. A provider that cannot
+//! stream (or a test script) gets the streaming shape for free: the default
+//! `stream` calls `complete` once and yields its reply as one
+//! [`StreamEvent::Complete`]. The turn loop, not the panel, is what turns
+//! those events into a reply, so every provider speaks the same language
+//! above this file.
 
 use std::time::Duration;
 
 use futures::future::BoxFuture;
+use futures::stream::{self, BoxStream};
 use serde_json::{Value, json};
 
 /// A tool call the model made.
@@ -72,11 +84,40 @@ pub struct Reply {
     pub tool_calls: Vec<ToolCall>,
 }
 
+/// One piece of a streaming answer, in the order the model produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamEvent {
+    /// A fragment of the assistant's text. Fragments concatenate, in order,
+    /// to the reply's content.
+    ContentDelta(String),
+    /// A fragment of one tool call. `index` is the call's position in the
+    /// reply's tool-call list; `id` and `name` usually arrive with the first
+    /// fragment and are `None` after that, while `arguments` is a fragment
+    /// of the JSON arguments and concatenates, in order, to the whole.
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments: String,
+    },
+    /// A whole reply, from a provider that does not stream. The turn treats
+    /// this exactly like the deltas that would have built the same reply.
+    Complete(Reply),
+    /// The stream ended. `finish_reason` is the server's, if it sent one
+    /// (`stop`, `tool_calls`, `length`, …); a stream that simply closes has
+    /// none, and that is not an error.
+    Finished { finish_reason: Option<String> },
+}
+
 /// Why a request failed, in terms the panel can say in words.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderError {
     /// The endpoint refused the `tools` array.
     ToolsUnsupported,
+    /// The endpoint refused a streaming request. The turn falls back to
+    /// [`ChatProvider::complete`] for that round, so this is a signal to the
+    /// turn, not usually a message for the user.
+    StreamUnsupported,
     /// The key was missing or refused.
     Auth,
     Unreachable(String),
@@ -89,6 +130,9 @@ impl std::fmt::Display for ProviderError {
         match self {
             ProviderError::ToolsUnsupported => {
                 write!(f, "the model endpoint does not support tool calls")
+            }
+            ProviderError::StreamUnsupported => {
+                write!(f, "the model endpoint does not support streaming")
             }
             ProviderError::Auth => {
                 write!(
@@ -115,6 +159,21 @@ pub trait ChatProvider: Send + Sync {
         messages: &'a [Message],
         tools: &'a [Value],
     ) -> BoxFuture<'a, Result<Reply, ProviderError>>;
+
+    /// The same answer as a stream of [`StreamEvent`]s. The default calls
+    /// [`ChatProvider::complete`] once and yields its reply as one
+    /// [`StreamEvent::Complete`], so a provider only overrides this when it
+    /// can genuinely stream — today, that is [`HttpProvider`] over SSE.
+    fn stream<'a>(
+        &'a self,
+        messages: &'a [Message],
+        tools: &'a [Value],
+    ) -> BoxStream<'a, Result<StreamEvent, ProviderError>> {
+        let future = self.complete(messages, tools);
+        Box::pin(stream::once(async move {
+            future.await.map(StreamEvent::Complete)
+        }))
+    }
 }
 
 /// Where to send requests: the global settings plus the keychain's key.
@@ -160,6 +219,34 @@ impl HttpProvider {
         )
     }
 
+    /// The request body both shapes send, with `stream` added by the
+    /// streaming shape only.
+    fn body(&self, messages: &[Message], tools: &[Value], stream: bool) -> Value {
+        let mut body = json!({
+            "model": self.endpoint.model,
+            "messages": messages.iter().map(Message::to_json).collect::<Vec<_>>(),
+        });
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(tools.to_vec());
+        }
+        if stream {
+            body["stream"] = Value::Bool(true);
+        }
+        body
+    }
+
+    fn authed(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self
+            .endpoint
+            .api_key
+            .as_deref()
+            .filter(|key| !key.is_empty())
+        {
+            Some(key) => request.bearer_auth(key),
+            None => request,
+        }
+    }
+
     /// Keep the key out of anything shown, whatever the server echoed.
     fn scrub(&self, text: &str) -> String {
         let mut text = text.to_string();
@@ -182,22 +269,8 @@ impl ChatProvider for HttpProvider {
         tools: &'a [Value],
     ) -> BoxFuture<'a, Result<Reply, ProviderError>> {
         Box::pin(async move {
-            let mut body = json!({
-                "model": self.endpoint.model,
-                "messages": messages.iter().map(Message::to_json).collect::<Vec<_>>(),
-            });
-            if !tools.is_empty() {
-                body["tools"] = Value::Array(tools.to_vec());
-            }
-            let mut request = self.client.post(self.url()).json(&body);
-            if let Some(key) = self
-                .endpoint
-                .api_key
-                .as_deref()
-                .filter(|key| !key.is_empty())
-            {
-                request = request.bearer_auth(key);
-            }
+            let body = self.body(messages, tools, false);
+            let request = self.authed(self.client.post(self.url()).json(&body));
             let response = request.send().await.map_err(|error| {
                 if error.is_timeout() {
                     ProviderError::Timeout
@@ -219,6 +292,215 @@ impl ChatProvider for HttpProvider {
             parse_reply(&text)
         })
     }
+
+    fn stream<'a>(
+        &'a self,
+        messages: &'a [Message],
+        tools: &'a [Value],
+    ) -> BoxStream<'a, Result<StreamEvent, ProviderError>> {
+        let body = self.body(messages, tools, true);
+        let sent_tools = !tools.is_empty();
+        let client = self.client.clone();
+        let url = self.url();
+        let request = self.authed(client.post(url).json(&body));
+        // The SSE reader runs on its own task and feeds events down a
+        // channel; dropping the stream drops the receiver, which ends the
+        // reader on its next send, so a stopped turn does not leave a
+        // request running. The task itself is not aborted — it exits as
+        // soon as its next send fails — which is why every send is checked.
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        let scrub = {
+            let endpoint = self.endpoint.clone();
+            move |text: &str| {
+                let mut text = text.to_string();
+                if let Some(key) = endpoint.api_key.as_deref().filter(|key| !key.is_empty()) {
+                    text = text.replace(key, "<key>");
+                }
+                text.chars().take(300).collect()
+            }
+        };
+        tokio::spawn(async move {
+            let send = |event: Result<StreamEvent, ProviderError>| tx.unbounded_send(event).is_ok();
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(error) => {
+                    let error = if error.is_timeout() {
+                        ProviderError::Timeout
+                    } else {
+                        ProviderError::Unreachable(scrub(&error.without_url().to_string()))
+                    };
+                    send(Err(error));
+                    return;
+                }
+            };
+            let status = response.status();
+            if !status.is_success() {
+                let text = response.text().await.unwrap_or_default();
+                let error = classify_failure(status.as_u16(), &text, sent_tools)
+                    .or_else(|| classify_stream_failure(status.as_u16(), &text))
+                    .unwrap_or_else(|| ProviderError::Other(format!("{status}: {}", scrub(&text))));
+                send(Err(error));
+                return;
+            }
+            let mut bytes = response.bytes_stream();
+            let mut parser = SseParser::new();
+            use futures::StreamExt as _;
+            while let Some(chunk) = bytes.next().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        send(Err(ProviderError::Other(scrub(&error.to_string()))));
+                        return;
+                    }
+                };
+                let text = String::from_utf8_lossy(&chunk);
+                for event in parser.feed(&text) {
+                    if !send(Ok(event)) {
+                        return;
+                    }
+                }
+            }
+            for event in parser.finish() {
+                if !send(Ok(event)) {
+                    return;
+                }
+            }
+        });
+        Box::pin(rx)
+    }
+}
+
+/// A streaming refusal that is not a tools refusal: the endpoint took the
+/// request but will not stream it. The turn falls back to `complete` for
+/// that round rather than failing the turn.
+fn classify_stream_failure(status: u16, body: &str) -> Option<ProviderError> {
+    if matches!(status, 400 | 404 | 422 | 501) && body.to_lowercase().contains("stream") {
+        Some(ProviderError::StreamUnsupported)
+    } else {
+        None
+    }
+}
+
+/// One SSE event's worth of a chat-completions stream, as the server sends
+/// it: `data: {...}` lines separated by a blank line, with `[DONE]` at the
+/// end. Kept separate from the HTTP code so the parsing is unit-tested
+/// without a network.
+///
+/// An event may be split across chunks — a chunk can end mid-line or
+/// mid-event — so `feed` keeps the incomplete tail in `buffer` until the
+/// next chunk completes it. A server that ignores `stream: true` and answers
+/// with one whole JSON reply instead is handled by `finish`, which reads a
+/// buffered complete reply as [`StreamEvent::Complete`].
+pub struct SseParser {
+    buffer: String,
+}
+
+impl SseParser {
+    pub fn new() -> Self {
+        Self {
+            buffer: String::new(),
+        }
+    }
+
+    /// Events completed by `text`. Incomplete tails stay buffered.
+    pub fn feed(&mut self, text: &str) -> Vec<StreamEvent> {
+        self.buffer.push_str(text);
+        self.buffer = self.buffer.replace("\r\n", "\n");
+        let mut events = Vec::new();
+        while let Some(end) = self.buffer.find("\n\n") {
+            let raw: String = self.buffer.drain(..end + 2).collect();
+            events.extend(parse_sse_event(&raw));
+        }
+        events
+    }
+
+    /// Events in whatever is left when the stream closes: a final event
+    /// without its trailing blank line, or a whole JSON reply from a server
+    /// that ignored `stream: true`.
+    pub fn finish(mut self) -> Vec<StreamEvent> {
+        let raw = std::mem::take(&mut self.buffer);
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+        let events = parse_sse_event(&raw);
+        if !events.is_empty() {
+            return events;
+        }
+        match parse_reply(trimmed) {
+            Ok(reply) => vec![StreamEvent::Complete(reply)],
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+impl Default for SseParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The events one raw SSE event (data lines, blank line already consumed by
+/// the caller) carries, in order: its deltas first, then `Finished` if it
+/// carried a finish reason.
+fn parse_sse_event(raw: &str) -> Vec<StreamEvent> {
+    let mut events = Vec::new();
+    let mut finish_reason = None;
+    for line in raw.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.strip_prefix(' ').unwrap_or(data);
+        if data == "[DONE]" {
+            events.push(StreamEvent::Finished {
+                finish_reason: None,
+            });
+            return events;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        let delta = match value.pointer("/choices/0/delta") {
+            Some(delta) => delta,
+            None => continue,
+        };
+        if let Some(text) = delta.get("content").and_then(Value::as_str)
+            && !text.is_empty()
+        {
+            events.push(StreamEvent::ContentDelta(text.to_string()));
+        }
+        if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                events.push(StreamEvent::ToolCallDelta {
+                    index: call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
+                    id: call.get("id").and_then(Value::as_str).map(String::from),
+                    name: call
+                        .get("function")
+                        .and_then(|function| function.get("name"))
+                        .and_then(Value::as_str)
+                        .map(String::from),
+                    arguments: call
+                        .get("function")
+                        .and_then(|function| function.get("arguments"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                });
+            }
+        }
+        if let Some(reason) = value
+            .pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str)
+        {
+            finish_reason = Some(reason.to_string());
+        }
+    }
+    if let Some(finish_reason) = finish_reason {
+        events.push(StreamEvent::Finished {
+            finish_reason: Some(finish_reason),
+        });
+    }
+    events
 }
 
 /// Read an error response as one of the cases the panel handles specially.
@@ -319,6 +601,74 @@ mod tests {
         assert!(!provider.scrub("bad key sk-secret").contains("sk-secret"));
         let debug = format!("{:?}", provider.endpoint);
         assert!(!debug.contains("sk-secret"));
+    }
+
+    #[test]
+    fn sse_events_are_parsed_in_order() {
+        let mut parser = SseParser::new();
+        let events = parser.feed(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"list_tables\",\"arguments\":\"{\\\"\"}}]}}]}\n\n",
+        );
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], StreamEvent::ContentDelta(text) if text == "Hel"));
+        match &events[1] {
+            StreamEvent::ToolCallDelta {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(*index, 0);
+                assert_eq!(id.as_deref(), Some("a"));
+                assert_eq!(name.as_deref(), Some("list_tables"));
+                assert_eq!(arguments, "{\"");
+            }
+            event => panic!("unexpected event {event:?}"),
+        }
+    }
+
+    #[test]
+    fn sse_events_split_across_chunks_are_held_until_complete() {
+        let mut parser = SseParser::new();
+        assert!(
+            parser
+                .feed("data: {\"choices\":[{\"delta\":{\"content\":\"Hel")
+                .is_empty()
+        );
+        let events = parser.feed("lo\"}}]}\n\n");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], StreamEvent::ContentDelta(text) if text == "Hello"));
+    }
+
+    #[test]
+    fn sse_done_and_a_whole_reply_without_streaming_are_both_read() {
+        let mut parser = SseParser::new();
+        let events = parser.feed("data: [DONE]\n\n");
+        assert_eq!(
+            events,
+            vec![StreamEvent::Finished {
+                finish_reason: None
+            }]
+        );
+
+        let mut parser = SseParser::new();
+        parser.feed("{\"choices\":[{\"message\":{\"content\":\"hi\",\"tool_calls\":[]}}]}");
+        let events = parser.finish();
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], StreamEvent::Complete(reply) if reply.content.as_deref() == Some("hi"))
+        );
+    }
+
+    #[test]
+    fn stream_refusals_are_told_apart_from_tool_refusals() {
+        assert_eq!(
+            classify_stream_failure(400, "streaming is not supported"),
+            Some(ProviderError::StreamUnsupported)
+        );
+        assert_eq!(classify_stream_failure(400, "bad model"), None);
+        assert_eq!(classify_stream_failure(500, "streaming broke"), None);
     }
 
     #[test]

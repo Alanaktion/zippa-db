@@ -14,10 +14,43 @@ impl AgentPanel {
             .iter()
             .map(|item| match item {
                 Item::User(text) | Item::Assistant(text) => text.clone(),
-                Item::Tool { event, .. } => format!("tool {}", event.name),
+                Item::Tool { name, .. } => format!("tool {name}"),
                 Item::Notice { text, .. } => text.clone(),
             })
             .collect()
+    }
+
+    /// Tool items as (name, arguments, result, running, failed), in order.
+    pub(crate) fn tools_for_test(&self) -> Vec<(String, String, Option<String>, bool, bool)> {
+        self.items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Tool {
+                    name,
+                    arguments,
+                    result,
+                    is_error,
+                    running,
+                    ..
+                } => Some((
+                    name.clone(),
+                    arguments.clone(),
+                    result.clone(),
+                    *running,
+                    *is_error,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Apply one turn event, as the event listener would.
+    pub(crate) fn apply_turn_event_for_test(
+        &mut self,
+        event: crate::db::agent::turn::TurnEvent,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_turn_event(event, cx);
     }
 
     pub(crate) fn set_access_for_test(&mut self, access: AgentAccess, cx: &mut Context<Self>) {

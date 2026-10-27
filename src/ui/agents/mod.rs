@@ -33,7 +33,7 @@ use gpui_kit::{
 use crate::db::agent::context::{self, ContextInfo};
 use crate::db::agent::provider::{Endpoint, HttpProvider, Message, ProviderError};
 use crate::db::agent::tools::{Approver, ToolContext, UiAction, WriteRequest};
-use crate::db::agent::turn::{self, ToolEvent, TurnOutcome};
+use crate::db::agent::turn::{self, TurnEvent, TurnOutcome};
 use crate::db::{
     AgentAccess, Connection, DatabaseObject, WriteApproval, is_risky_agent, runtime, store,
 };
@@ -59,8 +59,20 @@ pub enum AgentEvent {
 enum Item {
     User(String),
     Assistant(String),
+    /// A tool call, drawn as soon as the model triggers it and filled in
+    /// as it runs: `result` is `None` until it finishes, and `running`
+    /// says whether it is running now (as opposed to merely triggered and
+    /// waiting its turn). `index` is the call's position in the turn as a
+    /// whole, counting across replies, so a placeholder, its running
+    /// state, and its result address the same item. The status is in words
+    /// in the summary, never colour alone.
     Tool {
-        event: ToolEvent,
+        index: usize,
+        name: String,
+        arguments: String,
+        result: Option<String>,
+        is_error: bool,
+        running: bool,
         open: bool,
     },
     /// Something the panel itself says; `error` ones are prefixed in words.
@@ -109,6 +121,10 @@ pub struct AgentPanel {
     generation: u64,
     abort: Option<tokio::task::AbortHandle>,
     tools_supported: bool,
+    /// Whether the endpoint streams, as the panel last learned it. A turn
+    /// that falls back to whole replies sets this false, so later turns do
+    /// not waste a request asking for a stream that will be refused.
+    stream_supported: bool,
     pending: Option<Pending>,
     focus: FocusHandle,
 }
@@ -152,6 +168,7 @@ impl AgentPanel {
             generation: 0,
             abort: None,
             tools_supported: true,
+            stream_supported: true,
             pending: None,
             focus: cx.focus_handle(),
         }
@@ -237,7 +254,12 @@ impl AgentPanel {
             approval: self.approval,
         };
         let tools_supported = self.tools_supported;
+        let stream_supported = self.stream_supported;
         let (asks, mut requests) = mpsc::unbounded();
+        // Turn events arrive here as they happen — text fragments, tool
+        // placeholders, running states, results — and the listener below
+        // draws them at once, rather than waiting for the turn to finish.
+        let (events_tx, mut events) = mpsc::unbounded();
 
         self.generation += 1;
         let generation = self.generation;
@@ -258,17 +280,38 @@ impl AgentPanel {
                     };
                 }
             };
-            turn::run(
+            turn::run_with_events(
                 &provider,
                 &tool_context,
                 &Bridge(asks),
                 &history,
                 &text,
                 tools_supported,
+                stream_supported,
+                Some(events_tx),
             )
             .await
         });
         self.abort = task.abort_handle();
+
+        // Turn events arrive here until the turn ends and its sender is
+        // dropped. A stopped turn's events are guarded by generation, like
+        // the approval requests below.
+        cx.spawn(async move |this, cx| {
+            while let Some(event) = events.next().await {
+                let shown = this.update(cx, |this, cx| {
+                    if this.generation != generation {
+                        return false;
+                    }
+                    this.apply_turn_event(event, cx);
+                    true
+                });
+                if !matches!(shown, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
 
         // Requests the turn makes for approval arrive here until it ends and
         // its sender is dropped.
@@ -325,12 +368,14 @@ impl AgentPanel {
                 false,
             );
         }
-        for event in outcome.events {
-            self.items.push(Item::Tool { event, open: false });
+        if outcome.stream_unsupported {
+            // Silent: the next turn simply uses whole replies, and its
+            // tool placeholders still arrive as the tools run.
+            self.stream_supported = false;
         }
-        if let Some(answer) = outcome.answer {
-            self.items.push(Item::Assistant(answer));
-        }
+        // No items are pushed here: assistant text and tool calls already
+        // arrived item by item through the turn-events listener above, and
+        // pushing the outcome's copy again would duplicate them.
         if outcome.hit_limit {
             self.notice(
                 "Stopped calling tools: the limit for one message was reached.",
@@ -347,6 +392,89 @@ impl AgentPanel {
             }
         }
         cx.notify();
+    }
+
+    /// Draw one turn event at once. Text appends to the current assistant
+    /// item (a new round starts a new one, because a tool item sits between
+    /// rounds); a tool event finds its item by index, creating it if an
+    /// event arrived out of order, so a placeholder, its running state, and
+    /// its result never become three separate items.
+    fn apply_turn_event(&mut self, event: TurnEvent, cx: &mut Context<Self>) {
+        match event {
+            TurnEvent::AssistantDelta(text) => {
+                if text.is_empty() {
+                    return;
+                }
+                match self.items.last_mut() {
+                    Some(Item::Assistant(existing)) => existing.push_str(&text),
+                    _ => self.items.push(Item::Assistant(text)),
+                }
+            }
+            TurnEvent::ToolPending {
+                index,
+                name,
+                arguments,
+            } => {
+                if !self.tool_item_mut(index).is_some() {
+                    self.items.push(Item::Tool {
+                        index,
+                        name,
+                        arguments,
+                        result: None,
+                        is_error: false,
+                        running: false,
+                        open: false,
+                    });
+                }
+            }
+            TurnEvent::ToolArguments { index, arguments } => {
+                if let Some(Item::Tool {
+                    arguments: existing,
+                    ..
+                }) = self.tool_item_mut(index)
+                {
+                    *existing = arguments;
+                }
+            }
+            TurnEvent::ToolRunning { index } => {
+                if let Some(Item::Tool { running, .. }) = self.tool_item_mut(index) {
+                    *running = true;
+                }
+            }
+            TurnEvent::ToolFinished {
+                index,
+                result,
+                is_error,
+            } => match self.tool_item_mut(index) {
+                Some(Item::Tool {
+                    result: existing,
+                    is_error: error,
+                    running,
+                    ..
+                }) => {
+                    *existing = Some(result);
+                    *error = is_error;
+                    *running = false;
+                }
+                _ => self.items.push(Item::Tool {
+                    index,
+                    name: String::new(),
+                    arguments: String::new(),
+                    result: Some(result),
+                    is_error,
+                    running: false,
+                    open: false,
+                }),
+            },
+        }
+        cx.notify();
+    }
+
+    /// The tool item for `index`, if one is already drawn.
+    fn tool_item_mut(&mut self, index: usize) -> Option<&mut Item> {
+        self.items.iter_mut().find(
+            |item| matches!(item, Item::Tool { index: item_index, .. } if *item_index == index),
+        )
     }
 
     fn notice(&mut self, text: &str, error: bool) {
@@ -378,6 +506,7 @@ impl AgentPanel {
         self.thread.clear();
         self.items.clear();
         self.tools_supported = true;
+        self.stream_supported = true;
         cx.notify();
     }
 
@@ -599,20 +728,44 @@ impl AgentPanel {
                     text.clone()
                 })
                 .into_any_element(),
-            Item::Tool { event, open } => {
+            Item::Tool {
+                name,
+                arguments,
+                result,
+                is_error,
+                running,
+                open,
+                ..
+            } => {
                 let open = *open;
-                let preview: String = event.arguments.chars().take(40).collect();
+                let running = *running;
+                let is_error = *is_error;
+                let preview: String = arguments.chars().take(40).collect();
+                let status = if is_error {
+                    " — failed"
+                } else if running {
+                    " — running"
+                } else if result.is_none() {
+                    " — waiting"
+                } else {
+                    ""
+                };
                 let summary = format!(
                     "{} {}{}{}",
                     if open { "▾" } else { "▸" },
-                    event.name,
+                    name,
                     if preview.trim() == "{}" || preview.is_empty() {
                         String::new()
                     } else {
                         format!(" {preview}")
                     },
-                    if event.is_error { " — failed" } else { "" },
+                    status,
                 );
+                let expanded = match result {
+                    Some(result) => format!("{arguments}\n→ {result}"),
+                    None if running => format!("{arguments}\n→ running…"),
+                    None => format!("{arguments}\n→ waiting…"),
+                };
                 v_flex()
                     .items_start()
                     .child(
@@ -621,9 +774,16 @@ impl AgentPanel {
                             .xsmall()
                             .label(summary)
                             .accessibility_label(format!(
-                                "Tool call {}{}",
-                                event.name,
-                                if event.is_error { ", failed" } else { "" }
+                                "Tool call {name}{}",
+                                if is_error {
+                                    ", failed"
+                                } else if running {
+                                    ", running"
+                                } else if result.is_none() {
+                                    ", waiting"
+                                } else {
+                                    ""
+                                }
                             ))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(Item::Tool { open, .. }) = this.items.get_mut(ix) {
@@ -639,7 +799,7 @@ impl AgentPanel {
                                 .text_size(gpui_kit::px(11.))
                                 .text_color(theme.muted_foreground)
                                 .font_family("monospace")
-                                .child(format!("{}\n→ {}", event.arguments, event.result)),
+                                .child(expanded),
                         )
                     })
                     .into_any_element()
