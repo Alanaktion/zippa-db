@@ -8,7 +8,7 @@ use super::tools::{self, Approver, ToolContext, UiAction};
 
 /// Tool calls one turn may make before the model is told to answer with what
 /// it has.
-pub const MAX_TOOL_CALLS: usize = 12;
+pub const MAX_TOOL_CALLS: usize = 50;
 
 /// One tool call as the panel lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -22,6 +22,7 @@ use gpui_kit::base::TextView;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Sizable, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -465,15 +466,11 @@ impl AgentPanel {
                 AgentAccess::ALL.into_iter().fold(menu, |menu, access| {
                     let panel = access_panel.clone();
                     menu.item(
-                        PopupMenuItem::new(format!(
-                            "{} — {}",
-                            access.label(),
-                            access.description()
-                        ))
-                        .checked(current_access == access)
-                        .on_click(move |_, _, cx| {
-                            panel.update(cx, |panel, cx| panel.set_access(access, cx));
-                        }),
+                        option_item(access.label(), access.description())
+                            .checked(current_access == access)
+                            .on_click(move |_, _, cx| {
+                                panel.update(cx, |panel, cx| panel.set_access(access, cx));
+                            }),
                     )
                 })
             });
@@ -489,17 +486,13 @@ impl AgentPanel {
                 WriteApproval::ALL.into_iter().fold(menu, |menu, approval| {
                     let panel = approval_panel.clone();
                     menu.item(
-                        PopupMenuItem::new(format!(
-                            "{} — {}",
-                            approval.label(),
-                            approval.description()
-                        ))
-                        .checked(current_approval == approval)
-                        .on_click(move |_, window, cx| {
-                            panel.update(cx, |panel, cx| {
-                                panel.choose_approval(approval, window, cx)
-                            });
-                        }),
+                        option_item(approval.label(), approval.description())
+                            .checked(current_approval == approval)
+                            .on_click(move |_, window, cx| {
+                                panel.update(cx, |panel, cx| {
+                                    panel.choose_approval(approval, window, cx)
+                                });
+                            }),
                     )
                 })
             });
@@ -621,6 +614,7 @@ impl AgentPanel {
                     if event.is_error { " — failed" } else { "" },
                 );
                 v_flex()
+                    .items_start()
                     .child(
                         Button::new(SharedString::from(format!("agent-tool-{ix}")))
                             .custom(crate::ui::subtle_button(cx))
@@ -728,6 +722,24 @@ impl AgentPanel {
     }
 }
 
+/// A dropdown choice: its name, then what it means in small muted text,
+/// pushed to the right edge.
+fn option_item(label: &'static str, description: &'static str) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, cx| {
+        h_flex()
+            .w_full()
+            .gap_4()
+            .justify_between()
+            .child(div().child(label))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(description),
+            )
+    })
+}
+
 fn error_text(error: &ProviderError) -> String {
     format!("Error: {error}")
 }
@@ -771,24 +783,27 @@ impl Render for AgentPanel {
             .size_full()
             .child(self.render_header(cx))
             .child(
-                v_flex()
+                div()
                     .id("agents-messages")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .p_2()
-                    .gap_2()
-                    .when(empty, |this| {
-                        this.child(div().text_sm().text_color(muted).child(
-                            "Ask about this database. Nothing is sent to the model until you \
-                             send a message.",
-                        ))
-                    })
-                    .children(items)
-                    .children(self.render_pending(cx))
-                    .when(running && self.pending.is_none(), |this| {
-                        this.child(div().text_xs().text_color(muted).child("Working…"))
-                    }),
+                    .overflow_y_scrollbar()
+                    .child(
+                        v_flex()
+                            .p_2()
+                            .gap_2()
+                            .when(empty, |this| {
+                                this.child(div().text_sm().text_color(muted).child(
+                                    "Ask about this database. Nothing is sent to the model \
+                                     until you send a message.",
+                                ))
+                            })
+                            .children(items)
+                            .children(self.render_pending(cx))
+                            .when(running && self.pending.is_none(), |this| {
+                                this.child(div().text_xs().text_color(muted).child("Working…"))
+                            }),
+                    ),
             )
             .child(
                 h_flex()
