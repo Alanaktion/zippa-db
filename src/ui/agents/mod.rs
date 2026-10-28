@@ -282,7 +282,7 @@ impl AgentPanel {
         // thread that cannot shrink far enough is refused here, in words,
         // rather than failing at the endpoint. The panel's own thread
         // stays whole.
-        let compacted = match compaction::compact(&prompt, &self.thread) {
+        let compacted = match compaction::compact(&prompt, &self.thread, &text) {
             compaction::Fit::Fits(compacted) => {
                 if compacted.compacted > 0 {
                     self.notice(

@@ -58,12 +58,16 @@ pub enum Fit {
     TooBig,
 }
 
-/// The thread as it should be sent, given the system prompt it goes with.
-/// The system prompt itself counts against the budget; the thread returned
-/// never includes it.
-pub fn compact(system_prompt: &str, thread: &[Message]) -> Fit {
+/// The thread as it should be sent, given the system prompt it goes with
+/// and the user message about to be appended. The system prompt itself
+/// counts against the budget, as does the pending message, which is never
+/// compacted — it is appended intact after — and the thread returned
+/// never includes either.
+pub fn compact(system_prompt: &str, thread: &[Message], pending: &str) -> Fit {
     let mut messages = thread.to_vec();
-    let mut total = system_prompt.chars().count() + messages.iter().map(message_len).sum::<usize>();
+    let mut total = system_prompt.chars().count()
+        + pending.chars().count()
+        + messages.iter().map(message_len).sum::<usize>();
     if total <= MAX_PROMPT_CHARS {
         return Fit::Fits(Compacted {
             messages,
@@ -145,6 +149,13 @@ fn summarize(content: &str) -> Option<String> {
         if names.len() > shown.len() {
             summary.push_str(&format!(", and {} more", names.len() - shown.len()));
         }
+    }
+    // The rows above are the sample format_result kept, not the whole
+    // result: when it cut rows, it said so in a note, and the summary
+    // must keep that note or a later answer reads the sample as the
+    // complete result.
+    if let Some(note) = value.get("note").and_then(Value::as_str) {
+        summary.push_str(&format!(", {note}"));
     }
     summary.push(']');
     Some(summary)
@@ -230,7 +241,7 @@ mod tests {
     }
 
     fn fits(thread: &[Message]) -> Compacted {
-        match compact("", thread) {
+        match compact("", thread, "") {
             Fit::Fits(compacted) => compacted,
             Fit::TooBig => panic!("expected the thread to fit"),
         }
@@ -352,13 +363,71 @@ mod tests {
     }
 
     #[test]
+    fn a_summary_keeps_the_truncation_note() {
+        // The rows array is the sample format_result kept, not the whole
+        // result: it cut rows and said so in a note, and the summary
+        // must keep the note's full count.
+        let rows: Vec<Value> = (0..100)
+            .map(|_| Value::Array(vec![Value::String("x".repeat(2000))]))
+            .collect();
+        let content = serde_json::json!({
+            "columns": ["id"],
+            "rows": rows,
+            "note": "only the first 100 of 150 rows are shown",
+        })
+        .to_string();
+        let thread = vec![
+            user("first question"),
+            assistant_calls(&[("1", "run_select")]),
+            tool("1", &content),
+            user("second question"),
+            assistant_text("answer"),
+        ];
+        let compacted = fits(&thread);
+        assert_eq!(compacted.compacted, 1);
+        assert_eq!(
+            compacted.messages[2],
+            tool(
+                "1",
+                "[earlier result compacted: 100 rows, columns id, only the first 100 of 150 rows are shown]"
+            )
+        );
+    }
+
+    #[test]
+    fn the_pending_message_counts_against_the_budget() {
+        let big = result(&["id"], 3, 20_000);
+        let thread = vec![
+            user("first question"),
+            assistant_calls(&[("1", "run_select")]),
+            tool("1", &big),
+            assistant_text("first answer"),
+            user("second question"),
+            assistant_text("answer"),
+        ];
+        // The stored thread alone fits; the pending message is what
+        // pushes it over, so the old result compacts — and the pending
+        // message itself is not in what comes back, since the caller
+        // appends it intact after.
+        assert_eq!(fits(&thread).compacted, 0);
+        match compact("", &thread, &"p".repeat(45_000)) {
+            Fit::Fits(compacted) => {
+                assert_eq!(compacted.compacted, 1);
+                assert_eq!(compacted.messages.len(), thread.len());
+                assert_eq!(compacted.messages[5], assistant_text("answer"));
+            }
+            Fit::TooBig => panic!("expected the thread to fit after compaction"),
+        }
+    }
+
+    #[test]
     fn a_thread_with_nothing_compactable_is_too_big() {
         // Two long user messages and nothing a summary could shrink.
         let thread = vec![user(&"u".repeat(60_000)), user(&"v".repeat(60_000))];
-        assert!(matches!(compact("", &thread), Fit::TooBig));
+        assert!(matches!(compact("", &thread, ""), Fit::TooBig));
         // A system prompt alone over budget is too big the same way.
         assert!(matches!(
-            compact(&"s".repeat(MAX_PROMPT_CHARS + 1), &[]),
+            compact(&"s".repeat(MAX_PROMPT_CHARS + 1), &[], ""),
             Fit::TooBig
         ));
     }
@@ -376,7 +445,7 @@ mod tests {
         // Without a system prompt this thread is under budget; with a
         // large one it is not, and the old result compacts.
         assert_eq!(fits(&thread).compacted, 0);
-        match compact(&"s".repeat(70_000), &thread) {
+        match compact(&"s".repeat(70_000), &thread, "") {
             Fit::Fits(compacted) => assert_eq!(compacted.compacted, 1),
             Fit::TooBig => panic!("expected the thread to fit after compaction"),
         }
