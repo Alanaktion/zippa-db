@@ -369,6 +369,42 @@ pub fn with_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
 /// `OFFSET` with no limit to clamp, or a bound placeholder — is `None`, run
 /// as written. Only the outermost query is looked at: a `LIMIT` inside a
 /// subquery or a common table expression bounds that one alone.
+/// Byte index of a `-` in `between` that is the negative sign of the count
+/// that follows, rather than a dash inside a comment: `-- …` and `/* … */`
+/// (`# …` on MySQL) are comment text, and the word scanner has already
+/// skipped them to find the count, so they can sit between the `LIMIT`
+/// keyword and its count. Only ASCII delimiters are looked for, so scanning
+/// bytes is safe whatever the comment holds.
+fn negative_sign(between: &str, engine: Engine) -> Option<usize> {
+    let bytes = between.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match (bytes[index], bytes.get(index + 1).copied()) {
+            (b'-', Some(b'-')) => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            (b'/', Some(b'*')) => {
+                index += 2;
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = (index + 2).min(bytes.len());
+            }
+            (b'#', _) if engine == Engine::MySql => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            (b'-', _) => return Some(index),
+            _ => index += 1,
+        }
+    }
+    None
+}
+
 pub fn clamp_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
     let mut statements = statements(sql, engine)
         .into_iter()
@@ -421,9 +457,11 @@ pub fn clamp_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
             }
             return None;
         };
-        // SQLite reads `LIMIT -1` as no limit at all.
+        // SQLite reads `LIMIT -1` as no limit at all. The sign is the
+        // `-` itself, not a dash hiding in a comment between the keyword
+        // and the count.
         let between = &slice[limit.end..span.0];
-        if let Some(minus) = between.find('-') {
+        if let Some(minus) = negative_sign(between, engine) {
             return replace((limit.end + minus, span.1));
         }
         // A fractional count is not a limit this can clamp.
@@ -1390,6 +1428,32 @@ mod tests {
             clamped("select * from t limit -1").as_deref(),
             Some("select * from t limit 100")
         );
+    }
+
+    #[test]
+    fn a_dash_inside_a_comment_is_not_a_negative_limit() {
+        // A dash in a comment between the keyword and the count used to be
+        // read as the negative sign: the small limit was raised and the
+        // comment dropped, or a block comment was left unterminated.
+        assert_eq!(clamped("select * from t limit -- cap\n 5"), None);
+        assert_eq!(clamped("select * from t limit /* top-5 */ 5"), None);
+        // A large limit past a comment still clamps, with the comment kept.
+        assert_eq!(
+            clamped("select * from t limit /* top-5 */ 100000").as_deref(),
+            Some("select * from t limit /* top-5 */ 100")
+        );
+        // And a genuinely negative count past a comment still clamps.
+        assert_eq!(
+            clamped("select * from t limit /* c */ -1").as_deref(),
+            Some("select * from t limit /* c */ 100")
+        );
+        assert_eq!(
+            clamped("select * from t limit -- cap\n -1").as_deref(),
+            Some("select * from t limit -- cap\n 100")
+        );
+        // MySQL's `#` comment, same shape.
+        let clamped_mysql = |sql: &str| super::clamp_limit(sql, 100, Engine::MySql);
+        assert_eq!(clamped_mysql("select * from t limit # cap-5\n 5"), None);
     }
 
     #[test]
