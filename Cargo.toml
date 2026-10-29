@@ -87,9 +87,12 @@ icons = ["assets/icons/zippa-db.iconset/*.png", "assets/icons/zippa-db.icns", "a
 # own code) keeps `cargo run` usable while still building fast.
 [profile.dev]
 opt-level = 1
+# Backtraces keep file:line; locals are not inspectable in a debugger.
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = "line-tables-only"
 
 # Smaller, faster shipped binaries for packaged builds.
 [profile.release]
