@@ -77,6 +77,7 @@ actions!(
         ImportSqlDump,
         SearchSchema,
         OpenConsole,
+        OpenConnectionInfo,
         OpenProcessList,
         OpenServerVariables,
         OpenQueryDigest,
@@ -687,6 +688,9 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_search_schema))
             .on_action(cx.listener(|this, _: &OpenConsole, window, cx| {
                 this.open_tool(Tool::Console, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenConnectionInfo, window, cx| {
+                this.open_tool(Tool::ConnectionInfo, window, cx);
             }))
             .on_action(cx.listener(|this, _: &OpenProcessList, window, cx| {
                 this.open_tool(Tool::Processes, window, cx);

@@ -20,10 +20,10 @@ use crate::ui::query_editor::{
 };
 use crate::ui::session::dashboard::CloseWidgetDialog;
 use crate::ui::session::{
-    CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConsole, OpenErd,
-    OpenFile, OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables,
-    OpenUserManagement, PreviousTab, QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs,
-    SaveQuery, SearchSchema,
+    CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConnectionInfo,
+    OpenConsole, OpenErd, OpenFile, OpenMaintenance, OpenProcessList, OpenQueryDigest,
+    OpenServerVariables, OpenUserManagement, PreviousTab, QuickSwitcher, Reconnect, Refresh,
+    SaveFile, SaveFileAs, SaveQuery, SearchSchema,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -213,6 +213,11 @@ pub fn bind(cx: &mut App) {
         // modifier so a stray Enter cannot run a statement.
         KeyBinding::new("secondary-enter", ApproveWrite, Some("AgentApproval")),
         KeyBinding::new("escape", RejectWrite, Some("AgentApproval")),
+        // The connection's basic facts: engine, version, database, size.
+        // Shares its key with viewing a cell's value, the way the server
+        // variables share theirs: the more specific context — a grid with
+        // the focus — wins there, and this is what answers it everywhere else.
+        KeyBinding::new("secondary-shift-c", OpenConnectionInfo, Some("Session")),
         // The process list: who is connected to the server and what they're
         // running, with a way to end one.
         KeyBinding::new("secondary-shift-p", OpenProcessList, Some("Session")),

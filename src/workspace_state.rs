@@ -103,6 +103,10 @@ pub enum PanelState {
     /// The console tab. Carries nothing of its own — the log it shows lives
     /// on the connection, not on disk — so restoring one just reopens it.
     Console,
+    /// The connection information tab. Carries nothing of its own, the same
+    /// as the console — restoring one just reopens it and it reads the
+    /// connection fresh.
+    ConnectionInfo,
     /// The process list tab. Carries nothing of its own, the same as the
     /// console — restoring one just reopens it and it reads the server fresh.
     Processes,

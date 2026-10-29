@@ -73,8 +73,8 @@ pub use config::{
 };
 pub(crate) use connection::pool_options;
 pub use connection::{
-    Connection, Credentials, DatabaseObject, ObjectKind, QueryDigest, RowKey, StoredKind,
-    StoredObject,
+    Connection, ConnectionInfo, Credentials, DatabaseObject, ObjectKind, QueryDigest, RowKey,
+    StoredKind, StoredObject,
 };
 pub use ddl::TableExtras;
 pub use import::{ImportProgress, ImportRequest, ImportSummary, OnError};

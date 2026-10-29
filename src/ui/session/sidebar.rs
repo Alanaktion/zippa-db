@@ -39,9 +39,9 @@ use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
 use super::{
-    BackupDatabase, ImportSqlDump, NewTable, OpenConsole, OpenErd, OpenMaintenance,
-    OpenProcessList, OpenQueryDigest, OpenServerVariables, OpenUserManagement, Refresh,
-    SearchSchema, Session, Tool,
+    BackupDatabase, ImportSqlDump, NewTable, OpenConnectionInfo, OpenConsole, OpenErd,
+    OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, OpenUserManagement,
+    Refresh, SearchSchema, Session, Tool,
 };
 
 impl Session {
@@ -519,6 +519,18 @@ impl Session {
             .flex_1()
             .min_h_0()
             .gap_1()
+            .child(
+                tool_row(
+                    "open-connection-info",
+                    IconName::Database,
+                    "Connection Info",
+                    "This connection's engine, version, database, and size",
+                    &OpenConnectionInfo,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_tool(Tool::ConnectionInfo, window, cx);
+                })),
+            )
             .child(
                 tool_row(
                     "open-erd",
