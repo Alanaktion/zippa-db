@@ -144,6 +144,12 @@ pub struct Settings {
     /// visible in another. Off by default; with it on, only one query runs
     /// at a time.
     pub share_connection_across_buffers: bool,
+    /// Whether a dashboard runs its widgets at the same time, each on its
+    /// own pooled connection, rather than one after another. Off by
+    /// default: sequential keeps one connection in use and preserves the
+    /// widgets' order, while parallel finishes sooner when the widgets are
+    /// slow and independent.
+    pub parallel_dashboard_queries: bool,
     /// Whether scrollbars stay on screen instead of fading out when idle.
     ///
     /// On by default: a wide result is scrolled sideways by dragging its
@@ -180,6 +186,7 @@ impl Default for Settings {
             accept_completion: CompletionKey::default(),
             wrap_scripts_in_transaction: true,
             share_connection_across_buffers: false,
+            parallel_dashboard_queries: false,
             implicit_limit: true,
             implicit_limit_rows: DEFAULT_PAGE_SIZE,
             agent_base_url: String::new(),
@@ -470,6 +477,10 @@ mod tests {
             !settings.share_connection_across_buffers,
             "a file written before the setting existed should keep one connection per buffer"
         );
+        assert!(
+            !settings.parallel_dashboard_queries,
+            "a file written before the setting existed should keep dashboard widgets sequential"
+        );
     }
 
     #[test]
@@ -483,6 +494,10 @@ mod tests {
             !settings.share_connection_across_buffers,
             "buffers should keep their own connections unless the user opts in"
         );
+        assert!(
+            !settings.parallel_dashboard_queries,
+            "dashboard widgets should keep running one at a time unless the user opts in"
+        );
     }
 
     #[test]
@@ -490,6 +505,7 @@ mod tests {
         let settings = Settings {
             wrap_scripts_in_transaction: false,
             share_connection_across_buffers: true,
+            parallel_dashboard_queries: true,
             ..Settings::default()
         };
 
@@ -497,6 +513,7 @@ mod tests {
         let read: Settings = serde_json::from_str(&written).expect("settings should parse");
         assert!(!read.wrap_scripts_in_transaction);
         assert!(read.share_connection_across_buffers);
+        assert!(read.parallel_dashboard_queries);
     }
 
     #[test]
