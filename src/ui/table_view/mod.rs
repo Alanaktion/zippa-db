@@ -780,11 +780,15 @@ impl TableView {
         // Editing a key column changes what addresses the row, and Postgres
         // moves a row's `ctid` when it rewrites it, so either way the page in
         // hand is stale and has to be read again. So is a page that gained or
-        // lost a row: only the server knows what it ended up holding.
+        // lost a row: only the server knows what it ended up holding. And
+        // so is one that wrote a blob: the staged value is hex text, and
+        // applying it to the baseline would leave the cell showing hex
+        // instead of the value's stand-in.
         let stale = inserted > 0
             || !deletions.is_empty()
             || matches!(self.row_key, Some(RowKey::RowId("ctid")))
-            || staged.iter().any(|staged| self.touches_key(staged));
+            || staged.iter().any(|staged| self.touches_key(staged))
+            || staged.iter().any(|staged| self.touches_blob(staged));
 
         let write = Confirming {
             summary: applied_summary(rows, inserted, deletions.len()),
@@ -976,13 +980,17 @@ impl TableView {
             let grid = self.grid.downgrade();
             let row = event.row;
             let column_name = event.column.clone();
+            // The result the dialog opened on: a reload between here and
+            // the save moves the rows, so the grid refuses a save built on
+            // this count rather than staging onto the wrong row.
+            let generation = self.grid.read(cx).result_generation();
             Rc::new(move |bytes: Vec<u8>, cx: &mut App| {
                 let Some(grid) = grid.upgrade() else {
-                    return;
+                    return false;
                 };
                 grid.update(cx, |grid, cx| {
-                    grid.stage_binary_cell(row, &column_name, bytes, cx)
-                });
+                    grid.stage_binary_cell(row, &column_name, bytes, generation, cx)
+                })
             }) as value_dialog::SaveBinary
         });
         let task = runtime::spawn(async move { connection.fetch_binary(&sql, params).await });

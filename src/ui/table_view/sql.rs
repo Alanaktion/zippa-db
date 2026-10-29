@@ -442,6 +442,18 @@ impl TableView {
                 .is_some_and(|name| key.contains(name))
         })
     }
+
+    /// Whether a staged row changes a blob column: the staged value is hex
+    /// text, not the bytes the server now holds, so applying it to the
+    /// baseline would leave the cell showing hex instead of the value's
+    /// stand-in — the page has to be read again.
+    pub(super) fn touches_blob(&self, staged: &StagedRow) -> bool {
+        staged.cells.iter().any(|(column, _)| {
+            self.column_types
+                .get(*column)
+                .is_some_and(|name| is_blob_type(name))
+        })
+    }
 }
 
 /// Take the row identifier column out of a freshly loaded result, handing back
