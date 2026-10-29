@@ -283,6 +283,19 @@ impl Render for QuickSwitcherView {
                 &["console", "log", "statements", "history"],
             ),
             action(
+                SwitcherTarget::OpenTool(Tool::ConnectionInfo),
+                "Connection Info",
+                IconName::Database,
+                &[
+                    "connection",
+                    "info",
+                    "version",
+                    "size",
+                    "database",
+                    "server",
+                ],
+            ),
+            action(
                 SwitcherTarget::OpenTool(Tool::Erd),
                 "ER Diagram",
                 IconName::Network,

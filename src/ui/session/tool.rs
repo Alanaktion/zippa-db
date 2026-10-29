@@ -1,5 +1,5 @@
-//! The session's tool tabs: the console, the server views, SQLite
-//! maintenance, user management, and the ER diagram. A session holds at most
+//! The session's tool tabs: the console, the connection information, the
+//! server views, SQLite maintenance, user management, and the ER diagram. A session holds at most
 //! one of each, opened from the sidebar's Management tab, the View menu, or
 //! the quick switcher, and brought forward rather than duplicated.
 //!
@@ -15,6 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, Entity, FocusHandle, Focusable as _, Window};
 
 use crate::db::{Connection, Engine};
+use crate::ui::connection_info::ConnectionInfoView;
 use crate::ui::console::ConsoleView;
 use crate::ui::erd::ErdView;
 use crate::ui::process_list::ProcessListView;
@@ -28,6 +29,7 @@ use crate::workspace_state::PanelState;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tool {
     Console,
+    ConnectionInfo,
     Processes,
     Variables,
     Digest,
@@ -41,6 +43,7 @@ impl Tool {
     pub(crate) fn title(self) -> &'static str {
         match self {
             Tool::Console => "Console",
+            Tool::ConnectionInfo => "Connection Info",
             Tool::Processes => "Processes",
             Tool::Variables => "Variables",
             Tool::Digest => "Query Digest",
@@ -52,11 +55,12 @@ impl Tool {
 
     /// Whether `engine` has anything for this tool to show. The server views
     /// need a server, which SQLite is not; maintenance is SQLite's own, the
-    /// other engines having a server to look after it; the console and the
-    /// diagram work everywhere.
+    /// other engines having a server to look after it; the console, the
+    /// diagram, and the connection information work everywhere — SQLite's
+    /// facts are its file and its library version.
     pub(crate) fn offered(self, engine: Engine) -> bool {
         match self {
-            Tool::Console | Tool::Erd => true,
+            Tool::Console | Tool::Erd | Tool::ConnectionInfo => true,
             Tool::Maintenance => engine == Engine::Sqlite,
             Tool::Processes | Tool::Variables | Tool::Digest | Tool::Users => {
                 engine != Engine::Sqlite
@@ -68,6 +72,7 @@ impl Tool {
     pub(crate) fn icon(self) -> IconName {
         match self {
             Tool::Console => IconName::ScrollText,
+            Tool::ConnectionInfo => IconName::Database,
             Tool::Processes => IconName::Activity,
             Tool::Variables => IconName::SlidersHorizontal,
             Tool::Digest => IconName::Gauge,
@@ -81,6 +86,7 @@ impl Tool {
     pub(crate) fn kind(self) -> &'static str {
         match self {
             Tool::Console => "console",
+            Tool::ConnectionInfo => "connection information",
             Tool::Processes => "process list",
             Tool::Variables => "server variables",
             Tool::Digest => "query digest",
@@ -94,6 +100,7 @@ impl Tool {
     pub(crate) fn state(self) -> PanelState {
         match self {
             Tool::Console => PanelState::Console,
+            Tool::ConnectionInfo => PanelState::ConnectionInfo,
             Tool::Processes => PanelState::Processes,
             Tool::Variables => PanelState::Variables,
             Tool::Digest => PanelState::Digest,
@@ -107,6 +114,7 @@ impl Tool {
     pub(crate) fn from_state(state: &PanelState) -> Option<Self> {
         match state {
             PanelState::Console => Some(Tool::Console),
+            PanelState::ConnectionInfo => Some(Tool::ConnectionInfo),
             PanelState::Processes => Some(Tool::Processes),
             PanelState::Variables => Some(Tool::Variables),
             PanelState::Digest => Some(Tool::Digest),
@@ -125,6 +133,7 @@ impl Tool {
 /// A tool tab's view.
 pub(crate) enum ToolView {
     Console(Entity<ConsoleView>),
+    ConnectionInfo(Entity<ConnectionInfoView>),
     Processes(Entity<ProcessListView>),
     Variables(Entity<ServerVariablesView>),
     Digest(Entity<QueryDigestView>),
@@ -139,6 +148,7 @@ macro_rules! each_view {
     ($tool:expr, $view:ident => $body:expr) => {
         match $tool {
             ToolView::Console($view) => $body,
+            ToolView::ConnectionInfo($view) => $body,
             ToolView::Processes($view) => $body,
             ToolView::Variables($view) => $body,
             ToolView::Digest($view) => $body,
@@ -160,6 +170,9 @@ impl ToolView {
         match tool {
             Tool::Console => {
                 ToolView::Console(cx.new(|cx| ConsoleView::new(connection, window, cx)))
+            }
+            Tool::ConnectionInfo => {
+                ToolView::ConnectionInfo(cx.new(|cx| ConnectionInfoView::new(connection, cx)))
             }
             Tool::Processes => {
                 ToolView::Processes(cx.new(|cx| ProcessListView::new(connection, window, cx)))
@@ -183,6 +196,7 @@ impl ToolView {
     pub(crate) fn tool(&self) -> Tool {
         match self {
             ToolView::Console(_) => Tool::Console,
+            ToolView::ConnectionInfo(_) => Tool::ConnectionInfo,
             ToolView::Processes(_) => Tool::Processes,
             ToolView::Variables(_) => Tool::Variables,
             ToolView::Digest(_) => Tool::Digest,
@@ -204,6 +218,7 @@ impl ToolView {
         match self {
             ToolView::Maintenance(_) => {}
             ToolView::Console(view) => view.update(cx, |view, cx| view.refresh(cx)),
+            ToolView::ConnectionInfo(view) => view.update(cx, |view, cx| view.refresh(cx)),
             ToolView::Processes(view) => view.update(cx, |view, cx| view.refresh(cx)),
             ToolView::Variables(view) => view.update(cx, |view, cx| view.refresh(cx)),
             ToolView::Digest(view) => view.update(cx, |view, cx| view.refresh(cx)),

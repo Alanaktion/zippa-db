@@ -156,6 +156,54 @@ pub enum QueryDigest {
     Unavailable(String),
 }
 
+/// One connection's basic facts, for the connection information panel.
+/// Everything here is either already known from the saved configuration or
+/// one cheap read; a fact an engine cannot report cheaply stays `None` and
+/// its row stays out of the panel rather than being guessed at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionInfo {
+    pub engine: Engine,
+    /// Where the connection lives: `host:port` on a server engine, the file
+    /// path on SQLite.
+    pub server: String,
+    /// The login name on a server engine; SQLite has no users.
+    pub username: Option<String>,
+    /// The server version string, as the server reports it.
+    pub version: String,
+    /// The database this connection is bound to; SQLite's database is its
+    /// file, so this stays `None` there and the panel shows the path.
+    pub database: Option<String>,
+    /// The current database's size in bytes, where the engine reports one.
+    pub size_bytes: Option<u64>,
+    /// Seconds since the server started; SQLite has no server to ask.
+    pub uptime_secs: Option<u64>,
+    /// Backends currently connected to the server; SQLite has none.
+    pub connections: Option<u64>,
+}
+
+/// A row cell as text, blank when the cell is missing or NULL — a missing
+/// fact reads as an empty value, never a panic.
+fn cell_text(row: &[Cell], index: usize) -> String {
+    row.get(index).cloned().flatten().unwrap_or_default()
+}
+
+/// A row cell as an integer, `None` when it is missing, NULL, or does not
+/// parse — the panel leaves that row out rather than failing on it.
+fn cell_int(row: &[Cell], index: usize) -> Option<i64> {
+    row.get(index)
+        .cloned()
+        .flatten()
+        .and_then(|value| value.parse().ok())
+}
+
+/// A row cell as a float, `None` on the same terms as [`cell_int`].
+fn cell_float(row: &[Cell], index: usize) -> Option<f64> {
+    row.get(index)
+        .cloned()
+        .flatten()
+        .and_then(|value| value.parse().ok())
+}
+
 /// A live connection to one database.
 #[derive(Debug)]
 pub struct Connection {
@@ -1190,6 +1238,101 @@ impl Connection {
             }
             Engine::Sqlite => anyhow::bail!("SQLite has no query digest to show"),
         }
+    }
+
+    /// The connection's basic facts, for the connection information panel:
+    /// the engine, where it lives, the server version, the database this
+    /// connection is bound to, and that database's size where the engine
+    /// can report it. Uptime and the connection count ride along only
+    /// where they are one cheap read — Postgres answers both in the same
+    /// query, MySQL from `SHOW GLOBAL STATUS`, SQLite has neither — and a
+    /// failed optional read leaves its row out rather than failing the
+    /// panel: the core facts are what the panel is for.
+    pub async fn connection_info(&self) -> Result<ConnectionInfo> {
+        let engine = self.config.engine;
+        let mut info = ConnectionInfo {
+            engine,
+            server: match engine {
+                Engine::Sqlite => self.config.database.clone(),
+                _ => format!("{}:{}", self.config.host, self.config.port),
+            },
+            username: match engine {
+                Engine::Sqlite => None,
+                _ => Some(self.config.username.clone()),
+            },
+            version: String::new(),
+            database: None,
+            size_bytes: None,
+            uptime_secs: None,
+            connections: None,
+        };
+
+        match engine {
+            Engine::Postgres => {
+                let result = self.run_query(postgres::CONNECTION_INFO_SQL).await?;
+                let row = result.rows.first().context("no connection info row")?;
+                info.version = cell_text(row, 0);
+                info.database = Some(cell_text(row, 1));
+                info.size_bytes = cell_int(row, 2).map(|size| size as u64);
+                info.uptime_secs = cell_float(row, 3).map(|secs| secs as u64);
+                info.connections = cell_int(row, 4).map(|count| count as u64);
+            }
+            Engine::MySql => {
+                let result = self.run_query(mysql::CONNECTION_INFO_SQL).await?;
+                let row = result.rows.first().context("no connection info row")?;
+                info.version = cell_text(row, 0);
+                info.database = Some(cell_text(row, 1));
+                info.size_bytes = cell_int(row, 2).map(|size| size as u64);
+                // Status variables, not queryable facts: either read is
+                // allowed to fail (a restricted user, an older server) and
+                // its row simply stays out.
+                info.uptime_secs = self
+                    .global_status("Uptime")
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|value| value.parse().ok());
+                info.connections = self
+                    .global_status("Threads_connected")
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|value| value.parse().ok());
+            }
+            Engine::Sqlite => {
+                let result = self.run_query(sqlite::CONNECTION_INFO_SQL).await?;
+                let row = result.rows.first().context("no connection info row")?;
+                info.version = cell_text(row, 0);
+                // The database is the file itself; an in-memory database
+                // has no file, so its size is simply not reported.
+                info.size_bytes = std::fs::metadata(&self.config.database)
+                    .ok()
+                    .map(|metadata| metadata.len());
+            }
+        }
+
+        // MySQL's `DATABASE()` is NULL when the connection selected no
+        // default database; the configured database is what it was bound
+        // to, so it is the honest fallback rather than an empty row.
+        if engine != Engine::Sqlite && info.database.as_deref() == Some("") {
+            info.database = Some(self.config.database.clone());
+        }
+
+        Ok(info)
+    }
+
+    /// One `SHOW GLOBAL STATUS` variable's value, for the MySQL facts
+    /// [`Self::connection_info`] reads on the side.
+    async fn global_status(&self, name: &str) -> Result<Option<String>> {
+        let result = self
+            .run_query(&format!("SHOW GLOBAL STATUS LIKE '{name}'"))
+            .await?;
+        Ok(result
+            .rows
+            .first()
+            .and_then(|row| row.get(1))
+            .cloned()
+            .flatten())
     }
 
     /// Run one of SQLite's housekeeping commands and hand back what it

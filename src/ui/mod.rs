@@ -7,6 +7,7 @@ pub mod agents;
 pub mod backup_dialog;
 pub mod busy;
 pub mod completion;
+pub mod connection_info;
 pub mod console;
 pub mod create_database_dialog;
 pub mod data_grid;

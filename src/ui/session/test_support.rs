@@ -9,6 +9,7 @@ use gpui_kit::component::dock::DockArea;
 use gpui_kit::{App, Context, Entity, SharedString, Window};
 
 use crate::db::DatabaseObject;
+use crate::ui::connection_info::ConnectionInfoView;
 use crate::ui::console::ConsoleView;
 use crate::ui::create_database_dialog::CreateDatabaseView;
 use crate::ui::data_grid::DataGrid;
@@ -149,6 +150,17 @@ impl Session {
     pub(crate) fn active_console_view(&self, cx: &App) -> Option<Entity<ConsoleView>> {
         match self.active_tool_view(cx)? {
             ToolView::Console(view) => Some(view.clone()),
+            _ => None,
+        }
+    }
+
+    /// The view in the active tab, if this is the connection information tab.
+    pub(crate) fn active_connection_info_view(
+        &self,
+        cx: &App,
+    ) -> Option<Entity<ConnectionInfoView>> {
+        match self.active_tool_view(cx)? {
+            ToolView::ConnectionInfo(view) => Some(view.clone()),
             _ => None,
         }
     }

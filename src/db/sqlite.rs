@@ -10,6 +10,11 @@ use super::{ConnectionConfig, decode, pool_options, quote_literal};
 /// A SQLite connection has one main database plus any attached ones.
 pub(crate) const DATABASES_SQL: &str = "SELECT name FROM pragma_database_list ORDER BY seq";
 
+/// The SQLite library version — the one fact about an embedded engine that
+/// needs asking. The database itself is the file the connection opened, and
+/// its size comes from the filesystem rather than a query.
+pub(crate) const CONNECTION_INFO_SQL: &str = "SELECT sqlite_version()";
+
 pub(crate) const OBJECTS_SQL: &str = "SELECT NULL AS table_schema, name, \
      CASE type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END AS table_type \
      FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' \

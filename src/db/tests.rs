@@ -203,6 +203,38 @@ async fn sqlite_has_no_query_digest() {
 }
 
 #[tokio::test]
+async fn sqlite_connection_info_reports_version_file_and_size() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let info = connection
+        .connection_info()
+        .await
+        .expect("SQLite can always report its own facts");
+    assert_eq!(info.engine, Engine::Sqlite);
+    assert_eq!(info.server, database.config().database);
+    assert!(
+        !info.version.is_empty(),
+        "SQLite reports its library version"
+    );
+    assert!(
+        info.size_bytes.is_some_and(|size| size > 0),
+        "the test database file has a size"
+    );
+    assert_eq!(
+        info.database, None,
+        "SQLite's database is its file, not a separate name"
+    );
+    assert_eq!(info.username, None);
+    assert_eq!(info.uptime_secs, None);
+    assert_eq!(info.connections, None);
+
+    connection.close().await;
+}
+
+#[tokio::test]
 async fn sqlite_maintenance_runs_each_task() {
     use super::Maintenance;
 
@@ -2443,6 +2475,77 @@ async fn live_postgres_server_variables_lists_max_connections() {
         .find(|row| row[0].as_deref() == Some("max_connections"))
         .expect("max_connections should be in pg_settings");
     assert!(row[1].is_some(), "max_connections should have a value");
+
+    connection.close().await;
+}
+
+/// `connection_info` reads the version, the database, its size, the
+/// uptime, and the connection count in one query — the database is the one
+/// the live helper connects to, and a fresh server has at least the test
+/// connection itself connected.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_connection_info_reports_all_facts() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+
+    let info = connection
+        .connection_info()
+        .await
+        .expect("could not read the connection information");
+    assert_eq!(info.engine, Engine::Postgres);
+    assert!(
+        !info.version.is_empty(),
+        "version() should report something"
+    );
+    assert_eq!(info.database.as_deref(), Some("app"));
+    assert!(
+        info.size_bytes.is_some_and(|size| size > 0),
+        "pg_database_size should report the app database's size"
+    );
+    assert!(
+        info.uptime_secs.is_some(),
+        "the server has been up for some number of seconds"
+    );
+    assert!(
+        info.connections.is_some_and(|count| count >= 1),
+        "at least this connection is connected"
+    );
+
+    connection.close().await;
+}
+
+/// The same, for MySQL's `VERSION()`/`DATABASE()`/information_schema size
+/// plus `SHOW GLOBAL STATUS` for the uptime and connection count.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_connection_info_reports_all_facts() {
+    let (connection, _pool) = live_mysql().await;
+
+    let info = connection
+        .connection_info()
+        .await
+        .expect("could not read the connection information");
+    assert_eq!(info.engine, Engine::MySql);
+    assert!(
+        !info.version.is_empty(),
+        "VERSION() should report something"
+    );
+    assert!(
+        info.database.is_some(),
+        "the live helper connects to a database"
+    );
+    assert!(
+        info.size_bytes.is_some(),
+        "the size sum should come back even for an empty database"
+    );
+    assert!(
+        info.uptime_secs.is_some(),
+        "SHOW GLOBAL STATUS should report Uptime"
+    );
+    assert!(
+        info.connections.is_some_and(|count| count >= 1),
+        "at least this connection is connected"
+    );
 
     connection.close().await;
 }

@@ -37,6 +37,17 @@ pub(crate) const VARIABLES_SQL: &str = "SELECT name, setting, unit, context, sho
      CASE WHEN setting IS DISTINCT FROM boot_val THEN 'yes' ELSE '' END AS changed \
      FROM pg_settings ORDER BY name";
 
+/// The connection's basic facts, in one row: the server version, the
+/// database this connection is bound to, that database's size, the seconds
+/// since the server started, and how many backends are connected.
+/// `pg_stat_activity` is readable by every role — the query text of other
+/// users' backends is hidden from non-superusers, but the rows still count —
+/// so the connection count is the server's, not just this role's.
+pub(crate) const CONNECTION_INFO_SQL: &str = "SELECT version(), current_database(), \
+     pg_database_size(current_database()), \
+     extract(epoch FROM now() - pg_postmaster_start_time()), \
+     (SELECT count(*) FROM pg_stat_activity)";
+
 /// Every role on the server, with the login attributes the user management
 /// tab shows. `pg_roles` is readable by every role; the password hashes are
 /// not in it.

@@ -41,6 +41,7 @@ mod agents;
 mod chart;
 mod comments;
 mod completion;
+mod connection_info;
 mod console;
 mod create_database;
 mod dashboards;

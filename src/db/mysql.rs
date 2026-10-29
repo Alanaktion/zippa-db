@@ -60,6 +60,15 @@ pub(crate) const VARIABLES_SQL: &str = "SELECT v.VARIABLE_NAME, v.VARIABLE_VALUE
      JOIN performance_schema.variables_info i ON v.VARIABLE_NAME = i.VARIABLE_NAME \
      ORDER BY v.VARIABLE_NAME";
 
+/// The connection's basic facts, in one row: the server version, the
+/// database this connection is bound to, and that database's size — the
+/// sum of its tables' data and index lengths. The uptime and connection
+/// count come separately, from `SHOW GLOBAL STATUS`, since they are status
+/// variables rather than something a `SELECT` can reach.
+pub(crate) const CONNECTION_INFO_SQL: &str = "SELECT VERSION(), DATABASE(), \
+     (SELECT COALESCE(SUM(data_length + index_length), 0) \
+      FROM information_schema.tables WHERE table_schema = DATABASE())";
+
 /// Every user on the server and the host it may connect from. Reading
 /// `mysql.user` needs the `SELECT` privilege on it; without that the user
 /// management tab reports the server's refusal instead of a list.
