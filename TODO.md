@@ -38,7 +38,6 @@ known defects and risks in the shipped code are tracked in
 ## 4. Schema browser & editor
 
 * Tree navigation: databases > schemas > tables / views
-* Read-only DDL text for tables, triggers, and check constraints in the structure tab ([plan](.agents/plans/structure-ddl-view.md)) — view definitions already show, via `Connection::view_definition`
 * Search the text of view, routine, and trigger definitions
 * Free-text column types in the structure tab (today a fixed per-engine list)
 * View and routine definition editor

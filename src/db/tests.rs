@@ -1422,6 +1422,150 @@ async fn view_definition_refuses_a_view_the_server_does_not_know() {
 }
 
 #[tokio::test]
+async fn definition_returns_create_index_and_trigger_in_order() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    for statement in [
+        "CREATE TABLE guarded (id INTEGER PRIMARY KEY, score REAL CHECK (score > 0))",
+        "CREATE INDEX guarded_score_idx ON guarded(score)",
+        "CREATE TRIGGER guarded_guard AFTER INSERT ON guarded BEGIN SELECT 1; END",
+    ] {
+        connection
+            .run_query(statement)
+            .await
+            .expect("could not seed the table");
+    }
+
+    let definition = connection
+        .definition(&table("guarded"))
+        .await
+        .expect("could not read the definition");
+
+    let create = definition
+        .find("CREATE TABLE guarded")
+        .expect("the definition should start with the table");
+    let index = definition
+        .find("CREATE INDEX guarded_score_idx")
+        .expect("the definition should hold the index");
+    let trigger = definition
+        .find("CREATE TRIGGER guarded_guard")
+        .expect("the definition should hold the trigger");
+    assert!(
+        create < index && index < trigger,
+        "create, then indexes, then triggers, got: {definition}"
+    );
+    assert!(
+        definition.contains("CHECK (score > 0)"),
+        "the create text should hold the check, got: {definition}"
+    );
+
+    // Round trip: the output recreates an equivalent schema elsewhere.
+    let other = TempDatabase::new().await;
+    let other_connection = Connection::open(other.config(), None)
+        .await
+        .expect("could not open the second test database");
+    other_connection
+        .execute_script(std::slice::from_ref(&definition))
+        .await
+        .expect("the definition should run on a fresh database");
+    let schema = other_connection
+        .table_schema(&table("guarded"))
+        .await
+        .expect("could not read the recreated schema");
+    assert_eq!(
+        schema
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id", "score"]
+    );
+    assert_eq!(schema.indexes.len(), 1);
+    assert_eq!(schema.indexes[0].name, "guarded_score_idx");
+
+    connection.close().await;
+    other_connection.close().await;
+}
+
+#[tokio::test]
+async fn definition_of_a_view_returns_its_create_statement() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let definition = connection
+        .definition(&DatabaseObject {
+            kind: ObjectKind::View,
+            ..table("named_items")
+        })
+        .await
+        .expect("could not read the view's definition");
+    assert!(
+        definition.contains("CREATE VIEW"),
+        "the definition should be a CREATE VIEW statement, got: {definition}"
+    );
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn definition_refuses_a_table_the_server_does_not_know() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let error = connection
+        .definition(&table("no_such_table"))
+        .await
+        .expect_err("a missing table should not report a definition");
+    assert!(
+        format!("{error:#}").contains("no definition"),
+        "the error should say there is no definition, got: {error:#}"
+    );
+
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn table_extras_lists_checks_and_triggers() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    for statement in [
+        "CREATE TABLE guarded (id INTEGER PRIMARY KEY, score REAL CHECK (score > 0))",
+        "CREATE TRIGGER guarded_guard BEFORE UPDATE OF score ON guarded BEGIN SELECT 1; END",
+    ] {
+        connection
+            .run_query(statement)
+            .await
+            .expect("could not seed the table");
+    }
+
+    let extras = connection
+        .table_extras(&table("guarded"))
+        .await
+        .expect("could not read the extras");
+    assert_eq!(extras.checks.len(), 1);
+    assert_eq!(extras.checks[0].name, "score");
+    assert_eq!(extras.checks[0].expression, "CHECK (score > 0)");
+    assert_eq!(extras.triggers.len(), 1);
+    assert_eq!(extras.triggers[0].name, "guarded_guard");
+    assert_eq!(extras.triggers[0].timing, "BEFORE");
+    assert_eq!(extras.triggers[0].events, "UPDATE OF score");
+    assert_eq!(extras.triggers[0].orientation, "ROW");
+    assert!(extras.trigger_error.is_none());
+
+    connection.close().await;
+}
+
+#[tokio::test]
 async fn table_schema_reads_columns_and_marks_the_primary_key() {
     let database = TempDatabase::new().await;
     let connection = Connection::open(database.config(), None)

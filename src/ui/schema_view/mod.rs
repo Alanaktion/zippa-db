@@ -24,11 +24,12 @@ use gpui_kit::{App, Context, Entity, EventEmitter, Window, div, px};
 
 use crate::db::{
     ColumnDef, Connection, DatabaseObject, Engine, ForeignKeyDef, IndexDef, ObjectKind,
-    RebuildSource, ReferentialAction, TableSchema, runtime,
+    RebuildSource, ReferentialAction, TableExtras, TableSchema, runtime,
 };
 use crate::ui::busy::busy_label;
 
 mod columns;
+mod definition;
 mod foreign_keys;
 mod indexes;
 mod layout;
@@ -45,6 +46,17 @@ pub(crate) enum SchemaViewEvent {
     /// The new-table form's `CREATE TABLE` ran. The session refreshes its
     /// object list and turns the tab into the new table's structure tab.
     TableCreated { object: DatabaseObject },
+    /// The SQL panel's "Open in query tab" was pressed: the session opens a
+    /// query tab holding this definition, so it can be edited and re-run.
+    OpenInQueryTab { text: String },
+}
+
+/// Which half of a structure tab is showing: the editable form, or the
+/// read-only SQL panel. A view has no form, so it opens on SQL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Panel {
+    Form,
+    Sql,
 }
 
 impl EventEmitter<SchemaViewEvent> for SchemaView {}
@@ -179,9 +191,19 @@ pub struct SchemaView {
     /// back on top of the table (its indexes, triggers, and views). `None` on
     /// the other engines, and for a view.
     rebuild_source: Option<RebuildSource>,
-    /// A view's stored `CREATE VIEW` text, shown read-only instead of the
-    /// builder. Set for a view; never touched for a table.
-    view_source: Entity<TextareaState>,
+    /// The SQL panel: the current database definition, read-only, for a
+    /// table or a view. Never the form's pending edits.
+    definition: Entity<TextareaState>,
+    /// Why the definition could not be read, when it could not — shown in
+    /// the SQL panel rather than wiping the form.
+    definition_error: Option<String>,
+    /// Which half of the tab is showing.
+    panel: Panel,
+    /// The read-only extras: checks, unique/exclusion constraints, and
+    /// triggers, read alongside the form.
+    extras: TableExtras,
+    /// Why the extras could not be read, when they could not.
+    extras_error: Option<String>,
     /// The Columns section's own editable state, seeded from `schema` each
     /// time it (re)loads.
     columns: Vec<EditableColumn>,
@@ -218,17 +240,27 @@ impl SchemaView {
         cx: &mut Context<Self>,
     ) -> Self {
         let preview = cx.new(|cx| TextareaState::new(window, cx));
-        let view_source = cx.new(|cx| TextareaState::new(window, cx));
+        let definition = cx.new(|cx| TextareaState::new(window, cx));
         let table_name = cx.new(|cx| InputState::new(window, cx).placeholder("table name"));
         cx.subscribe_in(&table_name, window, Self::on_field_event)
             .detach();
 
+        // A view has no editable structure, so it opens on SQL.
+        let panel = if object.kind == ObjectKind::View {
+            Panel::Sql
+        } else {
+            Panel::Form
+        };
         let mut view = Self {
             connection,
             object,
             schema: None,
             rebuild_source: None,
-            view_source,
+            definition,
+            definition_error: None,
+            panel,
+            extras: TableExtras::default(),
+            extras_error: None,
             columns: Vec::new(),
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
@@ -256,7 +288,7 @@ impl SchemaView {
         cx: &mut Context<Self>,
     ) -> Self {
         let preview = cx.new(|cx| TextareaState::new(window, cx));
-        let view_source = cx.new(|cx| TextareaState::new(window, cx));
+        let definition = cx.new(|cx| TextareaState::new(window, cx));
         let table_name = cx.new(|cx| InputState::new(window, cx).placeholder("table name"));
         cx.subscribe_in(&table_name, window, Self::on_field_event)
             .detach();
@@ -272,7 +304,11 @@ impl SchemaView {
             },
             schema: None,
             rebuild_source: None,
-            view_source,
+            definition,
+            definition_error: None,
+            panel: Panel::Form,
+            extras: TableExtras::default(),
+            extras_error: None,
             columns: Vec::new(),
             indexes: Vec::new(),
             foreign_keys: Vec::new(),
@@ -382,16 +418,26 @@ impl SchemaView {
         }
     }
 
+    /// Show the SQL panel, for the sidebar's "Show DDL" and for a view tab
+    /// that somehow landed on the form.
+    pub(crate) fn show_sql_panel(&mut self, cx: &mut Context<Self>) {
+        self.panel = Panel::Sql;
+        cx.notify();
+    }
+
     /// Read the structure fresh from the server.
     ///
     /// Leaves `notice` alone: `apply`'s "Changes applied" is set right before
     /// this runs and is meant to survive it, since the reload it is
-    /// reporting on is this same one.
+    /// reporting on is this same one. The SQL panel and the extras reload
+    /// with the form, so applying an edit never leaves them stale.
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
         self.pending = None;
         self.rebuild_source = None;
+        self.definition_error = None;
+        self.extras_error = None;
         cx.notify();
 
         let connection = self.connection.clone();
@@ -400,7 +446,7 @@ impl SchemaView {
         if object.kind == ObjectKind::View {
             // A view has no structure to edit: show its stored `CREATE VIEW`
             // statement instead of the table builder.
-            let task = runtime::spawn(async move { connection.view_definition(&object).await });
+            let task = runtime::spawn(async move { connection.definition(&object).await });
 
             cx.spawn(async move |this, cx| {
                 let result = task.await;
@@ -408,13 +454,14 @@ impl SchemaView {
                     this.loading = false;
                     match result {
                         Ok(Ok(definition)) => {
-                            this.view_source.update(cx, |input, cx| {
+                            this.definition.update(cx, |input, cx| {
                                 input.set_value(definition, window, cx);
                             });
                         }
-                        Ok(Err(error)) => this.error = Some(format!("{error:#}")),
+                        Ok(Err(error)) => this.definition_error = Some(format!("{error:#}")),
                         Err(_) => {
-                            this.error = Some("reading the view's definition was cancelled".into())
+                            this.definition_error =
+                                Some("reading the view's definition was cancelled".into())
                         }
                     }
                     cx.notify();
@@ -436,7 +483,15 @@ impl SchemaView {
             } else {
                 None
             };
-            (schema, connection.objects().await, source)
+            let definition = connection.definition(&object).await;
+            let extras = connection.table_extras(&object).await;
+            (
+                schema,
+                connection.objects().await,
+                source,
+                definition,
+                extras,
+            )
         });
 
         cx.spawn(async move |this, cx| {
@@ -444,7 +499,23 @@ impl SchemaView {
             this.update_in(cx, |this, window, cx| {
                 this.loading = false;
                 match result {
-                    Ok((Ok(schema), objects, source)) => {
+                    Ok((Ok(schema), objects, source, definition, extras)) => {
+                        match definition {
+                            Ok(definition) => {
+                                this.definition.update(cx, |input, cx| {
+                                    input.set_value(definition, window, cx);
+                                });
+                            }
+                            Err(error) => {
+                                this.definition_error = Some(format!("{error:#}"));
+                            }
+                        }
+                        match extras {
+                            Ok(extras) => this.extras = extras,
+                            Err(error) => {
+                                this.extras_error = Some(format!("{error:#}"));
+                            }
+                        }
                         let mut columns = Vec::with_capacity(schema.columns.len());
                         for column in schema.columns.clone() {
                             columns.push(this.new_row(Some(column), window, cx));
@@ -477,7 +548,7 @@ impl SchemaView {
                         this.schema = Some(schema);
                         this.rebuild_source = source;
                     }
-                    Ok((Err(error), _, _)) => this.error = Some(format!("{error:#}")),
+                    Ok((Err(error), _, _, _, _)) => this.error = Some(format!("{error:#}")),
                     Err(_) => {
                         this.error = Some("reading the table's structure was cancelled".into())
                     }
@@ -832,19 +903,22 @@ impl SchemaView {
                                 .child(format!("Read-only: {reason}")),
                         )
                     })
-                    .when(self.is_editable() && self.pending.is_none(), |this| {
-                        this.child(
-                            Button::new("preview-schema-changes")
-                                .primary()
-                                .xsmall()
-                                .label("Preview changes")
-                                .tooltip("Preview the staged changes before applying")
-                                .disabled(self.applying || !self.has_changes(cx))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.preview(window, cx);
-                                })),
-                        )
-                    }),
+                    .when(
+                        self.is_editable() && self.pending.is_none() && self.panel == Panel::Form,
+                        |this| {
+                            this.child(
+                                Button::new("preview-schema-changes")
+                                    .primary()
+                                    .xsmall()
+                                    .label("Preview changes")
+                                    .tooltip("Preview the staged changes before applying")
+                                    .disabled(self.applying || !self.has_changes(cx))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.preview(window, cx);
+                                    })),
+                            )
+                        },
+                    ),
             )
     }
 }
@@ -855,28 +929,7 @@ impl Render for SchemaView {
             .id("schema-view")
             .test_support()
             .size_full()
-            .child(if self.object.kind == ObjectKind::View {
-                div()
-                    .id("schema-sections")
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        v_flex()
-                            .p_3()
-                            .gap_2()
-                            .size_full()
-                            .child(self.render_header(cx))
-                            .child(self.render_section_heading("Definition", cx))
-                            .child(
-                                Textarea::new(&self.view_source)
-                                    .flex_1()
-                                    .min_h_0()
-                                    .readonly(true)
-                                    .font_family(crate::settings::grid_font(cx)),
-                            ),
-                    )
-                    .into_any_element()
-            } else {
+            .child(if self.new_table {
                 div()
                     .id("schema-sections")
                     .flex_1()
@@ -890,6 +943,56 @@ impl Render for SchemaView {
                             .child(self.render_columns(cx))
                             .child(self.render_indexes(cx))
                             .child(self.render_foreign_keys(cx)),
+                    )
+                    .into_any_element()
+            } else if self.object.kind == ObjectKind::View {
+                // A view has no form: the tab is the SQL panel.
+                div()
+                    .id("schema-sections")
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        v_flex()
+                            .p_3()
+                            .gap_2()
+                            .size_full()
+                            .child(self.render_header(cx))
+                            .child(self.render_panel_toggle(cx))
+                            .child(self.render_sql_panel(cx)),
+                    )
+                    .into_any_element()
+            } else if self.panel == Panel::Sql {
+                div()
+                    .id("schema-sections")
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        v_flex()
+                            .p_3()
+                            .gap_2()
+                            .size_full()
+                            .child(self.render_header(cx))
+                            .child(self.render_panel_toggle(cx))
+                            .child(self.render_sql_panel(cx)),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .id("schema-sections")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .child(
+                        v_flex()
+                            .p_3()
+                            .gap_4()
+                            .child(self.render_header(cx))
+                            .child(self.render_panel_toggle(cx))
+                            .child(self.render_columns(cx))
+                            .child(self.render_indexes(cx))
+                            .child(self.render_foreign_keys(cx))
+                            .child(self.render_constraints(cx))
+                            .child(self.render_triggers(cx)),
                     )
                     .into_any_element()
             })
