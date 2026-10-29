@@ -133,6 +133,16 @@ pub fn is_binary_type(type_name: &str) -> bool {
         || name == "GEOMETRY"
 }
 
+/// Column types that hold raw bytes a file can replace, as a staged hex
+/// string decoded on the way back in (see `sql::binary_placeholder`).
+/// Narrower than [`is_binary_type`]: a `GEOMETRY` value is only meaningful
+/// as WKB, and an array of a binary type is not one value, so neither is
+/// offered a file to load — their dialogs stay read-only.
+pub fn is_blob_type(type_name: &str) -> bool {
+    let name = type_name.trim_matches('"').to_ascii_uppercase();
+    name == "BYTEA" || name.ends_with("BLOB") || name == "BINARY" || name == "VARBINARY"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +159,21 @@ mod tests {
         assert!(!is_placeholder(&Some("<>".into())));
         // Nor is a Postgres `circle`.
         assert!(!is_placeholder(&Some("<(1,2),3>".into())));
+    }
+
+    #[test]
+    fn blob_types_are_the_ones_a_file_can_replace() {
+        assert!(is_blob_type("BYTEA"));
+        assert!(is_blob_type("BLOB"));
+        assert!(is_blob_type("LONGBLOB"));
+        assert!(is_blob_type("BINARY"));
+        assert!(is_blob_type("VARBINARY"));
+        assert!(
+            !is_blob_type("GEOMETRY"),
+            "geometry bytes are WKB, not a file"
+        );
+        assert!(!is_blob_type("BYTEA[]"), "an array is not one value");
+        assert!(!is_blob_type("TEXT"));
     }
 
     #[test]

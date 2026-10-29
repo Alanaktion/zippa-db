@@ -6,6 +6,7 @@
 //! `DELETE`, on leaving the row or on demand. The statements live in [`sql`],
 //! exports in [`export`], and the status line in [`footer`].
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::input::{InputEvent, InputState, NumberInputEvent, StepAction};
@@ -955,7 +956,9 @@ impl TableView {
 
     /// The value dialog opened on a binary cell it could only describe; if
     /// the row can still be addressed by its key, re-read the real bytes and
-    /// replace the dialog with a preview of them.
+    /// replace the dialog with a preview of them. On a writable table the
+    /// replacement dialog can also stage a file's bytes on the cell, through
+    /// the same staged-edit path a typed value takes.
     fn on_binary_preview_requested(
         &mut self,
         _: &Entity<DataGrid>,
@@ -969,14 +972,29 @@ impl TableView {
 
         let column: SharedString = event.column.clone().into();
         let connection = self.connection.clone();
+        let save_binary = self.grid.read(cx).is_writable(cx).then(|| {
+            let grid = self.grid.downgrade();
+            let row = event.row;
+            let column_name = event.column.clone();
+            Rc::new(move |bytes: Vec<u8>, cx: &mut App| {
+                let Some(grid) = grid.upgrade() else {
+                    return;
+                };
+                grid.update(cx, |grid, cx| {
+                    grid.stage_binary_cell(row, &column_name, bytes, cx)
+                });
+            }) as value_dialog::SaveBinary
+        });
         let task = runtime::spawn(async move { connection.fetch_binary(&sql, params).await });
 
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(bytes))) = task.await else {
                 return;
             };
-            this.update(cx, |_, cx| value_dialog::open_binary(column, bytes, cx))
-                .ok();
+            this.update(cx, |_, cx| {
+                value_dialog::open_binary(column, bytes, save_binary, cx)
+            })
+            .ok();
         })
         .detach();
     }

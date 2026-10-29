@@ -86,7 +86,110 @@ fn a_binary_value_is_re_read_and_shown_as_a_hex_dump(cx: &mut TestAppContext) {
 
     let request = pending_value(cx);
     assert!(request.text.contains("00 11 22"), "{}", request.text);
-    assert!(request.save.is_none(), "the preview is read-only for now");
+    assert!(
+        request.save.is_none(),
+        "a binary value is not typed text, so it has no text save"
+    );
+    assert!(
+        request.save_binary.is_some(),
+        "a writable table's binary dialog can stage a file"
+    );
+}
+
+#[gpui_kit::test]
+fn a_loaded_file_stages_binary_bytes_that_commit_back(cx: &mut TestAppContext) {
+    let (database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.view_cell(0, 3, cx));
+    cx.run_until_parked();
+
+    let request = pending_value(cx);
+    let save_binary = request
+        .save_binary
+        .expect("a writable table's binary dialog stages a file");
+    cx.update(|cx| save_binary(vec![0xde, 0xad, 0xbe, 0xef], cx));
+
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.cell_for_test(0, 3, cx)),
+        Some("deadbeef".to_string()),
+        "the staged value is the file's bytes as hex"
+    );
+    assert_eq!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .staged(cx)
+            .len()),
+        1,
+        "staging a file is a staged edit like any other"
+    );
+
+    view.update(cx, |view, cx| view.commit(cx));
+    cx.run_until_parked();
+
+    assert_eq!(
+        runtime::block_on(payload_of(&database, 1)),
+        Some(vec![0xde, 0xad, 0xbe, 0xef]),
+        "applying should write the staged bytes back"
+    );
+}
+
+#[gpui_kit::test]
+fn the_dialog_loads_a_file_and_saves_it_as_a_staged_edit(cx: &mut TestAppContext) {
+    let (_database, handle, view) = workspace_table(cx);
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.update(cx, |grid, cx| grid.view_cell(0, 3, cx));
+    cx.run_until_parked();
+    draw_workspace(cx, &handle);
+
+    let dialog = handle
+        .update(cx, |workspace, _, _| workspace.value_dialog_for_test())
+        .unwrap()
+        .expect("the dialog should be open over the window");
+    dialog.read_with(cx, |dialog, _| {
+        assert!(
+            dialog.has_binary_save_for_test(),
+            "the binary dialog should offer to load a file"
+        );
+    });
+
+    dialog
+        .downgrade()
+        .update_in(cx, |dialog, window, cx| {
+            dialog.load_bytes_for_test(vec![0xde, 0xad, 0xbe, 0xef], window, cx);
+        })
+        .unwrap();
+    dialog.read_with(cx, |dialog, _| {
+        assert_eq!(
+            dialog.staged_bytes_for_test(),
+            Some(vec![0xde, 0xad, 0xbe, 0xef]),
+            "loading a file should hold its bytes for saving"
+        );
+    });
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.press("secondary-enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert!(
+        handle
+            .update(cx, |workspace, _, _| workspace
+                .value_dialog_for_test()
+                .is_none())
+            .unwrap(),
+        "saving should close the dialog"
+    );
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.cell_for_test(0, 3, cx)),
+        Some("deadbeef".to_string()),
+        "the saved file should be staged in the cell"
+    );
 }
 
 #[gpui_kit::test]

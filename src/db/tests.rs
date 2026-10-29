@@ -14,7 +14,7 @@ use super::schema::ReferentialAction;
 use super::{
     CatalogKind, Connection, ConnectionConfig, Credentials, DatabaseObject, Engine, ObjectKind,
     QueryDigest, RowKey, SafetyMode, SshAuth, SshConfig, SslConfig, SslMode, TagColor,
-    keyword_literal, quote_identifier, typed_placeholder,
+    binary_placeholder, keyword_literal, quote_identifier, typed_placeholder,
 };
 use super::{
     Decision, OnFailure, PinnedConnection, QueryOutcome, QuerySource, ScriptFailure, ScriptMode,
@@ -145,6 +145,167 @@ async fn fetch_binary_reads_the_real_bytes_a_query_only_describes() {
         .expect("fetch failed");
     assert_eq!(missing, None);
 
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_staged_binary_value_round_trips_through_its_hex() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    // The statement `update_statement` generates for a staged hex value on
+    // the BLOB column, with the hex bound the way every other value is.
+    let sql = format!(
+        "UPDATE items SET payload = {} WHERE id = ?",
+        binary_placeholder(Engine::Sqlite, 1)
+    );
+    let rows = connection
+        .execute(
+            &sql,
+            vec![Some("deadbeef".to_string()), Some("1".to_string())],
+        )
+        .await
+        .expect("the update failed");
+    assert_eq!(rows, 1);
+
+    let bytes = connection
+        .fetch_binary(
+            "SELECT payload FROM items WHERE id = ?",
+            vec![Some("1".to_string())],
+        )
+        .await
+        .expect("fetch failed");
+    assert_eq!(bytes, Some(vec![0xde, 0xad, 0xbe, 0xef]));
+
+    // A NULL staged on the same column decodes to NULL, not to an error.
+    let rows = connection
+        .execute(&sql, vec![None, Some("1".to_string())])
+        .await
+        .expect("clearing the value failed");
+    assert_eq!(rows, 1);
+    let bytes = connection
+        .fetch_binary(
+            "SELECT payload FROM items WHERE id = ?",
+            vec![Some("1".to_string())],
+        )
+        .await
+        .expect("fetch failed");
+    assert_eq!(bytes, None);
+
+    connection.close().await;
+}
+
+/// The same round trip on a live MySQL server, where the decode is `UNHEX`.
+/// The staged hex and the key are bound the way `update_statement` binds
+/// them; the fixture goes through the pool's text protocol.
+///
+/// Ignored by default because it needs a server; see
+/// `live_mysql_routines_carry_their_argument_types` for how to start one.
+/// `cargo test -- --ignored live_mysql_binary`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_binary_value_round_trips_through_unhex() {
+    let (connection, pool) = live_mysql().await;
+
+    for sql in [
+        "DROP TABLE IF EXISTS zippa_binary_probe",
+        "CREATE TABLE zippa_binary_probe (id INT PRIMARY KEY, payload BLOB)",
+        "INSERT INTO zippa_binary_probe VALUES (1, x'001122')",
+    ] {
+        pool.execute(AssertSqlSafe(sql.to_string()))
+            .await
+            .unwrap_or_else(|error| panic!("{sql}: {error}"));
+    }
+
+    let sql = format!(
+        "UPDATE zippa_binary_probe SET payload = {} WHERE id = ?",
+        binary_placeholder(Engine::MySql, 1)
+    );
+    let rows = connection
+        .execute(
+            &sql,
+            vec![Some("deadbeef".to_string()), Some("1".to_string())],
+        )
+        .await
+        .expect("the update failed");
+    assert_eq!(rows, 1);
+
+    let bytes = connection
+        .fetch_binary(
+            "SELECT payload FROM zippa_binary_probe WHERE id = ?",
+            vec![Some("1".to_string())],
+        )
+        .await
+        .expect("fetch failed");
+    assert_eq!(bytes, Some(vec![0xde, 0xad, 0xbe, 0xef]));
+
+    pool.execute(AssertSqlSafe("DROP TABLE zippa_binary_probe".to_string()))
+        .await
+        .expect("could not drop the probe table");
+    connection.close().await;
+    pool.close().await;
+}
+
+/// The same round trip on a live Postgres server, where the decode is
+/// `decode($1, 'hex')` and the key is cast the way `update_statement` casts
+/// it.
+///
+/// Ignored by default because it needs a server; see
+/// `live_postgres_money_scales_by_the_servers_locale_not_always_by_100` for
+/// how to start one. `cargo test -- --ignored live_postgres_binary`.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_binary_value_round_trips_through_decode() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+
+    connection
+        .execute("DROP TABLE IF EXISTS zippa_binary_probe", vec![])
+        .await
+        .expect("could not drop the probe table");
+    connection
+        .execute(
+            "CREATE TABLE zippa_binary_probe (id INT PRIMARY KEY, payload BYTEA)",
+            vec![],
+        )
+        .await
+        .expect("could not create the probe table");
+    connection
+        .execute(
+            "INSERT INTO zippa_binary_probe VALUES (1, decode('001122', 'hex'))",
+            vec![],
+        )
+        .await
+        .expect("could not seed the probe table");
+
+    let sql = format!(
+        "UPDATE zippa_binary_probe SET payload = {} WHERE id = {}",
+        binary_placeholder(Engine::Postgres, 1),
+        typed_placeholder(Engine::Postgres, 2, "INT4")
+    );
+    let rows = connection
+        .execute(
+            &sql,
+            vec![Some("deadbeef".to_string()), Some("1".to_string())],
+        )
+        .await
+        .expect("the update failed");
+    assert_eq!(rows, 1);
+
+    let bytes = connection
+        .fetch_binary(
+            "SELECT payload FROM zippa_binary_probe WHERE id = cast($1 as INT4)",
+            vec![Some("1".to_string())],
+        )
+        .await
+        .expect("fetch failed");
+    assert_eq!(bytes, Some(vec![0xde, 0xad, 0xbe, 0xef]));
+
+    connection
+        .execute("DROP TABLE zippa_binary_probe", vec![])
+        .await
+        .expect("could not drop the probe table");
     connection.close().await;
 }
 

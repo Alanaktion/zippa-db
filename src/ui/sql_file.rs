@@ -98,6 +98,12 @@ pub async fn read(path: PathBuf) -> Result<String> {
     std::fs::read_to_string(&path).with_context(|| format!("could not open {}", path.display()))
 }
 
+/// Read a file's raw bytes, for values that are not text. Blocking: run it
+/// on a background executor, like [`read`].
+pub async fn read_bytes(path: PathBuf) -> Result<Vec<u8>> {
+    std::fs::read(&path).with_context(|| format!("could not open {}", path.display()))
+}
+
 /// Write a buffer to a file. Blocking: run it on a background executor.
 pub async fn write(path: PathBuf, contents: String) -> Result<()> {
     std::fs::write(&path, contents).with_context(|| format!("could not save {}", path.display()))

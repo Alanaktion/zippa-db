@@ -442,6 +442,24 @@ pub(crate) fn typed_placeholder(engine: Engine, index: usize, type_name: &str) -
     }
 }
 
+/// A placeholder that decodes a staged binary value on the way back in.
+///
+/// A staged binary value is the file's bytes as lowercase hex (see
+/// `binary::hex_encode`): bound as text, like every other parameter, and
+/// decoded by the server rather than by the client, so no binding path has
+/// to learn a new type. Postgres decodes hex to `bytea` outright; MySQL and
+/// SQLite have their own `UNHEX`/`unhex` (SQLite's dates to 3.43, well
+/// before the version sqlx bundles). A `NULL` decodes to `NULL` on all
+/// three, so a cleared binary cell needs no special case.
+pub(crate) fn binary_placeholder(engine: Engine, index: usize) -> String {
+    let placeholder = placeholder(engine, index);
+    match engine {
+        Engine::Postgres => format!("decode({placeholder}, 'hex')"),
+        Engine::MySql => format!("UNHEX({placeholder})"),
+        Engine::Sqlite => format!("unhex({placeholder})"),
+    }
+}
+
 /// The type a Postgres parameter is cast to on its way into a `type_name`
 /// column.
 ///
@@ -495,6 +513,13 @@ mod tests {
     #[test]
     fn the_reserved_list_is_sorted_for_its_search() {
         assert!(RESERVED.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn a_binary_value_is_decoded_from_its_hex_on_each_engine() {
+        assert_eq!(binary_placeholder(Engine::Postgres, 2), "decode($2, 'hex')");
+        assert_eq!(binary_placeholder(Engine::MySql, 2), "UNHEX(?)");
+        assert_eq!(binary_placeholder(Engine::Sqlite, 2), "unhex(?)");
     }
 
     #[test]

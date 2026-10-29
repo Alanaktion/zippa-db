@@ -40,6 +40,19 @@ pub fn sniff_image(bytes: &[u8]) -> Option<ImageKind> {
 /// the dialog with text nobody reads that far into.
 const HEX_DUMP_LIMIT: usize = 4096;
 
+/// `bytes` as lowercase hex, the form a staged binary value takes on its way
+/// back to the server: the write path decodes it per engine (see
+/// `sql::binary_placeholder`), so the staged text itself is never the value.
+/// Lowercase, so the grid can tell a staged binary value from typed text by
+/// the column's type alone.
+pub fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 /// `bytes` laid out sixteen to a line: an offset, the hex, and the printable
 /// ASCII of the same bytes — the classic hex editor layout, capped at
 /// [`HEX_DUMP_LIMIT`].
@@ -91,6 +104,13 @@ mod tests {
         assert_eq!(sniff_image(b"BMrest"), Some(ImageKind::Bmp));
         assert_eq!(sniff_image(b"\x00\x11\x22"), None);
         assert_eq!(sniff_image(b""), None);
+    }
+
+    #[test]
+    fn hex_encode_round_trips_through_the_byte_count() {
+        assert_eq!(hex_encode(&[]), "");
+        assert_eq!(hex_encode(&[0x00, 0xab, 0xff]), "00abff");
+        assert!(hex_encode(b"abc").chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
