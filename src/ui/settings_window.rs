@@ -233,6 +233,23 @@ fn editor_page() -> SettingPage {
                 )
                 .item(
                     SettingItem::new(
+                        "Run dashboard widgets in parallel",
+                        SettingField::switch(
+                            |cx| Settings::global(cx).parallel_dashboard_queries,
+                            |value, cx| {
+                                settings::update(cx, |settings| {
+                                    settings.parallel_dashboard_queries = value
+                                })
+                            },
+                        )
+                        .default_value(false),
+                    )
+                    .description(
+                        "On, each widget runs at once on its own connection. Off, they run one at a time.",
+                    ),
+                )
+                .item(
+                    SettingItem::new(
                         "Rows to limit to",
                         SettingField::number_input(
                             NumberFieldOptions {

@@ -114,6 +114,47 @@ fn opening_a_dashboard_runs_each_widget(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn parallel_dashboard_queries_run_every_widget(cx: &mut TestAppContext) {
+    let _lock = dashboards::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    cx.update(|cx| {
+        cx.set_global(Settings {
+            parallel_dashboard_queries: true,
+            ..Settings::default()
+        })
+    });
+    let (_database, handle) = dashboard_session(
+        cx,
+        vec![dashboard(
+            "Ops",
+            vec![
+                grid_widget("select id, name from items;"),
+                grid_widget("select id from items;"),
+                grid_widget("select nope from items;"),
+            ],
+            &[],
+        )],
+    );
+    open_dashboard(cx, handle, "Ops");
+    let summaries = summaries(cx, handle);
+    assert_eq!(summaries.len(), 3);
+    // All three land, and the failing one is its own error rather than
+    // taking the batch down: parallel runs the queue as one batch.
+    assert_eq!(summaries[0].status, "done");
+    assert_eq!(summaries[0].rows, Some(2));
+    assert_eq!(summaries[1].status, "done");
+    assert_eq!(summaries[1].rows, Some(2));
+    assert!(
+        summaries[2].status.starts_with("error"),
+        "the failing widget should report its own error: {}",
+        summaries[2].status
+    );
+    dashboards::reset_for_test();
+    cx.update(|cx| cx.set_global(Settings::default()));
+}
+
+#[gpui_kit::test]
 fn a_query_with_its_own_limit_gets_no_implicit_limit(cx: &mut TestAppContext) {
     let _lock = dashboards::FILE_LOCK
         .lock()

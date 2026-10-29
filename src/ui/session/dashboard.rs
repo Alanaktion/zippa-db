@@ -9,19 +9,22 @@
 //! and editable from the header. A widget that fails, or whose columns
 //! moved, is its own error cell; the rest of the dashboard still renders.
 //!
-//! The run path is the query tab's, one widget at a time: substitute the
-//! dashboard's variables, apply the implicit limit, refuse writes the
-//! session refuses, and run through [`Connection::run_query_with`] on the
-//! runtime thread. Widgets run one at a time from a queue, each named by a
-//! stable id rather than a position. Editing a widget queues it behind
+//! The run path is the query tab's: substitute the dashboard's variables,
+//! apply the implicit limit, refuse writes the session refuses, and run
+//! through [`Connection::run_query_with`] on the runtime thread. Widgets
+//! run from a queue, each named by a stable id rather than a position.
+//! Sequential is the default — one widget at a time — and the
+//! `parallel_dashboard_queries` setting runs the queued widgets at once,
+//! each on its own pooled connection. Editing a widget queues it behind
 //! whatever is running; only that widget's own run in flight is dropped,
-//! and a per-run token keeps the dropped run's rows from landing. Changes
+//! and a per-widget token keeps a dropped run's rows from landing. Changes
 //! that invalidate everything — a new connection, new variables — cancel
 //! the whole queue instead.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::{DialogButtonProps, DialogFooter};
@@ -78,6 +81,11 @@ struct WidgetState {
     status: WidgetStatus,
     result: Option<QueryResult>,
     applied_limit: Option<usize>,
+    /// The token of this widget's run in flight, if any: a run lands its
+    /// rows only while it still holds this token, so dropping the run —
+    /// by editing or deleting the widget, or cancelling the refresh — is
+    /// what keeps stale rows off the screen.
+    token: u64,
 }
 
 impl WidgetState {
@@ -88,6 +96,7 @@ impl WidgetState {
             status: WidgetStatus::Idle,
             result: None,
             applied_limit: None,
+            token: 0,
         }
     }
 
@@ -120,17 +129,18 @@ pub(crate) struct DashboardView {
     refreshing: bool,
     /// Widgets waiting to run, by id, in the order they were asked for.
     queue: VecDeque<u64>,
-    /// The widget whose query is in flight.
-    current: Option<u64>,
-    /// Bumped whenever the run in flight is dropped or a new one starts. A
-    /// run lands its rows only if the token it started with is still
-    /// current.
+    /// Widgets whose job left the queue and has not landed or been dropped.
+    in_flight: HashSet<u64>,
+    /// Bumped whenever a run starts or is dropped, and handed to the widget
+    /// as its token. A run lands its rows only while it still holds its
+    /// widget's token.
     job: u64,
     /// Bumped by a cancel of everything. The driver exits when it sees a
     /// different epoch than it started in.
     epoch: u64,
     next_id: u64,
-    running: Option<tokio::task::AbortHandle>,
+    /// Abort handles for the runs in flight, by widget id.
+    running: HashMap<u64, tokio::task::AbortHandle>,
     variables_dialog: Option<Entity<VariablesView>>,
 }
 
@@ -156,11 +166,11 @@ impl DashboardView {
             widgets,
             refreshing: false,
             queue: VecDeque::new(),
-            current: None,
+            in_flight: HashSet::new(),
             job: 0,
             epoch: 0,
             next_id: dashboard_len,
-            running: None,
+            running: HashMap::new(),
             variables_dialog: None,
         }
     }
@@ -221,7 +231,9 @@ impl DashboardView {
         self.epoch += 1;
         self.refreshing = false;
         self.queue.clear();
-        self.discard_current();
+        for id in self.in_flight.iter().copied().collect::<Vec<_>>() {
+            self.discard(id);
+        }
         for widget in &mut self.widgets {
             if matches!(widget.status, WidgetStatus::Running | WidgetStatus::Queued) {
                 widget.status = WidgetStatus::Idle;
@@ -230,23 +242,36 @@ impl DashboardView {
         cx.notify();
     }
 
-    /// Drop the run in flight, if any, so its rows never land. The driver
-    /// carries on with the queue.
-    fn discard_current(&mut self) {
+    /// Drop widget `id`'s run in flight, if any, so its rows never land:
+    /// its token moves on, so the run fails the landing check, and its
+    /// abort handle is fired. The driver carries on with the queue.
+    fn discard(&mut self, id: u64) {
+        if !self.in_flight.remove(&id) {
+            return;
+        }
         self.job += 1;
-        self.current = None;
-        if let Some(running) = self.running.take() {
+        if let Some(widget) = self.widgets.iter_mut().find(|widget| widget.id == id) {
+            widget.token = self.job;
+        }
+        if let Some(running) = self.running.remove(&id) {
             running.abort();
         }
+    }
+
+    /// Whether `token` is still the run widget `id` is waiting on: a run
+    /// whose widget was edited, deleted, or cancelled holds a stale token.
+    fn token_current(&self, id: u64, token: u64) -> bool {
+        self.widgets
+            .iter()
+            .find(|widget| widget.id == id)
+            .is_some_and(|widget| widget.token == token)
     }
 
     /// Take widget `id` out of the queue and out of flight, as when it is
     /// edited or deleted and whatever it was about to run is stale.
     fn withdraw(&mut self, id: u64) {
         self.queue.retain(|queued| *queued != id);
-        if self.current == Some(id) {
-            self.discard_current();
-        }
+        self.discard(id);
     }
 
     fn index_of(&self, id: u64) -> Option<usize> {
@@ -315,7 +340,8 @@ impl DashboardView {
         self.start_refresh(ids, cx);
     }
 
-    /// Queue widgets to run, one at a time, on the runtime thread. A widget
+    /// Queue widgets to run on the runtime thread: one at a time by
+    /// default, all at once with `parallel_dashboard_queries`. A widget
     /// already waiting keeps its place; one whose query is in flight has
     /// that query dropped and goes to the back, since its SQL or variables
     /// are what changed. Every other widget's run is left alone.
@@ -338,9 +364,7 @@ impl DashboardView {
     }
 
     fn withdraw_if_running(&mut self, id: u64) {
-        if self.current == Some(id) {
-            self.discard_current();
-        }
+        self.discard(id);
     }
 
     /// The next widget to run: its SQL and variables are read now, at its
@@ -355,7 +379,8 @@ impl DashboardView {
                 continue;
             };
             self.job += 1;
-            self.current = Some(id);
+            self.in_flight.insert(id);
+            self.widgets[index].token = self.job;
             self.widgets[index].status = WidgetStatus::Running;
             return Some(Job {
                 id,
@@ -367,78 +392,111 @@ impl DashboardView {
         None
     }
 
+    /// Work through the queue until it is empty. Each pass takes one batch
+    /// — a single widget when sequential, the whole queue when parallel —
+    /// and runs the batch's queries together, landing each result as it
+    /// finishes. A widget queued while a batch runs is picked up by the
+    /// next pass, so a refresh in flight never needs a second driver.
     fn drive(&mut self, cx: &mut Context<Self>) {
         let epoch = self.epoch;
-        let (limit_on, limit_rows) = {
+        let (limit_on, limit_rows, parallel) = {
             let settings = Settings::global(cx);
-            (settings.implicit_limit, settings.implicit_limit_rows)
+            (
+                settings.implicit_limit,
+                settings.implicit_limit_rows,
+                settings.parallel_dashboard_queries,
+            )
         };
         let limit = limit_on.then_some(limit_rows);
         let engine = self.engine;
         let connection = self.connection.clone();
         cx.spawn(async move |this, cx| {
             loop {
-                let job = this.update_in(cx, |view, _, cx| {
-                    let job = view.next_job(epoch);
+                let jobs = this.update_in(cx, |view, _, cx| {
+                    let mut jobs = Vec::new();
+                    while let Some(job) = view.next_job(epoch) {
+                        jobs.push(job);
+                        if !parallel {
+                            break;
+                        }
+                    }
                     cx.notify();
-                    job
+                    jobs
                 });
-                let Ok(Some(Job {
+                let Ok(jobs) = jobs else {
+                    return;
+                };
+                if jobs.is_empty() {
+                    break;
+                }
+                let mut pending = FuturesUnordered::new();
+                for Job {
                     id,
                     token,
                     sql,
                     variables,
-                })) = job
-                else {
-                    break;
-                };
-                let (sql, params, applied) = match params::substitute(&sql, &variables, engine) {
-                    Ok((sql, params)) => {
-                        let limited =
-                            limit.and_then(|rows| statement::with_limit(&sql, rows, engine));
-                        let applied = limit.filter(|_| limited.is_some());
-                        (limited.unwrap_or(sql), params, applied)
-                    }
-                    Err(error) => {
-                        this.update_in(cx, |view, _, cx| {
-                            if view.job == token {
-                                view.current = None;
-                                view.set_widget_error(id, format!("{error:#}"), cx);
+                } in jobs
+                {
+                    let (sql, params, applied) = match params::substitute(&sql, &variables, engine)
+                    {
+                        Ok((sql, params)) => {
+                            let limited =
+                                limit.and_then(|rows| statement::with_limit(&sql, rows, engine));
+                            let applied = limit.filter(|_| limited.is_some());
+                            (limited.unwrap_or(sql), params, applied)
+                        }
+                        Err(error) => {
+                            this.update_in(cx, |view, _, cx| {
+                                if view.token_current(id, token) {
+                                    view.in_flight.remove(&id);
+                                    view.set_widget_error(id, format!("{error:#}"), cx);
+                                }
+                            })
+                            .ok();
+                            continue;
+                        }
+                    };
+                    let connection = connection.clone();
+                    let task =
+                        runtime::spawn(
+                            async move { connection.run_query_with(&sql, params).await },
+                        );
+                    // A drop between the spawn and this store must not hand
+                    // the stale handle to the next run.
+                    this.update_in(cx, |view, _, _| {
+                        if view.token_current(id, token) {
+                            // Under test there is no Tokio task behind the
+                            // run, so there is no handle to store.
+                            if let Some(handle) = task.abort_handle() {
+                                view.running.insert(id, handle);
                             }
-                        })
-                        .ok();
-                        continue;
-                    }
-                };
-                let connection = connection.clone();
-                let task =
-                    runtime::spawn(async move { connection.run_query_with(&sql, params).await });
-                // A drop between the spawn and this store must not hand the
-                // stale handle to the next run.
-                this.update_in(cx, |view, _, _| {
-                    if view.job == token {
-                        view.running = task.abort_handle();
-                    }
-                })
-                .ok();
-                let result = task.await;
-                let landed = this.update_in(cx, |view, _, cx| {
-                    if view.job != token {
-                        // Dropped while it ran: whoever dropped it already
-                        // reset the cell, and the rows are for SQL the
-                        // widget may no longer run.
+                        }
+                    })
+                    .ok();
+                    pending.push(async move {
+                        let result = task.await;
+                        (id, token, applied, result)
+                    });
+                }
+                while let Some((id, token, applied, result)) = pending.next().await {
+                    let landed = this.update_in(cx, |view, _, cx| {
+                        if !view.token_current(id, token) {
+                            // Dropped while it ran: whoever dropped it
+                            // already reset the cell, and the rows are for
+                            // SQL the widget may no longer run.
+                            return;
+                        }
+                        view.in_flight.remove(&id);
+                        view.running.remove(&id);
+                        match result {
+                            Ok(Ok(result)) => view.set_widget_result(id, result, applied, cx),
+                            Ok(Err(error)) => view.set_widget_error(id, format!("{error:#}"), cx),
+                            Err(_) => view.set_widget_error(id, "Cancelled".to_string(), cx),
+                        }
+                    });
+                    if landed.is_err() {
                         return;
                     }
-                    view.current = None;
-                    view.running = None;
-                    match result {
-                        Ok(Ok(result)) => view.set_widget_result(id, result, applied, cx),
-                        Ok(Err(error)) => view.set_widget_error(id, format!("{error:#}"), cx),
-                        Err(_) => view.set_widget_error(id, "Cancelled".to_string(), cx),
-                    }
-                });
-                if landed.is_err() {
-                    return;
                 }
             }
             this.update_in(cx, |view, _, cx| {
