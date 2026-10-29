@@ -2,10 +2,10 @@
 
 use gpui_kit::{App, Context, Window};
 
-use crate::db::{DatabaseObject, ReferentialAction, TableSchema};
+use crate::db::{DatabaseObject, ReferentialAction, TableExtras, TableSchema};
 
-use super::SchemaView;
 use super::rebuild::Change;
+use super::{Panel, SchemaView};
 
 impl SchemaView {
     pub(crate) fn schema_for_test(&self) -> Option<TableSchema> {
@@ -292,7 +292,47 @@ impl SchemaView {
 
     /// The `CREATE VIEW` text the structure tab shows for a view.
     pub(crate) fn view_source_for_test(&self, cx: &App) -> String {
-        self.view_source.read(cx).value().to_string()
+        self.definition.read(cx).value().to_string()
+    }
+
+    /// Which half of the tab is showing.
+    pub(crate) fn panel_for_test(&self) -> Panel {
+        self.panel
+    }
+
+    /// Whether the form half is available: views have none.
+    pub(crate) fn form_disabled_for_test(&self) -> bool {
+        self.object.kind == crate::db::ObjectKind::View
+    }
+
+    /// Switch halves the way the toggle buttons do.
+    pub(crate) fn set_panel_for_test(&mut self, panel: Panel, cx: &mut Context<Self>) {
+        if self.object.kind == crate::db::ObjectKind::View {
+            return;
+        }
+        self.panel = panel;
+        cx.notify();
+    }
+
+    /// The SQL panel's definition text.
+    pub(crate) fn definition_for_test(&self, cx: &App) -> String {
+        self.definition.read(cx).value().to_string()
+    }
+
+    /// The read-only extras: checks, constraints, and triggers.
+    pub(crate) fn extras_for_test(&self) -> TableExtras {
+        self.extras.clone()
+    }
+
+    /// The note the SQL panel carries when the form has unsaved changes,
+    /// or `None` when it carries none.
+    pub(crate) fn sql_panel_note_for_test(&self, cx: &App) -> Option<String> {
+        self.sql_panel_note(cx).map(str::to_string)
+    }
+
+    /// Run the SQL panel's Copy the way its button does.
+    pub(crate) fn copy_definition_for_test(&mut self, cx: &mut Context<Self>) {
+        self.copy_definition(cx);
     }
 
     /// Read the structure again, the way applying a change does — used to

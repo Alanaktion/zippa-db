@@ -15,6 +15,8 @@
 //! * [`catalog`] — the whole schema once per session, and the search over it.
 //! * [`completion`] — what the SQL editor offers for the word under the caret.
 //! * [`schema`] — a table's own definition: columns, indexes, foreign keys.
+//! * [`ddl`] — that definition as runnable SQL text, plus its checks,
+//!   unique/exclusion constraints, and triggers.
 //! * [`sql`] — quoting and placing bind parameters in generated statements.
 //! * [`statement`] — splitting and classifying the user's own SQL.
 //! * [`plan`] — reading an `EXPLAIN` into a tree.
@@ -37,6 +39,7 @@ pub mod catalog;
 pub mod completion;
 pub mod config;
 pub mod connection;
+pub mod ddl;
 pub(crate) mod dedicated;
 pub mod erd;
 pub mod export;
@@ -73,6 +76,7 @@ pub use connection::{
     Connection, Credentials, DatabaseObject, ObjectKind, QueryDigest, RowKey, StoredKind,
     StoredObject,
 };
+pub use ddl::TableExtras;
 pub use import::{ImportProgress, ImportRequest, ImportSummary, OnError};
 pub use pinned::{PinnedConnection, TxnState};
 pub use plan::{Explained, Plan, PlanNode};

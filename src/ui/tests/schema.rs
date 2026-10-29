@@ -1338,3 +1338,193 @@ fn the_new_table_command_opens_a_tab_except_on_a_read_only_connection(cx: &mut T
         );
     }
 }
+
+#[gpui_kit::test]
+fn the_sql_panel_shows_the_tables_current_definition(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = schema_view(cx);
+
+    assert_eq!(
+        view.read_with(cx, |view, _| view.panel_for_test()),
+        crate::ui::schema_view::Panel::Form,
+        "a table's structure tab opens on the form"
+    );
+    view.downgrade()
+        .update_in(cx, |view, _, cx| {
+            view.set_panel_for_test(crate::ui::schema_view::Panel::Sql, cx);
+        })
+        .unwrap();
+
+    let definition = view.read_with(cx, |view, cx| view.definition_for_test(cx));
+    assert!(
+        definition.to_ascii_uppercase().starts_with("CREATE TABLE"),
+        "the SQL panel should show the table's CREATE TABLE, got: {definition}"
+    );
+    assert!(
+        definition.contains("items"),
+        "the definition should name the table, got: {definition}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_view_tab_opens_on_sql_with_form_disabled(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    let object = DatabaseObject {
+        schema: None,
+        name: "named_items".into(),
+        kind: ObjectKind::View,
+    };
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_schema_for_test(&object, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let view = handle
+        .update(cx, |session, _, cx| session.active_schema_view(cx))
+        .unwrap()
+        .expect("opening a view's structure should open a schema view");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.panel_for_test()),
+        crate::ui::schema_view::Panel::Sql,
+        "a view tab opens on SQL"
+    );
+    assert!(
+        view.read_with(cx, |view, _| view.form_disabled_for_test()),
+        "a view tab's Form half is disabled"
+    );
+}
+
+#[gpui_kit::test]
+fn editing_a_column_then_viewing_sql_shows_the_unchanged_definition_and_the_note(
+    cx: &mut TestAppContext,
+) {
+    let (_database, _handle, view) = schema_view(cx);
+    cx.run_until_parked();
+
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.set_column_name_for_test(1, "full_name", window, cx);
+            view.set_panel_for_test(crate::ui::schema_view::Panel::Sql, cx);
+        })
+        .unwrap();
+
+    let definition = view.read_with(cx, |view, cx| view.definition_for_test(cx));
+    assert!(
+        !definition.contains("full_name"),
+        "the SQL panel shows the database definition, not the pending rename, got: {definition}"
+    );
+    assert_eq!(
+        view.read_with(cx, |view, cx| view.sql_panel_note_for_test(cx)),
+        Some("Shows the current database definition, not your pending changes.".to_string()),
+        "the panel should say it is not showing pending edits"
+    );
+}
+
+#[gpui_kit::test]
+fn copy_from_the_sql_panel_puts_the_definition_on_the_clipboard(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = schema_view(cx);
+    cx.run_until_parked();
+
+    view.downgrade()
+        .update_in(cx, |view, _, cx| {
+            view.set_panel_for_test(crate::ui::schema_view::Panel::Sql, cx);
+            view.copy_definition_for_test(cx);
+        })
+        .unwrap();
+
+    let copied = clipboard(cx).unwrap_or_default();
+    assert!(
+        copied.to_ascii_uppercase().starts_with("CREATE TABLE"),
+        "Copy should put the definition on the clipboard, got: {copied}"
+    );
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test()),
+        Some("Copied definition of items".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn open_in_query_tab_opens_a_tab_holding_the_definition(cx: &mut TestAppContext) {
+    let (_database, handle, view) = schema_view(cx);
+    cx.run_until_parked();
+
+    view.downgrade()
+        .update_in(cx, |view, _, cx| {
+            view.set_panel_for_test(crate::ui::schema_view::Panel::Sql, cx);
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.click("open-definition-in-query-tab", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        handle
+            .update(cx, |session, _, cx| session.tab_titles(cx))
+            .unwrap(),
+        ["Query 1", "items", "Query 2"],
+        "opening in a query tab adds one"
+    );
+    let buffer = handle
+        .update(cx, |session, _, cx| {
+            session
+                .active_editor_for_test(cx)
+                .expect("the new tab has an editor")
+                .read(cx)
+                .sql(cx)
+        })
+        .unwrap();
+    assert!(
+        buffer.to_ascii_uppercase().starts_with("CREATE TABLE"),
+        "the new query tab should hold the definition, got: {buffer}"
+    );
+}
+
+#[gpui_kit::test]
+fn the_structure_tab_lists_checks_and_triggers(cx: &mut TestAppContext) {
+    let (database, handle, _view) = schema_view(cx);
+
+    runtime::block_on(async {
+        let connection = Connection::open(database.config(), None)
+            .await
+            .expect("could not reopen the test database");
+        for statement in [
+            "CREATE TABLE guarded (id INTEGER PRIMARY KEY, score REAL CHECK (score > 0))",
+            "CREATE TRIGGER guarded_guard AFTER INSERT ON guarded BEGIN SELECT 1; END",
+        ] {
+            connection
+                .run_query(statement)
+                .await
+                .expect("could not seed the table");
+        }
+        connection.close().await;
+    });
+
+    let object = DatabaseObject {
+        schema: None,
+        name: "guarded".into(),
+        kind: ObjectKind::Table,
+    };
+    handle
+        .update(cx, |session, window, cx| {
+            session.open_schema_for_test(&object, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let view = handle
+        .update(cx, |session, _, cx| session.active_schema_view(cx))
+        .unwrap()
+        .expect("opening the table's structure should open a schema view");
+    let extras = view.read_with(cx, |view, _| view.extras_for_test());
+    assert_eq!(extras.checks.len(), 1);
+    assert_eq!(extras.checks[0].expression, "CHECK (score > 0)");
+    assert_eq!(extras.triggers.len(), 1);
+    assert_eq!(extras.triggers[0].name, "guarded_guard");
+    assert_eq!(extras.triggers[0].timing, "AFTER");
+    assert_eq!(extras.triggers[0].events, "INSERT");
+}

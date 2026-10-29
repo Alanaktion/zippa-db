@@ -20,7 +20,7 @@
 - **Safety modes.** Read-only (enforced by the server *and* your SQL), confirm writes, staged edits, or auto-apply — per connection.
 - **SQL editor.** Highlighting, table/column/keyword completion, run statement / selection / script, per-tab pinned connections so transactions survive across runs, `EXPLAIN` plan trees, and `:name` / `$name` query variables.
 - **Tables.** Page, sort, and filter; stage cell edits, new rows, and deletions, then apply them together.
-- **Structure.** Edit columns, indexes, and foreign keys with a generated-SQL preview; see every table, its columns, and the foreign keys between them as a pannable, zoomable ER diagram, exportable to SVG.
+- **Structure.** Edit columns, indexes, and foreign keys with a generated-SQL preview; switch any structure tab to its SQL panel for the table's or view's current definition as read-only text, with its check constraints and triggers, copyable or openable in a query tab; see every table, its columns, and the foreign keys between them as a pannable, zoomable ER diagram, exportable to SVG.
 - **Import & export.** Results out as CSV, TSV, JSON, Markdown, or SQL `INSERT`; SQL dumps in (plain, gzip, bzip2, zstd) with progress and per-error choices.
 - **Server tools.** A console of every statement sent, process list, server variables, query digest, and user management (Postgres/MySQL), plus SQLite maintenance.
 - **Keyboard first.** Every command is in the menu bar, nearly all with a shortcut — `Ctrl`+`/` lists them all.

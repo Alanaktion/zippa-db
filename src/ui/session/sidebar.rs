@@ -294,7 +294,11 @@ impl Session {
                         let open_session = menu_session.clone();
                         let open_object = object.clone();
                         let inspect_session = menu_session.clone();
-                        let inspect_object = object;
+                        let inspect_object = object.clone();
+                        let copy_session = menu_session.clone();
+                        let copy_object = object.clone();
+                        let show_session = menu_session.clone();
+                        let show_object = object;
                         let new_table_session = menu_session.clone();
                         let read_only = menu_session
                             .read(cx)
@@ -320,6 +324,18 @@ impl Session {
                                 });
                             },
                         ))
+                        .item(PopupMenuItem::new("Copy DDL").on_click(move |_, _, cx| {
+                            copy_session.update(cx, |this, cx| {
+                                this.copy_ddl(&copy_object, cx);
+                            });
+                        }))
+                        .item(
+                            PopupMenuItem::new("Show DDL").on_click(move |_, window, cx| {
+                                show_session.update(cx, |this, cx| {
+                                    this.open_ddl(&show_object, window, cx);
+                                });
+                            }),
+                        )
                         .separator()
                         .item(
                             PopupMenuItem::new("New table…")

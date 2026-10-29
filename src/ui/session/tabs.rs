@@ -11,10 +11,10 @@ use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::dock::PanelId;
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, Window};
+use gpui_kit::{App, ClipboardItem, Context, Entity, Window};
 
 use crate::dashboards::{self, Dashboard};
-use crate::db::{DatabaseObject, PinnedConnection};
+use crate::db::{DatabaseObject, PinnedConnection, runtime};
 use crate::ui::filter_bar::FilterSpec;
 use crate::ui::schema_view::{SchemaView, SchemaViewEvent};
 use crate::ui::table_view::{TableView, TableViewEvent};
@@ -263,6 +263,10 @@ impl Session {
             ObjectViewMode::Schema => {
                 let view = cx
                     .new(|cx| SchemaView::new(self.connection.clone(), object.clone(), window, cx));
+                // The SQL panel's "Open in query tab" and the new-table
+                // flow both report through this event.
+                cx.subscribe_in(&view, window, Self::on_schema_view_event)
+                    .detach();
                 // No "Structure" suffix: the tab's icon tells it from the data
                 // tab of the same table.
                 let title = object.label();
@@ -271,6 +275,87 @@ impl Session {
         };
 
         self.install(panel, window, cx);
+    }
+
+    /// Open a table or view's structure tab on its SQL panel, or bring the
+    /// tab forward and switch it there — the sidebar's "Show DDL". A reused
+    /// tab re-reads its definition first, so an external `ALTER` does not
+    /// leave the panel showing — and copying — stale DDL; a new tab is
+    /// already loading its own.
+    pub(crate) fn open_ddl(
+        &mut self,
+        object: &DatabaseObject,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let existed = self.panels.iter().any(|panel| {
+            let panel = panel.read(cx);
+            panel.mode() == Some(ObjectViewMode::Schema)
+                && panel.object(cx).as_ref() == Some(object)
+        });
+        self.open_object(object, ObjectViewMode::Schema, window, cx);
+        if let Some(panel) = self
+            .panels
+            .iter()
+            .find(|panel| {
+                panel
+                    .read(cx)
+                    .schema_view()
+                    .is_some_and(|view| view.read(cx).object() == object)
+            })
+            .cloned()
+        {
+            panel.update(cx, |panel, cx| {
+                if let Some(view) = panel.schema_view() {
+                    view.update(cx, |view, cx| {
+                        view.show_sql_panel(cx);
+                        if existed {
+                            view.reload_definition(cx);
+                        }
+                    });
+                }
+            });
+        }
+    }
+
+    /// Copy a table or view's definition to the clipboard — the sidebar's
+    /// "Copy DDL". A failed read is a toast, not a silent nothing. A stale
+    /// read — an older one finishing after a newer one started — writes
+    /// nothing: the clipboard keeps the newer definition.
+    pub(crate) fn copy_ddl(&mut self, object: &DatabaseObject, cx: &mut Context<Self>) {
+        self.copy_ddl_generation += 1;
+        let generation = self.copy_ddl_generation;
+        let connection = self.connection.clone();
+        let object = object.clone();
+        let label = object.label();
+        let task = runtime::spawn(async move { connection.definition(&object).await });
+
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| {
+                if this.copy_ddl_generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(Ok(definition)) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(definition));
+                        crate::ui::notify_info(window, cx, format!("Copied definition of {label}"));
+                    }
+                    Ok(Err(error)) => {
+                        crate::ui::notify_info(
+                            window,
+                            cx,
+                            format!("Could not read definition: {error:#}"),
+                        );
+                    }
+                    Err(_) => {
+                        crate::ui::notify_info(window, cx, "Reading the definition was cancelled");
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Open a structure tab for a table that does not exist yet, or bring
@@ -313,10 +398,13 @@ impl Session {
         &mut self,
         view: &Entity<SchemaView>,
         event: &SchemaViewEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
+            SchemaViewEvent::OpenInQueryTab { text } => {
+                self.open_tab(None, text.clone(), false, window, cx);
+            }
             SchemaViewEvent::TableCreated { object } => {
                 self.reload_metadata(cx);
                 view.update(cx, |view, cx| view.adopt_created_table(object.clone(), cx));
