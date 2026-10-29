@@ -341,9 +341,10 @@ pub fn with_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
     }
 
     let (outer, code_end) = outermost_words(&sql[start..end], engine);
-    let first = outer.first()?;
-    if !(first == "SELECT" || first == "WITH" && outer.iter().any(|word| word == "SELECT"))
-        || outer.iter().any(|word| BOUNDED.contains(&word.as_str()))
+    let words: Vec<&str> = outer.iter().map(|word| word.word.as_str()).collect();
+    let first = words.first()?;
+    if !(first == &"SELECT" || first == &"WITH" && words.contains(&"SELECT"))
+        || words.iter().any(|word| BOUNDED.contains(word))
     {
         return None;
     }
@@ -352,10 +353,172 @@ pub fn with_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
     Some(format!("{} LIMIT {rows}{}", &sql[..at], &sql[at..]))
 }
 
+/// `sql` rewritten so the server reads at most `rows` rows, when it is one
+/// `SELECT` — or `WITH ... SELECT` — that [`with_limit`] would touch, except
+/// that a bound already written is clamped instead of left alone:
+///
+/// - no outermost bound: `LIMIT rows` is appended, as [`with_limit`] does;
+/// - an outermost `LIMIT` larger than `rows`: its count is replaced with
+///   `rows` — the `LIMIT offset, count` form clamps the count, `LIMIT ALL`
+///   and SQLite's `LIMIT -1` count as unbounded;
+/// - an outermost `FETCH FIRST n ROWS ONLY` larger than `rows`: `n` is
+///   replaced with `rows`;
+/// - an outermost limit already at most `rows`: `None`, the SQL stands.
+///
+/// Anything else — several statements, a write, a locking clause, an
+/// `OFFSET` with no limit to clamp, or a bound placeholder — is `None`, run
+/// as written. Only the outermost query is looked at: a `LIMIT` inside a
+/// subquery or a common table expression bounds that one alone.
+/// Byte index of a `-` in `between` that is the negative sign of the count
+/// that follows, rather than a dash inside a comment: `-- …` and `/* … */`
+/// (`# …` on MySQL) are comment text, and the word scanner has already
+/// skipped them to find the count, so they can sit between the `LIMIT`
+/// keyword and its count. Only ASCII delimiters are looked for, so scanning
+/// bytes is safe whatever the comment holds.
+fn negative_sign(between: &str, engine: Engine) -> Option<usize> {
+    let bytes = between.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match (bytes[index], bytes.get(index + 1).copied()) {
+            (b'-', Some(b'-')) => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            (b'/', Some(b'*')) => {
+                index += 2;
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = (index + 2).min(bytes.len());
+            }
+            (b'#', _) if engine == Engine::MySql => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            (b'-', _) => return Some(index),
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+pub fn clamp_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
+    let mut statements = statements(sql, engine)
+        .into_iter()
+        .filter(|(words, _, _)| !words.is_empty());
+    let (words, start, end) = statements.next()?;
+    if statements.next().is_some() || !reads(&words) {
+        return None;
+    }
+
+    let (outer, _) = outermost_words(&sql[start..end], engine);
+    let words: Vec<&str> = outer.iter().map(|word| word.word.as_str()).collect();
+    let first = words.first()?;
+    if !(first == &"SELECT" || first == &"WITH" && words.contains(&"SELECT")) {
+        return None;
+    }
+    // A locking clause is left alone, as `with_limit` leaves it.
+    if words
+        .iter()
+        .any(|word| ["FOR", "LOCK", "PROCEDURE"].contains(word))
+    {
+        return None;
+    }
+
+    let slice = &sql[start..end];
+    // Replace one word of the statement, keeping the rest of the buffer —
+    // including a closing semicolon and trailing comments — as written.
+    let replace = |span: (usize, usize)| {
+        Some(format!(
+            "{}{rows}{}",
+            &sql[..start + span.0],
+            &sql[start + span.1..]
+        ))
+    };
+    // The count a word names, when it is a plain integer the statement
+    // actually bounds by; a placeholder or an expression is not clamped.
+    let count_at = |index: usize| -> Option<(usize, (usize, usize))> {
+        let word = outer.get(index)?;
+        let count: usize = word.word.parse().ok()?;
+        Some((count, (word.start, word.end)))
+    };
+
+    if let Some(at) = words.iter().position(|word| word == &"LIMIT") {
+        let limit = &outer[at];
+        let Some((count, span)) = count_at(at + 1) else {
+            // `LIMIT ALL` is unbounded, so it clamps; anything else that is
+            // not a number is a placeholder or an expression, left alone.
+            if words.get(at + 1).is_some_and(|word| word == &"ALL") {
+                let word = &outer[at + 1];
+                return replace((word.start, word.end));
+            }
+            return None;
+        };
+        // SQLite reads `LIMIT -1` as no limit at all. The sign is the
+        // `-` itself, not a dash hiding in a comment between the keyword
+        // and the count.
+        let between = &slice[limit.end..span.0];
+        if let Some(minus) = negative_sign(between, engine) {
+            return replace((limit.end + minus, span.1));
+        }
+        // A fractional count is not a limit this can clamp.
+        if slice[span.1..].trim_start().starts_with('.') {
+            return None;
+        }
+        // MySQL's `LIMIT offset, count` clamps the count, not the offset.
+        if slice[span.1..].trim_start().starts_with(',') {
+            let (second, second_span) = count_at(at + 2)?;
+            if slice[span.1..second_span.0].trim() != "," {
+                return None;
+            }
+            return if second > rows {
+                replace(second_span)
+            } else {
+                None
+            };
+        }
+        return if count > rows { replace(span) } else { None };
+    }
+
+    if let Some(at) = words.iter().position(|word| word == &"FETCH") {
+        // `FETCH FIRST n ROWS ONLY` — or `NEXT` for the same clause — where
+        // a bare `ROW` means one and needs no clamp.
+        if !words
+            .get(at + 1)
+            .is_some_and(|word| word == &"FIRST" || word == &"NEXT")
+        {
+            return None;
+        }
+        let (count, span) = count_at(at + 2)?;
+        if slice[span.1..].trim_start().starts_with('.') {
+            return None;
+        }
+        return if count > rows { replace(span) } else { None };
+    }
+
+    // An `OFFSET` with no limit has nothing to clamp, and appending a limit
+    // after it is not valid on every engine, so it is left alone.
+    if words.contains(&"OFFSET") {
+        return None;
+    }
+    with_limit(sql, rows, engine)
+}
+
+/// One word of a statement that stands outside every parenthesis, with its
+/// byte range in the statement it was read from.
+struct OuterWord {
+    word: String,
+    start: usize,
+    end: usize,
+}
+
 /// The words of one statement that stand outside every parenthesis,
 /// upper-cased, and the byte offset just past its last character that is not
 /// a comment or blank space.
-fn outermost_words(sql: &str, engine: Engine) -> (Vec<String>, usize) {
+fn outermost_words(sql: &str, engine: Engine) -> (Vec<OuterWord>, usize) {
     let characters: Vec<char> = sql.chars().collect();
     let offsets: Vec<usize> = sql
         .char_indices()
@@ -404,7 +567,11 @@ fn outermost_words(sql: &str, engine: Engine) -> (Vec<String>, usize) {
             character if character.is_alphanumeric() || character == '_' => {
                 let (word, next) = word_at(&characters, index).expect("a word starts here");
                 if depth == 0 {
-                    words.push(word.to_ascii_uppercase());
+                    words.push(OuterWord {
+                        word: word.to_ascii_uppercase(),
+                        start: byte(index),
+                        end: byte(next),
+                    });
                 }
                 index = next;
             }
@@ -1234,6 +1401,118 @@ mod tests {
             limited("select * from (select * from t limit 5) s").as_deref(),
             Some("select * from (select * from t limit 5) s LIMIT 500")
         );
+    }
+
+    fn clamped(sql: &str) -> Option<String> {
+        super::clamp_limit(sql, 100, Engine::Postgres)
+    }
+
+    #[test]
+    fn a_large_limit_is_clamped_and_a_small_one_is_kept() {
+        assert_eq!(
+            clamped("select * from t limit 100000").as_deref(),
+            Some("select * from t limit 100")
+        );
+        assert_eq!(
+            clamped("select * from t limit 100000 offset 5").as_deref(),
+            Some("select * from t limit 100 offset 5")
+        );
+        assert_eq!(clamped("select * from t limit 10"), None);
+        assert_eq!(clamped("select * from t limit 100"), None);
+        // `LIMIT ALL` and SQLite's `LIMIT -1` are both unbounded.
+        assert_eq!(
+            clamped("select * from t limit all").as_deref(),
+            Some("select * from t limit 100")
+        );
+        assert_eq!(
+            clamped("select * from t limit -1").as_deref(),
+            Some("select * from t limit 100")
+        );
+    }
+
+    #[test]
+    fn a_dash_inside_a_comment_is_not_a_negative_limit() {
+        // A dash in a comment between the keyword and the count used to be
+        // read as the negative sign: the small limit was raised and the
+        // comment dropped, or a block comment was left unterminated.
+        assert_eq!(clamped("select * from t limit -- cap\n 5"), None);
+        assert_eq!(clamped("select * from t limit /* top-5 */ 5"), None);
+        // A large limit past a comment still clamps, with the comment kept.
+        assert_eq!(
+            clamped("select * from t limit /* top-5 */ 100000").as_deref(),
+            Some("select * from t limit /* top-5 */ 100")
+        );
+        // And a genuinely negative count past a comment still clamps.
+        assert_eq!(
+            clamped("select * from t limit /* c */ -1").as_deref(),
+            Some("select * from t limit /* c */ 100")
+        );
+        assert_eq!(
+            clamped("select * from t limit -- cap\n -1").as_deref(),
+            Some("select * from t limit -- cap\n 100")
+        );
+        // MySQL's `#` comment, same shape.
+        let clamped_mysql = |sql: &str| super::clamp_limit(sql, 100, Engine::MySql);
+        assert_eq!(clamped_mysql("select * from t limit # cap-5\n 5"), None);
+    }
+
+    #[test]
+    fn a_limitless_select_gets_a_limit_and_a_bounded_one_does_not_gain_one() {
+        assert_eq!(
+            clamped("select * from t").as_deref(),
+            Some("select * from t LIMIT 100")
+        );
+        assert_eq!(
+            clamped("select * from t; -- done\n").as_deref(),
+            Some("select * from t LIMIT 100; -- done\n")
+        );
+        // A subquery's limit bounds the subquery alone; the outer query
+        // still gets its own.
+        assert_eq!(
+            clamped("select * from (select * from t limit 100000) s").as_deref(),
+            Some("select * from (select * from t limit 100000) s LIMIT 100")
+        );
+        // A limit hiding in a string or a comment is not the outer limit.
+        assert_eq!(
+            clamped("select 'limit 100000' from t").as_deref(),
+            Some("select 'limit 100000' from t LIMIT 100")
+        );
+    }
+
+    #[test]
+    fn mysql_comma_limits_clamp_the_count() {
+        let clamped_mysql = |sql: &str| super::clamp_limit(sql, 100, Engine::MySql);
+        assert_eq!(
+            clamped_mysql("select * from t limit 5, 100000").as_deref(),
+            Some("select * from t limit 5, 100")
+        );
+        // The count is already small, however large the offset is.
+        assert_eq!(clamped_mysql("select * from t limit 100000, 5"), None);
+    }
+
+    #[test]
+    fn fetch_first_clamps_like_limit() {
+        assert_eq!(
+            clamped("select * from t fetch first 100000 rows only").as_deref(),
+            Some("select * from t fetch first 100 rows only")
+        );
+        assert_eq!(clamped("select * from t fetch first 5 rows only"), None);
+        // A bare `ROW` already means one.
+        assert_eq!(clamped("select * from t fetch first row only"), None);
+    }
+
+    #[test]
+    fn an_unclampable_select_is_left_alone() {
+        for sql in [
+            "select * from t limit :rows",
+            "select * from t offset 10",
+            "select * from t for update",
+            "select * from t lock in share mode",
+            "select 1; select 2",
+            "insert into t values (1)",
+        ] {
+            assert_eq!(clamped(sql), None, "{sql}");
+        }
     }
 
     #[test]

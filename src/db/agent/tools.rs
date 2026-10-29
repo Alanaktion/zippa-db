@@ -536,7 +536,10 @@ async fn run_select(context: &ToolContext, sql: &str, explain: bool) -> ToolOutp
     let sent = if explain {
         format!("EXPLAIN {sql}")
     } else {
-        statement::with_limit(&sql, MAX_ROWS, engine).unwrap_or(sql)
+        // The cap is enforced in SQL, not just when the result is formatted:
+        // a model-written `LIMIT 100000` must not have the server read the
+        // full result first. `format_result` still caps what is shown.
+        statement::clamp_limit(&sql, MAX_ROWS, engine).unwrap_or(sql)
     };
     let connection = context.connection.clone();
     match crate::db::runtime::spawn(async move { connection.run_query_as_agent(&sent).await }).await
@@ -643,6 +646,28 @@ mod tests {
         assert_eq!(value["rows"].as_array().unwrap().len(), MAX_ROWS);
         assert!(value["note"].is_string());
         assert!(value["rows"][0][0].as_str().unwrap().chars().count() < 300);
+    }
+
+    #[test]
+    fn a_large_limit_is_enforced_in_sql_not_just_in_the_display() {
+        let (_database, context) = live(AgentAccess::ReadOnlySql);
+        futures::executor::block_on(async {
+            // 150 rows behind a `LIMIT 100000`: if the cap were only the
+            // display truncation, the result would carry the "only the
+            // first 100" note; enforced in SQL it is exactly 100 rows with
+            // no note at all.
+            let out = call(
+                &context,
+                &NeverApprove,
+                "run_select",
+                r#"{"sql":"WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 150) SELECT x FROM cnt LIMIT 100000"}"#,
+            )
+            .await;
+            assert!(!out.is_error, "{}", out.text);
+            let value: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(value["rows"].as_array().unwrap().len(), MAX_ROWS);
+            assert!(value.get("note").is_none(), "{}", out.text);
+        });
     }
 
     #[test]
