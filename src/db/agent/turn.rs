@@ -13,6 +13,7 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use serde_json::Value;
 
+use super::compaction;
 use super::provider::{ChatProvider, Message, ProviderError, StreamEvent, ToolCall};
 use super::tools::{self, Approver, ToolContext, UiAction};
 
@@ -147,6 +148,22 @@ pub async fn run_with_events(
     };
 
     loop {
+        // A result from the previous round can push the thread over
+        // budget after the panel's initial compaction — one result alone
+        // can hold 100 rows of 200-character cells — so the budget is
+        // reapplied before every provider request, not just the first.
+        // Older history shrinks; the current exchange, from the pending
+        // user message on, is never touched, so a result that just
+        // arrived is kept even when it alone breaks the budget, and the
+        // turn ends with a context error instead of sending a request
+        // that cannot succeed.
+        if !recompact(&mut thread) {
+            outcome.error = Some(ProviderError::Other(
+                "this thread exceeds the model's maximum context length even with earlier results compacted"
+                    .into(),
+            ));
+            return outcome;
+        }
         let base = tool_base;
         let round =
             match collect_reply(provider, &thread, &tool_json, stream_supported, base, &emit).await
@@ -235,6 +252,28 @@ pub async fn run_with_events(
             // One more answer, with no tools to reach for.
             tool_json.clear();
         }
+    }
+}
+
+/// Shrink a turn's working thread back inside the budget. The thread's
+/// first message is the system prompt; the rest is compacted the way the
+/// panel compacts it, so the current exchange — from the pending user
+/// message on — is protected and only older history shrinks. A thread
+/// with no system prompt first is left alone. Returns false when even
+/// compacting everything cannot shrink the thread enough.
+fn recompact(thread: &mut Vec<Message>) -> bool {
+    let Some(Message::System(prompt)) = thread.first() else {
+        return true;
+    };
+    let prompt = prompt.clone();
+    match compaction::compact(&prompt, &thread[1..], "") {
+        compaction::Fit::Fits(compacted) => {
+            let mut next = vec![Message::System(prompt)];
+            next.extend(compacted.messages);
+            *thread = next;
+            true
+        }
+        compaction::Fit::TooBig => false,
     }
 }
 
@@ -461,6 +500,7 @@ mod tests {
         replies: Mutex<Vec<Result<Reply, ProviderError>>>,
         asked: AtomicUsize,
         saw_tools: Mutex<Vec<usize>>,
+        saw_threads: Mutex<Vec<Vec<Message>>>,
     }
 
     impl Script {
@@ -469,6 +509,7 @@ mod tests {
                 replies: Mutex::new(replies),
                 asked: AtomicUsize::new(0),
                 saw_tools: Mutex::default(),
+                saw_threads: Mutex::default(),
             }
         }
     }
@@ -476,11 +517,12 @@ mod tests {
     impl ChatProvider for Script {
         fn complete<'a>(
             &'a self,
-            _: &'a [Message],
+            thread: &'a [Message],
             tools: &'a [Value],
         ) -> BoxFuture<'a, Result<Reply, ProviderError>> {
             self.asked.fetch_add(1, Ordering::SeqCst);
             self.saw_tools.lock().unwrap().push(tools.len());
+            self.saw_threads.lock().unwrap().push(thread.to_vec());
             let next = self.replies.lock().unwrap().remove(0);
             Box::pin(async move { next })
         }
@@ -865,6 +907,141 @@ mod tests {
             assert_eq!(outcome.answer.as_deref(), Some("There are none."));
             assert_eq!(outcome.events.len(), 1);
             assert_eq!(provider.asked.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn a_tool_result_that_breaks_the_budget_compacts_older_history_before_the_next_request() {
+        // Setup runs on the database runtime, like the tools tests do:
+        // the turn itself must run under futures' executor instead,
+        // because a real query goes through runtime::spawn, whose test
+        // form blocks on that same runtime — nesting it inside
+        // runtime::block_on panics.
+        let context = crate::db::runtime::block_on(context(AgentAccess::ReadOnlySql));
+        futures::executor::block_on(async {
+            // An old bulk result, already most of the budget.
+            let old = serde_json::json!({
+                "columns": ["id"],
+                "rows": [
+                    ["x".repeat(30_000)],
+                    ["x".repeat(30_000)],
+                    ["x".repeat(30_000)],
+                ],
+            })
+            .to_string();
+            let history = vec![
+                Message::System("s".into()),
+                Message::User("old question".into()),
+                Message::Assistant {
+                    content: None,
+                    tool_calls: vec![ToolCall {
+                        id: "0".into(),
+                        name: "run_select".into(),
+                        arguments: "{}".into(),
+                    }],
+                },
+                Message::Tool {
+                    id: "0".into(),
+                    content: old,
+                },
+            ];
+            // One hundred 200-character cells: a result big enough,
+            // with the old one, to break the budget once it arrives.
+            let wide = "a".repeat(200);
+            let sql = format!(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 100) \
+                 SELECT '{wide}' FROM n"
+            );
+            let provider = Script::new(vec![
+                Ok(call(
+                    "run_select",
+                    &serde_json::json!({"sql": sql}).to_string(),
+                )),
+                Ok(say("done")),
+            ]);
+            let outcome = run(
+                &provider,
+                &context,
+                &tools::NeverApprove,
+                &history,
+                "new question",
+                true,
+            )
+            .await;
+            assert_eq!(outcome.answer.as_deref(), Some("done"));
+            assert!(outcome.error.is_none());
+            let threads = provider.saw_threads.lock().unwrap();
+            assert_eq!(threads.len(), 2);
+            // The second request still carries the new result whole,
+            // but the old one arrives as a summary.
+            let second = &threads[1];
+            let old_result = second
+                .iter()
+                .find_map(|message| match message {
+                    Message::Tool { id, content } if id.as_str() == "0" => Some(content),
+                    _ => None,
+                })
+                .expect("old result still after its call");
+            assert!(old_result.starts_with("[earlier result compacted"));
+            let new_result = second
+                .iter()
+                .find_map(|message| match message {
+                    Message::Tool { id, content } if id.as_str() == "1" => Some(content),
+                    _ => None,
+                })
+                .expect("new result still after its call");
+            assert!(new_result.contains(&wide));
+        });
+    }
+
+    #[test]
+    fn a_turn_that_cannot_shrink_enough_ends_with_a_context_error() {
+        // Setup on the database runtime, turn under futures' executor:
+        // see the budget test above for why the two differ.
+        let context = crate::db::runtime::block_on(context(AgentAccess::ReadOnlySql));
+        futures::executor::block_on(async {
+            // Nothing here compacts — user messages are never shrunk —
+            // so once the new result arrives the thread cannot fit, and
+            // the turn ends instead of sending a request that cannot
+            // succeed.
+            let history = vec![
+                Message::System("s".into()),
+                Message::User("u".repeat(90_000)),
+            ];
+            let wide = "a".repeat(200);
+            let sql = format!(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 100) \
+                 SELECT '{wide}' FROM n"
+            );
+            let provider = Script::new(vec![
+                Ok(call(
+                    "run_select",
+                    &serde_json::json!({"sql": sql}).to_string(),
+                )),
+                Ok(say("done")),
+            ]);
+            let outcome = run(
+                &provider,
+                &context,
+                &tools::NeverApprove,
+                &history,
+                "new question",
+                true,
+            )
+            .await;
+            assert!(outcome.answer.is_none());
+            let error = outcome.error.expect("a context error ends the turn");
+            assert!(error.is_context_length());
+            // The second request is never sent, but the turn still
+            // records what happened, so the panel thread keeps the tool
+            // result after its call.
+            assert_eq!(provider.asked.load(Ordering::SeqCst), 1);
+            assert!(
+                outcome
+                    .messages
+                    .iter()
+                    .any(|message| matches!(message, Message::Tool { .. }))
+            );
         });
     }
 

@@ -30,6 +30,7 @@ use gpui_kit::{
     Window, actions, div,
 };
 
+use crate::db::agent::compaction;
 use crate::db::agent::context::{self, ContextInfo};
 use crate::db::agent::provider::{Endpoint, HttpProvider, Message, ProviderError};
 use crate::db::agent::tools::{Approver, ToolContext, UiAction, WriteRequest};
@@ -276,8 +277,33 @@ impl AgentPanel {
             open_tabs,
             active_buffer,
         });
+        // The thread as sent is the compacted one: old bulk tool results
+        // become summaries before the model's context limit is hit, and a
+        // thread that cannot shrink far enough is refused here, in words,
+        // rather than failing at the endpoint. The panel's own thread
+        // stays whole.
+        let compacted = match compaction::compact(&prompt, &self.thread, &text) {
+            compaction::Fit::Fits(compacted) => {
+                if compacted.compacted > 0 {
+                    self.notice(
+                        "Earlier tool results were compacted to fit the model's context.",
+                        false,
+                    );
+                }
+                compacted.messages
+            }
+            compaction::Fit::TooBig => {
+                self.notice(
+                    "This thread is too long for the model even with earlier results compacted. \
+                     Start a new thread with the New button above and continue there.",
+                    true,
+                );
+                cx.notify();
+                return;
+            }
+        };
         let mut history = vec![Message::System(prompt)];
-        history.extend(self.thread.iter().cloned());
+        history.extend(compacted);
 
         let tool_context = ToolContext {
             connection: self.connection.clone(),
@@ -422,7 +448,18 @@ impl AgentPanel {
             );
         }
         if let Some(error) = outcome.error {
-            self.notice(&error_text(&error), true);
+            if error.is_context_length() {
+                // A provider error that only says the context ran out is
+                // the failure compaction exists to avoid; say what to do
+                // instead of repeating the endpoint's wording.
+                self.notice(
+                    "The model ran out of context for this thread. Start a new thread with the \
+                     New button above and continue there.",
+                    true,
+                );
+            } else {
+                self.notice(&error_text(&error), true);
+            }
         }
         for action in outcome.ui {
             match action {

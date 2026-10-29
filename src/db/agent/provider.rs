@@ -149,6 +149,30 @@ impl std::fmt::Display for ProviderError {
     }
 }
 
+impl ProviderError {
+    /// Whether the endpoint refused the request because the conversation
+    /// no longer fits its context window, rather than for any other
+    /// reason. Only the endpoint's own wording can say so, so this
+    /// matches the phrases those errors use; anything else is not one.
+    pub fn is_context_length(&self) -> bool {
+        let ProviderError::Other(message) = self else {
+            return false;
+        };
+        let message = message.to_lowercase();
+        [
+            "context length",
+            "context window",
+            "maximum context",
+            "max context",
+            "too many tokens",
+            "token limit",
+            "context_length",
+        ]
+        .iter()
+        .any(|needle| message.contains(needle))
+    }
+}
+
 impl std::error::Error for ProviderError {}
 
 /// Anything that can answer a conversation.
@@ -663,6 +687,20 @@ mod tests {
         assert_eq!(classify_failure(400, "tools", false), None);
         assert_eq!(classify_failure(500, "boom", true), None);
         assert!(parse_reply("not json").is_err());
+    }
+
+    #[test]
+    fn a_context_length_error_is_recognised() {
+        assert!(
+            ProviderError::Other("400: this model's maximum context length is 8192 tokens".into())
+                .is_context_length()
+        );
+        assert!(
+            ProviderError::Other("400: request exceeds the context window".into())
+                .is_context_length()
+        );
+        assert!(!ProviderError::Other("500: boom".into()).is_context_length());
+        assert!(!ProviderError::Auth.is_context_length());
     }
 
     #[test]
