@@ -24,6 +24,7 @@ use gpui_kit::{
 };
 
 use crate::db::Engine;
+use crate::db::binary;
 use crate::db::export::Format;
 use crate::db::query::{self, Cell, QueryResult};
 use crate::settings::{self, Settings};
@@ -195,6 +196,10 @@ pub struct StagedRow {
 pub struct DataGrid {
     table: Entity<TableState<ResultDelegate>>,
     has_result: bool,
+    /// Counts every result handed to the grid: a binary dialog stages by
+    /// the result row it opened on, so a save built against an older count
+    /// is a save against rows that may no longer be there.
+    result_generation: u64,
     /// The owner is reading a result for this grid, so the empty state shows a
     /// spinner rather than telling the user to run a query.
     loading: bool,
@@ -387,6 +392,7 @@ impl DataGrid {
         Self {
             table,
             has_result: false,
+            result_generation: 0,
             loading: false,
             placeholder: "Run a query to see results".into(),
             editor,
@@ -518,6 +524,11 @@ impl DataGrid {
     /// Put the keyboard back on the table, the way clicking a cell does.
     fn focus_table(&self, window: &mut Window, cx: &mut App) {
         self.focus_handle(cx).focus(window, cx);
+    }
+
+    /// Whether the owner allows writing this result back.
+    pub(crate) fn is_writable(&self, cx: &App) -> bool {
+        self.table.read(cx).delegate().editable
     }
 
     /// Whether the owner is allowed to write this result back.
@@ -932,6 +943,7 @@ impl DataGrid {
                         text,
                         note: note.map(Into::into),
                         save,
+                        save_binary: None,
                         preview: None,
                     },
                     cx,
@@ -970,6 +982,69 @@ impl DataGrid {
             cx.notify();
         });
         cx.emit(GridEdit::Staged);
+    }
+
+    /// Stage a file's bytes on a blob cell, addressed by the result row and
+    /// the column name the value dialog knows — the dialog opens on a cell
+    /// the grid could only describe, so it has no display coordinates.
+    ///
+    /// Deliberately not [`Self::stage_cell`]: a blob column cannot be typed
+    /// into, so `is_editable` would refuse it. The guards that matter are
+    /// kept here instead — the grid must be writable at all, and the column
+    /// must be a blob type, so the staged hex is only ever decoded where
+    /// the write path expects it. Anything else is ignored, not staged.
+    ///
+    /// `expected_generation` is the result count the dialog opened on: a
+    /// reload since then may have moved the rows, so a save built on the
+    /// old one is refused rather than staged onto the wrong row. Returns
+    /// whether anything was staged, so the dialog can stay open — with its
+    /// bytes still in hand — instead of dismissing on a silent refusal.
+    pub fn stage_binary_cell(
+        &mut self,
+        source_row: usize,
+        column: &str,
+        bytes: Vec<u8>,
+        expected_generation: u64,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let generation = self.result_generation;
+        let staged = self.table.update(cx, |table, cx| {
+            if expected_generation != generation {
+                return false;
+            }
+            let delegate = table.delegate_mut();
+            if !delegate.editable {
+                return false;
+            }
+            let Some(col_ix) = delegate
+                .result
+                .columns
+                .iter()
+                .position(|name| name == column)
+            else {
+                return false;
+            };
+            let is_blob = delegate
+                .result
+                .column_types
+                .get(col_ix)
+                .is_some_and(|name| query::is_blob_type(name));
+            if !is_blob {
+                return false;
+            }
+            let Some(row_ix) =
+                (0..delegate.rows()).find(|&row_ix| delegate.source(row_ix) == Some(source_row))
+            else {
+                return false;
+            };
+            delegate.stage(row_ix, col_ix, Some(binary::hex_encode(&bytes)));
+            cx.notify();
+            true
+        });
+        if staged {
+            cx.emit(GridEdit::Staged);
+        }
+        staged
     }
 
     /// Mark the swept rows for deletion, the way the row menu does.
@@ -1220,12 +1295,20 @@ impl DataGrid {
     /// change, so an owner that sorts on the server has to hand its sort back.
     /// Without it the header returns to unsorted and the next click on it
     /// starts the cycle over, which makes every click sort descending.
+    /// The result currently on screen, counted: a binary dialog stages
+    /// against the generation it opened on, so a save built on an older
+    /// one is refused rather than staged onto rows that have moved.
+    pub fn result_generation(&self) -> u64 {
+        self.result_generation
+    }
+
     pub fn set_sorted_result(
         &mut self,
         result: QueryResult,
         sort: Option<(String, ColumnSort)>,
         cx: &mut Context<Self>,
     ) {
+        self.result_generation += 1;
         self.has_result = true;
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();

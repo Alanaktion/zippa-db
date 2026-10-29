@@ -750,6 +750,23 @@ async fn name_of(database: &TempDatabase, id: i64) -> Option<String> {
     result.rows[0][0].clone()
 }
 
+/// The `payload` column of `items` for a row, read back as raw bytes through
+/// a second connection.
+async fn payload_of(database: &TempDatabase, id: i64) -> Option<Vec<u8>> {
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not reopen the test database");
+    let bytes = connection
+        .fetch_binary(
+            "SELECT payload FROM items WHERE id = ?",
+            vec![Some(id.to_string())],
+        )
+        .await
+        .expect("could not read the row");
+    connection.close().await;
+    bytes
+}
+
 /// Run a statement through a second connection, the way another client would.
 fn run_external(database: &TempDatabase, sql: &str) {
     runtime::block_on(async {

@@ -61,6 +61,9 @@ The first release: a native client for PostgreSQL, MySQL, and SQLite.
   foreign-key navigation.
 - **Staged editing:** edit cells, add rows, and delete rows, written together
   as `UPDATE`/`INSERT`/`DELETE`, with every pending change marked in the grid.
+  A binary cell's value dialog re-reads the real bytes for a preview, and
+  "Load from file…" stages a file's bytes on the cell through the same
+  staged-edit path.
 - **Structure tab:** edit columns, indexes, and foreign keys, previewing the
   generated `ALTER TABLE` statements or SQLite table rebuild.
 - **Search:** schema search over tables, views, columns, indexes, routines, and

@@ -98,6 +98,27 @@ pub async fn read(path: PathBuf) -> Result<String> {
     std::fs::read_to_string(&path).with_context(|| format!("could not open {}", path.display()))
 }
 
+/// Read a file's raw bytes, for values that are not text. Blocking: run it
+/// on a background executor, like [`read`].
+///
+/// A file past this size is refused before it is read: the grid hex-encodes
+/// the bytes on save, doubling them in memory, and a value that big was
+/// never going to survive the round trip to the server.
+pub const MAX_BINARY_BYTES: usize = 64 * 1024 * 1024;
+
+pub async fn read_bytes(path: PathBuf) -> Result<Vec<u8>> {
+    let size = std::fs::metadata(&path)
+        .with_context(|| format!("could not open {}", path.display()))?
+        .len();
+    if size > MAX_BINARY_BYTES as u64 {
+        anyhow::bail!(
+            "{} is larger than the 64 MiB limit for a value loaded from a file",
+            path.display()
+        );
+    }
+    std::fs::read(&path).with_context(|| format!("could not open {}", path.display()))
+}
+
 /// Write a buffer to a file. Blocking: run it on a background executor.
 pub async fn write(path: PathBuf, contents: String) -> Result<()> {
     std::fs::write(&path, contents).with_context(|| format!("could not save {}", path.display()))
@@ -148,5 +169,43 @@ fn with_extension(path: PathBuf, extension: &str) -> PathBuf {
     match path.extension() {
         Some(_) => path,
         None => path.with_extension(extension),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("zippa-db-sql-file-test-{name}"))
+    }
+
+    #[test]
+    fn read_bytes_reads_a_small_file() {
+        let path = temp_path("small");
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all(b"hello").unwrap();
+        }
+        let bytes = futures::executor::block_on(read_bytes(path.clone())).unwrap();
+        assert_eq!(bytes, b"hello");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn read_bytes_refuses_a_file_past_the_limit() {
+        // Sparse, so the size is on the books without the bytes on disk:
+        // the cap is a metadata check, not a read that got too far.
+        let path = temp_path("oversized");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_BINARY_BYTES as u64 + 1).unwrap();
+        drop(file);
+        let error = futures::executor::block_on(read_bytes(path.clone())).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("64 MiB"),
+            "unexpected error: {error:#}"
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 }

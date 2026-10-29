@@ -10,20 +10,18 @@ where it waits before that.
 
 ## 1. Binary editor (write half)
 
-The read half shipped: a binary cell's value dialog now re-reads the real
-bytes for a row a table view can address, sniffs common image formats
+Both halves shipped: a binary cell's value dialog re-reads the real bytes
+for a row a table view can address, sniffs common image formats
 (PNG/JPEG/GIF/WebP/BMP) and shows a preview, or a hex dump otherwise
-(`src/db/binary.rs`, `Connection::fetch_binary`, `value_dialog::open_binary`).
-What's left is writing a new value back — a "Load from file…" action in the
-value dialog to stage a binary value, parallel to the existing text box.
+(`src/db/binary.rs`, `Connection::fetch_binary`, `value_dialog::open_binary`) —
+and "Load from file…" stages a file's bytes on the cell, parallel to the
+existing text box.
 
-* The hard part: `Connection::typed_placeholder` binds every parameter as
-  text (`AGENTS.md` § "Values are text, both ways") — there's no path today
-  to bind raw bytes back. Needs either a base64/hex round-trip through the
-  cast (Postgres: `decode($1, 'hex')::bytea`; MySQL: `UNHEX($1)`; SQLite
-  already accepts a `X'...'` literal or blob binding directly) or a small
-  `Cell::Binary` variant that `execute_with` binds natively per engine,
-  bypassing the text path for that one column.
+* The hard part, as shipped: `Connection::typed_placeholder` binds every
+  parameter as text (`AGENTS.md` § "Values are text, both ways"), so the
+  staged value is the file's bytes as hex and the write path decodes it per
+  engine — Postgres `decode($1, 'hex')`, MySQL `UNHEX(?)`, SQLite
+  `unhex(?)` — rather than teaching the binding path a new type.
 * Pairs with the audit's open item on missing Postgres `cell` arms — this is
   the same "driver type sqlx can decode but the app can't show" gap, just
   for the type that shows up most in a typical app schema.

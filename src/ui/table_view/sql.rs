@@ -15,10 +15,10 @@
 
 use gpui_kit::component::table::ColumnSort;
 
-use crate::db::query::{Cell, QueryResult};
+use crate::db::query::{Cell, QueryResult, is_blob_type};
 use crate::db::{
-    Engine, RowKey, keyword_literal, placeholder, qualified_name, quote_identifier, text_type,
-    typed_placeholder,
+    Engine, RowKey, binary_placeholder, keyword_literal, placeholder, qualified_name,
+    quote_identifier, text_type, typed_placeholder,
 };
 use crate::ui::data_grid::StagedRow;
 use crate::ui::filter_bar::{FilterSpec, Operator};
@@ -279,10 +279,19 @@ impl TableView {
                 }
                 params.push(value.clone());
                 let type_name = self.column_types.get(*column).cloned().unwrap_or_default();
+                // A staged value on a blob column is hex from the value
+                // dialog — the only path that can stage one, since binary
+                // columns cannot be typed into — so it is decoded on the
+                // way in rather than stored as the hex characters.
+                let value_placeholder = if is_blob_type(&type_name) {
+                    binary_placeholder(engine, params.len())
+                } else {
+                    typed_placeholder(engine, params.len(), &type_name)
+                };
                 format!(
                     "{} = {}",
                     quote_identifier(&name, engine),
-                    typed_placeholder(engine, params.len(), &type_name)
+                    value_placeholder
                 )
             })
             .collect();
@@ -431,6 +440,18 @@ impl TableView {
             self.columns
                 .get(*column)
                 .is_some_and(|name| key.contains(name))
+        })
+    }
+
+    /// Whether a staged row changes a blob column: the staged value is hex
+    /// text, not the bytes the server now holds, so applying it to the
+    /// baseline would leave the cell showing hex instead of the value's
+    /// stand-in — the page has to be read again.
+    pub(super) fn touches_blob(&self, staged: &StagedRow) -> bool {
+        staged.cells.iter().any(|(column, _)| {
+            self.column_types
+                .get(*column)
+                .is_some_and(|name| is_blob_type(name))
         })
     }
 }

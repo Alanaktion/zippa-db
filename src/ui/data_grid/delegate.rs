@@ -407,7 +407,25 @@ impl TableDelegate for ResultDelegate {
         }
 
         match self.cell(row_ix, col_ix) {
-            Some(value) => cell.child(value.to_string()).into_any_element(),
+            Some(value) => {
+                // A staged binary value is hex, not the value itself: show
+                // its size, the way the loaded value's own stand-in does,
+                // rather than a wall of hex digits.
+                let staged_binary = self.is_staged(row_ix, col_ix)
+                    && self
+                        .result
+                        .column_types
+                        .get(col_ix)
+                        .is_some_and(|name| query::is_blob_type(name))
+                    && value.len() % 2 == 0
+                    && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+                if staged_binary {
+                    cell.child(format!("<{} bytes>", value.len() / 2))
+                        .into_any_element()
+                } else {
+                    cell.child(value.to_string()).into_any_element()
+                }
+            }
             None => cell
                 .text_color(cx.theme().muted_foreground)
                 .child("NULL")

@@ -428,6 +428,14 @@ fn render_sql(
                 match cell.and_then(Option::as_deref) {
                     None => "NULL".to_string(),
                     Some(value) if is_number(type_name, value) => value.to_string(),
+                    // A staged value on a blob column is hex text, not the
+                    // bytes: quoting it would store the hex characters, so
+                    // it goes out as the engine's binary literal instead.
+                    // A value that does not read as hex is not staged hex,
+                    // so it keeps the quoted rendering it always had.
+                    Some(value) if query::is_blob_type(type_name) && is_staged_hex(value) => {
+                        binary_literal(engine, value)
+                    }
                     Some(value) => quote_literal_for(engine, value),
                 }
             })
@@ -440,6 +448,29 @@ fn render_sql(
     }
 
     Rendered { text, skipped }
+}
+
+/// Whether `value` reads as the hex text the value dialog stages for a
+/// blob column: an even run of hex digits — empty for an empty file.
+fn is_staged_hex(value: &str) -> bool {
+    value.len().is_multiple_of(2) && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// `hex`'s bytes as the engine's binary literal, so an exported `INSERT`
+/// stores the file's bytes rather than the hex characters staging them:
+/// Postgres spells a bytea literal `\x…`, MySQL and SQLite spell a blob
+/// literal `X'…'`.
+fn binary_literal(engine: Engine, hex: &str) -> String {
+    match engine {
+        Engine::Postgres => {
+            if hex.is_empty() {
+                "''".to_string()
+            } else {
+                format!("'\\x{hex}'")
+            }
+        }
+        Engine::MySql | Engine::Sqlite => format!("X'{hex}'"),
+    }
 }
 
 /// Whether a `type_name` value can go into the statement bare.
@@ -646,6 +677,50 @@ mod tests {
             "insert into t (id, payload) values (7, NULL);\n"
         );
         assert_eq!(rendered.skipped, 1);
+    }
+
+    #[test]
+    fn sql_writes_staged_hex_on_a_blob_column_as_a_binary_literal() {
+        let columns = vec!["id".to_string(), "payload".to_string()];
+        let types = vec!["INT4".to_string(), "BYTEA".to_string()];
+        let rows = vec![vec![Some("7".to_string()), Some("deadbeef".to_string())]];
+
+        // Quoting the hex would store its characters, not the file's bytes.
+        let rendered = render(Format::Sql, Engine::Postgres, "t", &columns, &types, &rows);
+        assert_eq!(
+            rendered.text,
+            "insert into t (id, payload) values (7, '\\xdeadbeef');\n"
+        );
+        assert_eq!(rendered.skipped, 0);
+
+        let rendered = render(Format::Sql, Engine::MySql, "t", &columns, &types, &rows);
+        assert_eq!(
+            rendered.text,
+            "insert into t (id, payload) values (7, X'deadbeef');\n"
+        );
+
+        let rendered = render(Format::Sql, Engine::Sqlite, "t", &columns, &types, &rows);
+        assert_eq!(
+            rendered.text,
+            "insert into t (id, payload) values (7, X'deadbeef');\n"
+        );
+
+        // An empty file stages empty hex: still a binary literal, not text.
+        let rows = vec![vec![Some("7".to_string()), Some(String::new())]];
+        let rendered = render(Format::Sql, Engine::Postgres, "t", &columns, &types, &rows);
+        assert_eq!(
+            rendered.text,
+            "insert into t (id, payload) values (7, '');\n"
+        );
+
+        // A blob-column value that does not read as hex is not staged hex,
+        // so it keeps the quoted rendering it always had.
+        let rows = vec![vec![Some("7".to_string()), Some("not-hex".to_string())]];
+        let rendered = render(Format::Sql, Engine::Sqlite, "t", &columns, &types, &rows);
+        assert_eq!(
+            rendered.text,
+            "insert into t (id, payload) values (7, 'not-hex');\n"
+        );
     }
 
     #[test]
