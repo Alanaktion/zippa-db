@@ -216,6 +216,11 @@ pub struct SchemaView {
     /// self-contained.
     tables: Vec<DatabaseObject>,
     next_id: usize,
+    /// Counts `reload` (and `reload_definition`) runs: a task captures the
+    /// count it started under and its callback drops the result when a
+    /// newer run has started since — a connection switch during a reload
+    /// must not land the previous connection's definition afterwards.
+    reload_generation: u64,
     loading: bool,
     applying: bool,
     error: Option<String>,
@@ -266,6 +271,7 @@ impl SchemaView {
             foreign_keys: Vec::new(),
             tables: Vec::new(),
             next_id: 0,
+            reload_generation: 0,
             loading: false,
             applying: false,
             error: None,
@@ -314,6 +320,7 @@ impl SchemaView {
             foreign_keys: Vec::new(),
             tables: Vec::new(),
             next_id: 0,
+            reload_generation: 0,
             loading: false,
             applying: false,
             error: None,
@@ -432,6 +439,8 @@ impl SchemaView {
     /// reporting on is this same one. The SQL panel and the extras reload
     /// with the form, so applying an edit never leaves them stale.
     fn reload(&mut self, cx: &mut Context<Self>) {
+        self.reload_generation += 1;
+        let generation = self.reload_generation;
         self.loading = true;
         self.error = None;
         self.pending = None;
@@ -451,6 +460,9 @@ impl SchemaView {
             cx.spawn(async move |this, cx| {
                 let result = task.await;
                 this.update_in(cx, |this, window, cx| {
+                    if this.reload_generation != generation {
+                        return;
+                    }
                     this.loading = false;
                     match result {
                         Ok(Ok(definition)) => {
@@ -497,9 +509,16 @@ impl SchemaView {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
+                if this.reload_generation != generation {
+                    return;
+                }
                 this.loading = false;
                 match result {
-                    Ok((Ok(schema), objects, source, definition, extras)) => {
+                    Ok((schema, objects, source, definition, extras)) => {
+                        // The definition and extras install whether or not
+                        // the schema read succeeded: a failed schema read
+                        // must not discard a good definition, leaving the
+                        // SQL panel blank or stale with its actions enabled.
                         match definition {
                             Ok(definition) => {
                                 this.definition.update(cx, |input, cx| {
@@ -513,44 +532,98 @@ impl SchemaView {
                         match extras {
                             Ok(extras) => this.extras = extras,
                             Err(error) => {
+                                // Clear rather than keep the previous
+                                // extras: showing old triggers beside a
+                                // fresh error would read as current.
+                                this.extras = TableExtras::default();
                                 this.extras_error = Some(format!("{error:#}"));
                             }
                         }
-                        let mut columns = Vec::with_capacity(schema.columns.len());
-                        for column in schema.columns.clone() {
-                            columns.push(this.new_row(Some(column), window, cx));
+                        match schema {
+                            Ok(schema) => {
+                                let mut columns = Vec::with_capacity(schema.columns.len());
+                                for column in schema.columns.clone() {
+                                    columns.push(this.new_row(Some(column), window, cx));
+                                }
+                                this.columns = columns;
+
+                                let mut indexes = Vec::with_capacity(schema.indexes.len());
+                                for index in schema.indexes.clone() {
+                                    indexes.push(this.new_index_row(Some(index), window, cx));
+                                }
+                                this.indexes = indexes;
+
+                                let mut foreign_keys =
+                                    Vec::with_capacity(schema.foreign_keys.len());
+                                for key in schema.foreign_keys.clone() {
+                                    foreign_keys.push(this.new_foreign_key_row(
+                                        Some(key),
+                                        window,
+                                        cx,
+                                    ));
+                                }
+                                this.foreign_keys = foreign_keys;
+
+                                // Other tables a new foreign key could
+                                // reference; a view cannot be one, and
+                                // referencing this table itself is left out
+                                // to keep the picker simple.
+                                this.tables = objects
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .filter(|candidate| {
+                                        candidate.kind == ObjectKind::Table
+                                            && candidate != &this.object
+                                    })
+                                    .collect();
+
+                                this.schema = Some(schema);
+                                this.rebuild_source = source;
+                            }
+                            Err(error) => this.error = Some(format!("{error:#}")),
                         }
-                        this.columns = columns;
-
-                        let mut indexes = Vec::with_capacity(schema.indexes.len());
-                        for index in schema.indexes.clone() {
-                            indexes.push(this.new_index_row(Some(index), window, cx));
-                        }
-                        this.indexes = indexes;
-
-                        let mut foreign_keys = Vec::with_capacity(schema.foreign_keys.len());
-                        for key in schema.foreign_keys.clone() {
-                            foreign_keys.push(this.new_foreign_key_row(Some(key), window, cx));
-                        }
-                        this.foreign_keys = foreign_keys;
-
-                        // Other tables a new foreign key could reference; a
-                        // view cannot be one, and referencing this table
-                        // itself is left out to keep the picker simple.
-                        this.tables = objects
-                            .unwrap_or_default()
-                            .into_iter()
-                            .filter(|candidate| {
-                                candidate.kind == ObjectKind::Table && candidate != &this.object
-                            })
-                            .collect();
-
-                        this.schema = Some(schema);
-                        this.rebuild_source = source;
                     }
-                    Ok((Err(error), _, _, _, _)) => this.error = Some(format!("{error:#}")),
                     Err(_) => {
                         this.error = Some("reading the table's structure was cancelled".into())
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Re-read only the SQL panel's definition, for "Show DDL" on a tab
+    /// that already has one: the form's unapplied edits are left alone, and
+    /// the definition is not left showing what an external `ALTER` replaced.
+    pub(crate) fn reload_definition(&mut self, cx: &mut Context<Self>) {
+        self.reload_generation += 1;
+        let generation = self.reload_generation;
+        self.loading = true;
+        self.definition_error = None;
+        cx.notify();
+
+        let connection = self.connection.clone();
+        let object = self.object.clone();
+        let task = runtime::spawn(async move { connection.definition(&object).await });
+
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| {
+                if this.reload_generation != generation {
+                    return;
+                }
+                this.loading = false;
+                match result {
+                    Ok(Ok(definition)) => {
+                        this.definition.update(cx, |input, cx| {
+                            input.set_value(definition, window, cx);
+                        });
+                    }
+                    Ok(Err(error)) => this.definition_error = Some(format!("{error:#}")),
+                    Err(_) => {
+                        this.definition_error = Some("reading the definition was cancelled".into())
                     }
                 }
                 cx.notify();

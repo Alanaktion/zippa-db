@@ -84,7 +84,7 @@ impl SchemaView {
                             .xsmall()
                             .label("Copy")
                             .tooltip("Copy the definition to the clipboard")
-                            .disabled(self.definition_error.is_some())
+                            .disabled(self.definition_error.is_some() || self.loading)
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.copy_definition(cx);
                             })),
@@ -95,7 +95,7 @@ impl SchemaView {
                             .xsmall()
                             .label("Open in query tab")
                             .tooltip("Open the definition in a query tab to edit and run it")
-                            .disabled(self.definition_error.is_some())
+                            .disabled(self.definition_error.is_some() || self.loading)
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.open_definition_in_query_tab(cx);
                             })),
@@ -106,7 +106,7 @@ impl SchemaView {
                             .xsmall()
                             .label("Save as .sql…")
                             .tooltip("Save the definition to a .sql file")
-                            .disabled(self.definition_error.is_some())
+                            .disabled(self.definition_error.is_some() || self.loading)
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.save_definition(cx);
                             })),
@@ -245,8 +245,19 @@ impl SchemaView {
                         .child(format!("Error: {error}")),
                 )
             })
+            .when_some(self.extras_error.clone(), |this, error| {
+                this.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(format!("Error: {error}")),
+                )
+            })
             .when(
-                self.extras.triggers.is_empty() && self.extras.trigger_error.is_none(),
+                self.extras.triggers.is_empty()
+                    && self.extras.trigger_error.is_none()
+                    && self.extras_error.is_none(),
                 |this| {
                     this.child(
                         div()

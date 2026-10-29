@@ -168,6 +168,10 @@ pub struct Session {
     reconnecting: bool,
     /// The next panel's stable key. See `SessionPanel`'s `key` field.
     next_key: usize,
+    /// Counts "Copy DDL" reads: a read captures the count it started under
+    /// and only writes the clipboard when no newer read has started since,
+    /// so an older read finishing last cannot replace a newer definition.
+    copy_ddl_generation: u64,
     /// The import dialog, while one is open over the window.
     import: Option<Entity<ImportView>>,
     /// The backup dialog, while one is open over the window.
@@ -250,6 +254,7 @@ impl Session {
             restoring: None,
             reconnecting: false,
             next_key: 0,
+            copy_ddl_generation: 0,
             import: None,
             backup: None,
             create_database: None,

@@ -278,13 +278,21 @@ impl Session {
     }
 
     /// Open a table or view's structure tab on its SQL panel, or bring the
-    /// tab forward and switch it there — the sidebar's "Show DDL".
+    /// tab forward and switch it there — the sidebar's "Show DDL". A reused
+    /// tab re-reads its definition first, so an external `ALTER` does not
+    /// leave the panel showing — and copying — stale DDL; a new tab is
+    /// already loading its own.
     pub(crate) fn open_ddl(
         &mut self,
         object: &DatabaseObject,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let existed = self.panels.iter().any(|panel| {
+            let panel = panel.read(cx);
+            panel.mode() == Some(ObjectViewMode::Schema)
+                && panel.object(cx).as_ref() == Some(object)
+        });
         self.open_object(object, ObjectViewMode::Schema, window, cx);
         if let Some(panel) = self
             .panels
@@ -299,15 +307,24 @@ impl Session {
         {
             panel.update(cx, |panel, cx| {
                 if let Some(view) = panel.schema_view() {
-                    view.update(cx, |view, cx| view.show_sql_panel(cx));
+                    view.update(cx, |view, cx| {
+                        view.show_sql_panel(cx);
+                        if existed {
+                            view.reload_definition(cx);
+                        }
+                    });
                 }
             });
         }
     }
 
     /// Copy a table or view's definition to the clipboard — the sidebar's
-    /// "Copy DDL". A failed read is a toast, not a silent nothing.
+    /// "Copy DDL". A failed read is a toast, not a silent nothing. A stale
+    /// read — an older one finishing after a newer one started — writes
+    /// nothing: the clipboard keeps the newer definition.
     pub(crate) fn copy_ddl(&mut self, object: &DatabaseObject, cx: &mut Context<Self>) {
+        self.copy_ddl_generation += 1;
+        let generation = self.copy_ddl_generation;
         let connection = self.connection.clone();
         let object = object.clone();
         let label = object.label();
@@ -315,20 +332,25 @@ impl Session {
 
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            this.update_in(cx, |_, window, cx| match result {
-                Ok(Ok(definition)) => {
-                    cx.write_to_clipboard(ClipboardItem::new_string(definition));
-                    crate::ui::notify_info(window, cx, format!("Copied definition of {label}"));
+            this.update_in(cx, |this, window, cx| {
+                if this.copy_ddl_generation != generation {
+                    return;
                 }
-                Ok(Err(error)) => {
-                    crate::ui::notify_info(
-                        window,
-                        cx,
-                        format!("Could not read definition: {error:#}"),
-                    );
-                }
-                Err(_) => {
-                    crate::ui::notify_info(window, cx, "Reading the definition was cancelled");
+                match result {
+                    Ok(Ok(definition)) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(definition));
+                        crate::ui::notify_info(window, cx, format!("Copied definition of {label}"));
+                    }
+                    Ok(Err(error)) => {
+                        crate::ui::notify_info(
+                            window,
+                            cx,
+                            format!("Could not read definition: {error:#}"),
+                        );
+                    }
+                    Err(_) => {
+                        crate::ui::notify_info(window, cx, "Reading the definition was cancelled");
+                    }
                 }
             })
             .ok();
