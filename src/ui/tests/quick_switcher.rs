@@ -3,6 +3,7 @@
 use super::*;
 use gpui_kit::component::WindowExt;
 
+use crate::dashboards::{Dashboard, Dashboards, Widget, WidgetDisplay};
 use crate::ui::quick_switcher::SwitcherTarget;
 use crate::ui::session::Tool;
 
@@ -363,6 +364,75 @@ fn fuzzy_typing_matches_characters_out_of_order(cx: &mut TestAppContext) {
         1,
         "o_items should fuzzy-match the order_items tab"
     );
+}
+
+#[gpui_kit::test]
+fn the_dashboard_item_opens_the_dashboard_tab(cx: &mut TestAppContext) {
+    let _lock = crate::dashboards::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    crate::dashboards::reset_for_test();
+
+    let handle = workspace(cx);
+    let _database = connect(cx, &handle);
+
+    let session = handle
+        .update(cx, |workspace, _, _| workspace.active_session_for_test())
+        .unwrap()
+        .expect("active session");
+
+    cx.update(|cx| {
+        crate::dashboards::upsert(
+            &Dashboard {
+                name: "Ops".to_string(),
+                widgets: vec![Widget {
+                    name: None,
+                    width: None,
+                    sql: "select id, name from items;".to_string(),
+                    display: WidgetDisplay::Grid,
+                }],
+                variables: Default::default(),
+            },
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.update(|cx| Dashboards::find(cx, "Ops").is_some()),
+        "the dashboard should be saved before the palette reads it"
+    );
+
+    let view = switcher_view(cx, &handle, &session);
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.choose_for_test(SwitcherTarget::Dashboard("Ops".to_string()), window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    session.update(cx, |session, cx| {
+        assert_eq!(session.panels().len(), 2);
+        assert_eq!(
+            session.panels()[1].read(cx).dashboard_name(cx).as_deref(),
+            Some("Ops")
+        );
+        assert_eq!(session.active_tab_index(), 1);
+    });
+
+    // Choosing it again brings the same tab forward, the way
+    // Session::open_dashboard does from the sidebar.
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.choose_for_test(SwitcherTarget::Dashboard("Ops".to_string()), window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    session.update(cx, |session, _| {
+        assert_eq!(session.panels().len(), 2, "no second dashboard tab");
+        assert_eq!(session.active_tab_index(), 1);
+    });
+    crate::dashboards::reset_for_test();
 }
 
 #[gpui_kit::test]

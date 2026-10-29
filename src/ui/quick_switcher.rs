@@ -3,6 +3,7 @@
 //! Provides fast search and navigation across:
 //! - Open query and table tabs
 //! - Tables and views in the active database schema
+//! - Saved dashboards, by name
 //! - Quick actions (New Query Tab, Open SQL File, Refresh)
 //! - Available databases on the current connection
 //!
@@ -38,6 +39,7 @@ pub(crate) enum SwitcherTarget {
     SwitchDatabase(String),
     SearchSchema,
     OpenTool(Tool),
+    Dashboard(String),
 }
 
 /// One palette row before it becomes a `CommandItem`: the label and keywords
@@ -112,6 +114,11 @@ impl QuickSwitcherView {
                     session.open_tool(tool, window, cx);
                 });
             }
+            SwitcherTarget::Dashboard(name) => {
+                session.update(cx, |session, cx| {
+                    session.open_dashboard(name, window, cx);
+                });
+            }
         }
     }
 
@@ -152,7 +159,21 @@ pub fn open(session: Entity<Session>, window: &mut Window, cx: &mut App) {
 
 impl Render for QuickSwitcherView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (tabs_info, objects, databases, is_file_based, current_db, active_tab_ix) = {
+        // Read before the session below: the global list is taken here, not
+        // while the session is borrowed, so the two reads never overlap.
+        let dashboard_names = crate::dashboards::Dashboards::get(cx)
+            .iter()
+            .map(|dashboard| dashboard.name.clone())
+            .collect::<Vec<_>>();
+        let (
+            tabs_info,
+            objects,
+            databases,
+            is_file_based,
+            current_db,
+            active_tab_ix,
+            active_dashboard,
+        ) = {
             let s = self.session.read(cx);
             let tabs: Vec<(SharedString, IconName, bool, Option<String>)> = s
                 .panels()
@@ -172,6 +193,10 @@ impl Render for QuickSwitcherView {
             let is_file_based = s.connection().config.engine.is_file_based();
             let current_db = s.connection().database().to_string();
             let active_tab_ix = s.active_tab_index();
+            let active_dashboard = s
+                .panels()
+                .get(active_tab_ix)
+                .and_then(|panel| panel.read(cx).dashboard_name(cx));
             (
                 tabs,
                 objects,
@@ -179,6 +204,7 @@ impl Render for QuickSwitcherView {
                 is_file_based,
                 current_db,
                 active_tab_ix,
+                active_dashboard,
             )
         };
 
@@ -236,7 +262,19 @@ impl Render for QuickSwitcherView {
             }
         }
 
-        // 3. Actions / Commands
+        // 3. Saved Dashboards
+        let mut dashboard_items = Vec::new();
+        for name in dashboard_names {
+            dashboard_items.push(PaletteItem {
+                target: SwitcherTarget::Dashboard(name.clone()),
+                label: name.clone(),
+                icon: IconName::LayoutDashboard,
+                checked: active_dashboard.as_deref() == Some(name.as_str()),
+                keywords: vec!["dashboard".to_string(), "open".to_string()],
+            });
+        }
+
+        // 4. Actions / Commands
         let mut act_items = vec![
             action(
                 SwitcherTarget::NewTab,
@@ -340,7 +378,7 @@ impl Render for QuickSwitcherView {
             ]);
         }
 
-        // 4. Databases (if multi-database engine and databases known)
+        // 5. Databases (if multi-database engine and databases known)
         let mut db_items = Vec::new();
         if !is_file_based && databases.len() > 1 {
             for db in databases {
@@ -367,7 +405,7 @@ impl Render for QuickSwitcherView {
 
         let mut targets: Vec<Vec<SwitcherTarget>> = Vec::new();
         let mut command = Command::new(&self.state)
-            .placeholder("Search tables, views, open queries, commands...")
+            .placeholder("Search tables, views, dashboards, open queries, commands...")
             .bordered(false)
             .max_h(px(360.))
             .filterable(false)
@@ -377,7 +415,7 @@ impl Render for QuickSwitcherView {
                     .text_center()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child("No matching tables, views, queries or commands")
+                    .child("No matching tables, views, dashboards, queries or commands")
             });
 
         // Re-rank on every keystroke.
@@ -391,6 +429,7 @@ impl Render for QuickSwitcherView {
         for (group_label, items) in [
             ("Open Tabs", tab_items),
             ("Tables & Views", obj_items),
+            ("Dashboards", dashboard_items),
             ("Actions", act_items),
             ("Switch Database", db_items),
         ] {
