@@ -749,7 +749,7 @@ impl Connection {
     ) -> Result<QueryResult> {
         self.refuse_write(sql)?;
         let started = Instant::now();
-        let result = self.fetch_read_only(sql, max_rows).await;
+        let result = self.fetch_read_only(sql, Vec::new(), Some(max_rows)).await;
         let outcome = match &result {
             Ok(result) => query_outcome(result),
             Err(error) => QueryOutcome::Error(format!("{error:#}")),
@@ -758,11 +758,40 @@ impl Connection {
         result
     }
 
+    /// [`Self::run_query_with`] for a caller that must only ever read,
+    /// whatever the connection's safety mode: a dashboard, which runs its
+    /// widgets again on every open and refresh with no one there to confirm
+    /// a write each time.
+    ///
+    /// Anything the classifier does not recognise as a read is refused
+    /// before it is sent, and the rest runs in a read-only session of its
+    /// own, as an agent read does, so a `SELECT` calling a function that
+    /// writes is refused by the server.
+    pub async fn run_read_with(&self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
+        if let Some(word) = statement::first_write(sql, self.config.engine) {
+            anyhow::bail!("only reads can run here, so the {word} statement was not run");
+        }
+        let started = Instant::now();
+        let result = self.fetch_read_only(sql, params, None).await;
+        let outcome = match &result {
+            Ok(result) => query_outcome(result),
+            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+        };
+        self.log(sql, QuerySource::Internal, started.elapsed(), outcome);
+        result
+    }
+
     /// Run `sql` on a dedicated connection the server holds read-only for
-    /// the length of the statement. The connection closes afterwards rather
-    /// than going back to the pool, so a cancelled read cannot leave its
-    /// transaction, or SQLite's `query_only`, on a pooled connection.
-    async fn fetch_read_only(&self, sql: &str, max_rows: usize) -> Result<QueryResult> {
+    /// the length of the statement, reading at most `max_rows` rows when
+    /// given. The connection closes afterwards rather than going back to the
+    /// pool, so a cancelled read cannot leave its transaction, or SQLite's
+    /// `query_only`, on a pooled connection.
+    async fn fetch_read_only(
+        &self,
+        sql: &str,
+        params: Vec<Cell>,
+        max_rows: Option<usize>,
+    ) -> Result<QueryResult> {
         let mut connection = self.dedicated().await?;
         let open = match self.config.engine {
             Engine::Postgres => "BEGIN READ ONLY",
@@ -770,14 +799,16 @@ impl Connection {
             Engine::Sqlite => "PRAGMA query_only = ON",
         };
         connection.execute(open).await?;
-        let result = connection.fetch_capped(sql, max_rows).await;
+        let result = connection.fetch_bounded(sql, params, max_rows).await;
         // A read cut short leaves the rest of its rows on the wire, and a
         // `ROLLBACK` would have to drain them first — the very read the cap
         // is there to stop. Closing the connection ends the transaction
         // just as well.
-        let cut = result
-            .as_ref()
-            .is_ok_and(|result| result.rows.len() >= max_rows);
+        let cut = max_rows.is_some_and(|max_rows| {
+            result
+                .as_ref()
+                .is_ok_and(|result| result.rows.len() >= max_rows)
+        });
         if self.config.engine != Engine::Sqlite && !cut {
             // Nothing was written, so this only ends the transaction; the
             // connection closes either way.

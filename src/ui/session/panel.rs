@@ -531,10 +531,10 @@ impl SessionPanel {
     /// Run the dashboard tab's own refresh: the session's `Cmd+R` never
     /// does this, since re-running could repeat a write and there is no
     /// window for a confirmation dialog there.
-    pub(crate) fn dashboard_refresh(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn dashboard_refresh(&self, cx: &mut Context<Self>) {
         if let TabContent::Dashboard { view } = &self.content {
             let view = view.clone();
-            view.update(cx, |view, cx| view.refresh(window, cx));
+            view.update(cx, |view, cx| view.refresh(cx));
         }
     }
 

@@ -80,3 +80,37 @@ async fn the_other_modes_still_write() {
         connection.close().await;
     }
 }
+
+#[tokio::test]
+async fn a_read_only_caller_is_refused_a_write_in_every_mode() {
+    // A dashboard reads whatever the connection allows, so a widget that
+    // writes never repeats its write on a refresh.
+    let database = TempDatabase::new().await;
+    for safety in [
+        SafetyMode::ReadOnly,
+        SafetyMode::ConfirmWrites,
+        SafetyMode::Staged,
+        SafetyMode::AutoApply,
+    ] {
+        let connection = open_with(&database, safety).await;
+        let error = connection
+            .run_read_with("delete from items", vec![])
+            .await
+            .expect_err("a read-only caller should refuse a DELETE");
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("only reads") && error.contains("DELETE"),
+            "{safety:?}: the error should say what was refused: {error}"
+        );
+        let result = connection
+            .run_read_with(
+                "select name from items where id = ?",
+                vec![Some("1".to_string())],
+            )
+            .await
+            .expect("a read should still run");
+        assert_eq!(result.rows, [[Some("alpha".to_string())]], "{safety:?}");
+        assert_eq!(item_count(&connection).await, "2", "{safety:?}");
+        connection.close().await;
+    }
+}
