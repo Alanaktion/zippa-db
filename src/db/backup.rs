@@ -339,6 +339,9 @@ pub fn commands_for(
                 if multiple {
                     args.push("--databases".to_string());
                 }
+                // After `--`, so a name that starts with a dash is never an
+                // option.
+                args.push("--".to_string());
                 args.push(database.clone());
                 for table in tables.iter().filter(|table| &table.database == database) {
                     args.push(table.name.clone());

@@ -228,7 +228,11 @@ impl Connection {
                 // runs the replay, not as its original owner.
                 let definer = parse_definer(&text(row, 5))
                     .map(|(user, host)| {
-                        format!(" DEFINER={}@{}", quote_literal(&user), quote_literal(&host))
+                        format!(
+                            " DEFINER={}@{}",
+                            quote_literal_for(Engine::MySql, &user),
+                            quote_literal_for(Engine::MySql, &host)
+                        )
                     })
                     .unwrap_or_default();
                 TriggerDef {

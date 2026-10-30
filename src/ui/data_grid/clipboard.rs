@@ -204,6 +204,14 @@ impl DataGrid {
 
     /// Put `text` on the clipboard and tell the owner what it was.
     fn put_on_clipboard(&mut self, text: String, message: String, cx: &mut Context<Self>) {
+        // The row copies cap their payload already; this covers a single
+        // cell and the column shapes, so no copy exceeds the byte cap.
+        let (text, capped) = cap_bytes(text);
+        let message = if capped {
+            format!("{message} (cut at {} MB)", MAX_COPY_BYTES / (1024 * 1024))
+        } else {
+            message
+        };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         cx.emit(Copied { message });
     }

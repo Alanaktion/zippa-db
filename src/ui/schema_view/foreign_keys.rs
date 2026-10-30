@@ -80,15 +80,9 @@ impl SchemaView {
         }
     }
 
-    /// Whether foreign keys can be changed at all. SQLite now has the table
-    /// rebuild behind an add or drop, so this is the same gate as the rest.
-    fn foreign_keys_editable(&self) -> bool {
-        self.is_editable()
-    }
-
     /// Append a blank row for the user to name and connect by hand.
     pub(super) fn add_foreign_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.foreign_keys_editable() {
+        if !self.is_editable() {
             return;
         }
         let row = self.new_foreign_key_row(None, window, cx);
@@ -251,7 +245,7 @@ impl SchemaView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let id = key.id;
-        let editable = self.foreign_keys_editable();
+        let editable = self.is_editable();
         let available: Vec<String> = self.picker_columns(cx);
 
         let mut boxes = Vec::with_capacity(available.len());
@@ -298,7 +292,7 @@ impl SchemaView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let id = key.id;
-        let editable = self.foreign_keys_editable();
+        let editable = self.is_editable();
 
         if key.referenced_table.is_some() && key.referenced_table_columns.is_empty() {
             return div()
@@ -348,7 +342,7 @@ impl SchemaView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let id = key.id;
-        let editable = self.foreign_keys_editable();
+        let editable = self.is_editable();
         let label = key
             .referenced_table
             .as_ref()
@@ -395,7 +389,7 @@ impl SchemaView {
         current: ReferentialAction,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let editable = self.foreign_keys_editable();
+        let editable = self.is_editable();
         let weak = cx.entity().downgrade();
         let field = if on_delete { "delete" } else { "update" };
 
@@ -441,7 +435,7 @@ impl SchemaView {
 
     fn render_foreign_key_row(&self, key: &EditableForeignKey, cx: &mut Context<Self>) -> TableRow {
         let id = key.id;
-        let editable = self.foreign_keys_editable();
+        let editable = self.is_editable();
         let edit = key.snapshot(cx);
         let is_new = edit.is_new();
         let dropped = key.dropped;
@@ -603,7 +597,7 @@ impl SchemaView {
     }
 
     pub(super) fn render_foreign_keys(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let editable = self.foreign_keys_editable();
+        let editable = self.is_editable();
 
         let rows: Vec<TableRow> = self
             .foreign_keys

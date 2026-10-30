@@ -123,14 +123,19 @@ pub fn is_placeholder(cell: &Cell) -> bool {
 
 /// Column types whose values never survive a round trip through text.
 pub fn is_binary_type(type_name: &str) -> bool {
-    let name = type_name.trim_matches('"').to_ascii_uppercase();
+    let name = type_name.trim_matches('"');
     // An array of a binary type is no more readable than one value of it.
-    let name = name.strip_suffix("[]").unwrap_or(&name);
-    name == "BYTEA"
-        || name.ends_with("BLOB")
-        || name == "BINARY"
-        || name == "VARBINARY"
-        || name == "GEOMETRY"
+    let name = name.strip_suffix("[]").unwrap_or(name);
+    let ends_with_blob = name
+        .len()
+        .checked_sub(4)
+        .and_then(|start| name.get(start..))
+        .is_some_and(|tail| tail.eq_ignore_ascii_case("BLOB"));
+    name.eq_ignore_ascii_case("BYTEA")
+        || ends_with_blob
+        || name.eq_ignore_ascii_case("BINARY")
+        || name.eq_ignore_ascii_case("VARBINARY")
+        || name.eq_ignore_ascii_case("GEOMETRY")
 }
 
 /// Column types that hold raw bytes a file can replace, as a staged hex

@@ -1,7 +1,7 @@
 # Audit — Zippa DB — remaining issues
 
 **Revision audited:** `60e7002` "Add schema search dialog with full catalog" (2026-09-19), branch `main`.
-**Audit date:** 2026-09-21. **Last revised:** 2026-10-29, §13 (a read of everything merged since the 2026-10-20 cleanup).
+**Audit date:** 2026-09-21. **Last revised:** 2026-10-29, §13 (a read of everything merged since the 2026-10-20 cleanup), then pruned of items since fixed.
 **This revision:** findings that have since been fixed are removed, so only what is still open is listed. The 0.1 cleanup split the largest UI files into submodules (`ui/session/`, `ui/data_grid/`, `ui/table_view/`, `ui/schema_view/`), so anchors are given as `file` plus the function name rather than a line number. The resolved findings and their regression tests are in the git history.
 
 ## How this audit was done
@@ -21,7 +21,7 @@ Everything below comes from reading the source, cross-checked against `gpui-kit`
 - **[L]** low — polish, naming, docs, dead code.
 - ⚠︎ **inferred** — the symptom follows from the code but was not observed at runtime.
 
-There are no "unfinished feature" placeholders in the usual sense: no `todo!()`/`unimplemented!()`, and only one literal `TODO` (`src/ui/table_view/row_panel.rs`). The incompleteness here is of the quieter kind — one engine doing less than its sibling without saying so, and memory that grows with a result.
+There are no "unfinished feature" placeholders in the usual sense: no `todo!()`/`unimplemented!()` and no literal `TODO` in `src/`. The incompleteness here is of the quieter kind — one engine doing less than its sibling without saying so, and memory that grows with a result.
 
 ---
 
@@ -48,7 +48,6 @@ The "destructive statement" count only sees the first 64 KiB of the dump (`src/d
 - Stray `COPY` data outside a `COPY` header is silently dropped with no error and nothing in the summary (`src/db/import/mod.rs`).
 - The SQLite rebuild hardcodes the scratch name `new_{name}` (`src/ui/schema_view/rebuild.rs`); a table already called `new_items` fails the rebuild.
 - The column type picker is a fixed per-engine list with no free-text entry (`src/ui/schema_view/sql.rs`, `src/ui/schema_view/columns.rs` `render_type_picker`) — `bytea`, `inet`, enums, `year` can be displayed but never set. The doc says "Not exhaustive".
-- `foreign_keys_editable` is a no-op seam returning `is_editable()` (`src/ui/schema_view/foreign_keys.rs`).
 - The plan viewer keeps only a node's total cost, dropping the startup cost it stores (`src/db/plan.rs` `PlanNode` vs `src/ui/plan_view.rs`).
 
 ---
@@ -64,7 +63,6 @@ The "destructive statement" count only sees the first 64 KiB of the dump (`src/d
 
 ### Behaviour that differs between two paths to the same thing
 
-- **[L] `MAX_COPY_BYTES` is not applied to every copy.** Row copies are now capped at `MAX_COPY_ROWS` before any row is cloned, but the byte cap still skips single-cell copies and both column shapes (`src/ui/data_grid/clipboard.rs`).
 - **[L] A NULL is shown differently in the grid and the row panel.** The grid renders it as the word `NULL` (`src/ui/data_grid/format.rs`); the row panel shows an empty box (`src/ui/table_view/row_panel.rs`). Both coerce a typed `null` per the setting, and the value dialog does too.
 - **[L] Three different guards for "a dialog is already open".** `window.has_active_dialog` (`src/ui/quick_switcher.rs`, `src/ui/schema_search.rs`, `src/ui/shortcuts_dialog.rs`, `src/ui/user_management.rs`), a struct field (`Session::import`, `Session::create_database`, `Session::variables_dialog`), and none at all (`src/ui/welcome/mod.rs`, `src/ui/session/save_dialog.rs`).
 - **[L] The same failure is reported two ways at once.** `Welcome::connect` sets the inline banner *and* raises a toast; `connect_saved` shows only the banner; `settings::update` shows neither (`src/settings.rs`).
@@ -106,8 +104,6 @@ The keychain read, the `connections.json`/settings/dump-pre-flight writes, and t
 - **Ignored `Result`s** (all deliberate-looking, listed for completeness): `let _ = tx.send(...)` (`src/db/runtime.rs`), import `ROLLBACK`/`SET FOREIGN_KEY_CHECKS=1`/`SET UNIQUE_CHECKS=1` `.ok()` and `sender.send(...)` (`src/db/import/mod.rs`), SQLite `rollback()`/`PRAGMA foreign_keys = ON` `.ok()` (`src/db/sqlite.rs`), and `update_in(...).ok()` throughout the UI, which hides "the entity is gone" errors.
 - **Errors that reach only stderr.** A failed settings write (`src/settings.rs`) leaves the UI claiming success.
 
-**Fixed since the audit revision** (kept here so the fix and its motivation stay attached to the finding): `record_connected` was a read-modify-write against the file with no locking, so it could overwrite a concurrent save from the connection editor and lose a newly added connection; `mark_connected` now updates the launcher's own in-memory list and writes it through the same `store::save`/`store_in_background` path every other mutation uses, so there is exactly one writer and no second disk read to race. Every JSON file the app writes (`connections.json`, `workspace.json`, `settings.json`) was written with the platform's default permissions — worth noting since a query buffer can hold a pasted secret and `connections.json` carries a database's host and username — and now goes through `store::write_restricted`, which opens with mode `0o600` on Unix from the first byte.
-
 ### Panics in non-test code
 
 Small in number and mostly guarded, but they are panics in paths that process user input:
@@ -129,7 +125,6 @@ Small in number and mostly guarded, but they are panics in paths that process us
 ### Memory and hot paths
 
 - **Every result is materialised before it is rendered.** `fetch_all` collects the whole row stream into `Vec<Row>` and converts each cell to an owned `String` (`src/db/connection.rs`). The grid virtualizes only the *rendering*, so memory is proportional to the result; the README says so.
-- **Per-frame allocation in the row panel.** `render_field` calls `is_field_editable` and `needs_a_window` for every visible field (`src/ui/table_view/row_panel.rs`), and both end in `query::is_binary_type`, which allocates an uppercased `String` per call (`src/db/query.rs`).
 - **`is_placeholder` misclassifies genuine short bracketed values.** `src/db/query.rs` treats any `<…>` whose inner text has no brackets, parentheses, comma, or space as a driver stand-in, so a real `<nil>`, `<item>` or `<3 bytes>` text value is treated as "never read back": uneditable (`src/ui/data_grid/delegate.rs`), claims so in the value dialog, dropped from copies, and exported as `NULL`/empty (`src/db/export.rs`). The test only covers `<a>hi</a>`, `<>`, and a `circle`.
 - **Cancellation arms nothing can reach, and work that outlives its tab.** The connect task's abort handle is never kept (`src/ui/welcome/mod.rs`), same for `reload_metadata` and `switch_database` (`src/ui/session/metadata.rs`), so their "cancelled" branches can only be reached by a panic, which would be misreported. Table-view loads, writes and exports are `runtime::spawn`ed and detached with no abort handle (`src/ui/table_view/mod.rs`, `export.rs`), so nothing stops a page load or an export, and closing the tab leaves the future running. `CancelQuery`/`Cmd+.` only reaches queries and imports (`src/ui/session/running.rs`).
 - **Unchecked indexing / arithmetic** (all currently safe, listed for completeness): `self.tabs[self.active]` (`src/app.rs`, safe because `tabs` is never empty), `self.panels[index]` with a modulo (`src/ui/session/files.rs`), and `page * limit` / `limit`/`offset` interpolation (`src/ui/table_view/sql.rs`, `footer.rs`), clamped by `settings::MAX_PAGE_SIZE`.
@@ -149,14 +144,13 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 
 ## 6. CI
 
-`.github/workflows/ci.yml` runs `cargo test`, `cargo fmt --check`, and `cargo clippy -D warnings` in one `ubuntu-latest` job. `.github/workflows/live-tests.yml` runs the ignored live tests against `compose.yaml`'s MySQL and Postgres; it is not a required check, which is how §10's failure sat red for two days while `ci.yml` stayed green. Release packaging (`.github/workflows/release.yml`) builds installers on macOS, Linux, and Windows on version tags, so the platforms are covered at release time; the `ci.yml` test jobs themselves still run on Linux only. `script/linux` installs the Linux build dependencies; nothing equivalent guards the other two platforms for local development.
+`.github/workflows/ci.yml` runs `cargo test`, `cargo fmt --check`, and `cargo clippy -D warnings` in one `ubuntu-latest` job. `.github/workflows/live-tests.yml` runs the ignored live tests against `compose.yaml`'s MySQL and Postgres; it is not a required check, which is how a MySQL failure once sat red for two days while `ci.yml` stayed green. Release packaging (`.github/workflows/release.yml`) builds installers on macOS, Linux, and Windows on version tags, so the platforms are covered at release time; the `ci.yml` test jobs themselves still run on Linux only. `script/linux` installs the Linux build dependencies; nothing equivalent guards the other two platforms for local development.
 
 ## 7. Suggested triage order
 
 1. **Agent reads that are not bounded** (§13) — the last place model-written SQL can make the server read without limit.
-2. **Copy byte cap** (§2) — apply `MAX_COPY_BYTES` to every copy.
-3. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations.
-4. **The open design calls in §11.**
+2. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations.
+3. **The open design calls in §11.**
 
 ## 8. What this audit did and did not cover
 
@@ -166,33 +160,13 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 
 ## 9. Stability audit — hangs and crashes (2026-09-26, revision `3303ae4`)
 
-Prompted by UI hangs and crashes on macOS dev builds; static reading of all non-test code for panic sources, UI-thread stalls, and GPUI/macOS misuse. Everything it found was fixed in `08d8c38` (the non-ASCII tokenizer panic, the unguarded foreign-key column, the stacked confirm dialogs and connect re-entry, and the export, Copy as, JSON pretty-print, console snapshot, and schema-search work on the UI thread), except:
+Prompted by UI hangs and crashes on macOS dev builds; static reading of all non-test code for panic sources, UI-thread stalls, and GPUI/macOS misuse. Everything it found was fixed in `08d8c38` except:
 
 - **[L] Query editor clones and re-splits the whole buffer on re-render** (`src/ui/query_editor.rs`, `compute_statement` → `statement::at_cursor`). No per-keystroke subscription, so only a hitch with multi-MB buffers. The toolbar's script-blocker check is memoized on a hash of the buffer, but still hashes the whole text per render.
 
-## 10. MySQL's prepared protocol (2026-10-04, revision `069f96f`)
-
-Prompted by the nightly live tests failing since `4c5cfe5`. sqlx sends every `sqlx::query` as a prepared statement, and MySQL refuses a fixed set of statements over that protocol with error 1295 ("This command is not supported in the prepared statement protocol yet"). Checked against MySQL 8.4 with `PREPARE`: `BEGIN`, `START TRANSACTION`, `SAVEPOINT`, `RELEASE SAVEPOINT`, `ROLLBACK TO SAVEPOINT`, `LOCK TABLES`, `UNLOCK TABLES`, and `USE` are refused; `COMMIT`, `ROLLBACK`, and `SET` are accepted.
-
-**Fixed:** `Dedicated::execute` sends MySQL statements over the text protocol (`sqlx::raw_sql`), and `Dedicated::fetch` re-sends a statement as text when the prepared attempt is refused with 1295 (nothing ran, and none of those statements return rows). That covered three user-visible failures, each now pinned by a live test in `src/db/tests.rs`:
-
-- **[H] Every MySQL script run in a transaction failed before its first statement** (`Cmd+Shift+Enter`): the run's own `BEGIN` was refused, and each statement's `SAVEPOINT` would have been next.
-- **[H] A `mysqldump` file could not be imported**: its `LOCK TABLES … WRITE` was the first refused statement, so the import stopped (or, with Continue, skipped every lock and unlock).
-- **[M] A script run without a transaction could not hold `LOCK TABLES` or `USE`**, which is the very case the "run without a transaction" question exists for.
-
-**Fixed later:**
-
-- **[M] A query tab on MySQL refused the same statements** (`fetch_all` in `src/db/connection.rs`, through the pool). `BEGIN`, `LOCK TABLES`, or `USE other_db` run with `Cmd+Enter` failed with error 1295, and on Postgres and SQLite a `BEGIN` succeeded but left its transaction on whichever pooled connection ran it. A query tab now runs on a connection of its own (`db::pinned`), through `Dedicated::fetch` and its text-protocol fallback, so the session state each statement sets up stays with the tab; pinned by `live_mysql_a_pinned_tab_holds_a_transaction_and_its_locks`.
-
 ## 11. Polish audit — crashes, hangs, and inconsistencies (2026-10-05, revision `6558db1`)
 
-A second full read of `src/` after #4–#9 landed, looking for panics, work that hangs or outlives what started it, lost data, and places where two paths to the same thing disagree. Fixed in the same change:
-
-- **Persistence.** Each JSON file is written to a temp file and renamed, through one `store::write_atomic` that takes a `store::ticket()` when the snapshot is taken and skips a write older than one already on disk, so a background checkpoint can no longer land after the quit-time flush (this closes the §4 interleave). A failed workspace save is retried at the next checkpoint instead of being marked saved. A file that does not parse is moved aside to `<name>.unreadable` and the error says so, rather than being overwritten with an empty list on the next save. Two launcher tabs share one `SavedConnections` global, so a connection added in one is not dropped by a save from the other.
-- **Connecting.** The SSH sign-in has a 15 s timeout and the tunnel sends keepalives; the accept loop no longer spins on a persistent error; the agent tries every identity. `known_hosts` refuses an `@revoked` key and a host recorded under a different key type, matches the host case-insensitively, and reads tab-separated lines. Postgres ignores `~/.pgpass` and `PGDATABASE`, so a saved connection means the same thing on every machine (a blank database is the user's own, as libpq does), and sets `application_name`. Changing the SSH auth method in the editor saves the new secret rather than keeping the old one. Closing the editor stops a connection test still running.
-- **Query runs and transactions.** Disconnecting, closing a connection, or switching database stops the runs in flight (and asks the server to cancel the pinned statement) instead of leaving a tab spinning. Quitting with an open transaction asks first. Switching database or reconnecting with staged edits or an unsaved structure change asks first. A lost connection on a pinned tab discards it, so the next run checks out a fresh one. A cancelled run says "Cancelled" only if it was still running. Escape on a running import cancels it instead of hiding it. MySQL `autocommit` set as `ON`/`TRUE`/`'1'` is followed, and a script's own `BEGIN`/`COMMIT` update the transaction state. MySQL error 4031 and Postgres `57P04`/`57P05`/`25P03` read as a lost connection.
-- **SQL classification and quoting.** The splitter, classifier, and completion lexer now know the engine: `#` starts a comment only on MySQL, and a backslash escapes a quote only on MySQL and in a Postgres `E'…'` string, so a SQLite or Postgres `'C:\'` no longer swallows the rest of the buffer. `EXPLAIN ANALYSE` is recognised. A `PRAGMA name(arg)` is a read only for the pragmas that only read. The import splitter handles Postgres' `BEGIN ATOMIC` bodies and `e'…'` after a word ending in `e`. Generated SQL quotes reserved words (`rank`, `order`, …) on every engine.
-- **Grid and views.** Picked rows, the anchor, and the focused row follow their rows through a sort. Applying edits keeps an edit typed while the write was in flight. A stale page or foreign-key read no longer replaces a newer one. Schema search no longer indexes a catalog it did not rank (a panic after a refresh). `Cmd+C` escapes tabs and newlines in a cell the way `Copy as` TSV does. Export writes an array of booleans or numbers as its literal. The plan reader accepts `1e+06` costs. The management views clear their grid on an error and say what they will show when empty.
+A second full read of `src/` after #4–#9 landed, looking for panics, work that hangs or outlives what started it, lost data, and places where two paths to the same thing disagree. The fixes made in the same change are in the git history.
 
 Left open, because each needs a design call:
 
@@ -211,15 +185,7 @@ Left open, because each needs a design call:
 
 ## 12. Cleanup audit (2026-10-15, revision `64954cc`)
 
-A read of what landed after §11 — query variables, saved queries, create database, new-table creation, user management, the query formatter, the command palette's ranking, and the ER diagram — plus `cargo update`. Fixed in the same change:
-
-- **[H] The ER diagram drew no edges on Postgres for tables in `public`.** `all_foreign_keys` reported both ends as `public.table` while `objects` lists a `public` table without its schema, so `layout_diagram` matched neither end. Both now go through `shown_schema`; the live test pins it.
-- **[M] A password set from the user management tab showed in the query console.** `CREATE ROLE … PASSWORD` and `ALTER USER … IDENTIFIED BY` were logged as sent. They are logged with a `********` stand-in now.
-- **[M] An unreadable `saved_queries.json` was replaced on the next save,** losing every saved query: it loaded as empty and the next save wrote the one new query. The sidebar also read and parsed the file on every render, on the UI thread. Saved queries are now one global, read through `store::load_json` (which keeps an unreadable file aside) and written through `store::write_atomic` in the background.
-- **[M] Escape did nothing in the create-database, user, and variables dialogs.** Each turns the dialog's own keys off and handles a close action that nothing bound.
-- **[L]** The user dialog's password box was not masked, and the password was trimmed before it was set. A failed drop reported only a count. The variables dialog kept a leading `$` on a name, so `$id` never matched the buffer's `$id`.
-- **[L]** The read-only refusals now share one wording (§3), and the duplicated identifier quoting (§2) is one `db::sql::qualified_name`/`quoted_list`.
-- **Refactors.** `query_editor` is a directory like the other large views (`editing.rs` for the bound editing commands, `text.rs` for the pure text edits and their tests, `test_support.rs`); the seven tool tabs are one `TabContent::Tool(ToolView)` with a `Tool` kind, so `SessionPanel` no longer repeats a constructor, a predicate, and a match arm per tool, and `Session::open_tool` replaces seven `open_*` methods.
+A read of what landed after §11 — query variables, saved queries, create database, new-table creation, user management, the query formatter, the command palette's ranking, and the ER diagram — plus `cargo update`. The fixes made in the same change are in the git history.
 
 Left open:
 
@@ -227,13 +193,8 @@ Left open:
 
 ## 13. Feature audit (2026-10-29, revision `0177721`)
 
-A read of what was merged after the §12 cleanup and the 2026-10-20 backlog revision: the Agents panel (`db/agent/`, `ui/agents/`), backups through `pg_dump`/`mysqldump` (`db/backup.rs`, `ui/backup_dialog.rs`), dashboards and charts (`ui/session/dashboard.rs`, `chart.rs`), the implicit `LIMIT` (`session/limit.rs`, `statement::with_limit`/`clamp_limit`), staging a binary value from a file, the structure tab's read-only definition (`db/ddl.rs`, `schema_view/definition.rs`), the table view's quick search, the Messages pane, and connection information. The checks were the three CI commands plus the live tests against `compose.yaml`. Fixed in the same change:
+A read of what was merged after the §12 cleanup and the 2026-10-20 backlog revision: the Agents panel (`db/agent/`, `ui/agents/`), backups through `pg_dump`/`mysqldump` (`db/backup.rs`, `ui/backup_dialog.rs`), dashboards and charts (`ui/session/dashboard.rs`, `chart.rs`), the implicit `LIMIT` (`session/limit.rs`, `statement::with_limit`/`clamp_limit`), staging a binary value from a file, the structure tab's read-only definition (`db/ddl.rs`, `schema_view/definition.rs`), the table view's quick search, the Messages pane, and connection information. The checks were the three CI commands plus the live tests against `compose.yaml`. The fixes made in the same change (agent reads on a read-only session, hex encoding, clippy, a timezone-dependent test, a doc comment) are in the git history.
 
-- **[H] An agent "read" could write.** `run_select` and `explain_query` let a statement through only when the classifier sees a plain `SELECT`, but that statement ran on the ordinary pool, so a `SELECT` that writes through a function (`nextval`, `setval`, a user function that deletes rows) ran with the connection's full rights. The classifier cannot see inside a function. A table's rows are also part of the model's context, so text planted in the data could ask for this. At `ReadOnlySql` access, which is meant never to change anything, the change went through without any approval. `Connection::run_query_as_agent` now runs each agent read on a dedicated connection that the server holds read-only: `BEGIN READ ONLY` on Postgres, `START TRANSACTION READ ONLY` on MySQL, `PRAGMA query_only` on SQLite. The connection closes afterwards, so the setting never leaks back onto the pool. Pinned by `an_agent_read_runs_in_a_session_the_server_holds_read_only`, `live_postgres_an_agent_read_cannot_write_through_a_function` and `live_mysql_an_agent_read_runs_in_a_read_only_transaction`.
-- **[M] Staging a large file froze the window.** `binary::hex_encode` formatted a new `String` for every byte, and it runs on the UI thread when the value dialog's file is staged. It now uses a lookup table.
-- **[L] `cargo clippy -D warnings` failed on `main`** (`nonminimal_bool` in `ui/agents/mod.rs`), so CI was red.
-- **[L] `live_postgres_geometry_ranges_hstore_and_macaddr8_read_back_as_text` failed west of UTC.** It expected a `tstzrange` shown in local time to start with `2024-`. CI runs in UTC, so this only failed on local runs.
-- **[L]** `clamp_limit`'s doc comment sat on the private `negative_sign` helper above it, so the public function had no documentation and the helper had two descriptions.
 
 Left open:
 
@@ -246,8 +207,7 @@ Left open:
 
 ### Backups
 
-- **[L] A database or table name is passed to `mysqldump` as a bare positional argument** (`dump_commands`, `src/db/backup.rs`). A table named `--where=…` or `--result-file=…` would be read as an option. Postgres passes the database through `-d`, which also accepts a connection string, so a database named `host=… dbname=…` would connect somewhere else. The names come from the server's own lists, so this needs someone who can already create objects there. Passing names after `--`, or refusing names that start with `-` or contain `=`, would close it.
-- **[L] MySQL `DEFINER` in the reconstructed trigger text is quoted with `quote_literal`** rather than `quote_literal_for(Engine::MySql, …)` (`db/ddl.rs`, `mysql_trigger_rows`), so a backslash in a user or host name would be read as an escape by MySQL if the copied DDL were run.
+- **[L] A database name is passed to `pg_dump` through `-d`, which also accepts a connection string,** so a database named `host=… dbname=…` would connect somewhere else (`dump_commands`, `src/db/backup.rs`). `mysqldump` now gets its names after `--`. The names come from the server's own lists, so this needs someone who can already create objects there. Refusing names that contain `=` would close it.
 
 ### Binary values
 
