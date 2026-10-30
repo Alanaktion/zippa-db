@@ -1673,3 +1673,73 @@ async fn live_ssh_tunnel_reports_a_refused_password() {
         "{error:#}"
     );
 }
+
+/// A streamed read hands over every row of a result far larger than any page,
+/// and one stopped partway closes its connection rather than leaving the
+/// pool to drain the rest. Against `compose.yaml`'s `postgres` service.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_a_streamed_read_hands_over_every_row() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    let sql = "SELECT g FROM generate_series(1, 1000000) AS g";
+
+    let mut sink = CountingSink::new(None);
+    let rows = connection
+        .stream_query_with(sql, Vec::new(), &mut sink)
+        .await
+        .expect("the streamed read should run");
+    assert_eq!(rows, 1_000_000);
+    assert_eq!(sink.columns, ["g"]);
+    assert_eq!(sink.last.as_deref(), Some("1000000"));
+
+    let mut stopped = CountingSink::new(Some(10));
+    let error = connection
+        .stream_query_with(sql, Vec::new(), &mut stopped)
+        .await
+        .expect_err("the sink stops the read");
+    assert!(format!("{error:#}").contains("stopped"), "{error:#}");
+    assert_eq!(stopped.rows, 10);
+
+    let after = connection
+        .run_query("SELECT 1")
+        .await
+        .expect("the pool should still answer");
+    assert_eq!(after.rows[0][0].as_deref(), Some("1"));
+    connection.close().await;
+}
+
+/// The same on MySQL. Against `compose.yaml`'s `mysql` service.
+/// `cargo test -- --ignored live_mysql_a_streamed`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_a_streamed_read_hands_over_every_row() {
+    let (connection, _pool) = live_mysql().await;
+    let digits = "(SELECT 0 d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 \
+                  UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 \
+                  UNION ALL SELECT 8 UNION ALL SELECT 9)";
+    let sql = format!(
+        "SELECT a.d + 10 * b.d + 100 * c.d + 1000 * e.d + 10000 * f.d + 1 AS n \
+         FROM {digits} a, {digits} b, {digits} c, {digits} e, {digits} f ORDER BY n"
+    );
+
+    let mut sink = CountingSink::new(None);
+    let rows = connection
+        .stream_query_with(&sql, Vec::new(), &mut sink)
+        .await
+        .expect("the streamed read should run");
+    assert_eq!(rows, 100_000);
+    assert_eq!(sink.last.as_deref(), Some("100000"));
+
+    let mut stopped = CountingSink::new(Some(10));
+    connection
+        .stream_query_with(&sql, Vec::new(), &mut stopped)
+        .await
+        .expect_err("the sink stops the read");
+
+    let after = connection
+        .run_query("SELECT 1")
+        .await
+        .expect("the pool should still answer");
+    assert_eq!(after.rows[0][0].as_deref(), Some("1"));
+    connection.close().await;
+}

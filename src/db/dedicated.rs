@@ -19,7 +19,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::{AssertSqlSafe, Row as _};
 
 use super::config::Engine;
-use super::connection::fetch_on;
+use super::connection::{RowSink, fetch_on, stream_on};
 use super::pinned::TxnState;
 use super::query::{Cell, QueryResult};
 use super::{health, mysql, postgres, sqlite};
@@ -113,6 +113,39 @@ impl Dedicated {
         self.fetch_raw(sql, params, max_rows)
             .await
             .map_err(health::plain)
+    }
+
+    /// Run one read, handing each row to `sink` as it arrives — see
+    /// [`Connection::stream_query_with`](super::Connection::stream_query_with).
+    /// A read stopped partway leaves the rest of its rows unread, so the
+    /// connection should be dropped after it rather than used again.
+    pub(crate) async fn stream(
+        &mut self,
+        sql: &str,
+        params: Vec<Cell>,
+        sink: &mut dyn RowSink,
+    ) -> Result<usize> {
+        let streamed = match self {
+            Dedicated::Postgres(connection, scale) => {
+                let scale = *scale;
+                stream_on::<sqlx::Postgres, _>(
+                    &mut **connection,
+                    sql,
+                    params,
+                    move |row, index| postgres::cell(row, index, scale),
+                    sink,
+                )
+                .await
+            }
+            Dedicated::MySql(connection) => {
+                stream_on::<sqlx::MySql, _>(&mut **connection, sql, params, mysql::cell, sink).await
+            }
+            Dedicated::Sqlite(connection) => {
+                stream_on::<sqlx::Sqlite, _>(&mut **connection, sql, params, sqlite::cell, sink)
+                    .await
+            }
+        };
+        streamed.map_err(health::plain)
     }
 
     async fn fetch_raw(
