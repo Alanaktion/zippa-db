@@ -236,7 +236,12 @@ impl TableView {
             .detach();
         // The grid quotes copies for this connection's engine, and names this
         // table in a SQL `INSERT` copy; only this view knows either.
-        grid.update(cx, |grid, cx| grid.set_table(Some(object.name.clone()), cx));
+        let target = crate::db::sql::qualified_name(
+            object.schema.as_deref(),
+            &object.name,
+            connection.config.engine,
+        );
+        grid.update(cx, |grid, cx| grid.set_table(Some(target), cx));
 
         let row_panel = cx.new(|cx| RowPanel::new(grid.clone(), window, cx));
         cx.subscribe_in(&row_panel, window, Self::on_row_panel_event)

@@ -559,9 +559,9 @@ impl DataGrid {
         });
     }
 
-    /// Name the table this result came from, so the row menu can offer a SQL
-    /// `INSERT` copy. A query result never gets one, and offers no SQL copy as a
-    /// result.
+    /// Name the table this result came from — as SQL, quoted and qualified
+    /// with its schema — so the row menu can offer a SQL `INSERT` copy. A
+    /// query result never gets one, and offers no SQL copy as a result.
     pub fn set_table(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| {
             if table.delegate().table == name {
@@ -887,15 +887,15 @@ impl DataGrid {
         // Nothing was read back to show, but an owner that can address this
         // row by its key may be able to fetch the real bytes and replace the
         // dialog with a preview of them.
-        let binary_preview_row = (query::is_placeholder(&value)
-            && query::is_binary_type(&type_name))
-        .then(|| delegate.source(row_ix))
-        .flatten();
+        let placeholder = query::is_placeholder(&value, &type_name);
+        let binary_preview_row = (placeholder && query::is_binary_type(&type_name))
+            .then(|| delegate.source(row_ix))
+            .flatten();
 
         // The stand-ins the driver hands back describe a value rather than
         // holding it, so there is nothing to edit and the window says why.
         let editable = delegate.is_editable(row_ix, col_ix);
-        let note = if query::is_placeholder(&value) {
+        let note = if placeholder {
             Some("This value was not read back from the server.")
         } else if !editable {
             Some("This value cannot be edited here.")

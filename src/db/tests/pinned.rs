@@ -217,6 +217,64 @@ async fn a_scripts_own_begin_leaves_the_tab_in_a_transaction() {
     connection.close().await;
 }
 
+/// A script without a transaction of its own, run while the tab has one
+/// open, joins it: a failure is undone alone rather than aborting the tab's
+/// transaction, and nothing is kept until the tab commits.
+#[tokio::test]
+async fn an_autocommit_script_joins_the_tabs_open_transaction() {
+    let database = TempDatabase::new().await;
+    let connection = shared(&database).await;
+    let pinned = PinnedConnection::new(connection.clone());
+    pinned.run_query_with("BEGIN", &[]).await.expect("begin");
+
+    let outcome = finished(
+        ScriptRun::start(
+            pinned.clone(),
+            "INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\n\
+             INSERT INTO items VALUES (1, 'duplicate', 1.0, NULL);\n\
+             INSERT INTO items VALUES (4, 'delta', 4.0, NULL);",
+            &[],
+            ScriptMode::Autocommit,
+            OnFailure::Skip,
+        )
+        .await,
+    );
+    assert_eq!(outcome.failures.len(), 1, "the duplicate key fails alone");
+    assert_eq!(pinned.state(), TxnState::Open);
+    pinned
+        .run_query_with("ROLLBACK", &[])
+        .await
+        .expect("rollback");
+    assert_eq!(item_count(&connection).await, "2", "nothing was kept");
+
+    // A statement the tab's transaction cannot hold refuses the run before
+    // anything is sent.
+    pinned.run_query_with("BEGIN", &[]).await.expect("begin");
+    let refused = ScriptRun::start(
+        pinned.clone(),
+        "INSERT INTO items VALUES (3, 'gamma', 3.0, NULL);\nCOMMIT;",
+        &[],
+        ScriptMode::Autocommit,
+        OnFailure::Ask,
+    )
+    .await;
+    let Err(error) = refused else {
+        panic!("a COMMIT inside the tab's transaction should be refused");
+    };
+    assert!(
+        format!("{error:#}").contains("commit or roll it back"),
+        "{error:#}"
+    );
+    pinned
+        .run_query_with("ROLLBACK", &[])
+        .await
+        .expect("rollback");
+    assert_eq!(item_count(&connection).await, "2");
+
+    drop(pinned);
+    connection.close().await;
+}
+
 /// Query tabs share a fixed number of connections of their own, so they can
 /// never take the ones the sidebar and table views need; one past the cap is
 /// told how to free one rather than left waiting.

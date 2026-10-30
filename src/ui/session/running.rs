@@ -92,6 +92,15 @@ impl Session {
             }
         };
 
+        // A blocker inside the tab's open transaction is refused by the run
+        // before anything is sent, with the reason in the tab: asking
+        // whether to run it without a transaction would offer what cannot
+        // happen.
+        if blocker.is_some() && panel.read(cx).transaction().is_open() {
+            self.send_script(panel, sql, mode, on_failure, cx);
+            return;
+        }
+
         // A script is confirmed as a whole: what the user is being asked
         // about is the buffer they are about to run.
         if confirm || blocker.is_some() {
@@ -132,8 +141,22 @@ impl Session {
         }
 
         let statements = statement::split(&sql, self.connection.config.engine).len();
+        let joins_open = mode == ScriptMode::Autocommit && panel.read(cx).transaction().is_open();
         let mut description = Vec::new();
-        if let Some(blocker) = &blocker {
+        if joins_open && blocker.is_none() {
+            // The run joins the tab's transaction rather than committing:
+            // nothing is kept until the tab commits it.
+            description.push(
+                if on_failure == OnFailure::Skip {
+                    "The tab has a transaction open, so the statements join it and are kept only \
+                     when it commits; a statement that fails is undone alone and skipped."
+                } else {
+                    "The tab has a transaction open, so the statements join it and are kept only \
+                     when it commits; a statement that fails is undone alone and pauses the run."
+                }
+                .to_string(),
+            );
+        } else if let Some(blocker) = &blocker {
             description.push(format!(
                 "{}, so each statement will commit as it runs and an error cannot be rolled \
                  back.",
@@ -156,7 +179,7 @@ impl Session {
             ));
         }
         let description = description.join(" ");
-        let title = if mode == ScriptMode::Autocommit {
+        let title = if mode == ScriptMode::Autocommit && !joins_open {
             "Run this script without a transaction?"
         } else {
             "Run this script?"
@@ -331,8 +354,9 @@ impl Session {
                 match result {
                     Ok(Ok(Step::Paused(run, failure))) => {
                         let mode = run.mode();
+                        let joined = run.joined();
                         panel.update(cx, |panel, _| panel.park_script(run));
-                        this.ask_about_failure(panel, failure, mode, writes, window, cx);
+                        this.ask_about_failure(panel, failure, mode, joined, writes, window, cx);
                     }
                     Ok(Ok(Step::Finished(outcome))) => {
                         this.finish_script(&panel, outcome, writes, cx)
@@ -356,11 +380,13 @@ impl Session {
     ///
     /// Closing the question any other way than its buttons — `Escape` — is
     /// taken as the careful answer: roll back, or stop.
+    #[allow(clippy::too_many_arguments)]
     fn ask_about_failure(
         &mut self,
         panel: Entity<SessionPanel>,
         failure: ScriptFailure,
         mode: ScriptMode,
+        joined: bool,
         writes: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -373,6 +399,9 @@ impl Session {
             if transaction {
                 "Nothing has been committed yet. Roll back to undo the whole script, or skip \
                  this statement and carry on in the same transaction."
+            } else if joined {
+                "The statements before it are in the tab's open transaction, kept only if it \
+                 commits. Stop here, or skip this statement and carry on."
             } else {
                 "The statements before it have already been applied. Stop here, or skip this \
                  statement and carry on."

@@ -1218,6 +1218,9 @@ impl SessionPanel {
         if let Some(run) = self.take_script() {
             let message = match run.mode() {
                 ScriptMode::Transaction => "Cancelled; the script's transaction was rolled back",
+                ScriptMode::Autocommit if run.joined() => {
+                    "Cancelled; the statements before the error are in the tab's open transaction"
+                }
                 ScriptMode::Autocommit => "Cancelled; the statements before the error were applied",
             };
             self.set_status(Status::Done(message.into()));

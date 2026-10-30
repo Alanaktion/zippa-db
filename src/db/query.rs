@@ -94,32 +94,45 @@ pub fn blob(bytes: &[u8]) -> Cell {
     Some(format!("<{} bytes>", bytes.len()))
 }
 
-/// True for the `<3 bytes>` and `<TYPE>` stand-ins above.
+/// True for the `<3 bytes>` and `<TYPE>` stand-ins above, in a column whose
+/// driver type is `type_name`.
 ///
 /// The grid shows them, but they are a description of the value rather than
 /// the value itself, so writing one back would corrupt the row.
 ///
 /// Angle brackets alone are not enough to go on: a real value can be wrapped
-/// in them too, `<a>hi</a>` from an `xml` column being the everyday case. A
-/// stand-in holds one type name, or a byte count, and so never brackets
-/// anything of its own — nor holds a parenthesis or a comma, which is what
-/// tells a Postgres `circle`, `<(1,2),3>`, apart from one.
-pub fn is_placeholder(cell: &Cell) -> bool {
+/// in them too — `<a>hi</a>` from an `xml` column, or a plain `<nil>` in a
+/// text one. A `<TYPE>` stand-in names the type the driver could not read,
+/// which is the column's own type on Postgres and MySQL and the value's
+/// storage class on SQLite, so only that name counts. A byte count counts in
+/// any column, since SQLite stores a blob wherever it is put. With no type to
+/// go on, the shape alone decides: one word, or a byte count, with no
+/// brackets, parentheses, or commas of its own (a Postgres `circle` is
+/// `<(1,2),3>`).
+pub fn is_placeholder(cell: &Cell, type_name: &str) -> bool {
     let Some(value) = cell else {
         return false;
     };
     let Some(inner) = value.strip_prefix('<').and_then(|v| v.strip_suffix('>')) else {
         return false;
     };
-    if inner.contains(['<', '>', '(', ')', ',']) {
+    if inner.is_empty() || inner.contains(['<', '>', '(', ')', ',']) {
         return false;
     }
-    match inner.split_once(' ') {
-        Some((count, "bytes")) => count.chars().all(|c| c.is_ascii_digit()),
-        // A type name is one word; `INT4[]` and `double precision` included.
-        Some(_) | None => !inner.is_empty(),
+    if let Some((count, "bytes")) = inner.split_once(' ') {
+        return count.chars().all(|c| c.is_ascii_digit());
     }
+    let type_name = type_name.trim_matches('"');
+    if type_name.is_empty() {
+        // A type name is one word; `INT4[]` and `double precision` included.
+        return true;
+    }
+    inner.eq_ignore_ascii_case(type_name) || SQLITE_STORAGE.contains(&inner)
 }
+
+/// The storage classes SQLite names a value by, which is the type its
+/// stand-in carries whatever the column was declared as.
+const SQLITE_STORAGE: [&str; 5] = ["INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC"];
 
 /// Column types whose values never survive a round trip through text.
 pub fn is_binary_type(type_name: &str) -> bool {
@@ -154,16 +167,28 @@ mod tests {
 
     #[test]
     fn stand_ins_are_recognized() {
-        assert!(is_placeholder(&blob(b"abc")));
-        assert!(is_placeholder(&unsupported("XML")));
-        assert!(is_placeholder(&unsupported("INT4[]")));
-        assert!(!is_placeholder(&Some("plain".into())));
-        assert!(!is_placeholder(&None));
+        assert!(is_placeholder(&blob(b"abc"), "BYTEA"));
+        assert!(is_placeholder(&unsupported("XML"), "XML"));
+        assert!(is_placeholder(&unsupported("INT4[]"), "INT4[]"));
+        assert!(is_placeholder(&unsupported("tsvector"), ""));
+        assert!(!is_placeholder(&Some("plain".into()), "TEXT"));
+        assert!(!is_placeholder(&None, "TEXT"));
         // An `xml` document is a value, not a description of one.
-        assert!(!is_placeholder(&Some("<a>hi</a>".into())));
-        assert!(!is_placeholder(&Some("<>".into())));
+        assert!(!is_placeholder(&Some("<a>hi</a>".into()), "xml"));
+        assert!(!is_placeholder(&Some("<>".into()), ""));
         // Nor is a Postgres `circle`.
-        assert!(!is_placeholder(&Some("<(1,2),3>".into())));
+        assert!(!is_placeholder(&Some("<(1,2),3>".into()), "CIRCLE"));
+    }
+
+    #[test]
+    fn a_bracketed_word_is_a_value_unless_it_names_the_column_type() {
+        assert!(!is_placeholder(&Some("<nil>".into()), "TEXT"));
+        assert!(!is_placeholder(&Some("<item>".into()), "VARCHAR"));
+        assert!(is_placeholder(&Some("<tsvector>".into()), "TSVECTOR"));
+        // SQLite names the value's storage class, not the declared type.
+        assert!(is_placeholder(&unsupported("TEXT"), "VARCHAR(10)"));
+        // A blob can sit in any SQLite column.
+        assert!(is_placeholder(&blob(b"abc"), "TEXT"));
     }
 
     #[test]

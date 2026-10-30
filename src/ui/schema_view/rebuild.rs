@@ -185,6 +185,25 @@ fn native_plan(
     Ok(Change::Statements(statements))
 }
 
+/// `new_{name}`, or the first `new_{name}_2`, `new_{name}_3`, … that no table,
+/// view, index or trigger already has — SQLite compares names without
+/// regard to case.
+fn scratch_name(name: &str, taken: &[String]) -> String {
+    let free = |candidate: &str| {
+        !taken
+            .iter()
+            .any(|taken| taken.eq_ignore_ascii_case(candidate))
+    };
+    let first = format!("new_{name}");
+    if free(&first) {
+        return first;
+    }
+    (2..)
+        .map(|n| format!("new_{name}_{n}"))
+        .find(|candidate| free(candidate))
+        .unwrap_or(first)
+}
+
 /// The whole copy-and-swap, as the statements `Connection::rebuild_table`
 /// runs in one transaction.
 fn generate(
@@ -198,7 +217,7 @@ fn generate(
     let name = object.name.as_str();
     let table = quote_identifier(name, engine);
     // SQLite has no schemas, so the scratch name is the only qualification.
-    let scratch = quote_identifier(&format!("new_{name}"), engine);
+    let scratch = quote_identifier(&scratch_name(name, &source.taken), engine);
 
     // Anything the rebuild would otherwise drop on the floor stops here,
     // rather than quietly changing the table.
@@ -799,6 +818,17 @@ mod tests {
     }
 
     const ITEMS: &str = "CREATE TABLE items (\n    id INTEGER PRIMARY KEY,\n    name TEXT\n)";
+
+    #[test]
+    fn the_scratch_table_takes_a_name_nothing_else_has() {
+        assert_eq!(scratch_name("items", &[]), "new_items");
+        let taken = [
+            "items".to_string(),
+            "NEW_ITEMS".to_string(),
+            "new_items_2".to_string(),
+        ];
+        assert_eq!(scratch_name("items", &taken), "new_items_3");
+    }
 
     #[test]
     fn a_retype_becomes_a_copy_and_swap() {

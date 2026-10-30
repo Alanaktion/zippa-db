@@ -247,13 +247,30 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
     }
 
     // The file is small, but it is still disk I/O on every change; the write
-    // goes to the background so toggling a switch never waits on it.
+    // goes to the background so toggling a switch never waits on it. The
+    // change is already in effect, so a failed write is told to the user
+    // rather than left looking saved.
     let to_save = settings.clone();
     let ticket = store::ticket();
-    cx.background_spawn(async move {
-        if let Err(error) = save(&to_save, ticket) {
-            eprintln!("could not save the settings: {error:#}");
-        }
+    let write = cx.background_spawn(async move { save(&to_save, ticket) });
+    cx.spawn(async move |cx| {
+        let Err(error) = write.await else {
+            return;
+        };
+        let message = format!("Error: could not save the settings: {error:#}");
+        eprintln!("{message}");
+        cx.update(|cx| {
+            let window = cx
+                .active_window()
+                .or_else(|| cx.windows().into_iter().next());
+            if let Some(window) = window {
+                window
+                    .update(cx, |_, window, cx| {
+                        crate::ui::notify_error(window, cx, message)
+                    })
+                    .ok();
+            }
+        });
     })
     .detach();
     cx.set_global(settings);

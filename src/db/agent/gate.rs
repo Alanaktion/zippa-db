@@ -58,6 +58,66 @@ const FORBIDDEN: [&str; 9] = [
     "ATTACH", "DETACH", "COPY", "LOAD", "KILL", "SHUTDOWN", "INSTALL", "VACUUM", "\\",
 ];
 
+/// Functions a read-only session still lets run, which reach past the data:
+/// another session, a lock, the file system, a setting, or the clock. The
+/// server's read-only transaction stops a `SELECT` from writing rows, not
+/// from calling these, so they are refused by name anywhere in the
+/// statement. A column that shares a name has to be quoted to be read.
+const POSTGRES_FUNCTIONS: [&str; 17] = [
+    "PG_TERMINATE_BACKEND",
+    "PG_CANCEL_BACKEND",
+    "PG_RELOAD_CONF",
+    "PG_ROTATE_LOGFILE",
+    "PG_READ_FILE",
+    "PG_READ_BINARY_FILE",
+    "PG_LS_DIR",
+    "PG_STAT_FILE",
+    "PG_SLEEP",
+    "PG_SLEEP_FOR",
+    "PG_SLEEP_UNTIL",
+    "PG_NOTIFY",
+    "PG_LOGICAL_EMIT_MESSAGE",
+    "SET_CONFIG",
+    "LO_EXPORT",
+    "LO_IMPORT",
+    "LO_UNLINK",
+];
+
+/// The same, by prefix, for families too long to list: every advisory lock
+/// form, and every `dblink` call, which runs SQL over a connection of its own
+/// that the read-only session does not cover.
+const POSTGRES_PREFIXES: [&str; 3] = ["PG_ADVISORY_", "PG_TRY_ADVISORY_", "DBLINK"];
+
+const MYSQL_FUNCTIONS: [&str; 7] = [
+    "GET_LOCK",
+    "RELEASE_LOCK",
+    "RELEASE_ALL_LOCKS",
+    "SLEEP",
+    "BENCHMARK",
+    "LOAD_FILE",
+    "SOURCE_POS_WAIT",
+];
+
+const SQLITE_FUNCTIONS: [&str; 2] = ["LOAD_EXTENSION", "READFILE"];
+
+/// The first word of `words` that names a function [`POSTGRES_FUNCTIONS`]
+/// and its siblings refuse on `engine`.
+fn forbidden_function(words: &[String], engine: Engine) -> Option<&str> {
+    words
+        .iter()
+        .find(|word| match engine {
+            Engine::Postgres => {
+                POSTGRES_FUNCTIONS.contains(&word.as_str())
+                    || POSTGRES_PREFIXES
+                        .iter()
+                        .any(|prefix| word.starts_with(prefix))
+            }
+            Engine::MySql => MYSQL_FUNCTIONS.contains(&word.as_str()),
+            Engine::Sqlite => SQLITE_FUNCTIONS.contains(&word.as_str()),
+        })
+        .map(String::as_str)
+}
+
 /// Why a statement is not acceptable to a tool, or what it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
@@ -84,10 +144,15 @@ pub fn single(sql: &str, engine: Engine) -> Result<String, String> {
 /// counts as a read to [`statement::first_write`], and the agent runs without
 /// a transaction, so `BEGIN` is refused here as neither.
 pub fn classify(sql: &str, engine: Engine) -> Result<Kind, String> {
-    let words = statement::leading_words(sql, 1, engine);
+    let words = statement::leading_words(sql, usize::MAX, engine);
     let first = words.first().map(String::as_str).unwrap_or_default();
     if FORBIDDEN.contains(&first) {
         return Err(format!("{first} is not available to the agent"));
+    }
+    if let Some(function) = forbidden_function(&words, engine) {
+        return Err(format!(
+            "{function} reaches past the data and is not available to the agent"
+        ));
     }
     match statement::first_write(sql, engine) {
         None if first == "SELECT" || first == "WITH" => Ok(Kind::Read),
@@ -185,6 +250,38 @@ mod tests {
         // A comment cannot turn a write into a read, nor a read into a write.
         assert_eq!(classify("/* delete */ select 1", ENGINE), Ok(Kind::Read));
         assert_eq!(classify("-- select\ndelete from t", ENGINE), Ok(Kind::Dml));
+    }
+
+    #[test]
+    fn side_effect_functions_are_refused_inside_a_read() {
+        for sql in [
+            "select pg_terminate_backend(123)",
+            "select * from t where pg_advisory_lock(1) is not null",
+            "select dblink_exec('dbname=x', 'delete from t')",
+            "select set_config('search_path', 'x', false)",
+            "with a as (select pg_sleep(60)) select * from a",
+        ] {
+            assert!(classify(sql, Engine::Postgres).is_err(), "{sql}");
+        }
+        assert!(classify("select get_lock('x', 10)", Engine::MySql).is_err());
+        assert!(classify("select sleep(60)", Engine::MySql).is_err());
+        assert!(classify("select load_extension('x')", Engine::Sqlite).is_err());
+        // Only by name outside quotes, and only on the engine that has it.
+        assert_eq!(
+            classify(
+                "select 'pg_sleep(1)', \"set_config\" from t",
+                Engine::Postgres
+            ),
+            Ok(Kind::Read)
+        );
+        assert_eq!(
+            classify("select sleep from t", Engine::Postgres),
+            Ok(Kind::Read)
+        );
+        assert_eq!(
+            classify("select `sleep` from t", Engine::MySql),
+            Ok(Kind::Read)
+        );
     }
 
     #[test]

@@ -225,6 +225,26 @@ fn mysql_ssl_args(mode: SslMode, flavor: MysqldumpFlavor) -> Vec<String> {
     }
 }
 
+/// A database name as `pg_dump -d` should be given it. libpq reads a `-d`
+/// that holds an `=`, or starts like a URI, as a whole connection string —
+/// so a database named `host=elsewhere dbname=x` would connect somewhere
+/// else. Such a name goes as `dbname='…'`, a connection string that names
+/// only the database, with libpq's own quoting; any other name goes as it
+/// is.
+fn pg_dbname(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    if !name.contains('=')
+        && !lower.starts_with("postgresql://")
+        && !lower.starts_with("postgres://")
+    {
+        return name.to_string();
+    }
+    format!(
+        "dbname='{}'",
+        name.replace('\\', "\\\\").replace('\'', "\\'")
+    )
+}
+
 /// One part of a `pg_dump -t` pattern, quoted: `-t` takes a pattern, not
 /// an identifier, so an unquoted part is folded to lower case and `*`,
 /// `?`, and `.` read as pattern characters. Inside quotes the case stands
@@ -300,7 +320,7 @@ pub fn commands_for(
                 if multiple {
                     args.push("--create".to_string());
                 }
-                args.extend(["-d".to_string(), database.clone()]);
+                args.extend(["-d".to_string(), pg_dbname(database)]);
                 for table in tables.iter().filter(|table| &table.database == database) {
                     let schema = table.schema.as_deref().unwrap_or("public");
                     args.extend([
@@ -838,6 +858,17 @@ mod tests {
                 "app",
             ]
         );
+    }
+
+    #[test]
+    fn a_database_name_cannot_become_a_connection_string() {
+        assert_eq!(pg_dbname("app"), "app");
+        assert_eq!(
+            pg_dbname("host=evil dbname=x"),
+            "dbname='host=evil dbname=x'"
+        );
+        assert_eq!(pg_dbname("a='b\\"), "dbname='a=\\'b\\\\'");
+        assert_eq!(pg_dbname("postgres://evil/x"), "dbname='postgres://evil/x'");
     }
 
     #[test]

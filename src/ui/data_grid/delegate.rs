@@ -999,7 +999,18 @@ impl ResultDelegate {
             return false;
         }
 
-        self.source(row_ix).is_some() && !query::is_placeholder(self.baseline(row_ix, col_ix))
+        self.source(row_ix).is_some()
+            && !query::is_placeholder(self.baseline(row_ix, col_ix), self.column_type(col_ix))
+    }
+
+    /// Column `col_ix`'s driver type name, or nothing when the result has
+    /// none.
+    pub(super) fn column_type(&self, col_ix: usize) -> &str {
+        self.result
+            .column_types
+            .get(col_ix)
+            .map(String::as_str)
+            .unwrap_or_default()
     }
 
     /// Stage `value` on a cell, or drop the edit when it matches the row as

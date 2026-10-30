@@ -64,6 +64,10 @@ pub struct Rendered {
 }
 
 /// Lay `rows` out in `format`, under `columns` and their driver type names.
+///
+/// `table` is what an `INSERT` names, as SQL: already quoted and, where the
+/// table has a schema, qualified with it (`sql::qualified_name`). Only the
+/// owner knows the schema, so the quoting is the owner's too.
 pub fn render(
     format: Format,
     engine: Engine,
@@ -73,10 +77,10 @@ pub fn render(
     rows: &[Vec<Cell>],
 ) -> Rendered {
     match format {
-        Format::Tsv => render_tsv(columns, rows),
-        Format::Csv => render_csv(columns, rows),
+        Format::Tsv => render_tsv(columns, types, rows),
+        Format::Csv => render_csv(columns, types, rows),
         Format::Json => render_json(columns, types, rows),
-        Format::Markdown => render_markdown(columns, rows),
+        Format::Markdown => render_markdown(columns, types, rows),
         Format::Sql => render_sql(engine, table, columns, types, rows),
     }
 }
@@ -84,7 +88,7 @@ pub fn render(
 /// A header line, then one line per row, columns separated by tabs. Tabs and
 /// line breaks inside a value become spaces so one row stays one line, which is
 /// lossy and why the menu says so.
-fn render_tsv(columns: &[String], rows: &[Vec<Cell>]) -> Rendered {
+fn render_tsv(columns: &[String], types: &[String], rows: &[Vec<Cell>]) -> Rendered {
     let mut skipped = 0;
     let mut text = String::new();
 
@@ -100,7 +104,7 @@ fn render_tsv(columns: &[String], rows: &[Vec<Cell>]) -> Rendered {
     for row in rows {
         let fields: Vec<String> = (0..columns.len())
             .map(|index| match row.get(index) {
-                Some(cell) if query::is_placeholder(cell) => {
+                Some(cell) if query::is_placeholder(cell, type_of(types, index)) => {
                     skipped += 1;
                     String::new()
                 }
@@ -115,13 +119,18 @@ fn render_tsv(columns: &[String], rows: &[Vec<Cell>]) -> Rendered {
     Rendered { text, skipped }
 }
 
+/// The driver type of column `index`, or nothing when the result has none.
+fn type_of(types: &[String], index: usize) -> &str {
+    types.get(index).map(String::as_str).unwrap_or_default()
+}
+
 /// Tabs and line breaks become spaces so one row stays one line.
 pub(crate) fn tsv_field(value: &str) -> String {
     value.replace(['\t', '\n', '\r'], " ")
 }
 
 /// A header row, then one line per row, with `NULL` and placeholders empty.
-fn render_csv(columns: &[String], rows: &[Vec<Cell>]) -> Rendered {
+fn render_csv(columns: &[String], types: &[String], rows: &[Vec<Cell>]) -> Rendered {
     let mut skipped = 0;
     let mut text = String::new();
 
@@ -137,7 +146,7 @@ fn render_csv(columns: &[String], rows: &[Vec<Cell>]) -> Rendered {
     for row in rows {
         let fields: Vec<String> = (0..columns.len())
             .map(|index| match row.get(index) {
-                Some(cell) if query::is_placeholder(cell) => {
+                Some(cell) if query::is_placeholder(cell, type_of(types, index)) => {
                     skipped += 1;
                     String::new()
                 }
@@ -163,7 +172,7 @@ fn csv_field(value: &str) -> String {
 
 /// A Markdown table: a header row, a dash separator, then one row per result,
 /// every cell padded to its column's width so the source reads in plain text.
-fn render_markdown(columns: &[String], rows: &[Vec<Cell>]) -> Rendered {
+fn render_markdown(columns: &[String], types: &[String], rows: &[Vec<Cell>]) -> Rendered {
     let mut skipped = 0;
     if columns.is_empty() {
         return Rendered {
@@ -178,7 +187,7 @@ fn render_markdown(columns: &[String], rows: &[Vec<Cell>]) -> Rendered {
         .map(|row| {
             (0..columns.len())
                 .map(|index| match row.get(index) {
-                    Some(cell) if query::is_placeholder(cell) => {
+                    Some(cell) if query::is_placeholder(cell, type_of(types, index)) => {
                         skipped += 1;
                         String::new()
                     }
@@ -277,13 +286,13 @@ fn render_json(columns: &[String], types: &[String], rows: &[Vec<Cell>]) -> Rend
             text.push_str(": ");
 
             let cell = row.get(index);
-            if cell.is_some_and(query::is_placeholder) {
+            let type_name = type_of(types, index);
+            if cell.is_some_and(|cell| query::is_placeholder(cell, type_name)) {
                 skipped += 1;
                 text.push_str("null");
                 continue;
             }
 
-            let type_name = types.get(index).map(String::as_str).unwrap_or_default();
             text.push_str(&json_value(cell.and_then(Option::as_deref), type_name));
         }
         text.push_str("\n  }");
@@ -327,12 +336,12 @@ fn json_value(value: Option<&str>, type_name: &str) -> String {
 
 /// One value per line, for a single column: what a column copy puts on the
 /// clipboard. `NULL` and placeholders are empty lines.
-pub fn values(cells: &[Cell]) -> Rendered {
+pub fn values(type_name: &str, cells: &[Cell]) -> Rendered {
     let mut skipped = 0;
     let lines: Vec<String> = cells
         .iter()
         .map(|cell| {
-            if query::is_placeholder(cell) {
+            if query::is_placeholder(cell, type_name) {
                 skipped += 1;
                 return String::new();
             }
@@ -358,7 +367,7 @@ pub fn in_list(engine: Engine, type_name: &str, cells: &[Cell]) -> Rendered {
     let mut values = Vec::new();
 
     for cell in cells {
-        if query::is_placeholder(cell) {
+        if query::is_placeholder(cell, type_name) {
             skipped += 1;
             continue;
         }
@@ -408,7 +417,7 @@ fn render_sql(
         };
     }
 
-    let target = quote_identifier(table, engine);
+    let target = table;
     let names = columns
         .iter()
         .map(|name| quote_identifier(name, engine))
@@ -420,11 +429,11 @@ fn render_sql(
         let values: Vec<String> = (0..columns.len())
             .map(|index| {
                 let cell = row.get(index);
-                if cell.is_some_and(query::is_placeholder) {
+                let type_name = type_of(types, index);
+                if cell.is_some_and(|cell| query::is_placeholder(cell, type_name)) {
                     skipped += 1;
                     return "NULL".to_string();
                 }
-                let type_name = types.get(index).map(String::as_str).unwrap_or_default();
                 match cell.and_then(Option::as_deref) {
                     None => "NULL".to_string(),
                     Some(value) if is_number(type_name, value) => value.to_string(),
@@ -815,9 +824,26 @@ mod tests {
     #[test]
     fn column_values_are_one_per_line() {
         let cells = vec![Some("a".to_string()), None, query::blob(b"abc")];
-        let rendered = values(&cells);
+        let rendered = values("TEXT", &cells);
         assert_eq!(rendered.text, "a\n\n");
         assert_eq!(rendered.skipped, 1);
+    }
+
+    #[test]
+    fn a_bracketed_text_value_is_exported_as_itself() {
+        // `<nil>` in a text column is what was stored, not a stand-in for a
+        // value the driver could not read.
+        let rows = vec![vec![Some("<nil>".to_string())]];
+        let rendered = render(
+            Format::Csv,
+            Engine::Postgres,
+            "t",
+            &["note".to_string()],
+            &["TEXT".to_string()],
+            &rows,
+        );
+        assert_eq!(rendered.text, "note\n<nil>\n");
+        assert_eq!(rendered.skipped, 0);
     }
 
     #[test]

@@ -92,10 +92,26 @@ impl Dedicated {
 
     /// The same, binding `params` in order.
     pub(crate) async fn fetch_with(&mut self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
-        self.fetch_raw(sql, params).await.map_err(health::plain)
+        self.fetch_raw(sql, params, None)
+            .await
+            .map_err(health::plain)
     }
 
-    async fn fetch_raw(&mut self, sql: &str, params: Vec<Cell>) -> Result<QueryResult> {
+    /// [`Self::fetch`], reading at most `max_rows` rows. A read that reaches
+    /// the cap leaves the rest of the statement unread, so the connection
+    /// should be dropped after it rather than used again.
+    pub(crate) async fn fetch_capped(&mut self, sql: &str, max_rows: usize) -> Result<QueryResult> {
+        self.fetch_raw(sql, Vec::new(), Some(max_rows))
+            .await
+            .map_err(health::plain)
+    }
+
+    async fn fetch_raw(
+        &mut self,
+        sql: &str,
+        params: Vec<Cell>,
+        max_rows: Option<usize>,
+    ) -> Result<QueryResult> {
         match self {
             Dedicated::Postgres(connection, scale) => {
                 let scale = *scale;
@@ -108,6 +124,7 @@ impl Dedicated {
                     // Postgres notices cannot be read back on any
                     // connection: see `QueryResult::messages`.
                     None,
+                    max_rows,
                 )
                 .await
             }
@@ -120,6 +137,7 @@ impl Dedicated {
                     mysql::cell,
                     mysql::rows_affected,
                     Some(mysql::SHOW_WARNINGS_SQL),
+                    max_rows,
                 )
                 .await;
                 match fetched {
@@ -157,6 +175,7 @@ impl Dedicated {
                     sqlite::cell,
                     sqlite::rows_affected,
                     None,
+                    max_rows,
                 )
                 .await
             }

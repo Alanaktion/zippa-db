@@ -10,7 +10,7 @@ async fn an_agent_read_runs_in_a_session_the_server_holds_read_only() {
         .expect("could not open the test database");
 
     let read = connection
-        .run_query_as_agent("SELECT name FROM items WHERE id = 1")
+        .run_query_as_agent("SELECT name FROM items WHERE id = 1", 100)
         .await
         .expect("a plain read should run");
     assert_eq!(read.rows[0][0].as_deref(), Some("alpha"));
@@ -18,7 +18,7 @@ async fn an_agent_read_runs_in_a_session_the_server_holds_read_only() {
     // The connection itself allows writes; only the agent's session does not,
     // which is what stops a write hidden where the classifier cannot see it.
     let refused = connection
-        .run_query_as_agent("INSERT INTO items (id, name) VALUES (9, 'agent')")
+        .run_query_as_agent("INSERT INTO items (id, name) VALUES (9, 'agent')", 100)
         .await;
     assert!(
         refused.is_err(),

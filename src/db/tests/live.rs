@@ -18,11 +18,11 @@ async fn live_postgres_an_agent_read_cannot_write_through_a_function() {
         .expect("could not create the probe sequence");
 
     let refused = connection
-        .run_query_as_agent("SELECT nextval('zippa_agent_probe')")
+        .run_query_as_agent("SELECT nextval('zippa_agent_probe')", 100)
         .await;
     assert!(refused.is_err(), "nextval should be refused read-only");
     let read = connection
-        .run_query_as_agent("SELECT last_value, is_called FROM zippa_agent_probe")
+        .run_query_as_agent("SELECT last_value, is_called FROM zippa_agent_probe", 100)
         .await
         .expect("reading the sequence should run");
     assert_eq!(read.rows[0][1].as_deref(), Some("0"));
@@ -31,6 +31,27 @@ async fn live_postgres_an_agent_read_cannot_write_through_a_function() {
         .execute("DROP SEQUENCE zippa_agent_probe", vec![])
         .await
         .expect("could not drop the probe sequence");
+    connection.close().await;
+}
+
+/// An agent read past its row cap stops reading, without draining the rest,
+/// and the pool answers normally afterwards. Against `compose.yaml`'s
+/// `postgres` service.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_an_agent_read_stops_at_its_cap() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    let read = connection
+        .run_query_as_agent("SELECT g FROM generate_series(1, 5000000) AS g", 101)
+        .await
+        .expect("a capped read should run");
+    assert_eq!(read.rows.len(), 101);
+    assert_eq!(read.rows[100][0].as_deref(), Some("101"));
+    let after = connection
+        .run_query("SELECT 1")
+        .await
+        .expect("the pool should still answer");
+    assert_eq!(after.rows[0][0].as_deref(), Some("1"));
     connection.close().await;
 }
 
@@ -739,14 +760,14 @@ async fn live_mysql_an_agent_read_runs_in_a_read_only_transaction() {
     }
 
     let refused = connection
-        .run_query_as_agent("INSERT INTO zippa_agent_probe VALUES (1)")
+        .run_query_as_agent("INSERT INTO zippa_agent_probe VALUES (1)", 100)
         .await;
     assert!(
         refused.is_err(),
         "the agent's session should refuse a write"
     );
     let count = connection
-        .run_query_as_agent("SELECT count(*) FROM zippa_agent_probe")
+        .run_query_as_agent("SELECT count(*) FROM zippa_agent_probe", 100)
         .await
         .expect("a read should run");
     assert_eq!(count.rows[0][0].as_deref(), Some("0"));
@@ -754,6 +775,32 @@ async fn live_mysql_an_agent_read_runs_in_a_read_only_transaction() {
     pool.execute("DROP TABLE zippa_agent_probe")
         .await
         .expect("could not drop the probe table");
+    connection.close().await;
+}
+
+/// The same cap on MySQL, whose text of a cut result is left unread on a
+/// connection that is then closed.
+/// `cargo test -- --ignored live_mysql_an_agent`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_an_agent_read_stops_at_its_cap() {
+    let (connection, _pool) = live_mysql().await;
+    let read = connection
+        .run_query_as_agent(
+            // A cross join of the recursion's 1000-row limit: a million
+            // rows.
+            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 1000) \
+             SELECT a.x FROM n AS a CROSS JOIN n AS b",
+            101,
+        )
+        .await
+        .expect("a capped read should run");
+    assert_eq!(read.rows.len(), 101);
+    let after = connection
+        .run_query("SELECT 1")
+        .await
+        .expect("the pool should still answer");
+    assert_eq!(after.rows[0][0].as_deref(), Some("1"));
     connection.close().await;
 }
 

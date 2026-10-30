@@ -140,6 +140,9 @@ pub struct RebuildSource {
     pub triggers: Vec<StoredDefinition>,
     /// Every view; the generator keeps the ones that mention the table.
     pub views: Vec<StoredDefinition>,
+    /// Every name in the database's schema, so the copy's scratch table can
+    /// be given one nothing else already has.
+    pub taken: Vec<String>,
 }
 
 impl Connection {
@@ -226,6 +229,8 @@ impl Connection {
                 _ => {}
             }
         }
+        let names = self.run_query(sqlite::NAMES_SQL).await?;
+        source.taken = names.rows.iter().map(|row| text(row, 0)).collect();
         Ok(source)
     }
 

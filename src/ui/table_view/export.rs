@@ -24,7 +24,6 @@ impl TableView {
         // only read once a file has been chosen, so a cancelled dialog does not
         // cost a full-table read.
         let (sql, params) = self.select_sql(false, cx);
-        let table = self.object.name.clone();
         let connection = self.connection.clone();
         // A table addressed by its engine row id has that id asked for by name
         // (`select rowid, *`), so it has to come back out; a table with a
@@ -45,7 +44,7 @@ impl TableView {
             }
         };
 
-        self.export_result(format, table, query, cx);
+        self.export_result(format, query, cx);
     }
 
     /// Export the rows picked out in the grid, in `format`.
@@ -57,7 +56,6 @@ impl TableView {
             return;
         }
 
-        let table = self.object.name.clone();
         let result = QueryResult {
             columns: snapshot.columns,
             column_types: snapshot.types,
@@ -65,7 +63,7 @@ impl TableView {
             ..QueryResult::default()
         };
         let query = async move { Ok(result) };
-        self.export_result(format, table, query, cx);
+        self.export_result(format, query, cx);
     }
 
     /// Ask where to put an export, then run `query`, lay the rows out, and
@@ -73,12 +71,14 @@ impl TableView {
     fn export_result(
         &mut self,
         format: Format,
-        table: String,
         query: impl Future<Output = Result<QueryResult, String>> + 'static,
         cx: &mut Context<Self>,
     ) {
         let engine = self.connection.config.engine;
-        let prompt = sql_file::prompt_for_save(None, &table, format.extension(), cx);
+        // The file is named after the table; an `INSERT` names it with its
+        // schema, as every other statement this view writes does.
+        let prompt = sql_file::prompt_for_save(None, &self.object.name, format.extension(), cx);
+        let table = self.target();
 
         cx.spawn(async move |this, cx| {
             let path = match prompt.await {

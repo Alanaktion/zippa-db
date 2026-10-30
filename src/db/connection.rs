@@ -800,10 +800,19 @@ impl Connection {
     /// deletes), and the classifier cannot see into one. A read-only
     /// transaction (Postgres, MySQL) or `PRAGMA query_only` (SQLite) has the
     /// server refuse the write instead.
-    pub(crate) async fn run_query_as_agent(&self, sql: &str) -> Result<QueryResult> {
+    ///
+    /// At most `max_rows` rows are read. The agent's tools ask for one more
+    /// than they show, so a cut result still says there was more; whatever
+    /// shape of `SELECT` the model wrote — one `clamp_limit` cannot bound,
+    /// such as an `OFFSET` with no `LIMIT` — the client never holds more.
+    pub(crate) async fn run_query_as_agent(
+        &self,
+        sql: &str,
+        max_rows: usize,
+    ) -> Result<QueryResult> {
         self.refuse_write(sql)?;
         let started = Instant::now();
-        let result = self.fetch_read_only(sql).await;
+        let result = self.fetch_read_only(sql, max_rows).await;
         let outcome = match &result {
             Ok(result) => query_outcome(result),
             Err(error) => QueryOutcome::Error(format!("{error:#}")),
@@ -816,7 +825,7 @@ impl Connection {
     /// the length of the statement. The connection closes afterwards rather
     /// than going back to the pool, so a cancelled read cannot leave its
     /// transaction, or SQLite's `query_only`, on a pooled connection.
-    async fn fetch_read_only(&self, sql: &str) -> Result<QueryResult> {
+    async fn fetch_read_only(&self, sql: &str, max_rows: usize) -> Result<QueryResult> {
         let mut connection = self.dedicated().await?;
         let open = match self.config.engine {
             Engine::Postgres => "BEGIN READ ONLY",
@@ -824,8 +833,15 @@ impl Connection {
             Engine::Sqlite => "PRAGMA query_only = ON",
         };
         connection.execute(open).await?;
-        let result = connection.fetch(sql).await;
-        if self.config.engine != Engine::Sqlite {
+        let result = connection.fetch_capped(sql, max_rows).await;
+        // A read cut short leaves the rest of its rows on the wire, and a
+        // `ROLLBACK` would have to drain them first — the very read the cap
+        // is there to stop. Closing the connection ends the transaction
+        // just as well.
+        let cut = result
+            .as_ref()
+            .is_ok_and(|result| result.rows.len() >= max_rows);
+        if self.config.engine != Engine::Sqlite && !cut {
             // Nothing was written, so this only ends the transaction; the
             // connection closes either way.
             connection.execute("ROLLBACK").await.ok();
@@ -1554,6 +1570,11 @@ impl Connection {
 /// has no such statement; the pool's [`fetch_all`] never takes one, since
 /// a pool cannot promise the follow-up lands on the connection that ran
 /// the statement.
+///
+/// `max_rows` stops reading once that many rows are held, so a result the
+/// caller will cut anyway never sits whole in memory. The rest of the
+/// statement is left unread on the connection, which is then only fit to be
+/// closed: no messages are read and nothing else should run on it.
 pub(crate) async fn fetch_on<DB, F>(
     connection: &mut DB::Connection,
     sql: &str,
@@ -1561,6 +1582,7 @@ pub(crate) async fn fetch_on<DB, F>(
     cell: F,
     rows_affected: fn(&DB::QueryResult) -> u64,
     messages_sql: Option<&str>,
+    max_rows: Option<usize>,
 ) -> Result<QueryResult>
 where
     DB: Database,
@@ -1585,12 +1607,19 @@ where
     let mut results = query.fetch_many(&mut *connection);
     let mut rows = Vec::new();
     let mut affected: Option<u64> = None;
+    let mut cut = false;
     while let Some(result) = results.next().await {
         match result? {
             Either::Left(done) => {
                 *affected.get_or_insert(0) += rows_affected(&done);
             }
-            Either::Right(row) => rows.push(row),
+            Either::Right(row) => {
+                rows.push(row);
+                if max_rows.is_some_and(|max| rows.len() >= max) {
+                    cut = true;
+                    break;
+                }
+            }
         }
     }
     drop(results);
@@ -1600,10 +1629,11 @@ where
     // included, which a statement with no rows gets — so the messages are
     // the statement that just ran, not whatever comes next. Reading them
     // is best-effort: a failure here never fails a query that already
-    // ran, it just leaves it without messages.
+    // ran, it just leaves it without messages. A cut read leaves the
+    // statement's remaining rows on the wire, so it asks for nothing more.
     let messages = match messages_sql {
-        Some(sql) => read_messages(&mut *connection, sql).await,
-        None => Vec::new(),
+        Some(sql) if !cut => read_messages(&mut *connection, sql).await,
+        _ => Vec::new(),
     };
 
     let (columns, column_types): (Vec<String>, Vec<String>) = match rows.first() {

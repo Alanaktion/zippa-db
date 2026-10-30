@@ -551,13 +551,18 @@ async fn run_select(context: &ToolContext, sql: &str, explain: bool) -> ToolOutp
     let sent = if explain {
         format!("EXPLAIN {sql}")
     } else {
-        // The cap is enforced in SQL, not just when the result is formatted:
-        // a model-written `LIMIT 100000` must not have the server read the
-        // full result first. `format_result` still caps what is shown.
+        // The cap is enforced in SQL where the statement allows it, so a
+        // model-written `LIMIT 100000` does not have the server read the
+        // full result first. Where it does not — an `OFFSET` with no
+        // `LIMIT`, a `LIMIT` written as an expression, a locking clause —
+        // the read below still stops after one row more than is shown.
         statement::clamp_limit(&sql, MAX_ROWS, engine).unwrap_or(sql)
     };
     let connection = context.connection.clone();
-    match crate::db::runtime::spawn(async move { connection.run_query_as_agent(&sent).await }).await
+    match crate::db::runtime::spawn(async move {
+        connection.run_query_as_agent(&sent, MAX_ROWS + 1).await
+    })
+    .await
     {
         Ok(Ok(result)) => ToolOutput::ok(format_result(&result)),
         Ok(Err(error)) => ToolOutput::error(format!("{error:#}")),
@@ -586,10 +591,11 @@ pub fn format_result(result: &QueryResult) -> String {
         })
         .collect();
     let mut out = json!({ "columns": result.columns, "rows": rows });
+    // The read stops one row past the cap, so the total is not known; only
+    // that there was more.
     if result.rows.len() > MAX_ROWS {
         out["note"] = json!(format!(
-            "only the first {MAX_ROWS} of {} rows are shown",
-            result.rows.len()
+            "the result has more than {MAX_ROWS} rows; only the first {MAX_ROWS} are shown"
         ));
     }
     out.to_string()
@@ -682,6 +688,31 @@ mod tests {
             let value: Value = serde_json::from_str(&out.text).unwrap();
             assert_eq!(value["rows"].as_array().unwrap().len(), MAX_ROWS);
             assert!(value.get("note").is_none(), "{}", out.text);
+        });
+    }
+
+    #[test]
+    fn a_read_clamp_limit_cannot_bound_is_still_cut_at_the_cap() {
+        let (_database, context) = live(AgentAccess::ReadOnlySql);
+        futures::executor::block_on(async {
+            // A `LIMIT` written as an expression is left as written by
+            // `clamp_limit`, so the server returns every row; the read
+            // stops one past the cap and the note says there was more.
+            let out = call(
+                &context,
+                &NeverApprove,
+                "run_select",
+                r#"{"sql":"WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5000) SELECT x FROM cnt LIMIT (5000)"}"#,
+            )
+            .await;
+            assert!(!out.is_error, "{}", out.text);
+            let value: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(value["rows"].as_array().unwrap().len(), MAX_ROWS);
+            assert!(
+                value["note"].as_str().unwrap().contains("more than"),
+                "{}",
+                out.text
+            );
         });
     }
 

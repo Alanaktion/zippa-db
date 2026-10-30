@@ -213,6 +213,11 @@ pub struct ScriptRun {
     /// there would be refused (SQLite), ignored with a warning (Postgres), or
     /// would commit the tab's transaction (MySQL).
     nested: bool,
+    /// The run has no transaction of its own but the tab had one open, so
+    /// every statement joins it: kept only when the tab commits. Each one
+    /// still gets a savepoint, so a failure undoes that statement alone
+    /// rather than aborting the tab's whole transaction (Postgres `25P02`).
+    joined: bool,
     statements: Vec<Statement>,
     /// Each statement with its `:name`/`$name` variables substituted, and the bind
     /// parameters in order. A variable without a value refuses the run in
@@ -269,13 +274,23 @@ impl ScriptRun {
             .collect();
 
         let mut session = pinned.lock().await?;
+        // Every statement would fail with the transaction's own error, in
+        // either mode, so nothing is sent.
+        if session.state() == TxnState::Failed {
+            anyhow::bail!("the tab's transaction has failed; roll it back before running a script");
+        }
         let nested = mode == ScriptMode::Transaction && session.state().is_open();
+        let joined = mode == ScriptMode::Autocommit && session.state().is_open();
+        // What a transaction cannot hold, the tab's open one cannot either:
+        // a `COMMIT` in the script would end it under the run's savepoint.
+        if joined && let Some(blocker) = transaction_blocker(connection.config.engine, &statements)
+        {
+            anyhow::bail!(
+                "{}, and the tab has a transaction open; commit or roll it back first",
+                blocker.message()
+            );
+        }
         if mode == ScriptMode::Transaction {
-            if session.state() == TxnState::Failed {
-                anyhow::bail!(
-                    "the tab's transaction has failed; roll it back before running a script"
-                );
-            }
             let begin = if nested {
                 format!("SAVEPOINT {OUTER_SAVEPOINT}")
             } else {
@@ -294,6 +309,7 @@ impl ScriptRun {
             connection,
             session: Some(session),
             nested,
+            joined,
             statements,
             rewritten,
             params,
@@ -343,6 +359,12 @@ impl ScriptRun {
 
     pub fn mode(&self) -> ScriptMode {
         self.mode
+    }
+
+    /// Whether the run, with no transaction of its own, joined the one the
+    /// tab had open — so what it ran is kept only if the tab commits.
+    pub fn joined(&self) -> bool {
+        self.joined
     }
 
     /// Undo the script's transaction — or its savepoint, inside the tab's
@@ -426,7 +448,7 @@ impl ScriptRun {
     /// the outer one is the connection or the transaction going wrong under
     /// it, which ends the run.
     async fn run_one(&mut self, index: usize) -> Result<Result<QueryResult, String>> {
-        let transaction = self.mode == ScriptMode::Transaction;
+        let transaction = self.mode == ScriptMode::Transaction || self.joined;
         let sql = self.rewritten[index].clone();
         let params = self.params[index].clone();
         let session = self.session.as_mut().context(CLOSED)?;

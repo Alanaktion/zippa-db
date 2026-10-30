@@ -27,7 +27,7 @@ use super::TableView;
 
 impl TableView {
     /// The table this view reads and writes, qualified and quoted.
-    fn target(&self) -> String {
+    pub(super) fn target(&self) -> String {
         qualified_name(
             self.object.schema.as_deref(),
             &self.object.name,

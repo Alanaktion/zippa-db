@@ -17,7 +17,7 @@ pub fn format_value(value: &Cell, type_name: &str) -> String {
         return "NULL".to_string();
     };
 
-    if query::is_placeholder(value) {
+    if query::is_placeholder(value, type_name) {
         return format!(
             "{text}\n\nThis value was not read back from the server, so there is \
              nothing to show here."
@@ -45,7 +45,7 @@ const LONG_VALUE: usize = 200;
 /// Several lines, JSON, something the driver only described, or simply too
 /// much text to read through a cell.
 pub fn needs_a_window(value: &Cell, type_name: &str) -> bool {
-    if query::is_placeholder(value) || query::is_binary_type(type_name) {
+    if query::is_placeholder(value, type_name) || query::is_binary_type(type_name) {
         return true;
     }
 

@@ -271,7 +271,7 @@ impl RowPanel {
 
         let note = if deleted {
             None
-        } else if query::is_placeholder(&cell) {
+        } else if query::is_placeholder(&cell, &type_name) {
             Some("This value was not read back from the server.")
         } else if !editable {
             Some("This value cannot be edited here.")

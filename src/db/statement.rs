@@ -464,8 +464,9 @@ pub fn clamp_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
         if let Some(minus) = negative_sign(between, engine) {
             return replace((limit.end + minus, span.1));
         }
-        // A fractional count is not a limit this can clamp.
-        if slice[span.1..].trim_start().starts_with('.') {
+        // A fractional count is not a limit this can clamp, and nor is one
+        // that is only the first term of an expression.
+        if slice[span.1..].trim_start().starts_with('.') || continues_expression(&slice[span.1..]) {
             return None;
         }
         // MySQL's `LIMIT offset, count` clamps the count, not the offset.
@@ -493,7 +494,7 @@ pub fn clamp_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
             return None;
         }
         let (count, span) = count_at(at + 2)?;
-        if slice[span.1..].trim_start().starts_with('.') {
+        if slice[span.1..].trim_start().starts_with('.') || continues_expression(&slice[span.1..]) {
             return None;
         }
         return if count > rows { replace(span) } else { None };
@@ -505,6 +506,17 @@ pub fn clamp_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
         return None;
     }
     with_limit(sql, rows, engine)
+}
+
+/// Whether `rest`, the text straight after a count, carries on an arithmetic
+/// expression the count is only the first term of — `LIMIT 4000 + 1000` —
+/// rather than ending it or starting a comment.
+fn continues_expression(rest: &str) -> bool {
+    let rest = rest.trim_start();
+    if rest.starts_with("--") || rest.starts_with("/*") {
+        return false;
+    }
+    rest.starts_with(['+', '-', '*', '/', '%', '^', '|', '&', '<', '>'])
 }
 
 /// One word of a statement that stands outside every parenthesis, with its
@@ -1431,6 +1443,18 @@ mod tests {
         assert_eq!(
             clamped("select * from t limit -1").as_deref(),
             Some("select * from t limit 100")
+        );
+    }
+
+    #[test]
+    fn a_limit_written_as_arithmetic_is_not_clamped_to_its_first_term() {
+        // Replacing the `4000` alone would leave `LIMIT 100 + 1000`.
+        assert_eq!(clamped("select * from t limit 4000 + 1000"), None);
+        assert_eq!(clamped("select * from t limit 4000*2"), None);
+        // A trailing comment is not arithmetic.
+        assert_eq!(
+            clamped("select * from t limit 4000 -- all of them").as_deref(),
+            Some("select * from t limit 100 -- all of them")
         );
     }
 

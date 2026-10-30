@@ -152,6 +152,9 @@ pub(crate) fn master_sql(table: &str) -> String {
     )
 }
 
+/// Every name the main schema holds — tables, views, indexes, triggers.
+pub(crate) const NAMES_SQL: &str = "SELECT name FROM sqlite_master";
+
 /// A view's own `CREATE VIEW` text, as `sqlite_master` stores it.
 pub(crate) fn view_definition_sql(name: &str) -> String {
     format!(

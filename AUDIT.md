@@ -1,7 +1,7 @@
 # Audit — Zippa DB — remaining issues
 
 **Revision audited:** `60e7002` "Add schema search dialog with full catalog" (2026-09-19), branch `main`.
-**Audit date:** 2026-09-21. **Last revised:** 2026-10-29, §13 (a read of everything merged since the 2026-10-20 cleanup), then pruned of items since fixed.
+**Audit date:** 2026-09-21. **Last revised:** 2026-10-30, §14 (a pre-release pass over every open item at `04c8080`), then pruned of items since fixed.
 **This revision:** findings that have since been fixed are removed, so only what is still open is listed. The 0.1 cleanup split the largest UI files into submodules (`ui/session/`, `ui/data_grid/`, `ui/table_view/`, `ui/schema_view/`), so anchors are given as `file` plus the function name rather than a line number. The resolved findings and their regression tests are in the git history.
 
 ## How this audit was done
@@ -37,7 +37,7 @@ The geometric types, `hstore`, the six built-in ranges and `macaddr8` now read b
 
 ### [L] Import pre-flight heuristics
 
-The "destructive statement" count only sees the first 64 KiB of the dump (`src/db/import/mod.rs`, `HEAD`), so a `DROP`/`TRUNCATE`/unbounded `DELETE` further in is missed. (The `WHERE`-detection gap this used to also list — `" WHERE "` as a literal substring missing a boundary-punctuated clause like `WHERE(id>0)` — is fixed: `destructive_count` now checks for `WHERE` as a standalone word via `contains_word`.)
+The "destructive statement" count only sees the first 64 KiB of the dump (`src/db/import/mod.rs`, `HEAD`), so a `DROP`/`TRUNCATE`/unbounded `DELETE` further in is missed.
 
 ### [M] Export reads the whole table and the whole rendering into memory
 
@@ -46,7 +46,6 @@ The "destructive statement" count only sees the first 64 KiB of the dump (`src/d
 ### [L] Other partial edges
 
 - Stray `COPY` data outside a `COPY` header is silently dropped with no error and nothing in the summary (`src/db/import/mod.rs`).
-- The SQLite rebuild hardcodes the scratch name `new_{name}` (`src/ui/schema_view/rebuild.rs`); a table already called `new_items` fails the rebuild.
 - The column type picker is a fixed per-engine list with no free-text entry (`src/ui/schema_view/sql.rs`, `src/ui/schema_view/columns.rs` `render_type_picker`) — `bytea`, `inet`, enums, `year` can be displayed but never set. The doc says "Not exhaustive".
 - The plan viewer keeps only a node's total cost, dropping the startup cost it stores (`src/db/plan.rs` `PlanNode` vs `src/ui/plan_view.rs`).
 
@@ -57,7 +56,6 @@ The "destructive statement" count only sees the first 64 KiB of the dump (`src/d
 ### Engine divergence
 
 - **[M] Timestamps are labelled differently per engine.** Postgres renders `timestamptz` in the local zone with an explicit offset (`src/db/postgres.rs`); MySQL renders `TIMESTAMP` as a bare UTC wall clock (`src/db/mysql.rs`), which happens to be right only because sqlx defaults the MySQL session to `time_zone='+00:00'`. A `TIMESTAMP` and a `DATETIME` therefore look identical while meaning different things.
-- **[L] The `INSERT` export is not schema-qualified** while every other generated statement is: `export_result` passes `self.object.name` (`src/ui/table_view/export.rs`) and `render_sql` quotes it bare (`src/db/export.rs`), whereas `TableView::target()` qualifies with the schema (`src/ui/table_view/sql.rs`). Exporting `myschema.items` writes `insert into items …`.
 - **[L] The editor splitter and the dump splitter are different tools.** `db/statement.rs` has no trigger-body, `DELIMITER`, `\.`-meta-line or `COPY` handling, all of which `db/import/splitter.rs` has. `Cmd+Shift+Enter` on a `CREATE TRIGGER … BEGIN … END;` or a `COPY … FROM stdin` header splits in the wrong place. `import/splitter.rs` notes the editor's version covers "the common cases", but nothing at the editor says so.
 - **[L] `EXPLAIN_OPTIONS` is a fixed list**, so an unknown option word silently becomes part of the wrapped statement (`src/db/statement.rs`).
 
@@ -102,7 +100,7 @@ The keychain read, the `connections.json`/settings/dump-pre-flight writes, and t
 ### Durability and races
 
 - **Ignored `Result`s** (all deliberate-looking, listed for completeness): `let _ = tx.send(...)` (`src/db/runtime.rs`), import `ROLLBACK`/`SET FOREIGN_KEY_CHECKS=1`/`SET UNIQUE_CHECKS=1` `.ok()` and `sender.send(...)` (`src/db/import/mod.rs`), SQLite `rollback()`/`PRAGMA foreign_keys = ON` `.ok()` (`src/db/sqlite.rs`), and `update_in(...).ok()` throughout the UI, which hides "the entity is gone" errors.
-- **Errors that reach only stderr.** A failed settings write (`src/settings.rs`) leaves the UI claiming success.
+- **Errors that reach only stderr.** A failed `workspace.json` checkpoint or quit-time flush (`src/app.rs`) and a failed agent-settings save (`src/ui/welcome/mod.rs`) are only printed; nothing in the window says the state was not kept. (A failed settings write now raises an error toast.)
 
 ### Panics in non-test code
 
@@ -125,7 +123,7 @@ Small in number and mostly guarded, but they are panics in paths that process us
 ### Memory and hot paths
 
 - **Every result is materialised before it is rendered.** `fetch_all` collects the whole row stream into `Vec<Row>` and converts each cell to an owned `String` (`src/db/connection.rs`). The grid virtualizes only the *rendering*, so memory is proportional to the result; the README says so.
-- **`is_placeholder` misclassifies genuine short bracketed values.** `src/db/query.rs` treats any `<…>` whose inner text has no brackets, parentheses, comma, or space as a driver stand-in, so a real `<nil>`, `<item>` or `<3 bytes>` text value is treated as "never read back": uneditable (`src/ui/data_grid/delegate.rs`), claims so in the value dialog, dropped from copies, and exported as `NULL`/empty (`src/db/export.rs`). The test only covers `<a>hi</a>`, `<>`, and a `circle`.
+- **[L] `is_placeholder` still has two narrow false positives.** It now takes the column's type, so a `<TYPE>` stand-in counts only when it names that type (or a SQLite storage class), and a real `<nil>` in a text column is a value. Left over: a text value that is literally `<N bytes>` (counted in any column, because SQLite stores a blob wherever it is put), or literally `<TEXT>`/`<INTEGER>`/… — each is treated as unread, so uneditable and exported as `NULL` (`src/db/query.rs`). A typed stand-in (a `Cell` variant rather than a string) would close it, at the cost of touching every consumer.
 - **Cancellation arms nothing can reach, and work that outlives its tab.** The connect task's abort handle is never kept (`src/ui/welcome/mod.rs`), same for `reload_metadata` and `switch_database` (`src/ui/session/metadata.rs`), so their "cancelled" branches can only be reached by a panic, which would be misreported. Table-view loads, writes and exports are `runtime::spawn`ed and detached with no abort handle (`src/ui/table_view/mod.rs`, `export.rs`), so nothing stops a page load or an export, and closing the tab leaves the future running. `CancelQuery`/`Cmd+.` only reaches queries and imports (`src/ui/session/running.rs`).
 - **Unchecked indexing / arithmetic** (all currently safe, listed for completeness): `self.tabs[self.active]` (`src/app.rs`, safe because `tabs` is never empty), `self.panels[index]` with a modulo (`src/ui/session/files.rs`), and `page * limit` / `limit`/`offset` interpolation (`src/ui/table_view/sql.rs`, `footer.rs`), clamped by `settings::MAX_PAGE_SIZE`.
 - **`describe` failures are swallowed.** `Executor::describe(pool, statement)` is called with no bound parameters and `unwrap_or_default()`ed (`src/db/connection.rs`), so a parameterised statement that returns no rows can silently lose its column list. ⚠︎ Unverified against a live Postgres; every in-tree caller casts its placeholders.
@@ -148,9 +146,10 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 
 ## 7. Suggested triage order
 
-1. **Agent reads that are not bounded** (§13) — the last place model-written SQL can make the server read without limit.
-2. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations.
-3. **The open design calls in §11.**
+1. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations left; fetching the catalog through a counting, capped read (as the agent's read now is) would close the second cheaply.
+2. **MySQL timestamp labelling** (§2) — the one remaining place two engines show the same-looking value meaning different things.
+3. **Cancellation that nothing can reach** (§4) — table-view loads and exports that outlive their tab.
+4. **The open design calls in §11 and §13.**
 
 ## 8. What this audit did and did not cover
 
@@ -170,7 +169,6 @@ A second full read of `src/` after #4–#9 landed, looking for panics, work that
 
 Left open, because each needs a design call:
 
-- **[M] A script run without a transaction, inside an open one** (`script::ScriptRun`, `ScriptMode::Autocommit` on a pinned connection whose `TxnState` is `Open`): the statements join the tab's transaction rather than committing, the question's wording says otherwise, and on Postgres the first failure aborts the whole transaction so every later statement fails with `25P02`. Either refuse the mode while a transaction is open or word the question for it.
 - **[L] Re-running straight after cancelling a paused script** can say "still running something" until the close on the runtime finishes (`panel::close_script`).
 - **[L] `EXPLAIN` runs on the pool, not the tab's pinned connection**, so it cannot see the tab's temporary tables, `SET`s, or `USE`.
 - **[L] Row panel text is lost on `Cmd+S` or a row change** if the field has not been committed by a blur (`src/ui/table_view/row_panel.rs`).
@@ -200,14 +198,10 @@ Left open:
 
 ### Agents panel
 
-- **[M] An agent read is not always bounded.** `run_select` relies on `statement::clamp_limit`, which returns `None`, leaving the SQL as written, for an outermost `OFFSET` with no `LIMIT`, a `LIMIT` given as an expression, or a locking clause. The comment in `run_select` says "the cap is enforced in SQL", but in these cases the server reads the whole result, and `fetch_all` holds all of it in memory before `format_result` trims it to 100 rows. Wrapping the statement as `SELECT * FROM (…) LIMIT n` would cover these cases, but MySQL refuses a derived table with duplicate column names (`a.id, b.id`), so that wrapper would break joins that work now.
-- **[M] A read-only session does not stop every side effect.** Postgres still allows `pg_terminate_backend`, `pg_cancel_backend`, `pg_advisory_lock`, `dblink_exec` (which writes over another connection), `lo_export` for a superuser, and `set_config`. MySQL still allows `GET_LOCK` and `SLEEP`. A read-only session keeps the agent from changing data, not from affecting the server. `gate::FORBIDDEN` only looks at a statement's first word, so a denylist of function names would be needed to close this.
+- **[L] An unbounded agent read still costs the server until the connection closes.** The client now stops one row past the cap whatever the SQL says (`Connection::run_query_as_agent`), so memory is bounded; but for the shapes `clamp_limit` leaves alone (an `OFFSET` with no `LIMIT`, a `LIMIT` in parentheses or as arithmetic, a locking clause) the server keeps producing rows until it notices the closed socket. A sort or aggregate over a large table runs to completion first. The connection's `statement_timeout`, when set, is the only server-side bound.
+- **[L] The side-effect denylist is by name.** `gate::classify` refuses the Postgres/MySQL/SQLite functions that reach past the data (`pg_terminate_backend`, advisory locks, `dblink*`, `set_config`, `lo_*`, `pg_read_file`, `GET_LOCK`, `SLEEP`, `load_extension`, …) anywhere in a statement. A user-defined function that calls one internally is not seen, and an unquoted column with one of those names (`sleep` on MySQL) has to be quoted for the agent to read it. The list is in `src/db/agent/gate.rs`.
 - **[L] The keychain is used on the UI thread from Settings.** `settings_window::key_set` reads the API key the first time the Agents page is drawn. The key box's change callback writes `store::set_api_key` on every change, and a failed write is ignored, so the box keeps showing the key as saved (`src/ui/settings_window.rs`). A turn's own read (`ui/agents/mod.rs`) runs on the Tokio runtime and blocks one of its two threads while the keychain answers.
 - **[L] New connections get `Schema` access by default** (`AgentAccess::default`). No schema is sent anywhere until the user sets an endpoint, and the Settings page says what will be sent. But once an endpoint is set, every saved connection, production ones included, offers its table and column names to the model unless it was set to `None` one by one.
-
-### Backups
-
-- **[L] A database name is passed to `pg_dump` through `-d`, which also accepts a connection string,** so a database named `host=… dbname=…` would connect somewhere else (`dump_commands`, `src/db/backup.rs`). `mysqldump` now gets its names after `--`. The names come from the server's own lists, so this needs someone who can already create objects there. Refusing names that contain `=` would close it.
 
 ### Binary values
 
@@ -217,6 +211,10 @@ Left open:
 
 - **[L] Refreshing a dashboard asks only on a `ConfirmWrites` connection.** That matches a query tab. But a dashboard runs every widget again on each refresh, so on a `Staged` or `AutoApply` connection a widget that writes repeats its write on every refresh with no question. A dashboard restored at startup does not run (`open_dashboard_inner(run: false)`), so the gap is limited to opening a dashboard from the sidebar or the palette, the Refresh button, and an edited widget.
 
-### Documentation drift
+## 14. Pre-release pass (2026-10-30, revision `04c8080`)
 
-- **[L] `CLAUDE.md`/`AGENTS.md` do not describe the features added since 0.1.2.** There is no architecture paragraph for the Agents panel (its three gates, `QuerySource::Agent`, the API key's keychain entry), backups, dashboards and charts, the quick search, or the structure tab's definition view, and the `src/ui/tests/` file list is missing `agents`, `chart`, `connection_info`, `dashboards`, `messages`, and `table_search`. `README.md` does not mention the Agents panel or that it sends schema and rows to a configurable endpoint.
+Every open item above was re-checked against the code, and the high-value ones fixed in the same change, each with a regression test: agent reads capped at the client (plus live Postgres/MySQL tests that a cut read neither drains nor poisons the pool) and a side-effect function denylist; an autocommit script inside the tab's open transaction now joins it with a savepoint per statement and says so, and refuses a `COMMIT`/`VACUUM`-style blocker; `is_placeholder` takes the column type; `clamp_limit` no longer rewrites the first term of `LIMIT 4000 + 1000`; the SQLite rebuild picks a scratch name nothing else has; the `INSERT` export and copy are schema-qualified; a `pg_dump -d` name that reads as a connection string goes as `dbname='…'`; a failed settings write raises an error toast. The checks were the three CI commands and the live tests (the two SSH-tunnel tests were not run: no jump host).
+
+Found in the same pass and left open:
+
+- **[L] `script/test-db` needs the Docker Compose plugin.** On a machine with plain `docker` it fails with "unknown shorthand flag: 'd'" before starting anything, and every live test then fails to connect, which reads like a code failure.

@@ -60,8 +60,15 @@ impl DataGrid {
                 .iter()
                 .map(|row| {
                     row.iter()
-                        .map(|cell| {
-                            let (text, read_back) = cell_text(cell);
+                        .zip(
+                            snapshot
+                                .types
+                                .iter()
+                                .map(String::as_str)
+                                .chain(std::iter::repeat("")),
+                        )
+                        .map(|(cell, type_name)| {
+                            let (text, read_back) = cell_text(cell, type_name);
                             skipped += usize::from(!read_back);
                             // A tab or a line break inside a value would split
                             // the row when pasted, so it goes as a space — the
@@ -94,7 +101,9 @@ impl DataGrid {
     /// Copy one cell's value, a stand-in going out as the `NULL` it would be
     /// in any `Copy as` shape.
     fn copy_cell(&mut self, row_ix: usize, col_ix: usize, cx: &mut Context<Self>) {
-        let (text, read_back) = cell_text(self.table.read(cx).delegate().cell(row_ix, col_ix));
+        let delegate = self.table.read(cx).delegate();
+        let (text, read_back) =
+            cell_text(delegate.cell(row_ix, col_ix), delegate.column_type(col_ix));
         let message = if read_back {
             "Copied value".to_string()
         } else {
@@ -115,7 +124,8 @@ impl DataGrid {
             CopyAs::ColumnValues(column) => {
                 let snapshot = self.snapshot(Scope::Column(column), cx);
                 let cells = column_cells(&snapshot);
-                let rendered = export::values(&cells);
+                let type_name = snapshot.types.first().cloned().unwrap_or_default();
+                let rendered = export::values(&type_name, &cells);
                 let message = with_skipped(
                     format!("Copied {}", count_of(cells.len(), "value", "values")),
                     rendered.skipped,
@@ -129,7 +139,7 @@ impl DataGrid {
                 let rendered = export::in_list(self.engine(cx), &type_name, &cells);
                 let copied = cells
                     .iter()
-                    .filter(|cell| cell.is_some() && !query::is_placeholder(cell))
+                    .filter(|cell| cell.is_some() && !query::is_placeholder(cell, &type_name))
                     .count();
                 let message = if copied == 0 {
                     "No values to copy".to_string()
@@ -336,8 +346,8 @@ fn column_cells(snapshot: &Snapshot) -> Vec<Cell> {
 /// back (`query::is_placeholder`), the way the TSV `Copy as` writes both —
 /// the description is not the value, and pasting it somewhere would pass it
 /// off as one.
-fn cell_text(cell: &Cell) -> (String, bool) {
-    if query::is_placeholder(cell) {
+fn cell_text(cell: &Cell, type_name: &str) -> (String, bool) {
+    if query::is_placeholder(cell, type_name) {
         return (String::new(), false);
     }
     (cell.clone().unwrap_or_default(), true)
