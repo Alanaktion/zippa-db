@@ -179,12 +179,8 @@ impl Writer {
         out.push('\n');
     }
 
-    /// One row. A result with no columns has nothing an `INSERT` could
-    /// name, so in SQL it writes nothing and is not counted.
+    /// One row.
     pub fn row(&mut self, row: &[Cell], out: &mut String) {
-        if self.format == Format::Sql && self.columns.is_empty() {
-            return;
-        }
         match self.format {
             Format::Tsv => self.delimited_row(row, "\t", tsv_field, out),
             Format::Csv => self.delimited_row(row, ",", csv_field, out),
@@ -263,6 +259,16 @@ impl Writer {
 
     /// One `INSERT`, with numbers bare and everything else quoted.
     fn sql_row(&mut self, row: &[Cell], out: &mut String) {
+        // A row of a table with no columns (Postgres allows one) has no
+        // values to name, but still has to come back as a row.
+        if self.columns.is_empty() {
+            let values = match self.engine {
+                Engine::MySql => "() values ()",
+                Engine::Postgres | Engine::Sqlite => "default values",
+            };
+            out.push_str(&format!("insert into {} {values};\n", self.table));
+            return;
+        }
         let mut values = Vec::with_capacity(self.columns.len());
         for index in 0..self.columns.len() {
             let cell = row.get(index);
@@ -785,13 +791,13 @@ mod tests {
     }
 
     #[test]
-    fn sql_neither_writes_nor_counts_a_row_with_no_columns() {
+    fn sql_writes_a_row_with_no_columns_as_default_values() {
         let mut writer = Writer::new(Format::Sql, Engine::Postgres, "t", vec![], vec![])
             .expect("SQL has a writer");
         let mut text = String::new();
         writer.row(&[], &mut text);
-        assert_eq!(text, "");
-        assert_eq!(writer.rows(), 0);
+        assert_eq!(text, "insert into t default values;\n");
+        assert_eq!(writer.rows(), 1);
     }
 
     #[test]

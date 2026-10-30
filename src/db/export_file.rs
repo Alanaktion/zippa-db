@@ -74,7 +74,7 @@ impl Connection {
             bail!("a Markdown table cannot be exported to a file");
         }
 
-        let partial = Partial::create(&request.path)?;
+        let mut partial = Partial::create(&request.path)?;
         let mut sink = FileSink {
             format: request.format,
             engine: self.config.engine,
@@ -184,18 +184,22 @@ impl RowSink for FileSink {
 
 /// The hidden file an export is written to before it is renamed into place.
 /// Each export gets its own, created fresh.
-/// Dropped without [`Self::keep`], it is deleted.
+/// Dropped without [`Self::keep`], it is deleted — but only once this
+/// export has created it, so a file already at that name is never touched.
 struct Partial {
     partial: PathBuf,
     target: PathBuf,
+    created: bool,
     kept: bool,
 }
 
 impl Partial {
     fn create(target: &Path) -> Result<Self> {
-        let name = target
+        // Cut short, so the prefix and suffix cannot push a name near the
+        // file system's limit past it.
+        let name: String = target
             .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
+            .map(|name| name.to_string_lossy().chars().take(64).collect())
             .unwrap_or_else(|| "export".to_string());
         // Its own name per export, so two exports to one file never write
         // into the same partial file.
@@ -206,19 +210,23 @@ impl Partial {
         Ok(Self {
             partial,
             target: target.to_path_buf(),
+            created: false,
             kept: false,
         })
     }
 
     /// The partial file, created empty. A file it will replace lends it its
     /// permissions first, so an export over an owner-only file stays
-    /// owner-only, as writing over it in place would have kept it.
-    fn file(&self) -> Result<File> {
+    /// owner-only, as writing over it in place would have kept it. Only the
+    /// mode is carried over: the new file belongs to whoever runs the export,
+    /// and ACL entries on the old one are not copied.
+    fn file(&mut self) -> Result<File> {
         let file = File::options()
             .write(true)
             .create_new(true)
             .open(&self.partial)
             .with_context(|| format!("could not save {}", self.target.display()))?;
+        self.created = true;
         if let Ok(existing) = std::fs::metadata(&self.target) {
             file.set_permissions(existing.permissions())
                 .with_context(|| format!("could not save {}", self.target.display()))?;
@@ -237,7 +245,7 @@ impl Partial {
 
 impl Drop for Partial {
     fn drop(&mut self) {
-        if !self.kept {
+        if self.created && !self.kept {
             let _ = std::fs::remove_file(&self.partial);
         }
     }
@@ -322,7 +330,7 @@ mod tests {
         let target = scratch("unfinished.csv");
         std::fs::write(&target, "kept").unwrap();
 
-        let partial = Partial::create(&target).unwrap();
+        let mut partial = Partial::create(&target).unwrap();
         let mut file = partial.file().unwrap();
         file.write_all(b"half").unwrap();
         let hidden = partial.partial.clone();
@@ -340,11 +348,33 @@ mod tests {
     #[test]
     fn two_exports_to_one_file_write_separate_partial_files() {
         let target = scratch("shared.csv");
-        let first = Partial::create(&target).unwrap();
-        let second = Partial::create(&target).unwrap();
+        let mut first = Partial::create(&target).unwrap();
+        let mut second = Partial::create(&target).unwrap();
         assert_ne!(first.partial, second.partial);
         first.file().unwrap();
         second.file().unwrap();
+    }
+
+    #[test]
+    fn a_partial_file_it_did_not_create_is_left_alone() {
+        let target = scratch("taken.csv");
+        let mut partial = Partial::create(&target).unwrap();
+        let hidden = partial.partial.clone();
+        std::fs::write(&hidden, "someone else's").unwrap();
+
+        assert!(partial.file().is_err());
+        drop(partial);
+
+        assert_eq!(std::fs::read_to_string(&hidden).unwrap(), "someone else's");
+        std::fs::remove_file(&hidden).unwrap();
+    }
+
+    #[test]
+    fn a_long_file_name_keeps_the_partial_name_short() {
+        let target = scratch(&format!("{}.csv", "x".repeat(250)));
+        let partial = Partial::create(&target).unwrap();
+        let name = partial.partial.file_name().unwrap().to_string_lossy().len();
+        assert!(name < 100, "partial name is {name} bytes");
     }
 
     #[cfg(unix)]
@@ -356,7 +386,7 @@ mod tests {
         std::fs::write(&target, "old").unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-        let partial = Partial::create(&target).unwrap();
+        let mut partial = Partial::create(&target).unwrap();
         partial.file().unwrap().write_all(b"new").unwrap();
         partial.keep().unwrap();
 
@@ -370,7 +400,7 @@ mod tests {
         let target = scratch("finished.csv");
         std::fs::write(&target, "old").unwrap();
 
-        let partial = Partial::create(&target).unwrap();
+        let mut partial = Partial::create(&target).unwrap();
         partial.file().unwrap().write_all(b"new").unwrap();
         partial.keep().unwrap();
 
