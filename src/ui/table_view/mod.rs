@@ -204,6 +204,8 @@ pub struct TableView {
     committing: bool,
     /// What the last write did, for the footer.
     notice: Option<String>,
+    /// A whole-table export being written, for the footer.
+    exporting: Option<export::Exporting>,
     /// An action waiting on an answer about the staged edits it would lose.
     pending: Option<Pending>,
     /// A write waiting on an answer about whether to run at all.
@@ -317,6 +319,7 @@ impl TableView {
             key_type: None,
             committing: false,
             notice: None,
+            exporting: None,
             pending: None,
             confirming: None,
             reveal: None,

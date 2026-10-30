@@ -39,10 +39,6 @@ The geometric types, `hstore`, the six built-in ranges and `macaddr8` now read b
 
 The "destructive statement" count only sees the first 64 KiB of the dump (`src/db/import/mod.rs`, `HEAD`), so a `DROP`/`TRUNCATE`/unbounded `DELETE` further in is missed.
 
-### [M] Export reads the whole table and the whole rendering into memory
-
-`TableView::export` runs `select_sql(paged: false)` into one `QueryResult` and then builds the entire output `String` before one write (`src/ui/table_view/export.rs`). streaming is a known open item — noted because it is the largest unbounded allocation in the app.
-
 ### [L] Other partial edges
 
 - Stray `COPY` data outside a `COPY` header is silently dropped with no error and nothing in the summary (`src/db/import/mod.rs`).
@@ -124,7 +120,7 @@ Small in number and mostly guarded, but they are panics in paths that process us
 
 - **Every result is materialised before it is rendered.** `fetch_all` collects the whole row stream into `Vec<Row>` and converts each cell to an owned `String` (`src/db/connection.rs`). The grid virtualizes only the *rendering*, so memory is proportional to the result; the README says so.
 - **[L] `is_placeholder` still has two narrow false positives.** It now takes the column's type, so a `<TYPE>` stand-in counts only when it names that type (or a SQLite storage class), and a real `<nil>` in a text column is a value. Left over: a text value that is literally `<N bytes>` (counted in any column, because SQLite stores a blob wherever it is put), or literally `<TEXT>`/`<INTEGER>`/… — each is treated as unread, so uneditable and exported as `NULL` (`src/db/query.rs`). A typed stand-in (a `Cell` variant rather than a string) would close it, at the cost of touching every consumer.
-- **Cancellation arms nothing can reach, and work that outlives its tab.** The connect task's abort handle is never kept (`src/ui/welcome/mod.rs`), same for `reload_metadata` and `switch_database` (`src/ui/session/metadata.rs`), so their "cancelled" branches can only be reached by a panic, which would be misreported. Table-view loads, writes and exports are `runtime::spawn`ed and detached with no abort handle (`src/ui/table_view/mod.rs`, `export.rs`), so nothing stops a page load or an export, and closing the tab leaves the future running. `CancelQuery`/`Cmd+.` only reaches queries and imports (`src/ui/session/running.rs`).
+- **Cancellation arms nothing can reach, and work that outlives its tab.** The connect task's abort handle is never kept (`src/ui/welcome/mod.rs`), same for `reload_metadata` and `switch_database` (`src/ui/session/metadata.rs`), so their "cancelled" branches can only be reached by a panic, which would be misreported. Table-view loads and writes are `runtime::spawn`ed and detached with no abort handle (`src/ui/table_view/mod.rs`), so nothing stops a page load, and closing the tab leaves the future running. A whole-table export keeps its abort handle for the footer's Cancel export button, but closing the tab still lets it run to the end. `CancelQuery`/`Cmd+.` only reaches queries and imports (`src/ui/session/running.rs`).
 - **Unchecked indexing / arithmetic** (all currently safe, listed for completeness): `self.tabs[self.active]` (`src/app.rs`, safe because `tabs` is never empty), `self.panels[index]` with a modulo (`src/ui/session/files.rs`), and `page * limit` / `limit`/`offset` interpolation (`src/ui/table_view/sql.rs`, `footer.rs`), clamped by `settings::MAX_PAGE_SIZE`.
 - **`describe` failures are swallowed.** `Executor::describe(pool, statement)` is called with no bound parameters and `unwrap_or_default()`ed (`src/db/connection.rs`), so a parameterised statement that returns no rows can silently lose its column list. ⚠︎ Unverified against a live Postgres; every in-tree caller casts its placeholders.
 
@@ -146,9 +142,9 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 
 ## 7. Suggested triage order
 
-1. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations left; fetching the catalog through a counting, capped read (as the agent's read now is) would close the second cheaply.
+1. **The catalog's source rows** (§1) — the largest unbounded allocation left now that a table export streams; fetching the catalog through a counting, capped read (as the agent's read now is) would close the second cheaply.
 2. **MySQL timestamp labelling** (§2) — the one remaining place two engines show the same-looking value meaning different things.
-3. **Cancellation that nothing can reach** (§4) — table-view loads and exports that outlive their tab.
+3. **Cancellation that nothing can reach** (§4) — table-view loads, and exports that outlive their tab.
 4. **The open design calls in §11 and §13.**
 
 ## 8. What this audit did and did not cover

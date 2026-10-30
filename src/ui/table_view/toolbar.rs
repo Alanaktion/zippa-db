@@ -72,7 +72,7 @@ impl TableView {
                             .label("Export")
                             .dropdown_caret(true)
                             .tooltip("Write every row the view shows to a file")
-                            .disabled(self.loading || self.committing)
+                            .disabled(self.loading || self.committing || self.is_exporting())
                             .dropdown_menu(move |mut menu, _window, _cx| {
                                 for format in Format::FILE {
                                     let view = view.clone();
