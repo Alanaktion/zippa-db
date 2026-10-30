@@ -17,7 +17,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
@@ -183,6 +183,7 @@ impl RowSink for FileSink {
 }
 
 /// The hidden file an export is written to before it is renamed into place.
+/// Each export gets its own, created fresh.
 /// Dropped without [`Self::keep`], it is deleted.
 struct Partial {
     partial: PathBuf,
@@ -196,7 +197,12 @@ impl Partial {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "export".to_string());
-        let partial = target.with_file_name(format!(".{name}.partial"));
+        // Its own name per export, so two exports to one file never write
+        // into the same partial file.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let unique = NEXT.fetch_add(1, Ordering::Relaxed);
+        let partial =
+            target.with_file_name(format!(".{name}.{}-{unique}.partial", std::process::id()));
         Ok(Self {
             partial,
             target: target.to_path_buf(),
@@ -208,7 +214,10 @@ impl Partial {
     /// permissions first, so an export over an owner-only file stays
     /// owner-only, as writing over it in place would have kept it.
     fn file(&self) -> Result<File> {
-        let file = File::create(&self.partial)
+        let file = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&self.partial)
             .with_context(|| format!("could not save {}", self.target.display()))?;
         if let Ok(existing) = std::fs::metadata(&self.target) {
             file.set_permissions(existing.permissions())
@@ -326,6 +335,16 @@ mod tests {
             "the file it would have replaced is left alone"
         );
         std::fs::remove_file(&target).unwrap();
+    }
+
+    #[test]
+    fn two_exports_to_one_file_write_separate_partial_files() {
+        let target = scratch("shared.csv");
+        let first = Partial::create(&target).unwrap();
+        let second = Partial::create(&target).unwrap();
+        assert_ne!(first.partial, second.partial);
+        first.file().unwrap();
+        second.file().unwrap();
     }
 
     #[cfg(unix)]
