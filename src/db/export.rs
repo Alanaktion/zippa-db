@@ -801,6 +801,16 @@ mod tests {
     }
 
     #[test]
+    fn sql_writes_a_mysql_row_with_no_columns_as_empty_values() {
+        let mut writer =
+            Writer::new(Format::Sql, Engine::MySql, "t", vec![], vec![]).expect("SQL has a writer");
+        let mut text = String::new();
+        writer.row(&[], &mut text);
+        assert_eq!(text, "insert into t () values ();\n");
+        assert_eq!(writer.rows(), 1);
+    }
+
+    #[test]
     fn tsv_flattens_tabs_and_line_breaks() {
         let rows = vec![
             vec![Some("a\tb".to_string()), Some("line\nbreak".to_string())],

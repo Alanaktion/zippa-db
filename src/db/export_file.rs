@@ -186,15 +186,29 @@ impl RowSink for FileSink {
 /// Each export gets its own, created fresh.
 /// Dropped without [`Self::keep`], it is deleted — but only once this
 /// export has created it, so a file already at that name is never touched.
+///
+/// A symlink is followed, so the file it points at is the one replaced and
+/// the link stays. A file with other hard links is replaced at this path
+/// alone: the other names keep the old contents.
 struct Partial {
     partial: PathBuf,
+    /// Where the finished file goes: the chosen path, or what it links to.
     target: PathBuf,
+    /// The chosen path, for messages.
+    shown: PathBuf,
     created: bool,
     kept: bool,
 }
 
 impl Partial {
-    fn create(target: &Path) -> Result<Self> {
+    fn create(shown: &Path) -> Result<Self> {
+        let is_link = std::fs::symlink_metadata(shown).is_ok_and(|meta| meta.is_symlink());
+        // A link that leads nowhere is replaced like any other file.
+        let target = match is_link {
+            true => std::fs::canonicalize(shown).unwrap_or_else(|_| shown.to_path_buf()),
+            false => shown.to_path_buf(),
+        };
+        let target = target.as_path();
         // Cut to 64 bytes on a character boundary, so the prefix and suffix
         // cannot push a name near the file system's limit past it.
         let name = target
@@ -217,34 +231,41 @@ impl Partial {
         Ok(Self {
             partial,
             target: target.to_path_buf(),
+            shown: shown.to_path_buf(),
             created: false,
             kept: false,
         })
     }
 
-    /// The partial file, created empty. A file it will replace lends it its
-    /// permissions first, so an export over an owner-only file stays
+    /// The partial file, created empty. When it will replace a file it is
+    /// owner-only while the rows go in, and takes the old file's permissions
+    /// in [`Self::keep`], so an export over an owner-only file stays
     /// owner-only, as writing over it in place would have kept it. Only the
     /// mode is carried over: the new file belongs to whoever runs the export,
     /// and ACL entries on the old one are not copied.
     fn file(&mut self) -> Result<File> {
-        let file = File::options()
-            .write(true)
-            .create_new(true)
-            .open(&self.partial)
-            .with_context(|| format!("could not save {}", self.target.display()))?;
-        self.created = true;
-        if let Ok(existing) = std::fs::metadata(&self.target) {
-            file.set_permissions(existing.permissions())
-                .with_context(|| format!("could not save {}", self.target.display()))?;
+        let mut options = File::options();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if self.target.exists() {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
         }
+        let file = options
+            .open(&self.partial)
+            .with_context(|| format!("could not save {}", self.shown.display()))?;
+        self.created = true;
         Ok(file)
     }
 
     /// Put the finished file where it was asked for.
     fn keep(mut self) -> Result<()> {
+        if let Ok(existing) = std::fs::metadata(&self.target) {
+            std::fs::set_permissions(&self.partial, existing.permissions())
+                .with_context(|| format!("could not save {}", self.shown.display()))?;
+        }
         std::fs::rename(&self.partial, &self.target)
-            .with_context(|| format!("could not save {}", self.target.display()))?;
+            .with_context(|| format!("could not save {}", self.shown.display()))?;
         self.kept = true;
         Ok(())
     }
@@ -404,6 +425,25 @@ mod tests {
         let mode = std::fs::metadata(&target).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         std::fs::remove_file(&target).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_export_over_a_symlink_writes_through_it() {
+        let real = scratch("linked-real.csv");
+        let link = scratch("linked.csv");
+        std::fs::write(&real, "old").unwrap();
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let mut partial = Partial::create(&link).unwrap();
+        partial.file().unwrap().write_all(b"new").unwrap();
+        partial.keep().unwrap();
+
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
+        std::fs::remove_file(&link).unwrap();
+        std::fs::remove_file(&real).unwrap();
     }
 
     #[test]
