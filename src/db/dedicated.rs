@@ -224,6 +224,7 @@ impl Dedicated {
                 // SAFETY: the handle is locked for the length of the call, so
                 // nothing else is using the connection, and
                 // `sqlite3_get_autocommit` only reads a flag off it.
+                #[allow(unsafe_code)]
                 let autocommit = unsafe {
                     libsqlite3_sys::sqlite3_get_autocommit(handle.as_raw_handle().as_ptr())
                 };

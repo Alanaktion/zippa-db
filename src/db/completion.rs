@@ -450,6 +450,7 @@ fn lex(text: &str, base: usize, engine: Engine) -> Option<Vec<Token>> {
                 index = closing(bytes, index, b'\'', escapes)?;
             }
             b'$' if dollar_tag(text, index).is_some() => {
+                #[allow(clippy::expect_used, reason = "the message states the invariant")]
                 let tag = dollar_tag(text, index).expect("checked just above");
                 let body = index + tag.len();
                 index = text[body..].find(&tag).map(|at| body + at + tag.len())?;

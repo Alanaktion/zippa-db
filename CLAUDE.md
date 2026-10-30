@@ -26,7 +26,7 @@ cargo test -- --ignored live_
 
 macOS build needs full Xcode (not just CLI tools) for the Metal toolchain — `xcrun --find metal` must succeed. If `xcode-select -p` points at CLI tools, either `sudo xcode-select -s /Applications/Xcode.app` or prefix commands with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
 
-CI (`.github/workflows/ci.yml`) runs `./script/linux`, then `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`; run the same three before pushing. The `#[ignore]`d live tests run separately in `.github/workflows/live-tests.yml` (nightly, on push to `main`, and on manual dispatch).
+CI (`.github/workflows/ci.yml`) runs `./script/linux`, then `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`; run the same three before pushing. `Cargo.toml`'s `[lints]` denies `unsafe_code` (the one `sqlite3_get_autocommit` call carries an `allow`) and warns on `unwrap`/`expect` outside tests (`clippy.toml`), so a justified one needs `#[allow(clippy::expect_used, reason = …)]`. A separate `deny` job runs `cargo deny check` against `deny.toml` (advisories, licences, sources; duplicate versions only warn) — an ignored advisory needs a `reason`. The `#[ignore]`d live tests run separately in `.github/workflows/live-tests.yml` (nightly, on push to `main`, and on manual dispatch).
 
 ## Architecture
 

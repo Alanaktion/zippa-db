@@ -12,6 +12,10 @@ use std::task::{Context, Poll};
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::oneshot;
 
+#[allow(
+    clippy::expect_used,
+    reason = "the app cannot run without its database runtime"
+)]
 fn runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {

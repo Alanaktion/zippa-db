@@ -705,7 +705,9 @@ async fn run_commands(
             .spawn()
             .map_err(|error| spawn_error(command.program, error))?;
 
+        #[allow(clippy::expect_used, reason = "the message states the invariant")]
         let mut stdout = child.stdout.take().expect("stdout was piped");
+        #[allow(clippy::expect_used, reason = "the message states the invariant")]
         let stderr = child.stderr.take().expect("stderr was piped");
         let stderr_task = tokio::spawn(async move {
             let mut kept = Vec::new();

@@ -768,6 +768,7 @@ fn acyclic_order(n: usize, arcs: &[(usize, usize)]) -> Vec<usize> {
         if left == 0 {
             break;
         }
+        #[allow(clippy::expect_used, reason = "the message states the invariant")]
         let v = (0..n)
             .filter(|&v| !removed[v])
             .max_by_key(|&v| (outdeg[v] as isize - indeg[v] as isize, std::cmp::Reverse(v)))
@@ -895,7 +896,10 @@ fn place(list: &[usize], desired: &[f32], vertices: &[Vertex], ys: &mut [f32]) {
                 break;
             }
             pools.pop();
-            *pools.last_mut().expect("two pools") = (s1 + s2, c1 + c2);
+            let last = pools.last_mut();
+            #[allow(clippy::expect_used, reason = "the message states the invariant")]
+            let last = last.expect("two pools");
+            *last = (s1 + s2, c1 + c2);
         }
     }
     let mut i = 0;

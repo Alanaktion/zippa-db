@@ -213,6 +213,7 @@ impl Session {
             {
                 self.shared_pin = Some(PinnedConnection::new(connection.clone()));
             }
+            #[allow(clippy::expect_used, reason = "the message states the invariant")]
             let wanted = self
                 .shared_pin
                 .clone()

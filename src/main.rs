@@ -130,6 +130,7 @@ fn main() {
             // The kit wraps the content in its own `Root`, which hosts
             // dialogs, sheets, and notifications; the builder just returns
             // the workspace.
+            #[allow(clippy::expect_used, reason = "the message states the invariant")]
             let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
                 let workspace = cx.new(|cx| Workspace::new(window, cx));
 

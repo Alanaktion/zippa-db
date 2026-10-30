@@ -197,6 +197,7 @@ fn modify_statements(
     edit: &ColumnEdit,
 ) -> Result<Vec<String>, String> {
     // `changed()` already established this.
+    #[allow(clippy::expect_used, reason = "the message states the invariant")]
     let original = edit
         .original
         .as_ref()

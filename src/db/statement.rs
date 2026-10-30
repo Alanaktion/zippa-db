@@ -553,6 +553,7 @@ fn outermost_words(sql: &str, engine: Engine) -> (Vec<OuterWord>, usize) {
             }
             '\'' | '"' | '`' => index = skip_quoted(&characters, index, character, engine),
             '$' if dollar_tag(&characters, index).is_some() => {
+                #[allow(clippy::expect_used, reason = "the message states the invariant")]
                 let tag = dollar_tag(&characters, index).expect("checked just above");
                 index = skip_until(&characters, index + tag.len(), &tag);
             }
@@ -565,6 +566,7 @@ fn outermost_words(sql: &str, engine: Engine) -> (Vec<OuterWord>, usize) {
                 index += 1;
             }
             character if character.is_alphanumeric() || character == '_' => {
+                #[allow(clippy::expect_used, reason = "the message states the invariant")]
                 let (word, next) = word_at(&characters, index).expect("a word starts here");
                 if depth == 0 {
                     words.push(OuterWord {
@@ -745,6 +747,7 @@ fn statements(sql: &str, engine: Engine) -> Vec<(Vec<String>, usize, usize)> {
             // Postgres dollar quoting: `$tag$ ... $tag$`.
             '$' if dollar_tag(&characters, index).is_some() => {
                 end_word!();
+                #[allow(clippy::expect_used, reason = "the message states the invariant")]
                 let tag = dollar_tag(&characters, index).expect("checked just above");
                 index = skip_until(&characters, index + tag.len(), &tag);
             }
@@ -848,6 +851,7 @@ fn skip_parens(characters: &[char], start: usize, engine: Engine) -> (bool, usiz
                 continue;
             }
             character if character.is_alphanumeric() || character == '_' => {
+                #[allow(clippy::expect_used, reason = "the message states the invariant")]
                 let (word, next) = word_at(characters, index).expect("a word starts here");
                 analyzes |= is_analyze(&word);
                 index = next;

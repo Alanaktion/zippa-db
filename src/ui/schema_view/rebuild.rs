@@ -142,6 +142,7 @@ fn native_plan(
         }
         // `needs_rebuild` established that nothing here retypes, drops
         // nullability, or changes a default, so a rename is all that is left.
+        #[allow(clippy::expect_used, reason = "the message states the invariant")]
         let original = edit
             .original
             .as_ref()
@@ -466,6 +467,7 @@ fn primary_key(
                 .as_ref()
                 .is_some_and(|original| original.is_primary_key)
     }) {
+        #[allow(clippy::expect_used, reason = "the message states the invariant")]
         return existing
             .original
             .as_ref()

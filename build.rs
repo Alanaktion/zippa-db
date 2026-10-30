@@ -5,6 +5,9 @@
 //! one. `settings::load_builtin_themes` just `include!`s the array this
 //! writes to `OUT_DIR`.
 
+// A build script has nowhere to report to but a panic.
+#![allow(clippy::expect_used)]
+
 use std::env;
 use std::fs;
 use std::path::Path;

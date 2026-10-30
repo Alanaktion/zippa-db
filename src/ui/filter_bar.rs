@@ -219,6 +219,7 @@ impl FilterBar {
             .iter()
             .map(|operator| SharedString::from(operator.label()))
             .collect();
+        #[allow(clippy::expect_used, reason = "the message states the invariant")]
         let operator_index = Operator::ALL
             .iter()
             .position(|candidate| *candidate == operator)
