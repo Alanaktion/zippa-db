@@ -1162,3 +1162,86 @@ fn the_database_picker_follows_the_list_and_the_current_database(cx: &mut TestAp
     assert_eq!(offered, 3, "the picker should list every database");
     assert_eq!(chosen.as_deref(), Some(current.as_str()));
 }
+
+/// Deliver a proposal from the Agents panel, as its event listener would.
+fn propose(cx: &mut TestAppContext, handle: WindowHandle<Session>, sql: &str) {
+    handle
+        .update(cx, |session, window, cx| {
+            session.propose_query_for_test(sql, window, cx)
+        })
+        .unwrap();
+}
+
+/// The buffers of the tabs titled "Agent", in creation order.
+fn agent_tabs(handle: WindowHandle<Session>, cx: &mut TestAppContext) -> Vec<String> {
+    handle
+        .update(cx, |session, _, cx| {
+            session
+                .panels()
+                .iter()
+                .filter_map(|panel| {
+                    let panel = panel.read(cx);
+                    if panel.title() == "Agent" {
+                        panel.editor().map(|editor| editor.read(cx).sql(cx))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap()
+}
+
+#[gpui_kit::test]
+fn proposals_reuse_a_pristine_agent_tab(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    propose(cx, handle, "select 1");
+    assert_eq!(agent_tabs(handle, cx), vec!["select 1"]);
+    propose(cx, handle, "select 2");
+    assert_eq!(
+        agent_tabs(handle, cx),
+        vec!["select 2"],
+        "an untouched proposal tab takes the next proposal, not a new tab"
+    );
+    propose(cx, handle, "select 3");
+    assert_eq!(agent_tabs(handle, cx), vec!["select 3"]);
+
+    // The user edits the tab: it is theirs now, so the next proposal opens
+    // a new tab and leaves the edited one alone.
+    handle
+        .update(cx, |session, window, cx| {
+            session.prepare_active_editor_for_test("select 3 -- mine", window, cx)
+        })
+        .unwrap();
+    propose(cx, handle, "select 4");
+    assert_eq!(agent_tabs(handle, cx), vec!["select 3 -- mine", "select 4"]);
+}
+
+#[gpui_kit::test]
+fn a_run_agent_tab_is_not_overwritten_by_the_next_proposal(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    propose(cx, handle, "select * from items");
+    handle
+        .update(cx, |session, window, cx| {
+            session.prepare_active_editor_for_test("select * from items", window, cx)
+        })
+        .unwrap();
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+    assert_eq!(
+        handle
+            .update(cx, |session, _, cx| session.results_for_test(cx))
+            .unwrap(),
+        (1, 0),
+        "the proposal should have run before the next one arrives"
+    );
+
+    propose(cx, handle, "select 2");
+    assert_eq!(
+        agent_tabs(handle, cx),
+        vec!["select * from items", "select 2"],
+        "a tab that ran keeps its proposal"
+    );
+}

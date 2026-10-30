@@ -33,6 +33,9 @@ pub const MAX_LISTED: usize = 200;
 pub enum UiAction {
     OpenTable(DatabaseObject),
     ProposeQuery(String),
+    /// A write changed the schema: the session's catalog snapshot is stale
+    /// until it is re-read.
+    RefreshCatalog,
 }
 
 /// What a tool call came to: the text the model reads back, and an optional
@@ -478,6 +481,9 @@ async fn run_write(context: &ToolContext, approver: &dyn Approver, sql: &str) ->
     if let Err(message) = gate::allowed(&kind, context.access) {
         return ToolOutput::error(message);
     }
+    // Read before the Ask arm moves `kind` into its request: only DDL
+    // rewrites the schema the catalog snapshot was read from.
+    let is_ddl = kind == gate::Kind::Other;
     match gate::write_decision(
         context.access,
         context.connection.config.safety,
@@ -502,10 +508,19 @@ async fn run_write(context: &ToolContext, approver: &dyn Approver, sql: &str) ->
     }
     let connection = context.connection.clone();
     match crate::db::runtime::spawn(async move { connection.execute_as_agent(&sql).await }).await {
-        Ok(Ok(affected)) => ToolOutput::ok(format!(
-            "{affected} row{} affected",
-            if affected == 1 { "" } else { "s" }
-        )),
+        Ok(Ok(affected)) => {
+            let mut out = ToolOutput::ok(format!(
+                "{affected} row{} affected",
+                if affected == 1 { "" } else { "s" }
+            ));
+            // DDL rewrites the schema the panel's catalog snapshot was read
+            // from, so the session re-reads it once the turn ends. DML
+            // leaves the schema alone and asks for nothing.
+            if is_ddl {
+                out.ui = Some(UiAction::RefreshCatalog);
+            }
+            out
+        }
         Ok(Err(error)) => ToolOutput::error(format!("{error:#}")),
         Err(_) => ToolOutput::error("cancelled"),
     }

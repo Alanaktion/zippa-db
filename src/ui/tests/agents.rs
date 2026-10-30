@@ -2,8 +2,9 @@
 
 use super::*;
 use crate::db::agent::gate::Kind;
-use crate::db::agent::tools::WriteRequest;
-use crate::db::agent::turn::TurnEvent;
+use crate::db::agent::provider::Message;
+use crate::db::agent::tools::{UiAction, WriteRequest};
+use crate::db::agent::turn::{TurnEvent, TurnOutcome};
 use crate::db::{AgentAccess, WriteApproval};
 
 fn delete_request() -> WriteRequest {
@@ -323,5 +324,138 @@ fn enter_sends_and_shift_enter_adds_a_line(cx: &mut TestAppContext) {
     assert_eq!(
         agents.read_with(cx, |agents, cx| agents.composer_text_for_test(cx)),
         ""
+    );
+}
+
+#[gpui_kit::test]
+fn an_empty_answer_with_no_tool_calls_leaves_a_notice(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+    agents.update(cx, |agents, cx| {
+        agents.finish_for_test(
+            TurnOutcome {
+                messages: vec![Message::User("what tables are here?".into())],
+                answer: None,
+                ..TurnOutcome::default()
+            },
+            cx,
+        );
+    });
+    let lines = agents.read_with(cx, |agents, _| agents.lines_for_test());
+    assert!(
+        lines.iter().any(|line| line.contains("returned no answer")),
+        "an empty turn should say so, not vanish: {lines:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_turn_that_showed_something_gets_no_empty_notice(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    // Assistant words on screen: no notice, even with no closing answer.
+    agents.update(cx, |agents, cx| agents.say_for_test("here they are", cx));
+    agents.update(cx, |agents, cx| {
+        agents.finish_for_test(
+            TurnOutcome {
+                answer: None,
+                ..TurnOutcome::default()
+            },
+            cx,
+        );
+    });
+    let lines = agents.read_with(cx, |agents, _| agents.lines_for_test());
+    assert!(
+        !lines.iter().any(|line| line.contains("returned no answer")),
+        "{lines:?}"
+    );
+
+    // A tool item on screen likewise: the turn did not vanish.
+    agents.update(cx, |agents, cx| {
+        agents.apply_turn_event_for_test(
+            TurnEvent::ToolPending {
+                index: 0,
+                name: "list_tables".into(),
+                arguments: "{}".into(),
+            },
+            cx,
+        );
+        agents.finish_for_test(
+            TurnOutcome {
+                answer: None,
+                ..TurnOutcome::default()
+            },
+            cx,
+        );
+    });
+    let lines = agents.read_with(cx, |agents, _| agents.lines_for_test());
+    assert!(
+        !lines.iter().any(|line| line.contains("returned no answer")),
+        "{lines:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_running_turn_keeps_showing_after_access_is_lowered(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    assert!(agents.read_with(cx, |agents, _| agents.shows_thread_for_test()));
+    agents.update(cx, |agents, cx| {
+        agents.set_access_for_test(AgentAccess::None, cx)
+    });
+    assert!(
+        !agents.read_with(cx, |agents, _| agents.shows_thread_for_test()),
+        "with nothing running, the turned-off message is right"
+    );
+    agents.update(cx, |agents, cx| agents.set_running_for_test(cx));
+    assert!(
+        agents.read_with(cx, |agents, _| agents.shows_thread_for_test()),
+        "lowering access mid-turn must not hide the running turn's output"
+    );
+}
+
+#[gpui_kit::test]
+fn a_catalog_refresh_action_reloads_the_session_catalog(cx: &mut TestAppContext) {
+    let (database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    // A table the session has never seen, made behind its back.
+    runtime::block_on(async {
+        let connection = Connection::open(database.config(), None)
+            .await
+            .expect("could not reopen the test database");
+        connection
+            .execute("create table fresh (id integer)", Vec::new())
+            .await
+            .expect("could not create the table");
+        connection.close().await;
+    });
+
+    agents.update(cx, |agents, cx| {
+        agents.finish_for_test(
+            TurnOutcome {
+                ui: vec![UiAction::RefreshCatalog],
+                ..TurnOutcome::default()
+            },
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let catalog = handle
+        .update(cx, |session, _, _| session.catalog())
+        .unwrap();
+    assert!(
+        catalog.entries.iter().any(|entry| entry.name == "fresh"),
+        "the re-read catalog should hold the new table"
     );
 }

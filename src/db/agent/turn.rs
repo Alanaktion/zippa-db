@@ -1109,4 +1109,90 @@ mod tests {
             assert_eq!(provider.asked.load(Ordering::SeqCst), 1);
         });
     }
+
+    /// Answers every approval request the same way.
+    struct Yes;
+
+    impl tools::Approver for Yes {
+        fn approve(&self, _: tools::WriteRequest) -> BoxFuture<'_, bool> {
+            Box::pin(async { true })
+        }
+    }
+
+    #[test]
+    fn a_successful_ddl_write_asks_for_a_catalog_refresh() {
+        // Setup under the runtime, the turn itself under the plain executor:
+        // under `#[cfg(test)]` a turn's `runtime::spawn` already blocks on
+        // the runtime, so driving the turn from inside it panics.
+        let context = run_blocking(context(AgentAccess::Full));
+        let provider = Script::new(vec![
+            Ok(call(
+                "run_write",
+                "{\"sql\":\"create table fresh (id integer)\"}",
+            )),
+            Ok(say("done")),
+        ]);
+        let outcome = futures::executor::block_on(run(&provider, &context, &Yes, &[], "go", true));
+        assert_eq!(outcome.answer.as_deref(), Some("done"));
+        assert!(
+            outcome
+                .ui
+                .iter()
+                .any(|action| matches!(action, UiAction::RefreshCatalog)),
+            "a DDL write should ask the session to re-read its catalog: {:?}",
+            outcome.ui
+        );
+    }
+
+    #[test]
+    fn a_failed_ddl_write_asks_for_no_catalog_refresh() {
+        let context = run_blocking(context(AgentAccess::Full));
+        let provider = Script::new(vec![
+            Ok(call("run_write", "{\"sql\":\"create table broken (\"}")),
+            Ok(say("done")),
+        ]);
+        let outcome = futures::executor::block_on(run(&provider, &context, &Yes, &[], "go", true));
+        assert!(
+            outcome.events.iter().any(|event| event.is_error),
+            "the broken DDL should have failed"
+        );
+        assert!(
+            outcome
+                .ui
+                .iter()
+                .all(|action| !matches!(action, UiAction::RefreshCatalog)),
+            "a failed DDL must not refresh the catalog: {:?}",
+            outcome.ui
+        );
+    }
+
+    #[test]
+    fn a_successful_dml_write_asks_for_no_catalog_refresh() {
+        let context = run_blocking(async {
+            let context = context(AgentAccess::Full).await;
+            context
+                .connection
+                .execute("create table widgets (id integer)", Vec::new())
+                .await
+                .unwrap();
+            context
+        });
+        let provider = Script::new(vec![
+            Ok(call(
+                "run_write",
+                "{\"sql\":\"insert into widgets values (1)\"}",
+            )),
+            Ok(say("done")),
+        ]);
+        let outcome = futures::executor::block_on(run(&provider, &context, &Yes, &[], "go", true));
+        assert_eq!(outcome.answer.as_deref(), Some("done"));
+        assert!(
+            outcome
+                .ui
+                .iter()
+                .all(|action| !matches!(action, UiAction::RefreshCatalog)),
+            "DML leaves the schema alone: {:?}",
+            outcome.ui
+        );
+    }
 }

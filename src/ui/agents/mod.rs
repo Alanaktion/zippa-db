@@ -54,6 +54,8 @@ pub enum AgentEvent {
     Send(String),
     OpenTable(DatabaseObject),
     ProposeQuery(String),
+    /// A turn's write changed the schema; the session re-reads its catalog.
+    RefreshCatalog,
 }
 
 /// Where a tool item is in its life: triggered and waiting its turn,
@@ -147,6 +149,9 @@ pub struct AgentPanel {
     /// What goes back to the model each turn, system prompt excluded.
     thread: Vec<Message>,
     items: Vec<Item>,
+    /// Where `items` ended when the running turn's user message was pushed,
+    /// so `finish` can tell whether the turn showed anything at all.
+    items_at_turn_start: usize,
     composer: Entity<TextareaState>,
     running: bool,
     /// Bumped by every send and Stop, so a turn that was stopped cannot
@@ -196,6 +201,7 @@ impl AgentPanel {
             catalog,
             thread: Vec::new(),
             items: Vec::new(),
+            items_at_turn_start: 0,
             composer,
             running: false,
             generation: 0,
@@ -251,6 +257,7 @@ impl AgentPanel {
             return;
         }
         self.items.push(Item::User(text.clone()));
+        self.items_at_turn_start = self.items.len();
 
         let settings = Settings::global(cx);
         let (base_url, model) = (
@@ -447,7 +454,7 @@ impl AgentPanel {
                 false,
             );
         }
-        if let Some(error) = outcome.error {
+        if let Some(error) = &outcome.error {
             if error.is_context_length() {
                 // A provider error that only says the context ran out is
                 // the failure compaction exists to avoid; say what to do
@@ -458,13 +465,34 @@ impl AgentPanel {
                     true,
                 );
             } else {
-                self.notice(&error_text(&error), true);
+                self.notice(&error_text(error), true);
             }
+        }
+        // A turn that answered with nothing and ran no tools would otherwise
+        // vanish: no assistant item, no tool item, nothing to read. Say so,
+        // distinctly from an error and from "Stopped." A notice pushed by
+        // the turn itself — compaction, the tool limit — does not count:
+        // it explains the turn, it is not the answer.
+        if outcome.error.is_none()
+            && outcome
+                .answer
+                .as_deref()
+                .is_none_or(|answer| answer.trim().is_empty())
+            && !self.items[self.items_at_turn_start.min(self.items.len())..]
+                .iter()
+                .any(|item| match item {
+                    Item::Assistant(text) => !text.trim().is_empty(),
+                    Item::Tool { .. } => true,
+                    _ => false,
+                })
+        {
+            self.notice("The assistant returned no answer.", false);
         }
         for action in outcome.ui {
             match action {
                 UiAction::OpenTable(object) => cx.emit(AgentEvent::OpenTable(object)),
                 UiAction::ProposeQuery(sql) => cx.emit(AgentEvent::ProposeQuery(sql)),
+                UiAction::RefreshCatalog => cx.emit(AgentEvent::RefreshCatalog),
             }
         }
         cx.notify();
@@ -673,6 +701,14 @@ impl AgentPanel {
             self.approval,
             cx,
         );
+    }
+
+    /// Whether the thread is drawn. Lowering access mid-turn does not hide
+    /// a turn already running: it keeps showing until it ends, and the new
+    /// level applies to the next turn only, which `send` and `start_turn`
+    /// already refuse while disabled.
+    fn shows_thread(&self) -> bool {
+        self.access.enabled() || self.running
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1002,7 +1038,7 @@ impl Render for AgentPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
-        if !self.access.enabled() {
+        if !self.shows_thread() {
             return v_flex()
                 .size_full()
                 .child(self.render_header(cx))

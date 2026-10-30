@@ -22,6 +22,8 @@ impl Session {
     pub(crate) fn reload_metadata(&mut self, cx: &mut Context<Self>) {
         let connection = self.connection.clone();
         let started_on = connection.clone();
+        self.metadata_generation += 1;
+        let generation = self.metadata_generation;
         let task = runtime::spawn(async move {
             (
                 connection.databases().await,
@@ -42,6 +44,13 @@ impl Session {
                 // have, the right answer), so it is dropped rather than
                 // shown.
                 if !Arc::ptr_eq(&this.connection, &started_on) {
+                    return;
+                }
+                // A newer reload has started since this one — a refresh the
+                // user asked for before an agent DDL, landing after the
+                // reload that DDL triggered. Its read predates the DDL, so
+                // applying it would put the stale schema back.
+                if generation != this.metadata_generation {
                     return;
                 }
                 this.metadata_error = None;

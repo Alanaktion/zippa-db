@@ -115,6 +115,12 @@ pub struct Session {
     active: Option<WeakEntity<SessionPanel>>,
     /// Numbers the untitled tabs, so closing one does not reuse its name.
     opened: usize,
+    /// The tab the last `propose_query` went to, with the proposal it holds,
+    /// so the next proposal reuses it while it is still pristine instead of
+    /// opening another "Agent" tab. `None` until the first proposal, and
+    /// left stale when that tab closes or the user makes it theirs — the
+    /// reuse check reads the tab itself, never just this record.
+    last_agent_proposal: Option<(Entity<SessionPanel>, String)>,
     /// Sidebar beside the editor and grid.
     columns: Entity<ResizableState>,
     /// The Agents panel's width, beside the dock.
@@ -156,6 +162,10 @@ pub struct Session {
     catalog: SharedCatalog,
     /// Whether that read is still in flight, so the dialog can say so.
     catalog_loading: bool,
+    /// Bumped by every metadata reload, so a read that started earlier —
+    /// a user refresh from before an agent DDL, say — cannot land after a
+    /// newer one and put its stale schema back.
+    metadata_generation: u64,
     /// Why the full catalog could not be read, when it could not; search then
     /// finds names but not columns, indexes or triggers.
     catalog_error: Option<String>,
@@ -234,6 +244,7 @@ impl Session {
             panels: Vec::new(),
             active: None,
             opened: 0,
+            last_agent_proposal: None,
             columns: cx.new(|_| ResizableState::default()),
             agents_columns: cx.new(|_| ResizableState::default()),
             agents,
@@ -250,6 +261,7 @@ impl Session {
             metadata_error: None,
             catalog,
             catalog_loading: true,
+            metadata_generation: 0,
             catalog_error: None,
             switching: false,
             restoring: None,
@@ -661,7 +673,16 @@ impl Session {
                 self.open_object(object, ObjectViewMode::Data, window, cx);
             }
             AgentEvent::ProposeQuery(sql) => {
-                self.open_tab(Some("Agent".into()), sql.clone(), false, window, cx);
+                if !self.reuse_agent_tab(sql, window, cx) {
+                    let panel = self.open_tab(Some("Agent".into()), sql.clone(), false, window, cx);
+                    self.last_agent_proposal = Some((panel, sql.to_string()));
+                }
+            }
+            AgentEvent::RefreshCatalog => {
+                // The session's own reload path, not a second one: the
+                // catalog, the object list, and the search index all come
+                // from this one read.
+                self.reload_metadata(cx);
             }
         }
     }

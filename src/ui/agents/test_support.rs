@@ -103,6 +103,23 @@ impl AgentPanel {
         cx.notify();
     }
 
+    /// Whether the render would draw the thread rather than the
+    /// turned-off message.
+    pub(crate) fn shows_thread_for_test(&self) -> bool {
+        self.shows_thread()
+    }
+
+    /// Run `finish` for a turn outcome, as the turn task's listener would
+    /// once its events drain.
+    pub(crate) fn finish_for_test(
+        &mut self,
+        outcome: crate::db::agent::turn::TurnOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = self.generation;
+        self.finish(generation, Ok(outcome), cx);
+    }
+
     pub(crate) fn pending_sql_for_test(&self) -> Option<String> {
         self.pending.as_ref().map(|p| p.request.sql.clone())
     }
