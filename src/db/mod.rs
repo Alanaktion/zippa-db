@@ -24,6 +24,8 @@
 //! * [`plan`] — reading an `EXPLAIN` into a tree.
 //! * [`query`] — what a run comes back as.
 //! * [`export`] — laying a result out as CSV, JSON, or SQL `INSERT`.
+//! * [`export_file`] — writing a table export to a file as it is read, so a
+//!   table larger than memory can be exported.
 //! * [`import`] — reading a SQL dump back in as statements.
 //! * [`script`] — running a whole query buffer, with or without a
 //!   transaction, pausing on a failure for the user to answer.
@@ -45,6 +47,7 @@ pub mod ddl;
 pub(crate) mod dedicated;
 pub mod erd;
 pub mod export;
+pub mod export_file;
 pub mod health;
 pub mod import;
 pub mod mysql;

@@ -77,11 +77,14 @@ impl TableView {
 
         // An error says so in words: the colour it is drawn in is the only
         // other thing telling it apart from the row count beside it.
-        let busy = self.error.is_none() && (self.loading || self.committing);
+        let busy = self.error.is_none() && (self.loading || self.committing || self.is_exporting());
         let message = match (&self.error, self.loading, self.committing) {
             (Some(error), _, _) => (format!("Error: {error}"), cx.theme().danger),
             (None, _, true) => ("Writing…".to_string(), cx.theme().muted_foreground),
             (None, true, _) => ("Loading…".to_string(), cx.theme().muted_foreground),
+            (None, false, false) if let Some(exporting) = &self.exporting => {
+                (exporting_label(exporting.rows), cx.theme().muted_foreground)
+            }
             // The question comes first: it is the one thing here waiting on
             // an answer.
             (None, false, _) => match (&self.pending, &changed, &self.notice) {
@@ -170,6 +173,18 @@ impl TableView {
                                 .child(format!("Read-only: {reason}")),
                         )
                     })
+                    .when(self.is_exporting(), |this| {
+                        this.child(
+                            Button::new("cancel-export")
+                                .ghost()
+                                .xsmall()
+                                .label("Cancel export")
+                                .tooltip("Stop the export and write nothing")
+                                .on_click(
+                                    cx.listener(|this, _, _window, cx| this.cancel_export(cx)),
+                                ),
+                        )
+                    })
                     .when_some(self.pending.clone(), |this, _| {
                         this.child(
                             Button::new("keep-edits")
@@ -248,5 +263,14 @@ impl TableView {
                         },
                     ),
             )
+    }
+}
+
+/// What the footer says while an export is being written.
+fn exporting_label(rows: usize) -> String {
+    match rows {
+        0 => "Exporting…".to_string(),
+        1 => "Exporting… 1 row written".to_string(),
+        rows => format!("Exporting… {rows} rows written"),
     }
 }

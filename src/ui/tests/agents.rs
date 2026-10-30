@@ -315,6 +315,67 @@ fn a_second_turns_tools_draw_their_own_items(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn new_output_follows_the_bottom_only_while_the_user_is_there(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    handle
+        .update(cx, |session, window, cx| {
+            session.toggle_agents_for_test(window, cx)
+        })
+        .unwrap();
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    let draw = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+    };
+
+    // Enough thread to overflow the panel, so there is a bottom to follow.
+    agents.update(cx, |agents, cx| {
+        agents.begin_turn_for_test("question", cx);
+        for line in 0..100 {
+            agents.say_for_test(&format!("line {line}"), cx);
+        }
+    });
+    draw(cx);
+    let max = agents.read_with(cx, |agents, _| agents.scroll_max_for_test());
+    assert!(max > px(0.), "the thread must overflow the panel");
+
+    // Scrolled to the top, new output must not yank the view back down.
+    agents.update(cx, |agents, cx| {
+        agents.set_scroll_offset_for_test(px(0.));
+        agents.apply_turn_event_for_test(TurnEvent::AssistantDelta("more".into()), cx);
+    });
+    draw(cx);
+    assert_eq!(
+        agents.read_with(cx, |agents, _| agents.scroll_offset_for_test()),
+        px(0.),
+        "reading earlier output must not be interrupted"
+    );
+
+    // Back at the bottom, new output follows it as it grows.
+    agents.update(cx, |agents, cx| {
+        let max = agents.scroll_max_for_test();
+        agents.set_scroll_offset_for_test(-max);
+        agents.apply_turn_event_for_test(TurnEvent::AssistantDelta("word ".repeat(100)), cx);
+    });
+    draw(cx);
+    let (offset, max) = agents.read_with(cx, |agents, _| {
+        (
+            agents.scroll_offset_for_test(),
+            agents.scroll_max_for_test(),
+        )
+    });
+    assert_eq!(
+        offset, -max,
+        "output at the bottom must stay at the bottom as it grows"
+    );
+}
+
+#[gpui_kit::test]
 fn a_stopped_tool_does_not_stay_running(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
     let agents = handle

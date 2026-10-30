@@ -22,12 +22,12 @@ use gpui_kit::base::TextView;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::scroll::{ScrollableElement, ScrollbarAxis};
 use gpui_kit::component::{ActiveTheme, Sizable, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString,
-    Window, actions, div,
+    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, ScrollHandle,
+    SharedString, Window, actions, div,
 };
 
 use crate::db::agent::compaction;
@@ -165,6 +165,9 @@ pub struct AgentPanel {
     stream_supported: bool,
     pending: Option<Pending>,
     focus: FocusHandle,
+    /// The messages area's scroll state, so new output can follow the
+    /// bottom while the user is already there.
+    messages_scroll: ScrollHandle,
 }
 
 impl EventEmitter<AgentEvent> for AgentPanel {}
@@ -210,6 +213,7 @@ impl AgentPanel {
             stream_supported: true,
             pending: None,
             focus: cx.focus_handle(),
+            messages_scroll: ScrollHandle::default(),
         }
     }
 
@@ -258,6 +262,8 @@ impl AgentPanel {
         }
         self.items.push(Item::User(text.clone()));
         self.items_at_turn_start = self.items.len();
+        // Sending is the user's own move to the bottom of the thread.
+        self.messages_scroll.scroll_to_bottom();
 
         let settings = Settings::global(cx);
         let (base_url, model) = (
@@ -395,6 +401,7 @@ impl AgentPanel {
                         return false;
                     }
                     this.pending = Some(Pending { request, answer });
+                    this.scroll_to_bottom_if_following();
                     cx.notify();
                     true
                 });
@@ -577,6 +584,7 @@ impl AgentPanel {
                 }),
             },
         }
+        self.scroll_to_bottom_if_following();
         cx.notify();
     }
 
@@ -613,6 +621,18 @@ impl AgentPanel {
             text: text.to_string(),
             error,
         });
+        self.scroll_to_bottom_if_following();
+    }
+
+    /// Follow new output to the bottom, but only while the user is already
+    /// there: scrolling up to read must not be yanked back by streaming.
+    /// The handle lands on the bottom at the next prepaint, so it stays
+    /// right even as the new content is still being laid out.
+    fn scroll_to_bottom_if_following(&mut self) {
+        let max = self.messages_scroll.max_offset().y;
+        if self.messages_scroll.offset().y <= -max + gpui_kit::px(1.) {
+            self.messages_scroll.scroll_to_bottom();
+        }
     }
 
     /// Stop the model request and any tool call in flight.
@@ -1070,25 +1090,37 @@ impl Render for AgentPanel {
             .child(
                 div()
                     .id("agents-messages")
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
                     .child(
-                        v_flex()
-                            .p_2()
-                            .gap_2()
-                            .when(empty, |this| {
-                                this.child(div().text_sm().text_color(muted).child(
-                                    "Ask about this database. Nothing is sent to the model \
-                                     until you send a message.",
-                                ))
-                            })
-                            .children(items)
-                            .children(self.render_pending(cx))
-                            .when(running && self.pending.is_none(), |this| {
-                                this.child(div().text_xs().text_color(muted).child("Working…"))
-                            }),
-                    ),
+                        div()
+                            .id("agents-messages-area")
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .track_scroll(&self.messages_scroll)
+                            .overflow_y_scroll()
+                            .child(
+                                v_flex()
+                                    .p_2()
+                                    .gap_2()
+                                    .when(empty, |this| {
+                                        this.child(div().text_sm().text_color(muted).child(
+                                            "Ask about this database. Nothing is sent to the model \
+                                             until you send a message.",
+                                        ))
+                                    })
+                                    .children(items)
+                                    .children(self.render_pending(cx))
+                                    .when(running && self.pending.is_none(), |this| {
+                                        this.child(
+                                            div().text_xs().text_color(muted).child("Working…"),
+                                        )
+                                    }),
+                            ),
+                    )
+                    .scrollbar(&self.messages_scroll, ScrollbarAxis::Vertical),
             )
             .child(
                 h_flex()

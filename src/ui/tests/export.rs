@@ -252,3 +252,68 @@ fn cancelling_a_query_export_writes_nothing(cx: &mut TestAppContext) {
         "a cancelled dialog should leave the status alone"
     );
 }
+
+#[gpui_kit::test]
+fn a_large_table_is_exported_whole_and_leaves_no_partial_file(cx: &mut TestAppContext) {
+    // More rows than one written chunk holds, so the file is written in
+    // several pieces as the rows are read.
+    let create = "CREATE TABLE numbers (id INTEGER PRIMARY KEY, label TEXT);\n\
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20000)\n\
+         INSERT INTO numbers SELECT i, 'row number ' || i FROM n;";
+    let (_database, _handle, view) = table_view_on(cx, "numbers", create);
+    cx.run_until_parked();
+
+    let scratch = ScratchDir::new();
+    let path = scratch.path.join("numbers.csv");
+    export_table(cx, &view, Format::Csv, &path);
+
+    let text = std::fs::read_to_string(&path).expect("the export was not written");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 20_001, "a header and every row");
+    assert_eq!(lines[1], "1,row number 1");
+    assert_eq!(lines[20_000], "20000,row number 20000");
+
+    let notice = view
+        .read_with(cx, |view, _| view.notice_for_test())
+        .expect("the export should say what it did");
+    assert!(notice.contains("Exported 20000 rows"), "{notice}");
+    let leftovers: Vec<_> = std::fs::read_dir(&scratch.path)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name != "numbers.csv")
+        .collect();
+    assert!(leftovers.is_empty(), "nothing else is left: {leftovers:?}");
+}
+
+#[gpui_kit::test]
+fn an_empty_table_exports_as_a_valid_document(cx: &mut TestAppContext) {
+    let create = "CREATE TABLE empty (id INTEGER PRIMARY KEY, name TEXT);";
+    let (_database, _handle, view) = table_view_on(cx, "empty", create);
+    cx.run_until_parked();
+
+    let scratch = ScratchDir::new();
+    let json = scratch.path.join("empty.json");
+    export_table(cx, &view, Format::Json, &json);
+    assert_eq!(std::fs::read_to_string(&json).unwrap(), "[]");
+
+    // The columns come from the server's description of the statement.
+    let csv = scratch.path.join("empty.csv");
+    export_table(cx, &view, Format::Csv, &csv);
+    assert_eq!(std::fs::read_to_string(&csv).unwrap(), "id,name\n");
+}
+
+#[gpui_kit::test]
+fn an_export_that_cannot_be_written_says_so(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    let scratch = ScratchDir::new();
+    let path = scratch.path.join("missing").join("items.csv");
+    export_table(cx, &view, Format::Csv, &path);
+
+    assert!(!path.exists());
+    let error = view
+        .read_with(cx, |view, _| view.error_for_test())
+        .expect("the failure should be shown");
+    assert!(error.contains("could not save"), "{error}");
+}

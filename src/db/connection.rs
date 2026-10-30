@@ -881,6 +881,36 @@ impl Connection {
         result.map_err(health::plain)
     }
 
+    /// [`Self::run_query_with`] for a read too large to hold: each row goes
+    /// to `sink` as it arrives and is let go, so memory stays bounded however
+    /// many rows the statement returns. Returns how many rows were read.
+    ///
+    /// The read runs on a dedicated connection that closes afterwards rather
+    /// than going back to the pool: a read stopped partway — the future
+    /// dropped, or `sink` failing — leaves the rest of its rows on the wire,
+    /// and a pooled connection would have to drain them before its next use.
+    /// The statement is logged as the app's own read, like
+    /// [`Self::run_query_with`].
+    pub async fn stream_query_with(
+        &self,
+        sql: &str,
+        params: Vec<Cell>,
+        sink: &mut dyn RowSink,
+    ) -> Result<usize> {
+        self.refuse_write(sql)?;
+        let started = Instant::now();
+        let result = match self.dedicated().await {
+            Ok(mut connection) => connection.stream(sql, params, sink).await,
+            Err(error) => Err(error),
+        };
+        let outcome = match &result {
+            Ok(rows) => QueryOutcome::Rows(*rows),
+            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+        };
+        self.log(sql, QuerySource::Internal, started.elapsed(), outcome);
+        result
+    }
+
     /// The raw bytes behind one binary cell, read fresh for a value preview.
     ///
     /// `fetch`/`cell` turn every `BYTEA`/`BLOB` into a `<N bytes>` summary and
@@ -1507,6 +1537,70 @@ where
         // `messages_sql`, which only a held connection can carry.
         messages: Vec::new(),
     })
+}
+
+/// Where [`Connection::stream_query_with`] sends a read, a row at a time.
+pub trait RowSink: Send {
+    /// The result's column names and driver type names, once, before any
+    /// row.
+    fn columns(&mut self, columns: &[String], types: &[String]) -> Result<()>;
+
+    /// One row, in column order. An error stops the read.
+    fn row(&mut self, row: Vec<Cell>) -> Result<()>;
+}
+
+/// [`fetch_on`], handing each row to `sink` as it arrives instead of
+/// collecting them. The columns are taken from the first row, or — when the
+/// statement returns none — from the server's description of it.
+pub(crate) async fn stream_on<DB, F>(
+    connection: &mut DB::Connection,
+    sql: &str,
+    params: Vec<Cell>,
+    cell: F,
+    sink: &mut dyn RowSink,
+) -> Result<usize>
+where
+    DB: Database,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
+    for<'q> Option<String>: Encode<'q, DB>,
+    String: Type<DB>,
+    F: Fn(&DB::Row, usize) -> Cell,
+{
+    // The statement is one the app built from the view's own filters, with
+    // every value the user typed bound as a parameter.
+    let statement = AssertSqlSafe(sql.to_string()).into_sql_str();
+    let mut query = sqlx::query(statement.clone());
+    for param in params {
+        query = query.bind(param);
+    }
+
+    let mut rows = query.fetch(&mut *connection);
+    let mut width = None;
+    let mut count = 0;
+    while let Some(row) = rows.next().await {
+        let row = row?;
+        let width = match width {
+            Some(width) => width,
+            None => {
+                let (columns, types) = describe_columns(row.columns());
+                sink.columns(&columns, &types)?;
+                *width.insert(columns.len())
+            }
+        };
+        sink.row((0..width).map(|index| cell(&row, index)).collect())?;
+        count += 1;
+    }
+    drop(rows);
+
+    if width.is_none() {
+        let (columns, types) = Executor::describe(&mut *connection, statement)
+            .await
+            .map(|described| describe_columns(described.columns()))
+            .unwrap_or_default();
+        sink.columns(&columns, &types)?;
+    }
+    Ok(count)
 }
 
 /// Run `sql` and read the first row's first column as raw bytes, bypassing
