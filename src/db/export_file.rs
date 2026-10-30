@@ -192,6 +192,8 @@ impl RowSink for FileSink {
 /// alone: the other names keep the old contents.
 struct Partial {
     partial: PathBuf,
+    /// The target's name, cut short, that partial names are made from.
+    name: String,
     /// Where the finished file goes: the chosen path, or what it links to.
     target: PathBuf,
     /// The chosen path, for messages.
@@ -222,14 +224,9 @@ impl Partial {
                 name[..end].to_string()
             })
             .unwrap_or_else(|| "export".to_string());
-        // Its own name per export, so two exports to one file never write
-        // into the same partial file.
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let unique = NEXT.fetch_add(1, Ordering::Relaxed);
-        let partial =
-            target.with_file_name(format!(".{name}.{}-{unique}.partial", std::process::id()));
         Ok(Self {
-            partial,
+            partial: partial_name(target, &name),
+            name,
             target: target.to_path_buf(),
             shown: shown.to_path_buf(),
             created: false,
@@ -251,9 +248,21 @@ impl Partial {
             use std::os::unix::fs::OpenOptionsExt as _;
             options.mode(0o600);
         }
-        let file = options
-            .open(&self.partial)
-            .with_context(|| format!("could not save {}", self.shown.display()))?;
+        // A name already taken (left by an earlier run that had this
+        // process id) is passed over for the next, never opened or removed.
+        let mut tries = 0;
+        let file = loop {
+            match options.open(&self.partial) {
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && tries < 16 => {
+                    tries += 1;
+                    self.partial = partial_name(&self.target, &self.name);
+                }
+                opened => {
+                    break opened
+                        .with_context(|| format!("could not save {}", self.shown.display()))?;
+                }
+            }
+        };
         self.created = true;
         Ok(file)
     }
@@ -269,6 +278,14 @@ impl Partial {
         self.kept = true;
         Ok(())
     }
+}
+
+/// A fresh hidden name beside `target`: its own per export, so two exports
+/// to one file never write into the same partial file.
+fn partial_name(target: &Path, name: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let unique = NEXT.fetch_add(1, Ordering::Relaxed);
+    target.with_file_name(format!(".{name}.{}-{unique}.partial", std::process::id()))
 }
 
 impl Drop for Partial {
@@ -384,14 +401,18 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_file_it_did_not_create_is_left_alone() {
+    fn a_partial_name_already_taken_is_passed_over_and_left_alone() {
         let target = scratch("taken.csv");
         let mut partial = Partial::create(&target).unwrap();
         let hidden = partial.partial.clone();
         std::fs::write(&hidden, "someone else's").unwrap();
 
-        assert!(partial.file().is_err());
-        drop(partial);
+        partial.file().unwrap().write_all(b"mine").unwrap();
+        assert_ne!(partial.partial, hidden);
+        partial.keep().unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "mine");
+        std::fs::remove_file(&target).unwrap();
 
         assert_eq!(std::fs::read_to_string(&hidden).unwrap(), "someone else's");
         std::fs::remove_file(&hidden).unwrap();
