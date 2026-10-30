@@ -73,6 +73,33 @@ impl Session {
         panel
     }
 
+    /// Put `sql` into the tab the last proposal went to, when that tab still
+    /// holds exactly the previous proposal, untouched and unrun — so a chatty
+    /// model does not pile up one "Agent" tab per proposal. A tab the user
+    /// has edited, run, or closed is left alone, and the caller opens a new
+    /// tab as before. Returns whether a tab was reused.
+    pub(crate) fn reuse_agent_tab(
+        &mut self,
+        sql: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((panel, previous)) = self.last_agent_proposal.clone() else {
+            return false;
+        };
+        if !self.panels.iter().any(|p| p == &panel) {
+            return false;
+        }
+        if !panel.read(cx).is_pristine_proposal(&previous, cx) {
+            return false;
+        }
+        panel.update(cx, |panel, cx| panel.set_query_sql(sql, window, cx));
+        self.last_agent_proposal = Some((panel.clone(), sql.to_string()));
+        self.activate_panel(&panel, window, cx);
+        cx.notify();
+        true
+    }
+
     /// Open the saved query `name` from the sidebar's Saved tab: the tab
     /// already holding it comes forward, or a new one opens tied to it, so
     /// saving the tab updates the query in place.

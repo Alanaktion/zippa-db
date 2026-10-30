@@ -201,6 +201,12 @@ impl QueryEditor {
         self.state.read(cx).value().to_string()
     }
 
+    /// Replace the buffer contents, as reusing a pristine proposal does.
+    pub(crate) fn set_buffer(&self, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, cx| state.set_value(sql.to_string(), window, cx));
+    }
+
     /// Whether this engine can report actual times. SQLite's planner cannot, so
     /// its analyze button is disabled rather than showing the plain plan under
     /// a button that promises timings.

@@ -14,8 +14,7 @@ impl QueryEditor {
 
     /// Replace the buffer contents.
     pub(crate) fn set_sql(&self, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.state
-            .update(cx, |state, cx| state.set_value(sql.to_string(), window, cx));
+        self.set_buffer(sql, window, cx);
     }
 
     /// Put the caret at a byte offset, the way clicking in the buffer does.

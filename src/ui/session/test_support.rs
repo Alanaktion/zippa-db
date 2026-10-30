@@ -44,6 +44,23 @@ impl Session {
         self.agents.clone()
     }
 
+    /// Deliver a proposal from the Agents panel, as its event listener
+    /// would.
+    pub(crate) fn propose_query_for_test(
+        &mut self,
+        sql: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let agents = self.agents.clone();
+        self.on_agent_event(
+            &agents,
+            &crate::ui::agents::AgentEvent::ProposeQuery(sql.to_string()),
+            window,
+            cx,
+        );
+    }
+
     /// Feed the grid a result without going through a live query.
     #[cfg(test)]
     pub(crate) fn show_result_for_test(

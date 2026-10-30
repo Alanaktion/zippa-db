@@ -1133,6 +1133,48 @@ impl SessionPanel {
         }
     }
 
+    /// Whether this tab still holds exactly `sql` as a proposal nobody has
+    /// edited or run: the buffer matches, and no run has left results, an
+    /// error, a flight, a paused script, or a pinned connection behind.
+    /// A run that left nothing else behind still leaves its pin, so a
+    /// cancelled run counts as run.
+    pub(crate) fn is_pristine_proposal(&self, sql: &str, cx: &App) -> bool {
+        match &self.content {
+            TabContent::Query {
+                editor,
+                results,
+                error,
+                running,
+                script,
+                pinned,
+                status,
+                ..
+            } => {
+                editor.read(cx).sql(cx) == sql
+                    && results.is_empty()
+                    && error.is_none()
+                    && running.is_none()
+                    && script.is_none()
+                    && pinned.is_none()
+                    && matches!(status, Status::Idle)
+            }
+            _ => false,
+        }
+    }
+
+    /// Replace a query tab's buffer and its baseline together, as reusing a
+    /// pristine proposal does: the tab still reads as unedited afterwards,
+    /// so closing it never asks about the proposal it holds.
+    pub(crate) fn set_query_sql(&mut self, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let TabContent::Query {
+            editor, baseline, ..
+        } = &mut self.content
+        {
+            editor.update(cx, |editor, cx| editor.set_buffer(sql, window, cx));
+            *baseline = sql.to_string();
+        }
+    }
+
     /// Stop the run in flight, if there is one. Answers whether there
     /// was something to cancel.
     pub(crate) fn cancel_running(&mut self, cx: &mut Context<Self>) -> bool {
