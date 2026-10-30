@@ -145,6 +145,37 @@ fn the_panel_says_when_it_is_off(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_mode_change_mid_turn_reaches_the_live_modes(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    agents.update(cx, |agents, cx| {
+        agents.set_access_for_test(AgentAccess::Crud, cx)
+    });
+    handle
+        .update(cx, |_, window, cx| {
+            agents.update(cx, |agents, cx| {
+                agents.choose_approval_for_test(WriteApproval::Auto, window, cx)
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        agents.read_with(cx, |agents, _| agents.live_modes_for_test()),
+        (AgentAccess::Crud, WriteApproval::Auto),
+        "a running turn's gates must read the new modes, not the snapshot"
+    );
+    agents.update(cx, |agents, cx| {
+        agents.set_access_for_test(AgentAccess::ReadOnlySql, cx)
+    });
+    assert_eq!(
+        agents.read_with(cx, |agents, _| agents.live_modes_for_test()),
+        (AgentAccess::ReadOnlySql, WriteApproval::Auto)
+    );
+}
+
+#[gpui_kit::test]
 fn auto_approval_is_taken_at_once_on_an_ordinary_connection(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
     let agents = handle

@@ -5,7 +5,7 @@
 //! access level is checked here, in code, on every call — a model that names a
 //! tool it was never offered gets a refusal, not the tool.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use serde_json::{Value, json};
 
@@ -222,12 +222,61 @@ impl Approver for NeverApprove {
     }
 }
 
-/// What a tool needs to run.
+/// The access level and write-approval mode as the panel currently shows
+/// them, shared with a running turn: a change the user makes mid-turn
+/// applies to the next tool call, while the tools offered stay those the
+/// turn started with.
+#[derive(Clone)]
+pub struct LiveModes {
+    access: Arc<RwLock<AgentAccess>>,
+    approval: Arc<RwLock<WriteApproval>>,
+}
+
+impl LiveModes {
+    pub fn new(access: AgentAccess, approval: WriteApproval) -> Self {
+        Self {
+            access: Arc::new(RwLock::new(access)),
+            approval: Arc::new(RwLock::new(approval)),
+        }
+    }
+
+    pub fn access(&self) -> AgentAccess {
+        *self
+            .access
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    pub fn approval(&self) -> WriteApproval {
+        *self
+            .approval
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    pub fn set_access(&self, access: AgentAccess) {
+        *self
+            .access
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner()) = access;
+    }
+
+    pub fn set_approval(&self, approval: WriteApproval) {
+        *self
+            .approval
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner()) = approval;
+    }
+}
+
+/// What a tool needs to run. `access` is the turn-start snapshot the tool
+/// list was offered under; `live` is what the gates read, so a mode
+/// change mid-turn applies to the next tool call.
 pub struct ToolContext {
     pub connection: Arc<Connection>,
     pub catalog: Arc<Catalog>,
     pub access: AgentAccess,
-    pub approval: WriteApproval,
+    pub live: LiveModes,
 }
 
 /// Run the tool `name` with the model's `arguments` (a JSON object as text).
@@ -243,10 +292,13 @@ pub async fn call(
     let Some(tool) = all().into_iter().find(|tool| tool.name == name) else {
         return ToolOutput::error(format!("there is no tool named {name}"));
     };
-    if !context.access.enabled() || context.access < tool.minimum {
+    // The live level, not the turn-start snapshot: lowering access
+    // mid-turn refuses the next call, even one the turn was offered.
+    let access = context.live.access();
+    if !access.enabled() || access < tool.minimum {
         return ToolOutput::error(format!(
             "{name} is not available at the {} access level",
-            context.access.label()
+            access.label()
         ));
     }
     let arguments: Value = match serde_json::from_str(if arguments.trim().is_empty() {
@@ -480,25 +532,25 @@ async fn run_write(context: &ToolContext, approver: &dyn Approver, sql: &str) ->
         Ok(kind) => kind,
         Err(message) => return ToolOutput::error(message),
     };
-    if let Err(message) = gate::allowed(&kind, context.access) {
+    // The live modes, not the turn-start snapshot: a change the user made
+    // mid-turn applies to this call, the next one the turn makes.
+    let access = context.live.access();
+    let approval = context.live.approval();
+    if let Err(message) = gate::allowed(&kind, access) {
         return ToolOutput::error(message);
     }
     // Read before the Ask arm moves `kind` into its request: only DDL
     // rewrites the schema the catalog snapshot was read from.
     let is_ddl = kind == gate::Kind::Other;
-    match gate::write_decision(
-        context.access,
-        context.connection.config.safety,
-        context.approval,
-    ) {
+    match gate::write_decision(access, context.connection.config.safety, approval) {
         gate::WriteDecision::Refuse(why) => return ToolOutput::error(why),
         gate::WriteDecision::Run => {}
         gate::WriteDecision::Ask => {
             let request = WriteRequest {
                 sql: sql.clone(),
                 kind,
-                access: context.access,
-                approval: context.approval,
+                access,
+                approval,
             };
             if !approver.approve(request).await {
                 return ToolOutput::error(
@@ -538,7 +590,7 @@ async fn run_select(context: &ToolContext, sql: &str, explain: bool) -> ToolOutp
     // only a plain read gets through either tool.
     match gate::classify(&sql, engine) {
         Ok(kind) => {
-            if let Err(message) = gate::allowed(&kind, context.access) {
+            if let Err(message) = gate::allowed(&kind, context.live.access()) {
                 return ToolOutput::error(message);
             }
             if kind != gate::Kind::Read {
@@ -746,7 +798,7 @@ mod tests {
             connection: Arc::new(connection),
             catalog: Arc::new(catalog),
             access,
-            approval,
+            live: LiveModes::new(access, approval),
         };
         (database, context)
     }
@@ -915,6 +967,54 @@ mod tests {
         assert!(out.is_error);
         assert_eq!(yes.1.load(Ordering::SeqCst), 0);
         assert_eq!(rows(&never), "2");
+    }
+
+    #[test]
+    fn a_mid_turn_mode_change_applies_to_the_next_write() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (_database, context) = live(AgentAccess::Crud);
+        let no = Answer(false, AtomicUsize::new(0));
+
+        // Ask at turn start, Auto by the time the write is called: the
+        // write runs without a question.
+        context.live.set_approval(WriteApproval::Auto);
+        let out = futures::executor::block_on(call(&context, &no, "run_write", DELETE));
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(no.1.load(Ordering::SeqCst), 0);
+        assert_eq!(rows(&context), "1");
+
+        // And back to Ask: the next write is asked about afresh.
+        context.live.set_approval(WriteApproval::Ask);
+        let out = futures::executor::block_on(call(
+            &context,
+            &no,
+            "run_write",
+            r#"{"sql":"delete from items"}"#,
+        ));
+        assert!(out.is_error && out.text.contains("rejected"));
+        assert_eq!(no.1.load(Ordering::SeqCst), 1);
+        assert_eq!(rows(&context), "1");
+    }
+
+    #[test]
+    fn a_mid_turn_access_drop_refuses_the_next_write_but_not_the_offer() {
+        use std::sync::atomic::AtomicUsize;
+        let (_database, context) = live(AgentAccess::Crud);
+        let yes = Answer(true, AtomicUsize::new(0));
+
+        // The turn was offered run_write, and that offer does not change
+        // mid-turn — but the gate reads the live level, so the call is
+        // refused once access drops below what the tool needs.
+        context.live.set_access(AgentAccess::ReadOnlySql);
+        assert!(
+            definitions(context.access)
+                .iter()
+                .any(|tool| tool.name == "run_write"),
+            "the turn-start offer is unchanged"
+        );
+        let out = futures::executor::block_on(call(&context, &yes, "run_write", DELETE));
+        assert!(out.is_error && out.text.contains("not available"));
+        assert_eq!(rows(&context), "2");
     }
 
     #[test]
