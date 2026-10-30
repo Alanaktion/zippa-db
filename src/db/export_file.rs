@@ -195,11 +195,18 @@ struct Partial {
 
 impl Partial {
     fn create(target: &Path) -> Result<Self> {
-        // Cut short, so the prefix and suffix cannot push a name near the
-        // file system's limit past it.
-        let name: String = target
+        // Cut to 64 bytes on a character boundary, so the prefix and suffix
+        // cannot push a name near the file system's limit past it.
+        let name = target
             .file_name()
-            .map(|name| name.to_string_lossy().chars().take(64).collect())
+            .map(|name| {
+                let name = name.to_string_lossy();
+                let mut end = name.len().min(64);
+                while !name.is_char_boundary(end) {
+                    end -= 1;
+                }
+                name[..end].to_string()
+            })
             .unwrap_or_else(|| "export".to_string());
         // Its own name per export, so two exports to one file never write
         // into the same partial file.
@@ -371,10 +378,14 @@ mod tests {
 
     #[test]
     fn a_long_file_name_keeps_the_partial_name_short() {
-        let target = scratch(&format!("{}.csv", "x".repeat(250)));
-        let partial = Partial::create(&target).unwrap();
-        let name = partial.partial.file_name().unwrap().to_string_lossy().len();
-        assert!(name < 100, "partial name is {name} bytes");
+        for long in [
+            format!("{}.csv", "x".repeat(250)),
+            format!("{}.csv", "🦀".repeat(60)),
+        ] {
+            let partial = Partial::create(&scratch(&long)).unwrap();
+            let name = partial.partial.file_name().unwrap().to_string_lossy().len();
+            assert!(name < 100, "partial name is {name} bytes");
+        }
     }
 
     #[cfg(unix)]
