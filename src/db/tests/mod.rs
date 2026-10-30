@@ -306,6 +306,7 @@ pub(crate) async fn live_postgres(var: &str, database: &str) -> Connection {
 
 mod agent;
 mod binary;
+mod classifier;
 mod config_store;
 mod connection;
 mod explain;

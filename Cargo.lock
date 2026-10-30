@@ -10778,6 +10778,7 @@ dependencies = [
  "keyring",
  "libsqlite3-sys",
  "lsp-types",
+ "proptest",
  "regex",
  "reqwest",
  "russh",

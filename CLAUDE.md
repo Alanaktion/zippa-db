@@ -100,7 +100,7 @@ Connection options that ride in the metadata: `ssl` (libpq's mode scale; the mod
 
 **Settings.** `settings::Settings` is one serde struct behind a GPUI global; `settings::update` is the only way to change it (it writes the file, re-applies the theme, refreshes windows). `apply` also re-runs `apply_scrollbars` because `Theme::change` rebuilds what they read. Every setting needs a way in that is not a keystroke (the Settings… menu item).
 
-**Tests.** `src/ui/tests/` and `src/db/tests/` are one file per area, with every shared fixture in `mod.rs` (even one only a single file uses, so the next area can find it) and each file opening with `use super::*;`. Put a new test in the file that matches what it is about. Pure unit tests sit beside their module. Live-server tests are `#[ignore]`d, live in `db/tests/live.rs`, and name their container in a doc comment.
+**Tests.** `src/ui/tests/` and `src/db/tests/` are one file per area, with every shared fixture in `mod.rs` (even one only a single file uses, so the next area can find it) and each file opening with `use super::*;`. Put a new test in the file that matches what it is about. Pure unit tests sit beside their module. `db/tests/classifier.rs` holds the write corpus (a classifier bug adds a row there first) and the `proptest` properties over the scanners; `proptest-regressions/` is committed. Live-server tests are `#[ignore]`d, live in `db/tests/live.rs`, and name their container in a doc comment.
 
 ## Accessibility
 
