@@ -18,7 +18,7 @@ use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::menu::{AppMenuBar, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar, TabVariant};
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Sizable, Size, TitleBar, WindowExt, h_flex, v_flex,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, Size, TitleBar, WindowExt, h_flex, v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -32,7 +32,7 @@ use crate::menu::Quit;
 use crate::db::{Connection, TagColor, runtime, store};
 use crate::settings;
 use crate::ui::session::{
-    Disconnect, QuickSwitcher, Reconnect, SearchSchema, Session, SessionEvent,
+    Disconnect, QuickSwitcher, Reconnect, SearchSchema, Session, SessionEvent, UploadFile,
 };
 use crate::ui::shortcuts_dialog::{self, ShowShortcuts};
 use crate::ui::value_dialog::{self, Dismissed, ValueView};
@@ -797,18 +797,23 @@ impl Workspace {
 
     /// Quit, asking first when a tab has a transaction open: the server
     /// rolls it back when the process goes, which every other way of leaving
-    /// a connection asks about. Unsaved query text needs no question, since
-    /// it is kept for the next launch.
+    /// a connection asks about. So does a remote SQLite file whose copy holds
+    /// changes the SSH host does not have. Unsaved query text needs no
+    /// question, since it is kept for the next launch.
     fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
-        let open: usize = self
-            .tabs
-            .iter()
-            .filter_map(|tab| match tab {
-                TabContent::Session(session) => Some(session.read(cx).open_transactions(cx)),
+        let sessions = || {
+            self.tabs.iter().filter_map(|tab| match tab {
+                TabContent::Session(session) => Some(session.read(cx)),
                 TabContent::Connect(_) => None,
             })
+        };
+        let open: usize = sessions()
+            .map(|session| session.open_transactions(cx))
             .sum();
-        if open == 0 {
+        let unuploaded = sessions()
+            .filter(|session| session.has_unuploaded_changes())
+            .count();
+        if open == 0 && unuploaded == 0 {
             cx.quit();
             return;
         }
@@ -816,14 +821,27 @@ impl Workspace {
             return;
         }
 
-        let description = match open {
-            1 => "An open transaction will be rolled back.".to_string(),
-            count => format!("{count} open transactions will be rolled back."),
+        let mut description = match open {
+            0 => String::new(),
+            1 => "An open transaction will be rolled back. ".to_string(),
+            count => format!("{count} open transactions will be rolled back. "),
+        };
+        match unuploaded {
+            0 => {}
+            1 => description.push_str("A file's changes have not been uploaded to its SSH host. "),
+            count => description.push_str(&format!(
+                "{count} files' changes have not been uploaded to their SSH hosts. "
+            )),
+        }
+        let title = if open > 0 {
+            "Open Transaction"
+        } else {
+            "Changes Not Uploaded"
         };
         window.open_alert_dialog(cx, move |alert, _, _| {
             alert
-                .title("Open Transaction")
-                .description(format!("{description} Quit anyway?"))
+                .title(title)
+                .description(format!("{description}Quit anyway?"))
                 .button_props(
                     DialogButtonProps::default()
                         .ok_text("Quit Anyway")
@@ -1061,16 +1079,21 @@ impl Workspace {
         session: &Entity<Session>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let (name, color, can_create_database) = {
+        let (name, color, can_create_database, remote, unuploaded, uploading) = {
             let session = session.read(cx);
-            let config = &session.connection().config;
+            let connection = session.connection();
+            let config = &connection.config;
             (
                 session.display_name(),
                 config.color,
                 // A SQLite file is one database; there is no second to make.
                 !config.engine.is_file_based(),
+                connection.is_remote_file() && !config.safety.is_read_only(),
+                session.has_unuploaded_changes(),
+                session.is_uploading(),
             )
         };
+        let upload_button = session.downgrade();
         let workspace = cx.entity().downgrade();
         let session = session.downgrade();
 
@@ -1088,6 +1111,7 @@ impl Workspace {
                 let disconnect = session.clone();
                 let close = workspace.clone();
                 let create_database = session.clone();
+                let upload = session.clone();
                 let menu = menu.item(
                     PopupMenuItem::new("New Connection")
                         .action(Box::new(NewConnection))
@@ -1106,6 +1130,21 @@ impl Workspace {
                                 })
                                 .ok();
                         }),
+                    )
+                } else {
+                    menu
+                };
+                let menu = if remote {
+                    menu.item(
+                        PopupMenuItem::new("Upload to SSH Host")
+                            .action(Box::new(UploadFile))
+                            .on_click(move |_, window, cx| {
+                                upload
+                                    .update(cx, |session, cx| {
+                                        session.upload_file(false, window, cx)
+                                    })
+                                    .ok();
+                            }),
                     )
                 } else {
                     menu
@@ -1140,11 +1179,37 @@ impl Workspace {
                     )
             });
 
+        // Said in words as well as offered: a copy that differs from the
+        // host's file is the thing most easily forgotten on the way out.
+        let upload = (remote && (unuploaded || uploading)).then(|| {
+            Button::new("upload-file")
+                .xsmall()
+                .outline()
+                .label(if uploading {
+                    "Uploading…"
+                } else {
+                    "Not uploaded · Upload"
+                })
+                .loading(uploading)
+                .disabled(uploading)
+                .tooltip_with_action(
+                    "Upload the changed file to its SSH host",
+                    &UploadFile,
+                    Some("Session"),
+                )
+                .on_click(move |_, window, cx| {
+                    upload_button
+                        .update(cx, |session, cx| session.upload_file(false, window, cx))
+                        .ok();
+                })
+        });
+
         h_flex()
             .min_w_0()
             .gap_1()
             .when_some(dot, |this, dot| this.child(dot))
             .child(button)
+            .when_some(upload, |this, upload| this.child(upload))
     }
 }
 

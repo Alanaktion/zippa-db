@@ -951,18 +951,26 @@ impl Session {
                 "{count} open transactions, which will be rolled back"
             )),
         };
-        match (unsaved, open) {
-            (false, None) => None,
-            (true, None) => Some((
-                "Unsaved Changes",
-                format!("\"{name}\" has tabs with unsaved changes."),
-            )),
-            (false, Some(open)) => Some(("Open Transaction", format!("\"{name}\" has {open}."))),
-            (true, Some(open)) => Some((
-                "Unsaved Changes",
-                format!("\"{name}\" has tabs with unsaved changes, and {open}."),
-            )),
+        let unuploaded = self.has_unuploaded_changes();
+        let title = if unsaved || unuploaded {
+            "Unsaved Changes"
+        } else {
+            "Open Transaction"
+        };
+        let mut parts = Vec::new();
+        if unsaved {
+            parts.push("tabs with unsaved changes".to_string());
         }
+        if unuploaded {
+            parts.push("changes not uploaded to the SSH host".to_string());
+        }
+        parts.extend(open);
+        let list = match parts.as_slice() {
+            [] => return None,
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+        };
+        Some((title, format!("\"{name}\" has {list}.")))
     }
 
     pub(crate) fn active_tab_index(&self) -> usize {

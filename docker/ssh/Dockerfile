@@ -1,4 +1,4 @@
-# A jump host for the SSH tunnel live tests
+# A jump host for the SSH tunnel and remote SQLite file live tests
 # (`live_postgres_connects_through_an_ssh_tunnel` and friends): OpenSSH with
 # password sign-in and TCP forwarding on, so a tunnel through it reaches the
 # compose network's `postgres` and `mysql` services by name.
@@ -7,7 +7,7 @@ FROM alpine:3.20
 # Alpine's own sshd_config turns forwarding off, and sshd takes the first
 # value it reads for a keyword, so the shipped lines are removed rather than
 # overridden by an appended one.
-RUN apk add --no-cache openssh \
+RUN apk add --no-cache openssh openssh-sftp-server \
     && ssh-keygen -A \
     && adduser -D -s /bin/sh tunnel \
     && echo 'tunnel:secret' | chpasswd \

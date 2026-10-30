@@ -33,6 +33,8 @@
 //!   and whether it has a transaction open.
 //! * [`runtime`] — the Tokio runtime every database call is submitted to.
 //! * [`store`] — connection metadata on disk, passwords in the OS keychain.
+//! * [`tunnel`] — the SSH session a server connection is forwarded through.
+//! * [`remote`] — a SQLite file on an SSH host, edited as a local copy.
 
 pub mod agent;
 pub mod backup;
@@ -54,6 +56,7 @@ pub mod plan;
 pub mod postgres;
 pub mod query;
 pub mod query_log;
+pub(crate) mod remote;
 pub mod runtime;
 pub mod schema;
 pub mod script;
@@ -83,6 +86,7 @@ pub use import::{ImportProgress, ImportRequest, ImportSummary, OnError};
 pub use pinned::{PinnedConnection, TxnState};
 pub use plan::{Explained, Plan, PlanNode};
 pub use query_log::{LoggedQuery, QueryOutcome, QuerySource};
+pub use remote::Upload;
 pub use schema::{
     ColumnDef, ForeignKeyDef, IndexDef, RebuildSource, ReferentialAction, TableSchema,
 };

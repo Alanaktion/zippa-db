@@ -136,3 +136,44 @@ async fn read_only_sqlite_refuses_the_maintenance_that_writes() {
 
     connection.close().await;
 }
+
+/// The snapshot a remote file's upload sends is the whole committed database,
+/// in the journal mode the copy was in: a WAL file stays WAL on the host.
+#[tokio::test]
+async fn an_upload_snapshot_keeps_rows_and_wal_mode() {
+    let database = TempDatabase::new().await;
+    let pool = sqlx::SqlitePool::connect_with(
+        SqliteConnectOptions::new()
+            .filename(&database.path)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
+    )
+    .await
+    .expect("open in WAL mode");
+    pool.execute("INSERT INTO items (id, name) VALUES (9, 'in the wal')")
+        .await
+        .expect("write");
+
+    let to = std::env::temp_dir().join(format!("zippa-db-snapshot-{}.sqlite", Uuid::new_v4()));
+    crate::db::sqlite::snapshot(&pool, &to)
+        .await
+        .expect("snapshot");
+    pool.close().await;
+
+    let copy = sqlx::SqlitePool::connect_with(SqliteConnectOptions::new().filename(&to))
+        .await
+        .expect("open the snapshot");
+    let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(&copy)
+        .await
+        .unwrap();
+    assert_eq!(mode, "wal");
+    let name: String = sqlx::query_scalar("SELECT name FROM items WHERE id = 9")
+        .fetch_one(&copy)
+        .await
+        .unwrap();
+    assert_eq!(name, "in the wal");
+    copy.close().await;
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", to.display()));
+    }
+}
