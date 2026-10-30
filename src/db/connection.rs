@@ -382,6 +382,12 @@ impl Connection {
             .is_some_and(|remote| remote.has_changes())
     }
 
+    /// Where the local copy of a remote file is kept: left there, not
+    /// deleted, when the connection closes with changes not uploaded.
+    pub fn remote_copy_dir(&self) -> Option<&std::path::Path> {
+        self.remote.as_ref().map(|remote| remote.dir())
+    }
+
     /// The file SQLite has open: the local copy of a remote file, or the
     /// saved path.
     pub(crate) fn sqlite_file(&self) -> std::path::PathBuf {

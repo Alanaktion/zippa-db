@@ -962,7 +962,15 @@ impl Session {
             parts.push("tabs with unsaved changes".to_string());
         }
         if unuploaded {
-            parts.push("changes not uploaded to the SSH host".to_string());
+            // The copy is kept rather than deleted, so say where it is: no
+            // later session will find it again on its own.
+            parts.push(match self.connection.remote_copy_dir() {
+                Some(dir) => format!(
+                    "changes not uploaded to the SSH host (the local copy stays in {})",
+                    dir.display()
+                ),
+                None => "changes not uploaded to the SSH host".to_string(),
+            });
         }
         parts.extend(open);
         let list = match parts.as_slice() {

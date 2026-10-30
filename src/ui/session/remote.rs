@@ -102,10 +102,17 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let description = overwrite_warning(target, modified);
+        // The upload ran in the background, so another dialog may be up by
+        // now; the warning must not be lost behind it.
         if window.has_active_dialog(cx) {
+            crate::ui::notify_error(
+                window,
+                cx,
+                format!("Not uploaded: {description} Upload again to choose."),
+            );
             return;
         }
-        let description = overwrite_warning(target, modified);
         let session = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let session = session.clone();

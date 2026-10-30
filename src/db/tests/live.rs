@@ -284,7 +284,7 @@ async fn live_postgres_connects_through_an_ssh_tunnel() {
 #[ignore = "needs a live SSH host with SFTP; see the doc comment"]
 async fn live_sqlite_file_on_an_ssh_host_round_trips() {
     use crate::db::Upload;
-    use crate::db::remote::{put_for_test, remove_for_test};
+    use crate::db::remote::{put_for_test, remove_for_test, set_mtime_for_test, stat_for_test};
 
     let (ssh, secret, _, _) = live_ssh();
     let path = format!("zippa-remote-{}.sqlite", Uuid::new_v4().simple());
@@ -328,8 +328,32 @@ async fn live_sqlite_file_on_an_ssh_host_round_trips() {
     );
     assert!(!connection.has_unuploaded_changes(), "the host has it now");
 
-    // Someone else commits to the server's copy, within the same second and
-    // without changing its size: the next upload is still held back.
+    // A reconnect reopens the pool on the same copy and must not forget the
+    // write the host does not have yet.
+    connection
+        .execute(
+            "INSERT INTO items (id, name) VALUES (6, 'zeta')",
+            Vec::new(),
+        )
+        .await
+        .expect("write to the copy");
+    let connection = connection
+        .with_database(connection.database())
+        .await
+        .expect("reconnect");
+    assert!(
+        connection.has_unuploaded_changes(),
+        "a reconnect keeps the change"
+    );
+    assert_eq!(
+        connection.upload(false).await.expect("upload"),
+        Upload::Uploaded
+    );
+
+    // Someone else commits to the server's copy without changing its size,
+    // and its time is put back: only the header can tell, and the next
+    // upload is still held back.
+    let (size, mtime) = stat_for_test(&ssh, &secret, &path).await;
     let other = TempDatabase::new().await;
     let pool = sqlx::SqlitePool::connect_with(SqliteConnectOptions::new().filename(&other.path))
         .await
@@ -339,6 +363,12 @@ async fn live_sqlite_file_on_an_ssh_host_round_trips() {
         .expect("change the other copy");
     pool.close().await;
     put_for_test(&ssh, &secret, &other.path, &path).await;
+    set_mtime_for_test(&ssh, &secret, &path, mtime).await;
+    assert_eq!(
+        stat_for_test(&ssh, &secret, &path).await,
+        (size, mtime),
+        "only the header differs"
+    );
     connection
         .execute(
             "INSERT INTO items (id, name) VALUES (4, 'delta')",
@@ -366,7 +396,7 @@ async fn live_sqlite_file_on_an_ssh_host_round_trips() {
     let names: Vec<_> = result.rows.iter().map(|row| row[0].clone()).collect();
     assert_eq!(
         names,
-        [Some("gamma".to_string()), Some("delta".to_string())]
+        ["gamma", "delta", "zeta"].map(|name| Some(name.to_string()))
     );
 
     // A file something on the host has open with changes in flight is never

@@ -22,6 +22,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
@@ -118,6 +119,10 @@ pub(crate) struct RemoteFile {
     dir: PathBuf,
     local: PathBuf,
     synced: Mutex<Synced>,
+    /// Whether [`settle`](Self::settle) has run. Only the first pool open
+    /// may re-baseline the copy: a reconnect opens a pool on the same copy,
+    /// and re-baselining then would forget writes not uploaded yet.
+    settled: AtomicBool,
 }
 
 impl fmt::Debug for RemoteFile {
@@ -169,6 +174,7 @@ impl RemoteFile {
                 server,
                 local: local_stamp,
             }),
+            settled: AtomicBool::new(false),
         })
     }
 
@@ -186,8 +192,17 @@ impl RemoteFile {
 
     /// Take the copy as it is now as the agreed state: for after the pool
     /// first opens it, which may touch the file without changing a row.
+    /// Later calls (a reconnect reopening the same copy) do nothing.
     pub(crate) fn settle(&self) {
-        self.synced().local = LocalStamp::of(&self.local);
+        if !self.settled.swap(true, Ordering::SeqCst) {
+            self.synced().local = LocalStamp::of(&self.local);
+        }
+    }
+
+    /// The directory the copy is kept in, for telling the user where a copy
+    /// with changes the host never got is left.
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// The copy's state, taken before a snapshot of it is made for
@@ -220,7 +235,15 @@ impl RemoteFile {
                 return Ok(Err(current));
             }
             sftp.refuse_in_use(&self.path).await?;
-            sftp.put(snapshot, &self.path, attrs.permissions).await?;
+            // `force` accepts the change the user was warned about, not one
+            // that lands while the snapshot travels: `put` checks again
+            // against what was seen here.
+            if let Some(changed) = sftp
+                .put(snapshot, &self.path, attrs.permissions, &current)
+                .await?
+            {
+                return Ok(Err(changed));
+            }
             anyhow::Ok(Ok(sftp.stamp(&self.path).await?.0))
         }
         .await;
@@ -264,6 +287,30 @@ pub(crate) async fn put_for_test(ssh: &SshConfig, secret: &str, local: &Path, pa
         .await
         .expect("copy");
     remote.shutdown().await.expect("close remote");
+    sftp.close().await;
+}
+
+/// The size and modification time of a file on the SSH host.
+#[cfg(test)]
+pub(crate) async fn stat_for_test(ssh: &SshConfig, secret: &str, path: &str) -> (u64, u32) {
+    let sftp = Sftp::connect(ssh, Some(secret)).await.expect("sign in");
+    let attrs = sftp.files.metadata(path).await.expect("stat");
+    sftp.close().await;
+    (attrs.size.expect("size"), attrs.mtime.expect("mtime"))
+}
+
+/// Set a file's modification time on the SSH host, for a live test to make a
+/// change only the header can tell.
+#[cfg(test)]
+pub(crate) async fn set_mtime_for_test(ssh: &SshConfig, secret: &str, path: &str, mtime: u32) {
+    let sftp = Sftp::connect(ssh, Some(secret)).await.expect("sign in");
+    let mut attrs = FileAttributes::empty();
+    attrs.atime = Some(mtime);
+    attrs.mtime = Some(mtime);
+    sftp.files
+        .set_metadata(path, attrs)
+        .await
+        .expect("set mtime");
     sftp.close().await;
 }
 
@@ -389,7 +436,19 @@ impl Sftp {
 
     /// Write `snapshot` beside `path` and move it into place, keeping the
     /// file's permissions.
-    async fn put(&self, snapshot: &Path, path: &str, permissions: Option<u32>) -> Result<()> {
+    ///
+    /// The transfer can take a while on a slow link, so just before the
+    /// rename the file is checked again: against `expected`, what it looked
+    /// like when the upload began, and for a `-wal`/`-journal` that appeared
+    /// meanwhile. A file that changed is left alone and its new stamp
+    /// returned.
+    async fn put(
+        &self,
+        snapshot: &Path,
+        path: &str,
+        permissions: Option<u32>,
+        expected: &Stamp,
+    ) -> Result<Option<Stamp>> {
         let temp = sibling(
             path,
             &format!("zippa-upload-{}", uuid::Uuid::new_v4().simple()),
@@ -406,12 +465,26 @@ impl Sftp {
             if let Some(permissions) = permissions {
                 let mut attrs = FileAttributes::empty();
                 attrs.permissions = Some(permissions & 0o7777);
-                let _ = self.files.set_metadata(temp.as_str(), attrs).await;
+                self.files
+                    .set_metadata(temp.as_str(), attrs)
+                    .await
+                    .map_err(|error| {
+                        anyhow!(
+                            "could not give the upload {path}'s permissions on the SSH host, so \
+                             it was not replaced: {error}"
+                        )
+                    })?;
             }
-            self.replace(&temp, path).await
+            let (now, _) = self.stamp(path).await?;
+            if now != *expected {
+                return Ok(Some(now));
+            }
+            self.refuse_in_use(path).await?;
+            self.replace(&temp, path).await?;
+            Ok(None)
         }
         .await;
-        if result.is_err() {
+        if !matches!(result, Ok(None)) {
             let _ = self.files.remove_file(temp.as_str()).await;
         }
         result
