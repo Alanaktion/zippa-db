@@ -580,9 +580,14 @@ impl AgentPanel {
         cx.notify();
     }
 
-    /// The tool item for `index`, if one is already drawn.
+    /// The tool item for `index`, if one is already drawn. Tool indices
+    /// restart at 0 each turn, so only this turn's items count: searching
+    /// the whole thread would match an earlier turn's tool at the same
+    /// index, and the new call would fill in that old item instead of
+    /// drawing its own.
     fn tool_item_mut(&mut self, index: usize) -> Option<&mut Item> {
-        self.items.iter_mut().find(
+        let start = self.items_at_turn_start.min(self.items.len());
+        self.items[start..].iter_mut().find(
             |item| matches!(item, Item::Tool { index: item_index, .. } if *item_index == index),
         )
     }

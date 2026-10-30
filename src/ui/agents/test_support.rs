@@ -49,6 +49,14 @@ impl AgentPanel {
             .collect()
     }
 
+    /// Start a turn's items, as `start_turn` would: the user message, then
+    /// the mark past it that bounds this turn's tool items.
+    pub(crate) fn begin_turn_for_test(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.items.push(Item::User(text.to_string()));
+        self.items_at_turn_start = self.items.len();
+        cx.notify();
+    }
+
     /// Apply one turn event, as the event listener would.
     pub(crate) fn apply_turn_event_for_test(
         &mut self,
