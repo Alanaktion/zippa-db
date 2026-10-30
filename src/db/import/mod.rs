@@ -12,6 +12,12 @@
 //! * [`splitter`] — streaming a dump into statements per dialect.
 //! * the runner below — one statement at a time, with an error policy, and the
 //!   transaction the policy asks for.
+//!
+//! Reading, decompressing, and splitting are blocking work, so they run on a
+//! blocking thread of their own and hand statements to the runner through a
+//! short bounded channel: the runtime's workers are left free for every other
+//! connection, and a dump is never read further ahead than the server keeps
+//! up with.
 
 pub(crate) mod reader;
 pub(crate) mod splitter;
@@ -24,16 +30,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{Receiver, UnboundedSender};
 
 use super::config::Engine;
 use super::dedicated::Dedicated;
-use splitter::Chunk;
 pub use splitter::Dialect;
+use splitter::{Chunk, leading_word};
 
 /// How much of a dump is looked at for the pre-flight warnings and for the
 /// MySQL session settings.
 pub(crate) const HEAD: usize = 64 * 1024;
+
+/// How many chunks the reading thread may get ahead of the runner. Each can be
+/// a statement of up to the splitter's limit, and one is enough to keep the
+/// reading and the running overlapped, so it is one.
+const READ_AHEAD: usize = 1;
 
 /// How many errors are kept from a `Continue` run; the rest are counted only.
 const MAX_ERRORS: usize = 200;
@@ -204,7 +215,21 @@ pub(crate) async fn run(
         }
     }
 
-    let mut chunks = splitter::new(opened.reader, dialect).peekable();
+    let (chunk_sender, receiver) = tokio::sync::mpsc::channel(READ_AHEAD);
+    let source = opened.reader;
+    // Detached: it ends at the end of the dump, or as soon as the runner stops
+    // listening — a stop, a failure, or the run being cancelled.
+    tokio::task::spawn_blocking(move || {
+        for chunk in splitter::new(source, dialect) {
+            if chunk_sender.blocking_send(chunk).is_err() {
+                break;
+            }
+        }
+    });
+    let mut chunks = Chunks {
+        receiver,
+        peeked: None,
+    };
     let mut errors = Vec::new();
     let mut dropped_errors = 0u64;
     let mut began = false;
@@ -213,7 +238,7 @@ pub(crate) async fn run(
     let mut last_line = 0u64;
 
     while !stopped {
-        let Some(chunk) = chunks.next() else {
+        let Some(chunk) = chunks.next().await else {
             break;
         };
         let chunk = chunk?;
@@ -309,37 +334,57 @@ pub(crate) async fn run(
 /// The writer borrows the connection for the length of the block, so the data
 /// is streamed rather than assembled: a table's export never sits in memory all
 /// at once.
-async fn copy_block<I>(
+async fn copy_block(
     session: &mut Dedicated,
     statement: &str,
-    chunks: &mut std::iter::Peekable<I>,
+    chunks: &mut Chunks,
     progress: &mut Progress,
     statements: u64,
     errors: u64,
     line: u64,
-) -> Result<()>
-where
-    I: Iterator<Item = Result<Chunk>>,
-{
+) -> Result<()> {
     match session {
         Dedicated::Postgres(connection, _) => {
             let mut writer = connection.copy_in_raw(statement).await?;
-            while matches!(chunks.peek(), Some(Ok(Chunk::CopyData(_)))) {
-                match chunks.next() {
-                    Some(Ok(Chunk::CopyData(data))) => {
-                        writer.send(data).await?;
-                        // A COPY of a large table is the one place a dump can
-                        // read for a long time without a statement boundary, so
-                        // the bar is fed from here as well.
-                        progress.tick(statements, errors, line);
-                    }
-                    _ => break,
-                }
+            while let Some(data) = chunks.next_copy_data().await {
+                writer.send(data).await?;
+                // A COPY of a large table is the one place a dump can read for
+                // a long time without a statement boundary, so the bar is fed
+                // from here as well.
+                progress.tick(statements, errors, line);
             }
             writer.finish().await?;
             Ok(())
         }
         _ => bail!("COPY data can only be read on PostgreSQL"),
+    }
+}
+
+/// The splitter's output as it arrives from the reading thread, with one
+/// chunk of look-ahead so a COPY block can tell where its data ends.
+struct Chunks {
+    receiver: Receiver<Result<Chunk>>,
+    peeked: Option<Result<Chunk>>,
+}
+
+impl Chunks {
+    async fn next(&mut self) -> Option<Result<Chunk>> {
+        match self.peeked.take() {
+            Some(chunk) => Some(chunk),
+            None => self.receiver.recv().await,
+        }
+    }
+
+    /// The next block of COPY data, or `None` — leaving whatever came instead
+    /// to be read next — once the block is over.
+    async fn next_copy_data(&mut self) -> Option<Vec<u8>> {
+        match self.next().await {
+            Some(Ok(Chunk::CopyData(data))) => Some(data),
+            other => {
+                self.peeked = other;
+                None
+            }
+        }
     }
 }
 
@@ -358,48 +403,6 @@ fn transaction_control(sql: &str) -> bool {
     )
 }
 
-/// The first word of `sql`, skipping leading comments and whitespace.
-fn leading_word(sql: &str) -> Option<String> {
-    let characters: Vec<char> = sql.chars().collect();
-    let mut index = 0;
-
-    loop {
-        while index < characters.len() && characters[index].is_whitespace() {
-            index += 1;
-        }
-        match (characters.get(index), characters.get(index + 1)) {
-            (Some('-'), Some('-')) | (Some('#'), _) => {
-                while index < characters.len() && characters[index] != '\n' {
-                    index += 1;
-                }
-            }
-            (Some('/'), Some('*')) => {
-                index += 2;
-                while index < characters.len() {
-                    if characters[index] == '*' && characters.get(index + 1) == Some(&'/') {
-                        index += 2;
-                        break;
-                    }
-                    index += 1;
-                }
-            }
-            _ => break,
-        }
-    }
-
-    let mut word = String::new();
-    while let Some(character) = characters.get(index) {
-        if character.is_alphabetic() || *character == '_' {
-            word.push(*character);
-            index += 1;
-        } else {
-            break;
-        }
-    }
-
-    (!word.is_empty()).then(|| word.to_ascii_uppercase())
-}
-
 /// Whether `head` mentions `needle`, up to case.
 fn mentions(head: &str, needle: &str) -> bool {
     head.to_ascii_uppercase()
@@ -407,9 +410,16 @@ fn mentions(head: &str, needle: &str) -> bool {
 }
 
 /// One line's worth of `sql`, for an error log.
+///
+/// Only the head of `sql` is read, so a failing statement of many megabytes
+/// costs no more to log than a short one.
 pub(crate) fn excerpt(sql: &str) -> String {
-    let flat = sql.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() > 120 {
+    let mut characters = sql
+        .split_whitespace()
+        .flat_map(|word| std::iter::once(' ').chain(word.chars()))
+        .skip(1);
+    let flat: String = characters.by_ref().take(120).collect();
+    if characters.next().is_some() {
         let mut shortened: String = flat.chars().take(119).collect();
         shortened.push('…');
         shortened

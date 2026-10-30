@@ -58,18 +58,24 @@ pub fn new<R: BufRead>(reader: R, dialect: Dialect) -> Splitter<R> {
 }
 
 /// Whether `sql` is a `COPY ... FROM stdin` statement, so its data follows.
+///
+/// `pg_dump` writes a `-- Data for Name: …` comment block in front of every
+/// `COPY`, and that comment is part of the statement, so it is skipped before
+/// the first word is read.
 pub fn is_copy(sql: &str) -> bool {
-    let upper = sql.to_ascii_uppercase();
-    let mut tokens = upper
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|token| !token.is_empty());
-
-    if tokens.next() != Some("COPY") {
+    let body = after_comments(sql);
+    if leading_word(body).as_deref() != Some("COPY") {
         return false;
     }
 
+    // Only a `COPY` header gets this far, so the uppercase copy is short.
+    let upper = body.to_ascii_uppercase();
     let mut after_from = false;
-    for token in tokens {
+    for token in upper
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|token| !token.is_empty())
+        .skip(1)
+    {
         if token == "FROM" {
             after_from = true;
         } else if token == "STDIN" && after_from {
@@ -79,12 +85,36 @@ pub fn is_copy(sql: &str) -> bool {
     false
 }
 
+/// `sql` past its leading whitespace and comments.
+pub(crate) fn after_comments(sql: &str) -> &str {
+    let mut rest = sql;
+    loop {
+        rest = rest.trim_start();
+        if rest.starts_with("--") || rest.starts_with('#') {
+            rest = rest.find('\n').map_or("", |end| &rest[end..]);
+        } else if let Some(body) = rest.strip_prefix("/*") {
+            rest = body.find("*/").map_or("", |end| &body[end + 2..]);
+        } else {
+            return rest;
+        }
+    }
+}
+
+/// The first word of `sql`, uppercased, skipping leading comments and
+/// whitespace.
+pub(crate) fn leading_word(sql: &str) -> Option<String> {
+    let rest = after_comments(sql);
+    let end = rest
+        .find(|character: char| !(character.is_alphabetic() || character == '_'))
+        .unwrap_or(rest.len());
+    (end > 0).then(|| rest[..end].to_ascii_uppercase())
+}
+
 #[derive(Debug, Clone)]
 enum Scan {
     Normal,
-    Single,
-    Double,
-    Backtick,
+    /// Inside a quoted string or name, ended by this quote byte.
+    Quoted(u8),
     LineComment,
     BlockComment(u32),
     Dollar(String),
@@ -101,6 +131,11 @@ pub struct Splitter<R> {
     dialect: Dialect,
     /// The line being read, counting from one.
     line: u64,
+    /// The line being read. Kept from line to line, like
+    /// [`Splitter::statement`], so a long line's buffer is grown once rather
+    /// than regrown and thrown away for every line like it — a cost the
+    /// allocator holds on to long after the line is gone.
+    raw: Vec<u8>,
     /// The statement being assembled, verbatim including comments.
     statement: String,
     /// The line the statement started on, for an error or a log entry.
@@ -108,7 +143,6 @@ pub struct Splitter<R> {
     state: Scan,
     /// MySQL's `DELIMITER`, which is `;` until the dump says otherwise.
     delimiter: String,
-    delimiter_chars: Vec<char>,
     /// The identifier being read, so block keywords can be recognised.
     word: String,
     /// Whether this statement mentions `TRIGGER`, so `BEGIN`/`END` in a SQLite
@@ -134,11 +168,11 @@ impl<R: BufRead> Splitter<R> {
             reader,
             dialect,
             line: 0,
+            raw: Vec::new(),
             statement: String::new(),
             statement_line: 0,
             state: Scan::Normal,
             delimiter: ";".to_string(),
-            delimiter_chars: vec![';'],
             word: String::new(),
             saw_trigger: false,
             blocks: Vec::new(),
@@ -153,8 +187,15 @@ impl<R: BufRead> Splitter<R> {
 
     /// Read one line and fold it into the state machine.
     fn advance(&mut self) -> Result<()> {
-        let mut raw = Vec::new();
-        let read = read_line_bounded(&mut self.reader, &mut raw, MAX_STATEMENT)
+        let mut raw = std::mem::take(&mut self.raw);
+        raw.clear();
+        let result = self.fold_line(&mut raw);
+        self.raw = raw;
+        result
+    }
+
+    fn fold_line(&mut self, raw: &mut Vec<u8>) -> Result<()> {
+        let read = read_line_bounded(&mut self.reader, raw, MAX_STATEMENT)
             .with_context(|| format!("line {}", self.line + 1))?;
         if read == 0 {
             self.finish()?;
@@ -163,11 +204,13 @@ impl<R: BufRead> Splitter<R> {
         self.line += 1;
 
         if self.copying {
-            self.push_copy(&raw);
+            self.push_copy(raw);
             return Ok(());
         }
 
-        let line = String::from_utf8_lossy(&raw).into_owned();
+        // Borrowed when the line is valid; only a broken one is copied to
+        // replace what does not decode.
+        let line = String::from_utf8_lossy(raw);
 
         // A `DELIMITER` command only counts where a statement would start.
         if matches!(self.state, Scan::Normal)
@@ -213,7 +256,6 @@ impl<R: BufRead> Splitter<R> {
         }
 
         self.delimiter = token.to_string();
-        self.delimiter_chars = self.delimiter.chars().collect();
         true
     }
 
@@ -237,11 +279,18 @@ impl<R: BufRead> Splitter<R> {
         }
     }
 
+    /// Fold `line` into the statement.
+    ///
+    /// Positions are byte offsets into `line`. Every byte the scanners stop on
+    /// is ASCII, which never occurs inside a multi-byte UTF-8 character, so a
+    /// run of anything else is copied across in one piece and every offset
+    /// stays on a character boundary. Nothing here holds more than the line
+    /// and the statement — a per-character copy of a long line was what made
+    /// a 60 MB `INSERT` cost gigabytes.
     fn scan(&mut self, line: &str) -> Result<()> {
-        let characters: Vec<char> = line.chars().collect();
         let mut index = 0;
 
-        while index < characters.len() {
+        while index < line.len() {
             if self.statement.len() > MAX_STATEMENT {
                 bail!(
                     "the statement starting on line {} is longer than the {} MiB limit",
@@ -252,196 +301,186 @@ impl<R: BufRead> Splitter<R> {
 
             let state = self.state.clone();
             index = match state {
-                Scan::Normal => self.scan_normal(&characters, index)?,
-                Scan::Single => self.scan_single(&characters, index),
-                Scan::Double => self.scan_quoted(&characters, index, '"'),
-                Scan::Backtick => self.scan_quoted(&characters, index, '`'),
-                Scan::LineComment => self.scan_line_comment(&characters, index),
-                Scan::BlockComment(depth) => self.scan_block_comment(&characters, index, depth),
-                Scan::Dollar(tag) => self.scan_dollar(&characters, index, &tag),
+                Scan::Normal => self.scan_normal(line, index),
+                Scan::Quoted(quote) => self.scan_quoted(line, index, quote),
+                Scan::LineComment => self.scan_line_comment(line, index),
+                Scan::BlockComment(depth) => self.scan_block_comment(line, index, depth),
+                Scan::Dollar(tag) => self.scan_dollar(line, index, &tag),
             };
         }
         Ok(())
     }
 
-    fn scan_normal(&mut self, characters: &[char], index: usize) -> Result<usize> {
+    fn scan_normal(&mut self, line: &str, index: usize) -> usize {
+        let rest = &line[index..];
+
         // The delimiter ends the statement unless a trigger body is open.
-        if !self.delimiter_chars.is_empty()
-            && characters[index..].starts_with(&self.delimiter_chars)
-        {
+        if !self.delimiter.is_empty() && rest.starts_with(self.delimiter.as_str()) {
             self.end_word();
             if self.blocks.is_empty() {
                 self.end_statement();
             } else {
-                for character in self.delimiter_chars.clone() {
-                    self.statement.push(character);
-                }
+                self.statement.push_str(&self.delimiter);
             }
-            return Ok(index + self.delimiter_chars.len());
+            return index + self.delimiter.len();
         }
 
-        let character = characters[index];
-        let next = characters.get(index + 1).copied();
+        let bytes = rest.as_bytes();
+        let next = bytes.get(1).copied();
 
-        match character {
-            '\'' => {
+        match bytes[0] {
+            quote @ b'\'' => {
                 self.end_word();
                 self.escape = self.escapes_in_a_string();
-                self.statement.push(character);
-                self.state = Scan::Single;
-                Ok(index + 1)
+                self.statement.push('\'');
+                self.state = Scan::Quoted(quote);
+                index + 1
             }
-            '"' | '`' => {
+            quote @ (b'"' | b'`') => {
                 self.end_word();
                 // MySQL reads a backslash in either kind of quoted string as an
                 // escape; Postgres and SQLite only in `E'...'`.
                 self.escape = self.dialect == Dialect::MySql;
-                self.statement.push(character);
-                self.state = if character == '"' {
-                    Scan::Double
-                } else {
-                    Scan::Backtick
-                };
-                Ok(index + 1)
+                self.statement.push(char::from(quote));
+                self.state = Scan::Quoted(quote);
+                index + 1
             }
-            '-' if next == Some('-') => {
+            b'-' if next == Some(b'-') => {
                 self.end_word();
-                self.statement.push('-');
-                self.statement.push('-');
+                self.statement.push_str("--");
                 self.state = Scan::LineComment;
-                Ok(index + 2)
+                index + 2
             }
-            '#' if self.dialect == Dialect::MySql => {
+            b'#' if self.dialect == Dialect::MySql => {
                 self.end_word();
                 self.statement.push('#');
                 self.state = Scan::LineComment;
-                Ok(index + 1)
+                index + 1
             }
-            '/' if next == Some('*') => {
+            b'/' if next == Some(b'*') => {
                 self.end_word();
-                self.statement.push('/');
-                self.statement.push('*');
+                self.statement.push_str("/*");
                 self.state = Scan::BlockComment(1);
-                Ok(index + 2)
+                index + 2
             }
-            '$' if self.dialect == Dialect::Postgres => match dollar_tag(characters, index) {
+            b'$' if self.dialect == Dialect::Postgres => match dollar_tag(rest) {
                 Some(tag) => {
                     self.end_word();
-                    self.statement.push_str(&tag);
-                    let length = tag.chars().count();
-                    self.state = Scan::Dollar(tag);
-                    Ok(index + length)
+                    self.statement.push_str(tag);
+                    self.state = Scan::Dollar(tag.to_string());
+                    index + tag.len()
                 }
                 None => {
                     self.statement.push('$');
-                    Ok(index + 1)
+                    index + 1
                 }
             },
-            character if is_word(character) => {
-                self.word.push(character);
-                self.statement.push(character);
-                Ok(index + 1)
-            }
             _ => {
-                self.end_word();
+                let Some(character) = rest.chars().next() else {
+                    return line.len();
+                };
+                if is_word(character) {
+                    self.word.push(character);
+                } else {
+                    self.end_word();
+                }
                 self.statement.push(character);
-                Ok(index + 1)
+                index + character.len_utf8()
             }
         }
     }
 
-    fn scan_single(&mut self, characters: &[char], index: usize) -> usize {
-        let character = characters[index];
-        if character == '\\' && self.escape {
-            self.statement.push(character);
-            if let Some(next) = characters.get(index + 1) {
-                self.statement.push(*next);
-                return index + 2;
-            }
-            return index + 1;
+    /// A string or quoted name: a doubled quote escapes, and so does a
+    /// backslash where [`Splitter::escape`] says it does.
+    fn scan_quoted(&mut self, line: &str, index: usize, quote: u8) -> usize {
+        let escape = self.escape;
+        let bytes = line.as_bytes();
+        let stop = bytes[index..]
+            .iter()
+            .position(|&byte| byte == quote || (escape && byte == b'\\'))
+            .map_or(line.len(), |offset| index + offset);
+        self.statement.push_str(&line[index..stop]);
+        if stop == line.len() {
+            return stop;
         }
-        if character == '\'' {
-            self.statement.push(character);
-            if characters.get(index + 1) == Some(&'\'') {
-                self.statement.push('\'');
-                return index + 2;
-            }
-            self.state = Scan::Normal;
-            return index + 1;
+
+        if bytes[stop] == b'\\' {
+            // The escaped character goes across whole, whatever its width.
+            let after = line[stop + 1..]
+                .chars()
+                .next()
+                .map_or(stop + 1, |character| stop + 1 + character.len_utf8());
+            self.statement.push_str(&line[stop..after]);
+            return after;
         }
-        self.statement.push(character);
-        index + 1
+
+        self.statement.push(char::from(quote));
+        if bytes.get(stop + 1) == Some(&quote) {
+            self.statement.push(char::from(quote));
+            return stop + 2;
+        }
+        self.state = Scan::Normal;
+        stop + 1
     }
 
-    /// A `"..."` or backtick-quoted name; a doubled quote escapes and MySQL
-    /// also honours a backslash.
-    fn scan_quoted(&mut self, characters: &[char], index: usize, quote: char) -> usize {
-        let character = characters[index];
-        if character == '\\' && self.escape {
-            self.statement.push(character);
-            if let Some(next) = characters.get(index + 1) {
-                self.statement.push(*next);
-                return index + 2;
+    fn scan_line_comment(&mut self, line: &str, index: usize) -> usize {
+        match line[index..].find('\n') {
+            Some(offset) => {
+                let end = index + offset + 1;
+                self.statement.push_str(&line[index..end]);
+                self.state = Scan::Normal;
+                end
             }
-            return index + 1;
-        }
-        if character == quote {
-            self.statement.push(character);
-            if characters.get(index + 1) == Some(&quote) {
-                self.statement.push(quote);
-                return index + 2;
+            None => {
+                self.statement.push_str(&line[index..]);
+                line.len()
             }
-            self.state = Scan::Normal;
-            return index + 1;
         }
-        self.statement.push(character);
-        index + 1
     }
 
-    fn scan_line_comment(&mut self, characters: &[char], index: usize) -> usize {
-        let character = characters[index];
-        self.statement.push(character);
-        if character == '\n' {
-            self.state = Scan::Normal;
+    fn scan_block_comment(&mut self, line: &str, index: usize, depth: u32) -> usize {
+        let bytes = line.as_bytes();
+        let stop = bytes[index..]
+            .iter()
+            .position(|&byte| byte == b'*' || byte == b'/')
+            .map_or(line.len(), |offset| index + offset);
+        self.statement.push_str(&line[index..stop]);
+        if stop == line.len() {
+            return stop;
         }
-        index + 1
-    }
 
-    fn scan_block_comment(&mut self, characters: &[char], index: usize, depth: u32) -> usize {
-        let character = characters[index];
-        let next = characters.get(index + 1).copied();
-
-        if character == '*' && next == Some('/') {
-            self.statement.push('*');
-            self.statement.push('/');
+        let pair = &bytes[stop..(stop + 2).min(bytes.len())];
+        if pair == b"*/" {
+            self.statement.push_str("*/");
             self.state = if depth <= 1 {
                 Scan::Normal
             } else {
                 Scan::BlockComment(depth - 1)
             };
-            return index + 2;
+            return stop + 2;
         }
-        if character == '/' && next == Some('*') && self.dialect == Dialect::Postgres {
-            self.statement.push('/');
-            self.statement.push('*');
+        if pair == b"/*" && self.dialect == Dialect::Postgres {
+            self.statement.push_str("/*");
             self.state = Scan::BlockComment(depth + 1);
-            return index + 2;
+            return stop + 2;
         }
-        self.statement.push(character);
-        index + 1
+        self.statement.push(char::from(bytes[stop]));
+        stop + 1
     }
 
-    fn scan_dollar(&mut self, characters: &[char], index: usize, tag: &str) -> usize {
-        let tag: Vec<char> = tag.chars().collect();
-        if characters[index..].starts_with(&tag) {
-            for character in &tag {
-                self.statement.push(*character);
+    fn scan_dollar(&mut self, line: &str, index: usize, tag: &str) -> usize {
+        match line[index..].find(tag) {
+            Some(offset) => {
+                let end = index + offset + tag.len();
+                self.statement.push_str(&line[index..end]);
+                self.state = Scan::Normal;
+                end
             }
-            self.state = Scan::Normal;
-            return index + tag.len();
+            None => {
+                self.statement.push_str(&line[index..]);
+                line.len()
+            }
         }
-        self.statement.push(characters[index]);
-        index + 1
     }
 
     /// Finish the identifier being read, and let it move the block depth.
@@ -482,9 +521,12 @@ impl<R: BufRead> Splitter<R> {
     /// Emit the statement just completed, if it holds anything.
     fn end_statement(&mut self) {
         self.end_word();
+        // The statement goes out as one copy of exactly its size, and the
+        // buffer it was assembled in is kept for the next, so a long statement
+        // does not leave a trail of outgrown buffers behind it.
         let text = self.statement.trim().to_string();
-        let line = self.statement_line;
         self.statement.clear();
+        let line = self.statement_line;
         self.word.clear();
         self.saw_trigger = false;
         self.blocks.clear();
@@ -513,7 +555,7 @@ impl<R: BufRead> Splitter<R> {
             bail!("the dump ends inside COPY data (line {})", self.line);
         }
         match self.state {
-            Scan::Single | Scan::Double | Scan::Backtick | Scan::Dollar(_) => {
+            Scan::Quoted(_) | Scan::Dollar(_) => {
                 bail!("the dump ends inside a quoted string (line {})", self.line)
             }
             Scan::BlockComment(_) => {
@@ -569,18 +611,13 @@ fn is_word(character: char) -> bool {
     character.is_alphanumeric() || character == '_'
 }
 
-/// The `$tag$` opening a dollar-quoted string at `index`, if there is one.
-fn dollar_tag(characters: &[char], index: usize) -> Option<String> {
-    let mut tag = String::from("$");
-    for character in &characters[index + 1..] {
-        match character {
-            '$' => {
-                tag.push('$');
-                return Some(tag);
-            }
-            character if character.is_ascii_alphanumeric() || *character == '_' => {
-                tag.push(*character)
-            }
+/// The `$tag$` opening a dollar-quoted string at the start of `rest`, if
+/// there is one.
+fn dollar_tag(rest: &str) -> Option<&str> {
+    for (offset, &byte) in rest.as_bytes().iter().enumerate().skip(1) {
+        match byte {
+            b'$' => return Some(&rest[..=offset]),
+            byte if byte.is_ascii_alphanumeric() || byte == b'_' => {}
             _ => return None,
         }
     }
@@ -803,6 +840,76 @@ mod tests {
         assert!(!is_copy("COPY t FROM '/tmp/data.csv'"));
         assert!(!is_copy("COPY t TO STDOUT"));
         assert!(!is_copy("SELECT 1"));
+        // `pg_dump` puts a comment block in front of every COPY.
+        assert!(is_copy(
+            "--\n-- Data for Name: t; Type: TABLE DATA\n--\n\nCOPY public.t (id) FROM stdin"
+        ));
+        assert!(is_copy("/* note */ COPY t FROM stdin"));
+        // Words in the comment are not the statement's.
+        assert!(!is_copy("-- COPY t FROM stdin\nSELECT 1"));
+        assert!(!is_copy("-- copied from stdin\nINSERT INTO t VALUES (1)"));
+    }
+
+    /// The shape `pg_dump` writes: a comment block, then the COPY header, then
+    /// its data. The comment once hid the header, so the data was read as SQL.
+    #[test]
+    fn a_pg_dump_copy_behind_its_comment_block_is_still_a_copy() {
+        let sql = "SET client_encoding = 'UTF8';\n\n--\n-- Data for Name: t; Type: TABLE DATA; Schema: public; Owner: app\n--\n\nCOPY public.t (id, name) FROM stdin;\n1\tone; two\n2\tthree\n\\.\n\n\nSELECT 1;\n";
+        let chunks: Vec<Chunk> = new(Cursor::new(sql.as_bytes().to_vec()), Dialect::Postgres)
+            .map(|chunk| chunk.expect("the splitter should not fail"))
+            .collect();
+
+        assert_eq!(chunks.len(), 4, "{chunks:?}");
+        assert!(
+            matches!(&chunks[0], Chunk::Statement(statement) if statement.sql.starts_with("SET"))
+        );
+        match &chunks[1] {
+            Chunk::Copy(statement) => {
+                assert!(
+                    statement
+                        .sql
+                        .ends_with("COPY public.t (id, name) FROM stdin")
+                );
+                assert_eq!(statement.line, 3, "the statement starts at its comment");
+            }
+            other => panic!("expected the COPY header, got {other:?}"),
+        }
+        assert!(matches!(&chunks[2], Chunk::CopyData(data) if data == b"1\tone; two\n2\tthree\n"));
+        assert!(matches!(&chunks[3], Chunk::Statement(statement) if statement.sql == "SELECT 1"));
+    }
+
+    /// Text wider than a byte survives whole in every state the scanner has,
+    /// including right after an escaping backslash.
+    #[test]
+    fn multi_byte_text_is_kept_whole() {
+        let sql = "INSERT INTO café VALUES ('naïve; 日本', \"ü;\", 'a\\é;b'); -- ½;\n/* ☃; */ SELECT '€';\n";
+        assert_eq!(
+            statements(sql, Dialect::MySql),
+            [
+                "INSERT INTO café VALUES ('naïve; 日本', \"ü;\", 'a\\é;b')",
+                "-- ½;\n/* ☃; */ SELECT '€'",
+            ]
+        );
+        let sql = "SELECT $é$ not a tag;\nSELECT $t$ ü; $t$;\n";
+        assert_eq!(
+            statements(sql, Dialect::Postgres),
+            ["SELECT $é$ not a tag", "SELECT $t$ ü; $t$"]
+        );
+    }
+
+    /// A line that is not valid UTF-8 is read lossily rather than refused.
+    #[test]
+    fn invalid_utf8_is_replaced_not_refused() {
+        let mut sql = b"SELECT 'a".to_vec();
+        sql.push(0xff);
+        sql.extend_from_slice(b"';\nSELECT 2;\n");
+        let statements: Vec<String> = new(Cursor::new(sql), Dialect::Sqlite)
+            .map(|chunk| match chunk.expect("the splitter should not fail") {
+                Chunk::Statement(statement) => statement.sql,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(statements, ["SELECT 'a\u{fffd}'", "SELECT 2"]);
     }
 
     #[test]

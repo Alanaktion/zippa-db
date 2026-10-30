@@ -1546,6 +1546,71 @@ async fn live_mysql_a_mysqldump_file_imports_with_its_table_locks() {
     connection.close().await;
 }
 
+/// A dump in `pg_dump`'s plain format, where every `COPY` sits behind a
+/// `-- Data for Name: …` comment block, has its data streamed through `COPY`
+/// rather than read as SQL. Against `compose.yaml`'s `postgres` service.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_a_pg_dump_file_imports_its_copy_data() {
+    use crate::db::{ImportRequest, OnError};
+
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    connection
+        .execute("DROP TABLE IF EXISTS zippa_import_copy", vec![])
+        .await
+        .expect("could not clear the fixture");
+
+    let path = env::temp_dir().join(format!("zippa-dump-{}.sql", Uuid::new_v4()));
+    std::fs::write(
+        &path,
+        "--\n-- PostgreSQL database dump\n--\n\n\
+         SET client_encoding = 'UTF8';\n\n\
+         --\n-- Name: zippa_import_copy; Type: TABLE; Schema: public; Owner: postgres\n--\n\n\
+         CREATE TABLE public.zippa_import_copy (\n    id integer NOT NULL,\n    name text\n);\n\n\
+         --\n-- Data for Name: zippa_import_copy; Type: TABLE DATA; Schema: public; Owner: postgres\n--\n\n\
+         COPY public.zippa_import_copy (id, name) FROM stdin;\n\
+         1\tone; two\n\
+         2\t\\N\n\
+         3\tthree\n\
+         \\.\n\n\n\
+         --\n-- PostgreSQL database dump complete\n--\n\n",
+    )
+    .expect("could not write the dump");
+
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let summary = connection
+        .import_dump(
+            ImportRequest {
+                path: path.clone(),
+                on_error: OnError::Rollback,
+            },
+            sender,
+        )
+        .await;
+    std::fs::remove_file(&path).ok();
+    let summary = summary.expect("the dump should import");
+    assert!(summary.errors.is_empty(), "{:?}", summary.errors);
+
+    let rows = connection
+        .run_query("SELECT id, name FROM zippa_import_copy ORDER BY id")
+        .await
+        .expect("the read failed");
+    assert_eq!(
+        rows.rows,
+        [
+            [Some("1".to_string()), Some("one; two".to_string())],
+            [Some("2".to_string()), None],
+            [Some("3".to_string()), Some("three".to_string())],
+        ]
+    );
+
+    connection
+        .execute("DROP TABLE zippa_import_copy", vec![])
+        .await
+        .ok();
+    connection.close().await;
+}
+
 /// A wrong SSH password is refused with a message that says so, before the
 /// database is ever asked.
 #[tokio::test]
