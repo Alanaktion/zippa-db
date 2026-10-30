@@ -1,7 +1,7 @@
 # Pinned connection per query tab, with transactions
 
 ## Status (2026-10-04, updated 2026-10-20)
-Implemented in `src/db/pinned.rs`; the follow-ups left are in TODO.md §3. Spike findings, and where the build differs from the design below:
+Implemented in `src/db/pinned.rs`; the follow-ups left are tracked as GitHub issues. Spike findings, and where the build differs from the design below:
 - sqlx 0.9 tracks transaction status per connection (Postgres `ReadyForQuery`, MySQL `SERVER_STATUS_IN_TRANS`, SQLite `sqlite3_get_autocommit`) but only behind `pub(crate)`; `Connection::is_in_transaction` counts sqlx-managed transactions only. So: Postgres probes `now() <> statement_timestamp()` after each run (`25P02` means failed), SQLite calls `sqlite3_get_autocommit` through `lock_handle` + `libsqlite3-sys`, and MySQL follows its state from the statements (`pinned::mysql_after`).
 - `fetch_all`/`execute_with` were not refactored: `Dedicated` (added for script runs) already runs one connection's statements, including MySQL's text-protocol fallback, so the pin is built on it.
 - Cancel asks the server to stop (`pg_cancel_backend` / `KILL QUERY`) *and* aborts the task, which closes the pinned connection (an open transaction is rolled back, and the status says so). Keeping the connection after a cancel is a follow-up.
@@ -60,7 +60,7 @@ SQLite: file-based, a pinned connection with an open write transaction holds the
 
 ## Critical files
 - new: `src/db/pinned.rs`, `src/ui/tests/transactions.rs`
-- edit: `src/db/{connection,statement,sqlite,postgres,mysql,mod}.rs`, `src/ui/session/{mod,tab,panel}.rs`, `src/ui/query_editor.rs`, `src/app.rs` (quit/close guards), `TODO.md`, `CLAUDE.md` ("Running SQL": editor runs on a per-tab pinned connection; pool for generated SQL)
+- edit: `src/db/{connection,statement,sqlite,postgres,mysql,mod}.rs`, `src/ui/session/{mod,tab,panel}.rs`, `src/ui/query_editor.rs`, `src/app.rs` (quit/close guards), `CLAUDE.md` ("Running SQL": editor runs on a per-tab pinned connection; pool for generated SQL)
 - reuse: `runtime::spawn` + abort handle, `Connection::refuse_write`, `TempDatabase` fixture, `Status`/`notify_error`.
 - `Connection::import_dump` should adopt `PinnedConnection` instead of its own held-connection code.
 

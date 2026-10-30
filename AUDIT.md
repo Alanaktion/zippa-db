@@ -41,7 +41,7 @@ The "destructive statement" count only sees the first 64 KiB of the dump (`src/d
 
 ### [M] Export reads the whole table and the whole rendering into memory
 
-`TableView::export` runs `select_sql(paged: false)` into one `QueryResult` and then builds the entire output `String` before one write (`src/ui/table_view/export.rs`). `TODO.md` lists streaming as open, so this is known — noted because it is the largest unbounded allocation in the app.
+`TableView::export` runs `select_sql(paged: false)` into one `QueryResult` and then builds the entire output `String` before one write (`src/ui/table_view/export.rs`). streaming is a known open item — noted because it is the largest unbounded allocation in the app.
 
 ### [L] Other partial edges
 
@@ -139,7 +139,7 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 - **The right-click menu is untested by design** — the test harness reports the `PopupMenu` as a leaked entity (see the note in `src/ui/tests/mod.rs`). That leaves `menu_row`/`menu_cell` staleness, the export gate, and `stop_right_click` unverified.
 - **In `#[cfg(test)]` the keychain is a no-op** (`src/db/store.rs`), so the real credential-store contract is never exercised and each call site has two code paths to keep right.
 - **Column dragging, the row-limit entry/stepper, and a grid keybinding inside a query tab** have no tests (`src/ui/table_view/mod.rs` `on_limit_event`/`on_limit_step`; `src/ui/tests/rows.rs` calls `copy_as` directly).
-- **MySQL is only tested for metadata and imports through paths that cannot reach most of them** — every pure test in `src/db/tests.rs` opens a SQLite `TempDatabase`, and the MySQL rollback→stop fallback and session-variable restore (`src/db/import/mod.rs`) are MySQL-only.
+- **MySQL is only tested for metadata and imports through paths that cannot reach most of them** — every pure test under `src/db/tests/` opens a SQLite `TempDatabase`, and the MySQL rollback→stop fallback and session-variable restore (`src/db/import/mod.rs`) are MySQL-only.
 - **Live-server tests are `#[ignore]`d by default** and run only in `.github/workflows/live-tests.yml` (nightly, on push to `main`, and on dispatch); each doc comment names its container. The timestamp-labelling divergence is still unverified end to end.
 
 ## 6. CI

@@ -4,7 +4,7 @@
 Shipped: the table half, closing issues #102 and #118. `Connection::definition` and `Connection::table_extras` (`src/db/ddl.rs`) serve a `Form | SQL` panel on every structure tab — tables and views alike — plus read-only Constraints and Triggers sections and sidebar `Copy DDL` / `Show DDL` entries. The earlier view half shipped via `Connection::view_definition` (issue #53); `definition` now routes views through it, so there is one panel for both kinds.
 
 ## Context
-`SchemaView` (`src/ui/schema_view/`) is an editable form for a table's columns, indexes, and foreign keys that diffs itself into `ALTER` statements; `TableSchema` carries exactly those three things. Missing: the definition as SQL text (`CREATE TABLE …`), triggers, and check/unique/exclusion constraints, and a definition view for views. TODO.md's "View definition viewer and editor" is covered here on the viewer side; a full editor is separate (this plan only offers "Open in query tab", where the user edits and runs `CREATE OR REPLACE VIEW`).
+`SchemaView` (`src/ui/schema_view/`) is an editable form for a table's columns, indexes, and foreign keys that diffs itself into `ALTER` statements; `TableSchema` carries exactly those three things. Missing: the definition as SQL text (`CREATE TABLE …`), triggers, and check/unique/exclusion constraints, and a definition view for views. The backlog's "View definition viewer and editor" is covered here on the viewer side; a full editor is separate (this plan only offers "Open in query tab", where the user edits and runs `CREATE OR REPLACE VIEW`).
 
 Decision (from user): fill the gaps only. Do not restructure `SchemaView`; add a read-only SQL panel and read-only trigger/constraint sections next to the existing forms.
 
@@ -43,7 +43,7 @@ Decision (from user): fill the gaps only. Do not restructure `SchemaView`; add a
 
 ## Critical files
 - new: `src/db/ddl.rs`
-- edit: `src/db/{mod,schema,connection,postgres,mysql,sqlite}.rs`, `src/ui/schema_view/mod.rs` (and a small `schema_view/definition.rs` for the panel to keep the file from growing further), `src/ui/session/sidebar.rs`, `src/ui/session/tab.rs`, `src/ui/tests/schema.rs`, `TODO.md` (tick the viewer half of "View definition viewer and editor" and note the editor remains), `README.md`, `CLAUDE.md` (schema view note)
+- edit: `src/db/{mod,schema,connection,postgres,mysql,sqlite}.rs`, `src/ui/schema_view/mod.rs` (and a small `schema_view/definition.rs` for the panel to keep the file from growing further), `src/ui/session/sidebar.rs`, `src/ui/session/tab.rs`, `src/ui/tests/schema.rs`, `README.md`, `CLAUDE.md` (schema view note)
 - reuse: `sql::quote_identifier`, `sql_file::{prompt_for_save,write}`, `QueryEditor` highlighting setup, `Session` "open query tab with text" path used by quick actions.
 
 ## Testing

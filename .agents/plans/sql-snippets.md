@@ -1,7 +1,7 @@
 # SQL snippets library
 
 ## Context
-TODO.md "Query History & Snippets" lists a reusable SQL code snippets library. Users currently keep frequent queries in `.sql` files (`sql_file.rs` open/save) or retype them. Goal: named, tagged snippets stored locally, inserted into the editor from a searchable dialog, with optional `${placeholder}` fields. Shares the dialog pattern with [query-history.md](query-history.md); build history first or extract the shared list-dialog pieces when the second one lands.
+The backlog asks for a reusable SQL code snippets library. Users currently keep frequent queries in `.sql` files (`sql_file.rs` open/save) or retype them. Goal: named, tagged snippets stored locally, inserted into the editor from a searchable dialog, with optional `${placeholder}` fields. Shares the dialog pattern with [query-history.md](query-history.md); build history first or extract the shared list-dialog pieces when the second one lands.
 
 ## Decisions
 - Scope: snippets are global (available on every connection) with an optional engine tag (`Any`, `Postgres`, `MySql`, `Sqlite`) so the picker can prefer matching ones. No per-connection scoping in v1.
@@ -39,7 +39,7 @@ pub struct Snippet {
 ### 3. Wiring
 - Actions in `query_editor.rs`/`session/mod.rs`: `InsertSnippet`, `SaveSnippet`. Keys in `keymap.rs`: `secondary-shift-s`? That is likely Save As on some platforms — check existing `SaveFileAs` binding and pick a free one; suggested `secondary-alt-s` for `InsertSnippet` and none for `SaveSnippet` (menu/context menu only, since it is rarer). Contexts: `QueryEditor > Input`, `QueryEditor`, `Session`.
 - Menu (`menu.rs`): `Edit > Insert Snippet…`, `Edit > Save as Snippet…`. Quick switcher: `Insert Snippet…` action. Editor right-click menu: same two entries. Toolbar button with `.accessibility_label("Insert snippet")`.
-- Shortcuts dialog, README, and `TODO.md` updated. CLAUDE.md gets a "Snippets" note under Persistence split.
+- Shortcuts dialog, and README updated. CLAUDE.md gets a "Snippets" note under Persistence split.
 - Settings: none in v1. Optional "Open snippets file" button to reveal `snippets.json` (also gives an export/backup path). Import/export dedicated UI is a follow-up.
 
 ### 4. Sequencing (each step compiles and tests green)
@@ -53,7 +53,7 @@ pub struct Snippet {
 
 ## Critical files
 - new: `src/snippets.rs`, `src/ui/snippet_picker.rs`, `src/ui/snippet_editor.rs`, `src/ui/tests/snippets.rs`
-- edit: `src/db/store.rs` (or a shared atomic-write helper it exposes), `src/ui/query_editor.rs`, `src/ui/session/mod.rs`, `src/ui/quick_switcher.rs`, `src/ui/mod.rs`, `src/keymap.rs`, `src/menu.rs`, `src/ui/shortcuts_dialog.rs`, `src/main.rs`, `README.md`, `TODO.md`
+- edit: `src/db/store.rs` (or a shared atomic-write helper it exposes), `src/ui/query_editor.rs`, `src/ui/session/mod.rs`, `src/ui/quick_switcher.rs`, `src/ui/mod.rs`, `src/keymap.rs`, `src/menu.rs`, `src/ui/shortcuts_dialog.rs`, `src/main.rs`, `README.md`
 - reuse: `statement::at_cursor`, `settings::update` pattern, `QuickSwitcherView` structure, `sql_file` for any file dialogs, `ScratchDir` fixture.
 
 ## Testing

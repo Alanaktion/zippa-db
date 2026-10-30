@@ -1,7 +1,7 @@
 # CSV import into a table
 
 ## Context
-TODO.md's "Import & Export Tools" section has export but no way to load tabular data. Users with a CSV/TSV file and an existing table have to write `INSERT`s by hand or convert to a dump. Goal: import a delimited file into one specific table, with a UI to map file columns to table columns, a preview, safety checks, error handling, and progress. Complements the SQL dump import (`src/db/import/`), which covers whole-dump restore; the two share the runner shape (dedicated connection, progress channel, error policy) and should share code where noted.
+There is export but no way to load tabular data. Users with a CSV/TSV file and an existing table have to write `INSERT`s by hand or convert to a dump. Goal: import a delimited file into one specific table, with a UI to map file columns to table columns, a preview, safety checks, error handling, and progress. Complements the SQL dump import (`src/db/import/`), which covers whole-dump restore; the two share the runner shape (dedicated connection, progress channel, error policy) and should share code where noted.
 
 ## Design
 
@@ -63,11 +63,11 @@ Modal dialog (`window.open_dialog`), same hosting as `value_dialog` / the dump i
 - On finish: if the table is open in a tab, offer "Reload" (re-reads from the first page through the existing staged-edit guard); refresh the sidebar object list. Staged edits in that tab are never discarded silently.
 
 ### 6. Docs and backlog
-TODO.md: add "Import CSV into a table" under "Import & Export Tools" and tick it when done; README shortcut; CLAUDE.md gets a short "Importing rows" note next to "Running SQL".
+Close the GitHub issue; README shortcut; CLAUDE.md gets a short "Importing rows" note next to "Running SQL".
 
 ## Critical files
 - new: `src/db/import/{csv,mapping,table}.rs`, `src/ui/csv_import/{mod,mapping,preview}.rs`, `src/ui/tests/csv_import.rs`
-- edit: `Cargo.toml` (`csv`, `encoding_rs`), `src/db/{mod,connection,sql}.rs`, `src/db/{postgres,mysql,sqlite}.rs` (`COLUMNS_SQL`), `src/ui/table_view/sql.rs` (call the shared insert builder), `src/ui/table_view/mod.rs` (Import button), `src/ui/session/{mod,sidebar}.rs`, `src/ui/mod.rs`, `src/keymap.rs`, `src/menu.rs`, `src/ui/shortcuts_dialog.rs`, `TODO.md`, `README.md`
+- edit: `Cargo.toml` (`csv`, `encoding_rs`), `src/db/{mod,connection,sql}.rs`, `src/db/{postgres,mysql,sqlite}.rs` (`COLUMNS_SQL`), `src/ui/table_view/sql.rs` (call the shared insert builder), `src/ui/table_view/mod.rs` (Import button), `src/ui/session/{mod,sidebar}.rs`, `src/ui/mod.rs`, `src/keymap.rs`, `src/menu.rs`, `src/ui/shortcuts_dialog.rs`, `README.md`
 - reuse: `runtime::spawn` + abort handle, `quote_identifier` / `typed_placeholder` / `keyword_literal` / `placeholder` (`src/db/sql.rs`), `Connection::objects` and `row_key` (primary key lookup for upsert), `config.safety`, `sql_file::prompt_for_open`, `Session::report` / `notify_error`, `TempDatabase` / `ScratchDir` fixtures, `settings::Settings` NULL-text setting.
 - Note: the working tree has uncommitted edits in several of these files (`src/db/connection.rs`, `src/ui/session/mod.rs`, `src/ui/session/sidebar.rs`, `src/keymap.rs`, `src/menu.rs`, `src/ui/shortcuts_dialog.rs`); edit on top, never revert.
 

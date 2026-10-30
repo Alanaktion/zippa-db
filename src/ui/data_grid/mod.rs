@@ -3,7 +3,7 @@
 //! The table virtualizes rows and columns, and cells can be typed into when
 //! the owner allows it: edits are staged in an overlay over the result and
 //! handed back for the owner to write. Specialized cell renderers (a date
-//! picker, say) are still ahead (TODO.md section 2).
+//! picker, say) are still ahead.
 //!
 //! The work is split by concern: [`layout`] sizes the columns, [`format`] lays
 //! one value out for reading, [`delegate`] holds the result together with

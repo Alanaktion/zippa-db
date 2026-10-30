@@ -44,7 +44,7 @@ Load alongside `load_foreign_keys` (`table_view/mod.rs:322`): field `inbound: Op
 The handler for `NavigateToForeignKey` already opens or focuses the target table tab and applies the filter; generalise it to `filters` and reuse it for inbound jumps (same event; the "object" is the child table). No new tab kind.
 
 ### 6. Docs
-README feature line, TODO.md (this is not a listed item; add a checked line under Data Browser), CLAUDE.md "Filtering" gets a sentence on jumps in both directions.
+README feature line, CLAUDE.md "Filtering" gets a sentence on jumps in both directions.
 
 ## Sequencing
 1. `InboundKey` + `referencing_keys` per engine with SQLite tests.

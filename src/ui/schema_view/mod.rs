@@ -1,6 +1,6 @@
 //! A table's own definition: columns, indexes, and foreign keys.
 //!
-//! TODO.md's "Table Schema Inspector & DDL Generator". Every section is now a
+//! Every section is now a
 //! form that diffs itself against what was loaded and turns the difference
 //! into statements (`sql.rs`), previewed and confirmed before they run —
 //! unconditionally, on every `SafetyMode`, since a dropped column or foreign

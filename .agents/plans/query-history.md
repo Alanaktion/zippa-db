@@ -1,7 +1,7 @@
 # Query execution history
 
 ## Context
-TODO.md "Query History & Snippets" lists a local execution history log, searchable by date, database, or query string. Today nothing records what ran: `Session::send` (`src/ui/session/mod.rs`) runs a buffer and shows results, then forgets it. Goal: every run from the query editor is logged locally, and a searchable History dialog lets the user reopen or re-run an entry.
+The backlog asks for a local execution history log, searchable by date, database, or query string. Today nothing records what ran: `Session::send` (`src/ui/session/mod.rs`) runs a buffer and shows results, then forgets it. Goal: every run from the query editor is logged locally, and a searchable History dialog lets the user reopen or re-run an entry.
 
 ## Decisions
 - Log only what the user typed in the query editor (`send`, both single-statement and script). Do not log statements Zippa generates (table paging, staged edits, filters); they are noise and can be regenerated.
@@ -52,11 +52,11 @@ pub struct HistoryEntry {
 - Query editor: optional `Alt+Up/Down` to step through this connection's previous statements is out of scope; note in TODO as follow-up.
 
 ### 5. Docs
-Tick TODO.md history item; README shortcut; CLAUDE.md "Persistence split" gets a sentence: history is `history.jsonl`, contains SQL text, never passwords.
+README shortcut; CLAUDE.md "Persistence split" gets a sentence: history is `history.jsonl`, contains SQL text, never passwords.
 
 ## Critical files
 - new: `src/db/history.rs`, `src/ui/history_dialog.rs`, `src/ui/tests/history.rs`
-- edit: `src/db/{mod,store}.rs`, `src/settings.rs`, `src/ui/settings_window.rs`, `src/ui/session/mod.rs`, `src/ui/quick_switcher.rs`, `src/ui/mod.rs`, `src/keymap.rs`, `src/menu.rs`, `src/ui/shortcuts_dialog.rs`, `src/main.rs`, `README.md`, `TODO.md`, `Cargo.toml` (only if `chrono` is missing)
+- edit: `src/db/{mod,store}.rs`, `src/settings.rs`, `src/ui/settings_window.rs`, `src/ui/session/mod.rs`, `src/ui/quick_switcher.rs`, `src/ui/mod.rs`, `src/keymap.rs`, `src/menu.rs`, `src/ui/shortcuts_dialog.rs`, `src/main.rs`, `README.md`, `Cargo.toml` (only if `chrono` is missing)
 - reuse: `runtime::spawn` abort/cancel path, `Session::run`, `text_filter`, `ScratchDir` fixture for a temp config dir.
 
 ## Testing

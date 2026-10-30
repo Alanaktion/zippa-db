@@ -73,7 +73,7 @@ fn saving_a_connection_persists_its_colour(cx: &mut TestAppContext) {
     );
 }
 
-/// The footgun IDEAS.md's safety nudge exists to catch: a card for a
+/// The footgun the production-safety nudge exists to catch: a card for a
 /// production-marked, auto-applying connection asks before connecting rather
 /// than opening straight away, the way an ordinary card does.
 #[gpui_kit::test]

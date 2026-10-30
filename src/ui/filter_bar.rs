@@ -1,6 +1,6 @@
 //! The filter bar above a table view.
 //!
-//! TODO.md section 2 ("Advanced filtering GUI"). One line per filter: the
+//! One line per filter: the
 //! column, what to test it with, and the value to test it against. The bar
 //! only describes the filters — turning them into a `where` clause is the
 //! table view's job, since it is the one that knows the engine, the column

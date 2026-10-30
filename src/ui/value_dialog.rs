@@ -1,6 +1,6 @@
 //! A dialog for one cell's value.
 //!
-//! TODO.md section 2 ("Specialized Cell Renderers"). A value too big for a
+//! A value too big for a
 //! grid cell — JSON, several lines, a long string — is opened here instead,
 //! in a text box that fills the dialog. The box is where editing a value in
 //! full will live, so the dialog takes what to do on save from whoever opened

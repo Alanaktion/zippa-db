@@ -14,9 +14,9 @@
 //! a new query tab. The Saved tab's lower section lists the saved dashboards
 //! the same way; clicking one opens it in a dashboard tab and runs it.
 //!
-//! TODO.md section 4 starts here — a tree of databases, schemas, tables,
-//! views, functions and the rest — so the list and the filter over it are
-//! kept apart from the session that owns them.
+//! A tree of databases, schemas, tables, views, functions and the rest would
+//! start here, so the list and the filter over it are kept apart from the
+//! session that owns them.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt;
