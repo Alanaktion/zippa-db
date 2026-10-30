@@ -16,6 +16,8 @@
 use std::fs::File;
 use std::io::{BufWriter, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
@@ -45,6 +47,10 @@ pub struct ExportRequest {
     /// The read's first column is the engine's row id, asked for by name to
     /// address rows (`select rowid, *`), and is not part of the export.
     pub drop_row_id: bool,
+    /// Set by a cancel. Checked once more before the finished file is put in
+    /// place, since a cancel that lands after the last read has no `.await`
+    /// left to stop the export at.
+    pub cancelled: Arc<AtomicBool>,
 }
 
 /// What an export wrote.
@@ -85,6 +91,9 @@ impl Connection {
         self.stream_query_with(&request.sql, request.params, &mut sink)
             .await?;
         let exported = sink.finish()?;
+        if request.cancelled.load(Ordering::Relaxed) {
+            bail!("the export was cancelled");
+        }
         partial.keep()?;
         Ok(exported)
     }
@@ -92,9 +101,9 @@ impl Connection {
 
 /// Lays rows out as they arrive and writes them to the file.
 ///
-/// The file is written from the database runtime. The writes are large and
-/// buffered, and a write into the OS cache is short next to the network read
-/// feeding it, so they are not worth a blocking thread of their own.
+/// The writes are large and buffered, and each is made with
+/// `block_in_place`, so a slow disk holds up this export alone rather than
+/// one of the database runtime's two workers.
 struct FileSink {
     format: Format,
     engine: Engine,
@@ -113,8 +122,8 @@ struct FileSink {
 impl FileSink {
     /// Write out what is gathered.
     fn flush(&mut self) -> Result<()> {
-        self.file
-            .write_all(self.buffer.as_bytes())
+        let (file, buffer) = (&mut self.file, &self.buffer);
+        tokio::task::block_in_place(|| file.write_all(buffer.as_bytes()))
             .with_context(|| format!("could not save {}", self.path.display()))?;
         self.buffer.clear();
         Ok(())
@@ -128,8 +137,8 @@ impl FileSink {
         };
         writer.finish(&mut self.buffer);
         self.flush()?;
-        self.file
-            .flush()
+        let file = &mut self.file;
+        tokio::task::block_in_place(|| file.flush())
             .with_context(|| format!("could not save {}", self.path.display()))?;
         let _ = self.progress.send(writer.rows());
         Ok(Exported {
@@ -195,9 +204,17 @@ impl Partial {
         })
     }
 
+    /// The partial file, created empty. A file it will replace lends it its
+    /// permissions first, so an export over an owner-only file stays
+    /// owner-only, as writing over it in place would have kept it.
     fn file(&self) -> Result<File> {
-        File::create(&self.partial)
-            .with_context(|| format!("could not save {}", self.target.display()))
+        let file = File::create(&self.partial)
+            .with_context(|| format!("could not save {}", self.target.display()))?;
+        if let Ok(existing) = std::fs::metadata(&self.target) {
+            file.set_permissions(existing.permissions())
+                .with_context(|| format!("could not save {}", self.target.display()))?;
+        }
+        Ok(file)
     }
 
     /// Put the finished file where it was asked for.
@@ -308,6 +325,24 @@ mod tests {
             "kept",
             "the file it would have replaced is left alone"
         );
+        std::fs::remove_file(&target).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_export_over_an_owner_only_file_stays_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let target = scratch("private.csv");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let partial = Partial::create(&target).unwrap();
+        partial.file().unwrap().write_all(b"new").unwrap();
+        partial.keep().unwrap();
+
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
         std::fs::remove_file(&target).unwrap();
     }
 

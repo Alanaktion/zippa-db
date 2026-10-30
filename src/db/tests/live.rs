@@ -1637,41 +1637,6 @@ async fn live_ssh_tunnel_reports_a_refused_password() {
     );
 }
 
-/// Counts what a streamed read hands over, and can stop it partway.
-struct CountingSink {
-    columns: Vec<String>,
-    rows: usize,
-    last: Option<String>,
-    stop_after: Option<usize>,
-}
-
-impl CountingSink {
-    fn new(stop_after: Option<usize>) -> Self {
-        Self {
-            columns: Vec::new(),
-            rows: 0,
-            last: None,
-            stop_after,
-        }
-    }
-}
-
-impl crate::db::connection::RowSink for CountingSink {
-    fn columns(&mut self, columns: &[String], _types: &[String]) -> anyhow::Result<()> {
-        self.columns = columns.to_vec();
-        Ok(())
-    }
-
-    fn row(&mut self, row: Vec<Cell>) -> anyhow::Result<()> {
-        if self.stop_after == Some(self.rows) {
-            anyhow::bail!("stopped");
-        }
-        self.rows += 1;
-        self.last = row.into_iter().next().flatten();
-        Ok(())
-    }
-}
-
 /// A streamed read hands over every row of a result far larger than any page,
 /// and one stopped partway closes its connection rather than leaving the
 /// pool to drain the rest. Against `compose.yaml`'s `postgres` service.
@@ -1706,7 +1671,7 @@ async fn live_postgres_a_streamed_read_hands_over_every_row() {
     connection.close().await;
 }
 
-/// The same on MySQL.
+/// The same on MySQL. Against `compose.yaml`'s `mysql` service.
 /// `cargo test -- --ignored live_mysql_a_streamed`.
 #[tokio::test]
 #[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]

@@ -4,6 +4,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Context, Window};
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::db::export::{self, Format};
 use crate::db::export_file::ExportRequest;
@@ -16,10 +18,16 @@ use super::TableView;
 
 /// A whole-table export on its way to a file.
 pub(super) struct Exporting {
+    /// Which export this is, so a database switch can leave an old one's
+    /// late progress and outcome unshown.
+    id: u64,
     /// Rows written so far, as the last progress update said.
     pub(super) rows: usize,
     /// Stops the read; `None` under test, where the export has already run.
     abort: Option<tokio::task::AbortHandle>,
+    /// Checked just before the finished file is put in place, so a cancel
+    /// that lands after the last row is read still writes nothing.
+    cancelled: Arc<AtomicBool>,
 }
 
 impl TableView {
@@ -59,22 +67,35 @@ impl TableView {
                 }
             };
 
-            let request = ExportRequest {
-                sql,
-                params,
-                format,
-                table,
-                path: path.clone(),
-                drop_row_id,
-            };
-            let (progress, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-            let task =
-                runtime::spawn(async move { connection.export_to_file(request, progress).await });
-
+            // Started, or `None` when another export got going while this
+            // dialog was open, or the view has gone.
             let started = this.update(cx, |this, cx| {
+                if this.exporting.is_some() {
+                    return None;
+                }
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let request = ExportRequest {
+                    sql,
+                    params,
+                    format,
+                    table,
+                    path: path.clone(),
+                    drop_row_id,
+                    cancelled: cancelled.clone(),
+                };
+                let (progress, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+                let task =
+                    runtime::spawn(
+                        async move { connection.export_to_file(request, progress).await },
+                    );
+
+                this.export_read += 1;
+                let id = this.export_read;
                 this.exporting = Some(Exporting {
+                    id,
                     rows: 0,
                     abort: task.abort_handle(),
+                    cancelled,
                 });
                 this.error = None;
                 this.notice = None;
@@ -85,7 +106,9 @@ impl TableView {
                 cx.spawn(async move |this, cx| {
                     while let Some(rows) = receiver.recv().await {
                         let updated = this.update(cx, |this, cx| {
-                            if let Some(exporting) = &mut this.exporting {
+                            if let Some(exporting) = &mut this.exporting
+                                && exporting.id == id
+                            {
                                 exporting.rows = rows;
                                 cx.notify();
                             }
@@ -96,23 +119,40 @@ impl TableView {
                     }
                 })
                 .detach();
+                Some((id, task))
             });
-            if started.is_err() {
+            let Ok(Some((id, task))) = started else {
                 return;
-            }
+            };
 
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
-                this.exporting = None;
+                // A database switch has already let this one go.
+                if this
+                    .exporting
+                    .as_ref()
+                    .is_none_or(|exporting| exporting.id != id)
+                {
+                    return;
+                }
+                let cancelled = this
+                    .exporting
+                    .take()
+                    .is_some_and(|exporting| exporting.cancelled.load(Ordering::Relaxed));
                 match result {
+                    // Finished before the cancel reached it: the file is
+                    // whole, so it is reported as written.
                     Ok(Ok(exported)) => {
                         this.error = None;
                         this.notice = Some(export_notice(exported.rows, &path, exported.skipped));
                         cx.notify();
                     }
-                    Ok(Err(error)) => this.fail_export(format!("{error:#}"), window, cx),
-                    // The work was dropped: the half-written file went with it.
-                    Err(_) => {
+                    Ok(Err(error)) if !cancelled => {
+                        this.fail_export(format!("{error:#}"), window, cx)
+                    }
+                    // The work was dropped, or stopped short of putting the
+                    // file in place: the half-written file went with it.
+                    Ok(Err(_)) | Err(_) => {
                         this.notice = Some("Export cancelled; nothing was written".to_string());
                         cx.notify();
                     }
@@ -126,14 +166,14 @@ impl TableView {
     /// Stop the export under way. The footer says so once the work has
     /// wound down.
     pub(super) fn cancel_export(&mut self, cx: &mut Context<Self>) {
-        if let Some(abort) = self
-            .exporting
-            .as_mut()
-            .and_then(|exporting| exporting.abort.take())
-        {
+        let Some(exporting) = self.exporting.as_mut() else {
+            return;
+        };
+        exporting.cancelled.store(true, Ordering::Relaxed);
+        if let Some(abort) = exporting.abort.take() {
             abort.abort();
-            cx.notify();
         }
+        cx.notify();
     }
 
     /// Whether an export is being written.

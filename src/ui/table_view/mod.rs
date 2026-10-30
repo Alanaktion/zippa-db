@@ -206,6 +206,9 @@ pub struct TableView {
     notice: Option<String>,
     /// A whole-table export being written, for the footer.
     exporting: Option<export::Exporting>,
+    /// Counts exports, so one let go by a database switch cannot report into
+    /// the view once it ends.
+    export_read: u64,
     /// An action waiting on an answer about the staged edits it would lose.
     pending: Option<Pending>,
     /// A write waiting on an answer about whether to run at all.
@@ -320,6 +323,7 @@ impl TableView {
             committing: false,
             notice: None,
             exporting: None,
+            export_read: 0,
             pending: None,
             confirming: None,
             reveal: None,
@@ -379,6 +383,10 @@ impl TableView {
         self.notice = None;
         self.error = None;
         self.reveal = None;
+        // An export under way reads the old database: it is stopped, and its
+        // file is not written.
+        self.cancel_export(cx);
+        self.exporting = None;
         self.load_row_key(cx);
         self.load_foreign_keys(cx);
     }
