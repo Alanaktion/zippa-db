@@ -156,6 +156,12 @@ pub struct Settings {
     /// scrollbar, and a bar that is only there while it is already moving
     /// cannot be grabbed with a mouse.
     pub always_show_scrollbars: bool,
+    /// Whether motion is reduced app-wide: dialog transitions settle on
+    /// their first frame instead of animating, and so does every other
+    /// animation. Off by default. One switch for all motion — gpui has
+    /// no dialog-only flag — for users who prefer reduced motion or
+    /// run on a slow GPU.
+    pub reduce_motion: bool,
     /// The key that takes a completion suggestion in the SQL editor.
     pub accept_completion: CompletionKey,
     /// Whether a query tab adds `LIMIT` to a lone `SELECT` that has none, so
@@ -183,6 +189,7 @@ impl Default for Settings {
             coerce_null_literal: true,
             stripe_rows: true,
             always_show_scrollbars: true,
+            reduce_motion: false,
             accept_completion: CompletionKey::default(),
             wrap_scripts_in_transaction: true,
             share_connection_across_buffers: false,
@@ -308,6 +315,10 @@ fn apply(window: Option<&mut Window>, cx: &mut App) {
 
     Theme::change(mode_for(settings.appearance, system), window, cx);
     apply_scrollbars(settings.always_show_scrollbars, cx);
+    // The motion flag is app state rather than theme state, but it rides
+    // the same apply path so a toggle takes effect at once and the saved
+    // value is in force from startup.
+    cx.set_reduce_motion(settings.reduce_motion);
 }
 
 /// Put the scrollbar setting into effect.
@@ -498,6 +509,10 @@ mod tests {
             !settings.parallel_dashboard_queries,
             "a file written before the setting existed should keep dashboard widgets sequential"
         );
+        assert!(
+            !settings.reduce_motion,
+            "a file written before the setting existed should keep animating"
+        );
     }
 
     #[test]
@@ -515,6 +530,10 @@ mod tests {
             !settings.parallel_dashboard_queries,
             "dashboard widgets should keep running one at a time unless the user opts in"
         );
+        assert!(
+            !settings.reduce_motion,
+            "the app should keep animating unless the user opts out"
+        );
     }
 
     #[test]
@@ -523,6 +542,7 @@ mod tests {
             wrap_scripts_in_transaction: false,
             share_connection_across_buffers: true,
             parallel_dashboard_queries: true,
+            reduce_motion: true,
             ..Settings::default()
         };
 
@@ -531,6 +551,7 @@ mod tests {
         assert!(!read.wrap_scripts_in_transaction);
         assert!(read.share_connection_across_buffers);
         assert!(read.parallel_dashboard_queries);
+        assert!(read.reduce_motion);
     }
 
     #[test]
