@@ -1114,9 +1114,27 @@ impl Connection {
 
     /// [`Self::execute`] for a write the Agents panel's model asked for,
     /// logged as such.
+    ///
+    /// The statement runs on a dedicated connection that closes afterwards,
+    /// not on the pool. sqlx resets nothing when a connection goes back to
+    /// its pool, and at Full access the model may send a statement whose
+    /// whole effect is on its session — `SET` (`search_path`, `ROLE`,
+    /// MySQL's `autocommit`), `USE`, a `PRAGMA`, a temporary table that
+    /// shadows a real one, `LOCK TABLES` — which would otherwise outlive the
+    /// write and reach whatever the app next ran on that pooled connection.
     pub(crate) async fn execute_as_agent(&self, sql: &str) -> Result<u64> {
-        self.execute_logged_as(sql, Vec::new(), sql, QuerySource::Agent)
-            .await
+        self.refuse_read_only("the change was not made")?;
+        let started = Instant::now();
+        let result = match self.dedicated().await {
+            Ok(mut connection) => connection.execute_counted(sql).await,
+            Err(error) => Err(error),
+        };
+        let outcome = match &result {
+            Ok(affected) => QueryOutcome::Affected(*affected),
+            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+        };
+        self.log(sql, QuerySource::Agent, started.elapsed(), outcome);
+        result
     }
 
     /// [`Self::execute`], recording `shown` in the query log in place of

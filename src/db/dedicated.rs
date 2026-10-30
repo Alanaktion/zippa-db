@@ -61,27 +61,31 @@ impl Dedicated {
     /// `SAVEPOINT` form, `LOCK TABLES`, and `USE` (error 1295), which are
     /// exactly what a script's transaction and a `mysqldump` file send.
     pub(crate) async fn execute(&mut self, sql: &str) -> Result<()> {
+        self.execute_raw(sql).await.map(drop).map_err(health::plain)
+    }
+
+    /// [`Self::execute`], reporting how many rows the statement changed.
+    pub(crate) async fn execute_counted(&mut self, sql: &str) -> Result<u64> {
         self.execute_raw(sql).await.map_err(health::plain)
     }
 
-    async fn execute_raw(&mut self, sql: &str) -> Result<()> {
+    async fn execute_raw(&mut self, sql: &str) -> Result<u64> {
         // The statement is either the user's own or one of the job's fixed
         // transaction-control statements; nothing in it is bound. It goes by
         // the text protocol, since MySQL refuses `BEGIN` and `SAVEPOINT` over
         // the prepared-statement one (error 1295).
         let statement = AssertSqlSafe(sql.to_string());
-        match self {
+        Ok(match self {
             Dedicated::Postgres(connection, _) => {
-                sqlx::raw_sql(statement).execute(&mut **connection).await?;
+                postgres::rows_affected(&sqlx::raw_sql(statement).execute(&mut **connection).await?)
             }
             Dedicated::MySql(connection) => {
-                sqlx::raw_sql(statement).execute(&mut **connection).await?;
+                mysql::rows_affected(&sqlx::raw_sql(statement).execute(&mut **connection).await?)
             }
             Dedicated::Sqlite(connection) => {
-                sqlx::raw_sql(statement).execute(&mut **connection).await?;
+                sqlite::rows_affected(&sqlx::raw_sql(statement).execute(&mut **connection).await?)
             }
-        }
-        Ok(())
+        })
     }
 
     /// Run one statement and read back its rows, the way a query tab shows

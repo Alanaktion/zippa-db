@@ -154,7 +154,9 @@ fn all() -> Vec<ToolDef> {
             name: "run_write",
             description: "Run one INSERT, UPDATE or DELETE statement (at Full access also DDL \
                 and grants). The user may be asked to approve it first, and may refuse; \
-                a refusal is final for that statement.",
+                a refusal is final for that statement. Each statement runs in a session \
+                of its own, so SET, USE, temporary tables and other session state do not \
+                carry over to later statements.",
             parameters: object_params(
                 json!({ "sql": string_param("One write statement") }),
                 &["sql"],
