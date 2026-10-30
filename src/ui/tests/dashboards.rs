@@ -262,6 +262,49 @@ fn one_failing_widget_does_not_take_the_rest_down(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_widget_that_writes_is_refused_rather_than_run(cx: &mut TestAppContext) {
+    let _lock = dashboards::FILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    // The test session is `Staged`, where a query tab would write without
+    // asking; a dashboard re-runs on every refresh, so it never writes.
+    let (_database, handle) = dashboard_session(
+        cx,
+        vec![dashboard(
+            "Ops",
+            vec![
+                grid_widget("delete from items;"),
+                grid_widget("select id from items;"),
+            ],
+            &[],
+        )],
+    );
+    open_dashboard(cx, handle, "Ops");
+    // Opening runs it once and Refresh again: neither may write.
+    for pass in ["open", "refresh"] {
+        if pass == "refresh" {
+            handle
+                .update(cx, |session, _, cx| session.refresh_dashboard_for_test(cx))
+                .unwrap();
+            cx.run_until_parked();
+        }
+        let summaries = summaries(cx, handle);
+        assert!(
+            summaries[0].status.starts_with("error:") && summaries[0].status.contains("DELETE"),
+            "{pass}: {}",
+            summaries[0].status
+        );
+        assert_eq!(summaries[1].status, "done", "{pass}");
+        assert_eq!(
+            summaries[1].rows,
+            Some(2),
+            "{pass}: the DELETE must not have run"
+        );
+    }
+    dashboards::reset_for_test();
+}
+
+#[gpui_kit::test]
 fn a_chart_column_that_is_not_there_is_the_widgets_own_error(cx: &mut TestAppContext) {
     let _lock = dashboards::FILE_LOCK
         .lock()
@@ -603,11 +646,10 @@ fn editing_a_widget_queues_it_instead_of_dropping_the_others(cx: &mut TestAppCon
     );
     open_dashboard(cx, handle, "Ops");
     handle
-        .update(cx, |session, window, cx| {
+        .update(cx, |session, _, cx| {
             session.edit_dashboard_during_refresh_for_test(
                 0,
                 grid_widget("select id from items limit 1;"),
-                window,
                 cx,
             )
         })

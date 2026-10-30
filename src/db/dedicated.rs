@@ -101,11 +101,16 @@ impl Dedicated {
             .map_err(health::plain)
     }
 
-    /// [`Self::fetch`], reading at most `max_rows` rows. A read that reaches
-    /// the cap leaves the rest of the statement unread, so the connection
-    /// should be dropped after it rather than used again.
-    pub(crate) async fn fetch_capped(&mut self, sql: &str, max_rows: usize) -> Result<QueryResult> {
-        self.fetch_raw(sql, Vec::new(), Some(max_rows))
+    /// [`Self::fetch_with`], reading at most `max_rows` rows when given. A
+    /// read that reaches the cap leaves the rest of the statement unread, so
+    /// the connection should be dropped after it rather than used again.
+    pub(crate) async fn fetch_bounded(
+        &mut self,
+        sql: &str,
+        params: Vec<Cell>,
+        max_rows: Option<usize>,
+    ) -> Result<QueryResult> {
+        self.fetch_raw(sql, params, max_rows)
             .await
             .map_err(health::plain)
     }

@@ -207,10 +207,6 @@ Left open:
 
 - **[L] There is no size limit on a file loaded into the value dialog.** `sql_file::read_bytes` reads it whole. Hex encoding doubles it, and the staged text is held in the grid's edits and sent as one bound parameter, so a multi-gigabyte file takes several times its size in memory and may exceed the server's packet limit (`max_allowed_packet` on MySQL) only when the edit is applied.
 
-### Dashboards
-
-- **[L] Refreshing a dashboard asks only on a `ConfirmWrites` connection.** That matches a query tab. But a dashboard runs every widget again on each refresh, so on a `Staged` or `AutoApply` connection a widget that writes repeats its write on every refresh with no question. A dashboard restored at startup does not run (`open_dashboard_inner(run: false)`), so the gap is limited to opening a dashboard from the sidebar or the palette, the Refresh button, and an edited widget.
-
 ## 14. Pre-release pass (2026-10-30, revision `04c8080`)
 
 Every open item above was re-checked against the code, and the high-value ones fixed in the same change, each with a regression test: agent reads capped at the client (plus live Postgres/MySQL tests that a cut read neither drains nor poisons the pool) and a side-effect function denylist; an autocommit script inside the tab's open transaction now joins it with a savepoint per statement and says so, and refuses a `COMMIT`/`VACUUM`-style blocker; `is_placeholder` takes the column type; `clamp_limit` no longer rewrites the first term of `LIMIT 4000 + 1000`; the SQLite rebuild picks a scratch name nothing else has; the `INSERT` export and copy are schema-qualified; a `pg_dump -d` name that reads as a connection string goes as `dbname='…'`; a failed settings write raises an error toast. The checks were the three CI commands and the live tests (the two SSH-tunnel tests were not run: no jump host).

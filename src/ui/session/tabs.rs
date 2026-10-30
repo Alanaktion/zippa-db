@@ -243,7 +243,7 @@ impl Session {
         });
         self.install(panel.clone(), window, cx);
         if run {
-            panel.update(cx, |panel, cx| panel.dashboard_refresh(window, cx));
+            panel.update(cx, |panel, cx| panel.dashboard_refresh(cx));
         }
         cx.notify();
         true

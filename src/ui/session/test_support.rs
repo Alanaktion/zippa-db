@@ -500,7 +500,6 @@ impl Session {
         &self,
         index: usize,
         widget: crate::dashboards::Widget,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let view = self
@@ -508,8 +507,19 @@ impl Session {
             .and_then(|panel| panel.read(cx).dashboard_view());
         if let Some(view) = view {
             view.update(cx, |view, cx| {
-                view.edit_during_refresh_for_test(index, widget, window, cx)
+                view.edit_during_refresh_for_test(index, widget, cx)
             });
+        }
+    }
+
+    /// Press the active dashboard's Refresh, for tests.
+    #[cfg(test)]
+    pub(crate) fn refresh_dashboard_for_test(&self, cx: &mut Context<Self>) {
+        if let Some(view) = self
+            .active_panel_for_test()
+            .and_then(|panel| panel.read(cx).dashboard_view())
+        {
+            view.update(cx, |view, cx| view.refresh(cx));
         }
     }
 
