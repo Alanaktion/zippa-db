@@ -17,6 +17,8 @@
 //! * [`schema`] — a table's own definition: columns, indexes, foreign keys.
 //! * [`ddl`] — that definition as runnable SQL text, plus its checks,
 //!   unique/exclusion constraints, and triggers.
+//! * [`server`] — administration and diagnostics for server-backed engines,
+//!   plus SQLite's local maintenance commands.
 //! * [`sql`] — quoting and placing bind parameters in generated statements.
 //! * [`statement`] — splitting and classifying the user's own SQL.
 //! * [`plan`] — reading an `EXPLAIN` into a tree.
@@ -55,6 +57,7 @@ pub mod query_log;
 pub mod runtime;
 pub mod schema;
 pub mod script;
+pub mod server;
 pub mod sql;
 pub mod sqlite;
 pub mod statement;
@@ -73,8 +76,7 @@ pub use config::{
 };
 pub(crate) use connection::pool_options;
 pub use connection::{
-    Connection, ConnectionInfo, Credentials, DatabaseObject, ObjectKind, QueryDigest, RowKey,
-    StoredKind, StoredObject,
+    Connection, Credentials, DatabaseObject, ObjectKind, RowKey, StoredKind, StoredObject,
 };
 pub use ddl::TableExtras;
 pub use import::{ImportProgress, ImportRequest, ImportSummary, OnError};
@@ -88,6 +90,7 @@ pub use script::{
     Blocker, Decision, OnFailure, ScriptFailure, ScriptMode, ScriptOutcome, ScriptRun, Step,
     transaction_blocker,
 };
+pub use server::{ConnectionInfo, QueryDigest};
 pub use sql::quote_identifier;
 pub(crate) use sql::{
     binary_placeholder, keyword_literal, placeholder, qualified_name, quote_literal, quoted_list,
