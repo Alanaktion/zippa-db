@@ -491,7 +491,7 @@ impl AgentPanel {
                 name,
                 arguments,
             } => {
-                if !self.tool_item_mut(index).is_some() {
+                if self.tool_item_mut(index).is_none() {
                     self.items.push(Item::Tool {
                         index,
                         name,

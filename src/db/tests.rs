@@ -102,6 +102,109 @@ async fn reads_columns_values_and_nulls() {
 }
 
 #[tokio::test]
+async fn an_agent_read_runs_in_a_session_the_server_holds_read_only() {
+    let database = TempDatabase::new().await;
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not open the test database");
+
+    let read = connection
+        .run_query_as_agent("SELECT name FROM items WHERE id = 1")
+        .await
+        .expect("a plain read should run");
+    assert_eq!(read.rows[0][0].as_deref(), Some("alpha"));
+
+    // The connection itself allows writes; only the agent's session does not,
+    // which is what stops a write hidden where the classifier cannot see it.
+    let refused = connection
+        .run_query_as_agent("INSERT INTO items (id, name) VALUES (9, 'agent')")
+        .await;
+    assert!(
+        refused.is_err(),
+        "the agent's session should refuse a write"
+    );
+    let count = connection
+        .run_query("SELECT count(*) FROM items WHERE id = 9")
+        .await
+        .expect("count failed");
+    assert_eq!(count.rows[0][0].as_deref(), Some("0"));
+
+    // And the pool is left as it was: `query_only` does not leak onto it.
+    connection
+        .execute("INSERT INTO items (id, name) VALUES (9, 'user')", vec![])
+        .await
+        .expect("the user's own write should still run");
+
+    connection.close().await;
+}
+
+/// A `SELECT` that writes through a function is refused on the agent's
+/// read-only session. Against `compose.yaml`'s `postgres` service.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_an_agent_read_cannot_write_through_a_function() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    connection
+        .execute("DROP SEQUENCE IF EXISTS zippa_agent_probe", vec![])
+        .await
+        .expect("could not drop the probe sequence");
+    connection
+        .execute("CREATE SEQUENCE zippa_agent_probe", vec![])
+        .await
+        .expect("could not create the probe sequence");
+
+    let refused = connection
+        .run_query_as_agent("SELECT nextval('zippa_agent_probe')")
+        .await;
+    assert!(refused.is_err(), "nextval should be refused read-only");
+    let read = connection
+        .run_query_as_agent("SELECT last_value, is_called FROM zippa_agent_probe")
+        .await
+        .expect("reading the sequence should run");
+    assert_eq!(read.rows[0][1].as_deref(), Some("0"));
+
+    connection
+        .execute("DROP SEQUENCE zippa_agent_probe", vec![])
+        .await
+        .expect("could not drop the probe sequence");
+    connection.close().await;
+}
+
+/// MySQL's agent session is a read-only transaction too.
+/// `cargo test -- --ignored live_mysql_an_agent`.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_an_agent_read_runs_in_a_read_only_transaction() {
+    let (connection, pool) = live_mysql().await;
+    for sql in [
+        "DROP TABLE IF EXISTS zippa_agent_probe",
+        "CREATE TABLE zippa_agent_probe (id INT PRIMARY KEY)",
+    ] {
+        pool.execute(AssertSqlSafe(sql.to_string()))
+            .await
+            .unwrap_or_else(|error| panic!("{sql}: {error}"));
+    }
+
+    let refused = connection
+        .run_query_as_agent("INSERT INTO zippa_agent_probe VALUES (1)")
+        .await;
+    assert!(
+        refused.is_err(),
+        "the agent's session should refuse a write"
+    );
+    let count = connection
+        .run_query_as_agent("SELECT count(*) FROM zippa_agent_probe")
+        .await
+        .expect("a read should run");
+    assert_eq!(count.rows[0][0].as_deref(), Some("0"));
+
+    pool.execute("DROP TABLE zippa_agent_probe")
+        .await
+        .expect("could not drop the probe table");
+    connection.close().await;
+}
+
+#[tokio::test]
 async fn fetch_binary_reads_the_real_bytes_a_query_only_describes() {
     let database = TempDatabase::new().await;
     let connection = Connection::open(database.config(), None)
@@ -2573,14 +2676,16 @@ async fn live_postgres_geometry_ranges_hstore_and_macaddr8_read_back_as_text() {
         );
     }
 
-    // `tstzrange` is shown in the local zone, so only its shape is pinned.
+    // `tstzrange` is shown in the local zone, so only its shape is pinned:
+    // west of UTC the bound is still the evening of 2023-12-31.
     let result = connection
         .run_query("SELECT '[2024-01-01 00:00+00,)'::tstzrange")
         .await
         .expect("could not read a tstzrange");
     let shown = result.rows[0][0].clone().unwrap_or_default();
     assert!(
-        shown.starts_with("[\"2024-") && shown.ends_with("\",)"),
+        (shown.starts_with("[\"2024-01-01") || shown.starts_with("[\"2023-12-31"))
+            && shown.ends_with("\",)"),
         "{shown}"
     );
 

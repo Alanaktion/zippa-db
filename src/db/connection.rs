@@ -793,9 +793,44 @@ impl Connection {
 
     /// [`Self::run_query`] for a statement the Agents panel's model asked for,
     /// logged as such.
+    ///
+    /// The statement runs inside a read-only session of its own, not on the
+    /// pool: the agent's gate only lets a `SELECT` through, but a `SELECT` can
+    /// still call a function that writes (`nextval`, a user function that
+    /// deletes), and the classifier cannot see into one. A read-only
+    /// transaction (Postgres, MySQL) or `PRAGMA query_only` (SQLite) has the
+    /// server refuse the write instead.
     pub(crate) async fn run_query_as_agent(&self, sql: &str) -> Result<QueryResult> {
-        self.run_query_tagged(sql, Vec::new(), QuerySource::Agent)
-            .await
+        self.refuse_write(sql)?;
+        let started = Instant::now();
+        let result = self.fetch_read_only(sql).await;
+        let outcome = match &result {
+            Ok(result) => query_outcome(result),
+            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+        };
+        self.log(sql, QuerySource::Agent, started.elapsed(), outcome);
+        result
+    }
+
+    /// Run `sql` on a dedicated connection the server holds read-only for
+    /// the length of the statement. The connection closes afterwards rather
+    /// than going back to the pool, so a cancelled read cannot leave its
+    /// transaction, or SQLite's `query_only`, on a pooled connection.
+    async fn fetch_read_only(&self, sql: &str) -> Result<QueryResult> {
+        let mut connection = self.dedicated().await?;
+        let open = match self.config.engine {
+            Engine::Postgres => "BEGIN READ ONLY",
+            Engine::MySql => "START TRANSACTION READ ONLY",
+            Engine::Sqlite => "PRAGMA query_only = ON",
+        };
+        connection.execute(open).await?;
+        let result = connection.fetch(sql).await;
+        if self.config.engine != Engine::Sqlite {
+            // Nothing was written, so this only ends the transaction; the
+            // connection closes either way.
+            connection.execute("ROLLBACK").await.ok();
+        }
+        result
     }
 
     async fn run_query_tagged(

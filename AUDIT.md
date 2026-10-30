@@ -1,7 +1,7 @@
 # Audit — Zippa DB — remaining issues
 
 **Revision audited:** `60e7002` "Add schema search dialog with full catalog" (2026-09-19), branch `main`.
-**Audit date:** 2026-09-21. **Last revised:** 2026-10-20, backlog cleanup (removed findings since fixed; the removed items and their evidence are in the git history).
+**Audit date:** 2026-09-21. **Last revised:** 2026-10-29, §13 (a read of everything merged since the 2026-10-20 cleanup).
 **This revision:** findings that have since been fixed are removed, so only what is still open is listed. The 0.1 cleanup split the largest UI files into submodules (`ui/session/`, `ui/data_grid/`, `ui/table_view/`, `ui/schema_view/`), so anchors are given as `file` plus the function name rather than a line number. The resolved findings and their regression tests are in the git history.
 
 ## How this audit was done
@@ -153,9 +153,10 @@ Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth namin
 
 ## 7. Suggested triage order
 
-1. **Copy byte cap** (§2) — apply `MAX_COPY_BYTES` to every copy.
-2. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations.
-3. **The open design calls in §11.**
+1. **Agent reads that are not bounded** (§13) — the last place model-written SQL can make the server read without limit.
+2. **Copy byte cap** (§2) — apply `MAX_COPY_BYTES` to every copy.
+3. **Export streaming** (§1) and the **catalog's source rows** (§1) — the two largest unbounded allocations.
+4. **The open design calls in §11.**
 
 ## 8. What this audit did and did not cover
 
@@ -223,3 +224,39 @@ A read of what landed after §11 — query variables, saved queries, create data
 Left open:
 
 - **[L] The Postgres user list shows every role,** the built-in `pg_*` roles included (`postgres::USERS_SQL`).
+
+## 13. Feature audit (2026-10-29, revision `0177721`)
+
+A read of what was merged after the §12 cleanup and the 2026-10-20 backlog revision: the Agents panel (`db/agent/`, `ui/agents/`), backups through `pg_dump`/`mysqldump` (`db/backup.rs`, `ui/backup_dialog.rs`), dashboards and charts (`ui/session/dashboard.rs`, `chart.rs`), the implicit `LIMIT` (`session/limit.rs`, `statement::with_limit`/`clamp_limit`), staging a binary value from a file, the structure tab's read-only definition (`db/ddl.rs`, `schema_view/definition.rs`), the table view's quick search, the Messages pane, and connection information. The checks were the three CI commands plus the live tests against `compose.yaml`. Fixed in the same change:
+
+- **[H] An agent "read" could write.** `run_select` and `explain_query` let a statement through only when the classifier sees a plain `SELECT`, but that statement ran on the ordinary pool, so a `SELECT` that writes through a function (`nextval`, `setval`, a user function that deletes rows) ran with the connection's full rights. The classifier cannot see inside a function. A table's rows are also part of the model's context, so text planted in the data could ask for this. At `ReadOnlySql` access, which is meant never to change anything, the change went through without any approval. `Connection::run_query_as_agent` now runs each agent read on a dedicated connection that the server holds read-only: `BEGIN READ ONLY` on Postgres, `START TRANSACTION READ ONLY` on MySQL, `PRAGMA query_only` on SQLite. The connection closes afterwards, so the setting never leaks back onto the pool. Pinned by `an_agent_read_runs_in_a_session_the_server_holds_read_only`, `live_postgres_an_agent_read_cannot_write_through_a_function` and `live_mysql_an_agent_read_runs_in_a_read_only_transaction`.
+- **[M] Staging a large file froze the window.** `binary::hex_encode` formatted a new `String` for every byte, and it runs on the UI thread when the value dialog's file is staged. It now uses a lookup table.
+- **[L] `cargo clippy -D warnings` failed on `main`** (`nonminimal_bool` in `ui/agents/mod.rs`), so CI was red.
+- **[L] `live_postgres_geometry_ranges_hstore_and_macaddr8_read_back_as_text` failed west of UTC.** It expected a `tstzrange` shown in local time to start with `2024-`. CI runs in UTC, so this only failed on local runs.
+- **[L]** `clamp_limit`'s doc comment sat on the private `negative_sign` helper above it, so the public function had no documentation and the helper had two descriptions.
+
+Left open:
+
+### Agents panel
+
+- **[M] An agent read is not always bounded.** `run_select` relies on `statement::clamp_limit`, which returns `None`, leaving the SQL as written, for an outermost `OFFSET` with no `LIMIT`, a `LIMIT` given as an expression, or a locking clause. The comment in `run_select` says "the cap is enforced in SQL", but in these cases the server reads the whole result, and `fetch_all` holds all of it in memory before `format_result` trims it to 100 rows. Wrapping the statement as `SELECT * FROM (…) LIMIT n` would cover these cases, but MySQL refuses a derived table with duplicate column names (`a.id, b.id`), so that wrapper would break joins that work now.
+- **[M] A read-only session does not stop every side effect.** Postgres still allows `pg_terminate_backend`, `pg_cancel_backend`, `pg_advisory_lock`, `dblink_exec` (which writes over another connection), `lo_export` for a superuser, and `set_config`. MySQL still allows `GET_LOCK` and `SLEEP`. A read-only session keeps the agent from changing data, not from affecting the server. `gate::FORBIDDEN` only looks at a statement's first word, so a denylist of function names would be needed to close this.
+- **[L] The keychain is used on the UI thread from Settings.** `settings_window::key_set` reads the API key the first time the Agents page is drawn. The key box's change callback writes `store::set_api_key` on every change, and a failed write is ignored, so the box keeps showing the key as saved (`src/ui/settings_window.rs`). A turn's own read (`ui/agents/mod.rs`) runs on the Tokio runtime and blocks one of its two threads while the keychain answers.
+- **[L] New connections get `Schema` access by default** (`AgentAccess::default`). No schema is sent anywhere until the user sets an endpoint, and the Settings page says what will be sent. But once an endpoint is set, every saved connection, production ones included, offers its table and column names to the model unless it was set to `None` one by one.
+
+### Backups
+
+- **[L] A database or table name is passed to `mysqldump` as a bare positional argument** (`dump_commands`, `src/db/backup.rs`). A table named `--where=…` or `--result-file=…` would be read as an option. Postgres passes the database through `-d`, which also accepts a connection string, so a database named `host=… dbname=…` would connect somewhere else. The names come from the server's own lists, so this needs someone who can already create objects there. Passing names after `--`, or refusing names that start with `-` or contain `=`, would close it.
+- **[L] MySQL `DEFINER` in the reconstructed trigger text is quoted with `quote_literal`** rather than `quote_literal_for(Engine::MySql, …)` (`db/ddl.rs`, `mysql_trigger_rows`), so a backslash in a user or host name would be read as an escape by MySQL if the copied DDL were run.
+
+### Binary values
+
+- **[L] There is no size limit on a file loaded into the value dialog.** `sql_file::read_bytes` reads it whole. Hex encoding doubles it, and the staged text is held in the grid's edits and sent as one bound parameter, so a multi-gigabyte file takes several times its size in memory and may exceed the server's packet limit (`max_allowed_packet` on MySQL) only when the edit is applied.
+
+### Dashboards
+
+- **[L] Refreshing a dashboard asks only on a `ConfirmWrites` connection.** That matches a query tab. But a dashboard runs every widget again on each refresh, so on a `Staged` or `AutoApply` connection a widget that writes repeats its write on every refresh with no question. A dashboard restored at startup does not run (`open_dashboard_inner(run: false)`), so the gap is limited to opening a dashboard from the sidebar or the palette, the Refresh button, and an edited widget.
+
+### Documentation drift
+
+- **[L] `CLAUDE.md`/`AGENTS.md` do not describe the features added since 0.1.2.** There is no architecture paragraph for the Agents panel (its three gates, `QuerySource::Agent`, the API key's keychain entry), backups, dashboards and charts, the quick search, or the structure tab's definition view, and the `src/ui/tests/` file list is missing `agents`, `chart`, `connection_info`, `dashboards`, `messages`, and `table_search`. `README.md` does not mention the Agents panel or that it sends schema and rows to a configurable endpoint.

@@ -353,22 +353,6 @@ pub fn with_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
     Some(format!("{} LIMIT {rows}{}", &sql[..at], &sql[at..]))
 }
 
-/// `sql` rewritten so the server reads at most `rows` rows, when it is one
-/// `SELECT` — or `WITH ... SELECT` — that [`with_limit`] would touch, except
-/// that a bound already written is clamped instead of left alone:
-///
-/// - no outermost bound: `LIMIT rows` is appended, as [`with_limit`] does;
-/// - an outermost `LIMIT` larger than `rows`: its count is replaced with
-///   `rows` — the `LIMIT offset, count` form clamps the count, `LIMIT ALL`
-///   and SQLite's `LIMIT -1` count as unbounded;
-/// - an outermost `FETCH FIRST n ROWS ONLY` larger than `rows`: `n` is
-///   replaced with `rows`;
-/// - an outermost limit already at most `rows`: `None`, the SQL stands.
-///
-/// Anything else — several statements, a write, a locking clause, an
-/// `OFFSET` with no limit to clamp, or a bound placeholder — is `None`, run
-/// as written. Only the outermost query is looked at: a `LIMIT` inside a
-/// subquery or a common table expression bounds that one alone.
 /// Byte index of a `-` in `between` that is the negative sign of the count
 /// that follows, rather than a dash inside a comment: `-- …` and `/* … */`
 /// (`# …` on MySQL) are comment text, and the word scanner has already
@@ -405,6 +389,22 @@ fn negative_sign(between: &str, engine: Engine) -> Option<usize> {
     None
 }
 
+/// `sql` rewritten so the server reads at most `rows` rows, when it is one
+/// `SELECT` — or `WITH ... SELECT` — that [`with_limit`] would touch, except
+/// that a bound already written is clamped instead of left alone:
+///
+/// - no outermost bound: `LIMIT rows` is appended, as [`with_limit`] does;
+/// - an outermost `LIMIT` larger than `rows`: its count is replaced with
+///   `rows` — the `LIMIT offset, count` form clamps the count, `LIMIT ALL`
+///   and SQLite's `LIMIT -1` count as unbounded;
+/// - an outermost `FETCH FIRST n ROWS ONLY` larger than `rows`: `n` is
+///   replaced with `rows`;
+/// - an outermost limit already at most `rows`: `None`, the SQL stands.
+///
+/// Anything else — several statements, a write, a locking clause, an
+/// `OFFSET` with no limit to clamp, or a bound placeholder — is `None`, run
+/// as written. Only the outermost query is looked at: a `LIMIT` inside a
+/// subquery or a common table expression bounds that one alone.
 pub fn clamp_limit(sql: &str, rows: usize, engine: Engine) -> Option<String> {
     let mut statements = statements(sql, engine)
         .into_iter()

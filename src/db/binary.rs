@@ -46,9 +46,14 @@ const HEX_DUMP_LIMIT: usize = 4096;
 /// Lowercase, so the grid can tell a staged binary value from typed text by
 /// the column's type alone.
 pub fn hex_encode(bytes: &[u8]) -> String {
+    // A table rather than `format!` per byte: this runs on the UI thread when
+    // a file is staged, and a formatted string per byte made a large file
+    // stall the window.
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
+        out.push(DIGITS[usize::from(byte >> 4)] as char);
+        out.push(DIGITS[usize::from(byte & 0x0f)] as char);
     }
     out
 }
