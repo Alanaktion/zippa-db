@@ -45,7 +45,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       # Advisories, licences, duplicate versions, and sources (deny.toml).
+      # The action runs in its own container, which has no sccache and no lld,
+      # and inherits the workflow env: clear both or `cargo metadata` fails.
       - uses: EmbarkStudios/cargo-deny-action@v2
+        env:
+          RUSTC_WRAPPER: ""
+          RUSTFLAGS: ""
 
   clippy:
     name: Clippy
