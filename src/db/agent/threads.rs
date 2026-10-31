@@ -15,8 +15,10 @@
 //! menu; there is no age expiry, since a thread's age says nothing about
 //! whether its owner still wants it.
 
+use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::io::{BufRead as _, BufReader};
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
@@ -84,9 +86,8 @@ fn thread_file(connection_id: Uuid, thread_id: Uuid) -> Result<PathBuf> {
 }
 
 /// Turn model messages into file lines. `tool_errors` runs alongside the
-/// tool results in the thread, in order — a tool item the panel settled as
-/// stopped has no message and so consumes no flag — saying which results
-/// were errors, since [`Message::Tool`] itself does not carry that.
+/// thread's tool results, one flag per [`Message::Tool`] in order, saying
+/// which were errors, since the message itself does not carry that.
 pub fn to_saved(
     messages: &[Message],
     tool_errors: impl IntoIterator<Item = bool>,
@@ -122,19 +123,55 @@ pub fn to_saved(
         .collect()
 }
 
+/// Which saved call each tool result answers, as `(assistant line, call
+/// position)` -> tool line. A result answers the first still-open call with
+/// its id in the most recent assistant message that has one: ids are only
+/// unique within a reply (a provider that sends none gets `call_0`,
+/// `call_1`, … each round), so an earlier turn's unanswered `call_0` must
+/// not claim a later turn's result.
+pub fn answers(saved: &[SavedMessage]) -> HashMap<(usize, usize), usize> {
+    let mut open: Vec<(usize, usize, &str)> = Vec::new();
+    let mut answered = HashMap::new();
+    for (line_index, line) in saved.iter().enumerate() {
+        match line {
+            SavedMessage::Assistant { tool_calls, .. } => {
+                for (position, call) in tool_calls.iter().enumerate() {
+                    open.push((line_index, position, &call.id));
+                }
+            }
+            SavedMessage::Tool { id, .. } => {
+                let Some(latest) = open
+                    .iter()
+                    .rev()
+                    .find(|(_, _, call_id)| call_id == id)
+                    .map(|(line, _, _)| *line)
+                else {
+                    continue;
+                };
+                if let Some(slot) = open
+                    .iter()
+                    .position(|(line, _, call_id)| *line == latest && call_id == id)
+                {
+                    let (line, position, _) = open.remove(slot);
+                    answered.insert((line, position), line_index);
+                }
+            }
+            SavedMessage::User { .. } => {}
+        }
+    }
+    answered
+}
+
 /// Turn file lines back into model messages. A call with no result — a turn
 /// cut off before its tools answered — cannot go back to the model, which
 /// requires every call answered, so it is stripped from its assistant
-/// message; a message left with neither words nor calls is dropped.
+/// message, and a result that answers no call is dropped for the same
+/// reason; a message left with neither words nor calls is dropped too.
 pub fn to_messages(saved: &[SavedMessage]) -> Vec<Message> {
-    let mut answered: Vec<&str> = Vec::new();
-    for line in saved {
-        if let SavedMessage::Tool { id, .. } = line {
-            answered.push(id);
-        }
-    }
+    let answered = answers(saved);
+    let kept_results: std::collections::HashSet<usize> = answered.values().copied().collect();
     let mut messages = Vec::new();
-    for line in saved {
+    for (line_index, line) in saved.iter().enumerate() {
         match line {
             SavedMessage::User { content } => messages.push(Message::User(content.clone())),
             SavedMessage::Assistant {
@@ -143,8 +180,9 @@ pub fn to_messages(saved: &[SavedMessage]) -> Vec<Message> {
             } => {
                 let calls: Vec<ToolCall> = tool_calls
                     .iter()
-                    .filter(|call| answered.iter().any(|id| id == &call.id))
-                    .map(|call| ToolCall {
+                    .enumerate()
+                    .filter(|(position, _)| answered.contains_key(&(line_index, *position)))
+                    .map(|(_, call)| ToolCall {
                         id: call.id.clone(),
                         name: call.name.clone(),
                         arguments: call.arguments.clone(),
@@ -157,13 +195,31 @@ pub fn to_messages(saved: &[SavedMessage]) -> Vec<Message> {
                     });
                 }
             }
-            SavedMessage::Tool { id, content, .. } => messages.push(Message::Tool {
-                id: id.clone(),
-                content: content.clone(),
-            }),
+            SavedMessage::Tool { id, content, .. } => {
+                if kept_results.contains(&line_index) {
+                    messages.push(Message::Tool {
+                        id: id.clone(),
+                        content: content.clone(),
+                    });
+                }
+            }
         }
     }
     messages
+}
+
+/// The error flags for the thread [`to_messages`] rebuilds, one per tool
+/// result it keeps, in order — what the panel saves back alongside it.
+pub fn tool_errors(saved: &[SavedMessage]) -> Vec<bool> {
+    let kept: std::collections::HashSet<usize> = answers(saved).values().copied().collect();
+    saved
+        .iter()
+        .enumerate()
+        .filter_map(|(line_index, line)| match line {
+            SavedMessage::Tool { is_error, .. } if kept.contains(&line_index) => Some(*is_error),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A thread's title: its first user message, on one line, truncated.
@@ -195,41 +251,20 @@ pub fn load(connection_id: Uuid, thread_id: Uuid) -> Result<Vec<SavedMessage>> {
         .collect()
 }
 
-/// List a connection's threads, newest first. Files that do not parse are
-/// left out rather than listed under a title they may not have.
+/// List a connection's threads, newest first. Only as much of each file is
+/// read as its title needs — up to its first user message — so opening the
+/// menu stays cheap however long the saved transcripts are. A file whose
+/// lines up to there do not parse is left out rather than listed under a
+/// title it may not have.
 pub fn list(connection_id: Uuid) -> Result<Vec<SavedThread>> {
-    let dir = threads_dir(connection_id)?;
     let mut threads = Vec::new();
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return Ok(threads);
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-        let Ok(id) = Uuid::parse_str(stem) else {
-            continue;
-        };
-        if path.extension().is_some_and(|ext| ext != "jsonl") {
-            continue;
-        }
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(lines) = text
-            .lines()
-            .map(serde_json::from_str)
-            .collect::<std::result::Result<Vec<SavedMessage>, _>>()
-        else {
-            continue;
-        };
-        let Ok(updated_at) = entry.metadata().and_then(|meta| meta.modified()) else {
+    for (id, path, updated_at) in thread_files(&threads_dir(connection_id)?) {
+        let Some(title) = read_title(&path) else {
             continue;
         };
         threads.push(SavedThread {
             id,
-            title: title_of(&lines),
+            title,
             updated_at,
         });
     }
@@ -237,17 +272,56 @@ pub fn list(connection_id: Uuid) -> Result<Vec<SavedThread>> {
     Ok(threads)
 }
 
+/// Every `<uuid>.jsonl` in `dir`, with its modification time.
+fn thread_files(dir: &Path) -> Vec<(Uuid, PathBuf, SystemTime)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
+                return None;
+            }
+            let id = Uuid::parse_str(path.file_stem()?.to_str()?).ok()?;
+            let updated_at = entry.metadata().and_then(|meta| meta.modified()).ok()?;
+            Some((id, path, updated_at))
+        })
+        .collect()
+}
+
+/// A thread file's title, reading lines only until the first user message.
+fn read_title(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut read = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line: SavedMessage = serde_json::from_str(&line.ok()?).ok()?;
+        let is_user = matches!(line, SavedMessage::User { .. });
+        read.push(line);
+        if is_user {
+            break;
+        }
+    }
+    Some(title_of(&read))
+}
+
 /// Write a thread's lines, restricted to the owner like every other file
 /// that can hold a pasted secret, then prune the directory back to the cap.
 /// Returns whether this was the connection's first saved thread, so the
 /// panel can warn once that history is now being kept on this machine.
-pub fn save(connection_id: Uuid, thread_id: Uuid, saved: &[SavedMessage]) -> Result<bool> {
-    let dir = threads_dir(connection_id)?;
-    fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
-    let first = fs::read_dir(&dir)
-        .map(|entries| entries.flatten().next().is_none())
-        .unwrap_or(true);
-    let path = thread_file(connection_id, thread_id)?;
+///
+/// `dir` is [`threads_dir`], resolved by the caller before it hands the
+/// write to a background thread, and `ticket` is drawn when the snapshot
+/// was taken, so an older save that lands late cannot replace a newer one.
+pub fn save(
+    dir: &Path,
+    thread_id: Uuid,
+    saved: &[SavedMessage],
+    ticket: store::Ticket,
+) -> Result<bool> {
+    fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
+    let first = thread_files(dir).is_empty();
     let mut text = String::new();
     for line in saved {
         text.push_str(&serde_json::to_string(line)?);
@@ -255,29 +329,24 @@ pub fn save(connection_id: Uuid, thread_id: Uuid, saved: &[SavedMessage]) -> Res
     }
     // Through a temporary file and a rename, so a crash mid-write never
     // leaves a half-written thread in place of a whole one.
-    let temporary = dir.join(format!("{thread_id}.jsonl.tmp"));
-    store::write_restricted(&temporary, &text)?;
-    if let Err(error) = fs::rename(&temporary, &path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error).with_context(|| format!("could not save {}", path.display()));
-    }
-    prune(connection_id, thread_id)?;
+    store::write_atomic(&dir.join(format!("{thread_id}.jsonl")), &text, ticket)?;
+    prune(dir, thread_id)?;
     Ok(first)
 }
 
 /// Drop every thread past the cap, oldest first, keeping `keep` whatever
 /// its age — the thread just saved is the newest by write time anyway, but
-/// a clock that jumped backwards must not prune the thread in hand.
-fn prune(connection_id: Uuid, keep: Uuid) -> Result<()> {
-    // `list` already orders newest first, so skipping the cap drops the
-    // oldest.
-    let threads = list(connection_id)?;
-    if threads.len() <= MAX_SAVED_THREADS {
+/// a clock that jumped backwards must not prune the thread in hand. Reads
+/// only file names and times, never a transcript.
+fn prune(dir: &Path, keep: Uuid) -> Result<()> {
+    let mut files = thread_files(dir);
+    if files.len() <= MAX_SAVED_THREADS {
         return Ok(());
     }
-    for thread in threads.into_iter().skip(MAX_SAVED_THREADS) {
-        if thread.id != keep {
-            delete(connection_id, thread.id)?;
+    files.sort_by_key(|(_, _, updated_at)| std::cmp::Reverse(*updated_at));
+    for (id, path, _) in files.into_iter().skip(MAX_SAVED_THREADS) {
+        if id != keep {
+            remove(&path)?;
         }
     }
     Ok(())
@@ -285,8 +354,23 @@ fn prune(connection_id: Uuid, keep: Uuid) -> Result<()> {
 
 /// Delete one thread file; deleting what is already gone is not an error.
 pub fn delete(connection_id: Uuid, thread_id: Uuid) -> Result<()> {
-    let path = thread_file(connection_id, thread_id)?;
-    match fs::remove_file(&path) {
+    remove(&thread_file(connection_id, thread_id)?)
+}
+
+/// Delete every saved thread for a connection — its [`threads_dir`] —
+/// for when the connection itself is deleted: its history may hold pasted
+/// secrets, and nothing could list or open it any more. The directory is
+/// resolved by the caller so the removal can run on a background thread.
+pub fn delete_dir(dir: &Path) -> Result<()> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("could not delete {}", dir.display())),
+    }
+}
+
+fn remove(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| format!("could not delete {}", path.display())),
@@ -320,6 +404,23 @@ mod tests {
         ScratchDir(dir)
     }
 
+    fn save_now(connection: Uuid, thread: Uuid, saved: &[SavedMessage]) -> Result<bool> {
+        save(
+            &threads_dir(connection).expect("the config dir should resolve"),
+            thread,
+            saved,
+            store::ticket(),
+        )
+    }
+
+    fn call(id: &str) -> SavedToolCall {
+        SavedToolCall {
+            id: id.into(),
+            name: "list_tables".into(),
+            arguments: "{}".into(),
+        }
+    }
+
     fn sample() -> Vec<Message> {
         vec![
             Message::User("what tables are here?".into()),
@@ -349,7 +450,7 @@ mod tests {
         let thread = Uuid::new_v4();
 
         let saved = to_saved(&sample(), [false]);
-        save(connection, thread, &saved).expect("the thread should save");
+        save_now(connection, thread, &saved).expect("the thread should save");
         let back = load(connection, thread).expect("the thread should load");
         assert_eq!(back, saved);
         assert_eq!(to_messages(&back), sample());
@@ -362,7 +463,7 @@ mod tests {
         let thread = Uuid::new_v4();
 
         let saved = to_saved(&sample(), [true]);
-        save(connection, thread, &saved).expect("the thread should save");
+        save_now(connection, thread, &saved).expect("the thread should save");
         let back = load(connection, thread).expect("the thread should load");
         assert!(matches!(back[2], SavedMessage::Tool { is_error: true, .. }));
     }
@@ -425,9 +526,9 @@ mod tests {
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
 
-        save(connection, first, &to_saved(&sample(), [false]))
+        save_now(connection, first, &to_saved(&sample(), [false]))
             .expect("the first thread should save");
-        save(connection, second, &to_saved(&sample(), [false]))
+        save_now(connection, second, &to_saved(&sample(), [false]))
             .expect("the second thread should save");
         let listed = list(connection).expect("the threads should list");
         assert_eq!(listed.len(), 2);
@@ -450,7 +551,8 @@ mod tests {
         let mut ids = Vec::new();
         for _ in 0..=MAX_SAVED_THREADS {
             let id = Uuid::new_v4();
-            save(connection, id, &to_saved(&sample(), [false])).expect("each thread should save");
+            save_now(connection, id, &to_saved(&sample(), [false]))
+                .expect("each thread should save");
             ids.push(id);
         }
         let listed = list(connection).expect("the threads should list");
@@ -465,5 +567,101 @@ mod tests {
                 .any(|thread| thread.id == ids[MAX_SAVED_THREADS]),
             "the newest thread is kept"
         );
+    }
+
+    #[test]
+    fn a_repeated_call_id_is_answered_in_its_own_turn() {
+        // Providers that send no id get `call_0` every round, so a cut-off
+        // call in one turn shares its id with a later, answered one.
+        let saved = vec![
+            SavedMessage::User {
+                content: "first".into(),
+            },
+            SavedMessage::Assistant {
+                content: None,
+                tool_calls: vec![call("call_0")],
+            },
+            SavedMessage::User {
+                content: "second".into(),
+            },
+            SavedMessage::Assistant {
+                content: None,
+                tool_calls: vec![call("call_0")],
+            },
+            SavedMessage::Tool {
+                id: "call_0".into(),
+                content: "items".into(),
+                is_error: true,
+            },
+        ];
+        let answered = answers(&saved);
+        assert_eq!(
+            answered.get(&(3, 0)),
+            Some(&4),
+            "the later call owns the result"
+        );
+        assert!(
+            !answered.contains_key(&(1, 0)),
+            "the cut-off call stays open"
+        );
+        let messages = to_messages(&saved);
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| matches!(message, Message::Assistant { .. }))
+                .count(),
+            1,
+            "the cut-off call's empty message is dropped: {messages:?}"
+        );
+        assert_eq!(tool_errors(&saved), vec![true]);
+    }
+
+    #[test]
+    fn a_result_that_answers_no_call_is_dropped() {
+        let saved = vec![
+            SavedMessage::User {
+                content: "go".into(),
+            },
+            SavedMessage::Tool {
+                id: "stray".into(),
+                content: "orphan".into(),
+                is_error: false,
+            },
+        ];
+        assert_eq!(to_messages(&saved), vec![Message::User("go".into())]);
+        assert!(tool_errors(&saved).is_empty());
+    }
+
+    #[test]
+    fn deleting_a_connections_threads_removes_them_all() {
+        let _dir = scratch();
+        let connection = Uuid::new_v4();
+        save_now(connection, Uuid::new_v4(), &to_saved(&sample(), [false]))
+            .expect("the thread should save");
+        delete_dir(&threads_dir(connection).expect("the config dir should resolve"))
+            .expect("the threads should delete");
+        assert!(
+            list(connection)
+                .expect("the threads should list")
+                .is_empty()
+        );
+        delete_dir(&threads_dir(connection).expect("the config dir should resolve"))
+            .expect("deleting twice is not an error");
+    }
+
+    #[test]
+    fn a_title_does_not_need_the_rest_of_the_file() {
+        let _dir = scratch();
+        let connection = Uuid::new_v4();
+        let thread = Uuid::new_v4();
+        save_now(connection, thread, &to_saved(&sample(), [false]))
+            .expect("the thread should save");
+        let path = thread_file(connection, thread).expect("the path should resolve");
+        let mut text = fs::read_to_string(&path).expect("the file should read");
+        text.push_str("not json\n");
+        fs::write(&path, text).expect("the file should write");
+        let listed = list(connection).expect("the threads should list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].title, "what tables are here?");
     }
 }

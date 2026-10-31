@@ -380,7 +380,9 @@ fn agents_page() -> SettingPage {
                      listed in the Agents panel's Threads menu by recency. A thread \
                      can hold schema, row data, and pasted secrets, so it is only \
                      written with this on — and restoring one brings its transcript \
-                     back, never a running turn or a waiting approval.",
+                     back, never a running turn or a waiting approval. Turning this off \
+                     keeps the threads already saved; deleting a connection deletes its \
+                     threads.",
                 ),
             ),
         )

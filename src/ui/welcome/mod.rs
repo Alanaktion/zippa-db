@@ -524,11 +524,18 @@ impl Welcome {
 
     fn delete_confirmed(&mut self, id: Uuid, _window: &mut Window, cx: &mut Context<Self>) {
         let (connections, ticket) = change_saved(cx, |list| list.retain(|config| config.id != id));
+        // Saved Agents threads go with their connection: they may hold
+        // pasted secrets, and nothing could list them any more.
+        let threads = crate::db::agent::threads::threads_dir(id).ok();
         store_in_background(
             move || {
                 store::save(&connections, ticket)?;
                 store::delete_password(&id)?;
-                store::delete_ssh_secret(&id)
+                store::delete_ssh_secret(&id)?;
+                match threads {
+                    Some(dir) => crate::db::agent::threads::delete_dir(&dir),
+                    None => Ok(()),
+                }
             },
             cx,
         );

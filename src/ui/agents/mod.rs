@@ -152,6 +152,11 @@ pub struct AgentPanel {
     approval: WriteApproval,
     /// What goes back to the model each turn, system prompt excluded.
     thread: Vec<Message>,
+    /// Whether each tool result in `thread` was an error, one flag per
+    /// [`Message::Tool`] in order, kept beside the thread rather than read
+    /// back off the drawn items: a stopped turn's tools stay drawn but its
+    /// messages never join the thread.
+    tool_errors: Vec<bool>,
     /// The saved file this thread is written to, when thread history is on.
     /// `None` until the first save: a thread that never finished a turn
     /// has no file yet.
@@ -208,6 +213,7 @@ impl AgentPanel {
             connection,
             catalog,
             thread: Vec::new(),
+            tool_errors: Vec::new(),
             thread_id: None,
             items: Vec::new(),
             items_at_turn_start: 0,
@@ -445,6 +451,16 @@ impl AgentPanel {
         // waiting or running for the rest of the thread.
         self.settle_tools("not run");
 
+        // The turn's events are its tool results, one each and in the same
+        // order as its `Message::Tool`s.
+        let results = outcome
+            .messages
+            .iter()
+            .filter(|message| matches!(message, Message::Tool { .. }))
+            .count();
+        let mut errors = outcome.events.iter().map(|event| event.is_error);
+        self.tool_errors
+            .extend((0..results).map(|_| errors.next().unwrap_or(false)));
         self.thread.extend(outcome.messages);
         self.save_thread(cx);
         if outcome.tools_unsupported {
@@ -646,6 +662,7 @@ impl AgentPanel {
     pub fn new_thread(&mut self, cx: &mut Context<Self>) {
         self.stop(cx);
         self.thread.clear();
+        self.tool_errors.clear();
         self.thread_id = None;
         self.items.clear();
         self.tools_supported = true;
@@ -661,27 +678,40 @@ impl AgentPanel {
         if !Settings::global(cx).agent_save_threads || self.thread.is_empty() {
             return;
         }
-        // Finished tools, in order, are the tool results in the thread; a
-        // tool settled as stopped has no message and consumes no flag.
-        let errors = self.items.iter().filter_map(|item| match item {
-            Item::Tool { status, .. } => match status {
-                ToolStatus::Done => Some(false),
-                ToolStatus::Failed => Some(true),
-                _ => None,
-            },
-            _ => None,
-        });
-        let saved = threads::to_saved(&self.thread, errors);
+        let saved = threads::to_saved(&self.thread, self.tool_errors.iter().copied());
         let id = *self.thread_id.get_or_insert_with(Uuid::new_v4);
-        match threads::save(self.connection.config.id, id, &saved) {
-            Ok(true) => self.notice(
-                "Thread history is now saved on this machine, one file per thread, \
-                 and may contain pasted secrets. The Threads menu lists them.",
-                false,
-            ),
-            Ok(false) => {}
-            Err(error) => self.notice(&format!("Thread history was not saved: {error:#}"), true),
-        }
+        // The directory is resolved here, not on the background thread, and
+        // the ticket is drawn with the snapshot, so a slow write cannot land
+        // over a later one.
+        let dir = match threads::threads_dir(self.connection.config.id) {
+            Ok(dir) => dir,
+            Err(error) => {
+                self.notice(&format!("Thread history was not saved: {error:#}"), true);
+                return;
+            }
+        };
+        let ticket = store::ticket();
+        let write = cx.background_spawn(async move { threads::save(&dir, id, &saved, ticket) });
+        cx.spawn(async move |panel, cx| {
+            let result = write.await;
+            panel
+                .update(cx, |panel, cx| {
+                    match result {
+                        Ok(true) => panel.notice(
+                            "Thread history is now saved on this machine, one file per thread, \
+                             and may contain pasted secrets. The Threads menu lists them.",
+                            false,
+                        ),
+                        Ok(false) => return,
+                        Err(error) => {
+                            panel.notice(&format!("Thread history was not saved: {error:#}"), true)
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
     }
 
     /// Replace the thread with a saved one: messages and tool events come
@@ -693,6 +723,7 @@ impl AgentPanel {
         match threads::load(self.connection.config.id, id) {
             Ok(saved) => {
                 self.thread = threads::to_messages(&saved);
+                self.tool_errors = threads::tool_errors(&saved);
                 self.items = items_from_saved(&saved);
                 self.thread_id = Some(id);
                 self.tools_supported = true;
@@ -701,6 +732,30 @@ impl AgentPanel {
             Err(error) => self.notice(&format!("Could not open that thread: {error:#}"), true),
         }
         cx.notify();
+    }
+
+    /// Ask before deleting the open thread's file: it cannot be undone.
+    fn confirm_delete_current_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.thread_id.is_none() {
+            return;
+        }
+        let panel = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let panel = panel.clone();
+            alert
+                .title("Delete this thread?")
+                .description("Its saved file is removed from this machine. This cannot be undone.")
+                .button_props(
+                    gpui_kit::component::dialog::DialogButtonProps::default()
+                        .ok_text("Delete")
+                        .cancel_text("Keep")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    panel.update(cx, |panel, cx| panel.delete_current_thread(cx));
+                    true
+                })
+        });
     }
 
     /// Delete the open thread's file and start over. Other threads are
@@ -829,8 +884,10 @@ impl AgentPanel {
                     let panel = panel.clone();
                     menu = menu.item(
                         option_item("Delete current thread", "removes its file").on_click(
-                            move |_, _, cx| {
-                                panel.update(cx, |panel, cx| panel.delete_current_thread(cx));
+                            move |_, window, cx| {
+                                panel.update(cx, |panel, cx| {
+                                    panel.confirm_delete_current_thread(window, cx)
+                                });
                             },
                         ),
                     );
@@ -1132,13 +1189,14 @@ impl AgentPanel {
 }
 
 /// Draw a saved transcript: user and assistant words, tool calls with
-/// their results. Results arrive in call order, so the first call still
-/// waiting is the one each result answers; a call that never got one did
-/// not run, and is shown stopped rather than left waiting.
+/// their results. Each result goes to the call it answers by id (see
+/// [`threads::answers`]); a call that never got one did not run, and is
+/// shown stopped rather than left waiting.
 fn items_from_saved(saved: &[threads::SavedMessage]) -> Vec<Item> {
+    let answered = threads::answers(saved);
     let mut items = Vec::new();
     let mut index = 0;
-    for line in saved {
+    for (line_index, line) in saved.iter().enumerate() {
         match line {
             threads::SavedMessage::User { content } => items.push(Item::User(content.clone())),
             threads::SavedMessage::Assistant {
@@ -1150,41 +1208,32 @@ fn items_from_saved(saved: &[threads::SavedMessage]) -> Vec<Item> {
                 {
                     items.push(Item::Assistant(text.clone()));
                 }
-                for call in tool_calls {
+                for (position, call) in tool_calls.iter().enumerate() {
+                    let answer = answered.get(&(line_index, position)).and_then(|tool_line| {
+                        match &saved[*tool_line] {
+                            threads::SavedMessage::Tool {
+                                content, is_error, ..
+                            } => Some((content.clone(), *is_error)),
+                            _ => None,
+                        }
+                    });
+                    let (result, status) = match answer {
+                        Some((content, true)) => (content, ToolStatus::Failed),
+                        Some((content, false)) => (content, ToolStatus::Done),
+                        None => ("not run".to_string(), ToolStatus::Stopped),
+                    };
                     items.push(Item::Tool {
                         index,
                         name: call.name.clone(),
                         arguments: call.arguments.clone(),
-                        result: None,
-                        status: ToolStatus::Waiting,
+                        result: Some(result),
+                        status,
                         open: false,
                     });
                     index += 1;
                 }
             }
-            threads::SavedMessage::Tool {
-                content, is_error, ..
-            } => {
-                if let Some(Item::Tool { result, status, .. }) = items
-                    .iter_mut()
-                    .find(|item| matches!(item, Item::Tool { result: None, .. }))
-                {
-                    *result = Some(content.clone());
-                    *status = if *is_error {
-                        ToolStatus::Failed
-                    } else {
-                        ToolStatus::Done
-                    };
-                }
-            }
-        }
-    }
-    for item in items.iter_mut() {
-        if let Item::Tool { result, status, .. } = item
-            && matches!(status, ToolStatus::Waiting)
-        {
-            *status = ToolStatus::Stopped;
-            *result = Some("not run".to_string());
+            threads::SavedMessage::Tool { .. } => {}
         }
     }
     items
