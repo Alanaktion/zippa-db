@@ -93,6 +93,21 @@ impl AgentPanel {
         cx.notify();
     }
 
+    /// The saved file this thread is written to, if it has one.
+    pub(crate) fn thread_id_for_test(&self) -> Option<uuid::Uuid> {
+        self.thread_id
+    }
+
+    /// Replace the thread with a saved one, as the Threads menu would.
+    pub(crate) fn open_thread_for_test(&mut self, id: uuid::Uuid, cx: &mut Context<Self>) {
+        self.open_thread(id, cx);
+    }
+
+    /// Delete the open thread's file, as the Threads menu would.
+    pub(crate) fn delete_current_thread_for_test(&mut self, cx: &mut Context<Self>) {
+        self.delete_current_thread(cx);
+    }
+
     /// The messages area's vertical scroll offset: 0 at the top, negative
     /// going down, `-scroll_max_for_test` at the bottom.
     pub(crate) fn scroll_offset_for_test(&self) -> gpui_kit::Pixels {
