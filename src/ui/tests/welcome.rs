@@ -782,6 +782,53 @@ fn the_editor_round_trips_an_ssh_tunnel(cx: &mut TestAppContext) {
     assert_eq!(secrets.ssh, None);
 }
 
+/// SQLite takes the same SSH settings, meaning the file is on that host; a
+/// half-filled one is refused before anything is downloaded.
+#[gpui_kit::test]
+fn a_sqlite_file_can_live_on_an_ssh_host(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| {
+                editor.fill_for_test(Engine::Sqlite, "/srv/app/data.sqlite", window, cx);
+                editor.fill_ssh_for_test(SshAuth::Agent, ["files.internal", "22", ""], window, cx)
+            })
+        });
+    })
+    .unwrap();
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.connect_for_test(true, cx))
+    });
+    cx.run_until_parked();
+    assert_eq!(editor_status(cx, &welcome), "Error: Enter the SSH user.");
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| {
+                editor.fill_ssh_for_test(
+                    SshAuth::Agent,
+                    ["files.internal", "22", "deploy"],
+                    window,
+                    cx,
+                )
+            })
+        });
+    })
+    .unwrap();
+    let config = welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.config_for_test(cx))
+    });
+    assert_eq!(config.engine, Engine::Sqlite);
+    assert!(config.ssh.enabled);
+    assert_eq!(config.database, "/srv/app/data.sqlite");
+    assert_eq!(
+        config.display_target(),
+        "files.internal:/srv/app/data.sqlite"
+    );
+}
+
 #[gpui_kit::test]
 fn a_key_file_tunnel_without_a_key_is_refused(cx: &mut TestAppContext) {
     let handle = workspace(cx);

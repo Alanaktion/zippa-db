@@ -27,6 +27,7 @@ use super::import::{self, Dialect, ImportProgress, ImportRequest, ImportSummary}
 use super::plan::{self, Explained, Plan};
 use super::query::{Cell, QueryMessage, QueryResult};
 use super::query_log::{LoggedQuery, QueryLog, QueryOutcome, QuerySource};
+use super::remote::{RemoteFile, Upload};
 use super::tunnel::Tunnel;
 use super::{erd, health, mysql, postgres, quote_identifier, quote_literal, sqlite, statement};
 
@@ -170,6 +171,11 @@ pub struct Connection {
     /// so a reconnect can open a fresh tunnel when the jump host dropped the
     /// old one. Never written to disk.
     ssh_secret: Option<String>,
+    /// For a SQLite file on an SSH host: the local copy the pool has open,
+    /// and the way back to the server. Shared with a connection
+    /// [`with_database`](Self::with_database) opens, so a reconnect keeps
+    /// the copy and whatever was written to it.
+    remote: Option<Arc<RemoteFile>>,
 }
 
 /// The secrets a connection is opened with: read from the keychain, or typed
@@ -201,7 +207,21 @@ impl Connection {
     /// the SSH tunnel the connection is configured with, if any.
     pub async fn open_with(config: ConnectionConfig, credentials: Credentials) -> Result<Self> {
         let tunnel = Self::tunnel(&config, credentials.ssh.as_deref()).await?;
-        Self::open_through(config, credentials, tunnel).await
+        let remote = Self::remote_file(&config, credentials.ssh.clone()).await?;
+        Self::open_through(config, credentials, tunnel, remote).await
+    }
+
+    /// Download the SQLite file `config` names from its SSH host, or `None`
+    /// for a file that is local (or a server engine, which tunnels instead).
+    async fn remote_file(
+        config: &ConnectionConfig,
+        secret: Option<String>,
+    ) -> Result<Option<Arc<RemoteFile>>> {
+        if !config.ssh.enabled || !config.engine.is_file_based() {
+            return Ok(None);
+        }
+        let remote = RemoteFile::download(&config.ssh, secret, &config.database).await?;
+        Ok(Some(Arc::new(remote)))
     }
 
     /// Open the tunnel `config` asks for, or `None` when it asks for none.
@@ -221,6 +241,7 @@ impl Connection {
         config: ConnectionConfig,
         credentials: Credentials,
         tunnel: Option<Arc<Tunnel>>,
+        remote: Option<Arc<RemoteFile>>,
     ) -> Result<Self> {
         let Credentials {
             password,
@@ -233,12 +254,20 @@ impl Connection {
             target.host = "127.0.0.1".into();
             target.port = tunnel.local_port();
         }
+        // Likewise a remote file: the pool opens the local copy, while
+        // `config` keeps the path on the server.
+        if let Some(remote) = &remote {
+            target.database = remote.local_path().to_string_lossy().into_owned();
+        }
         let password = password.as_deref();
         let pool = match config.engine {
             Engine::Postgres => Pool::Postgres(postgres::connect(&target, password).await?),
             Engine::MySql => Pool::MySql(mysql::connect(&target, password).await?),
             Engine::Sqlite => Pool::Sqlite(sqlite::connect(&target).await?),
         };
+        if let Some(remote) = &remote {
+            remote.settle();
+        }
         let money_scale = match &pool {
             Pool::Postgres(pool) => postgres::money_scale(pool).await,
             Pool::MySql(_) | Pool::Sqlite(_) => postgres::DEFAULT_MONEY_SCALE,
@@ -252,6 +281,7 @@ impl Connection {
             pinned: Arc::new(tokio::sync::Semaphore::new(PINNED_MAX as usize)),
             tunnel,
             ssh_secret,
+            remote,
         })
     }
 
@@ -335,7 +365,64 @@ impl Connection {
             password: self.password.clone(),
             ssh: self.ssh_secret.clone(),
         };
-        Self::open_through(config, credentials, tunnel).await
+        Self::open_through(config, credentials, tunnel, self.remote.clone()).await
+    }
+
+    /// Whether this is a SQLite file on an SSH host, edited as a local copy
+    /// that [`upload`](Self::upload) sends back.
+    pub fn is_remote_file(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    /// Whether the local copy of a remote file holds writes the server does
+    /// not have yet. Always `false` for any other connection.
+    pub fn has_unuploaded_changes(&self) -> bool {
+        self.remote
+            .as_ref()
+            .is_some_and(|remote| remote.has_changes())
+    }
+
+    /// Where the local copy of a remote file is kept: left there, not
+    /// deleted, when the connection closes with changes not uploaded.
+    pub fn remote_copy_dir(&self) -> Option<&std::path::Path> {
+        self.remote.as_ref().map(|remote| remote.dir())
+    }
+
+    /// The file SQLite has open: the local copy of a remote file, or the
+    /// saved path.
+    pub(crate) fn sqlite_file(&self) -> std::path::PathBuf {
+        match &self.remote {
+            Some(remote) => remote.local_path().to_path_buf(),
+            None => self.config.database.clone().into(),
+        }
+    }
+
+    /// Send the local copy of a remote SQLite file back to its SSH host.
+    ///
+    /// What goes is a snapshot (`VACUUM INTO`) rather than the file itself,
+    /// so it is whole even while a tab holds a transaction open — whose
+    /// uncommitted writes stay behind. Unless `force` is set, a server file
+    /// that changed since it was downloaded is left alone and reported as
+    /// [`Upload::ServerChanged`] for the user to decide about.
+    pub async fn upload(&self, force: bool) -> Result<Upload> {
+        let Some(remote) = &self.remote else {
+            anyhow::bail!("this connection's file is not on an SSH host");
+        };
+        self.refuse_read_only("the file was not uploaded")?;
+        let Pool::Sqlite(pool) = &self.pool else {
+            anyhow::bail!("only a SQLite file can be uploaded");
+        };
+        let mark = remote.mark();
+        let snapshot = remote.snapshot_path();
+        let result = async {
+            sqlite::snapshot(pool, &snapshot)
+                .await
+                .map_err(health::plain)?;
+            remote.upload(&snapshot, mark, force).await
+        }
+        .await;
+        let _ = tokio::fs::remove_file(&snapshot).await;
+        result
     }
 
     /// Databases the user can switch to on this server.

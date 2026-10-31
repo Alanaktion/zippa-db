@@ -33,7 +33,7 @@ use crate::ui::session::{
     BackupDatabase, CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NewTable, NextTab,
     OpenConnectionInfo, OpenConsole, OpenErd, OpenFile, OpenMaintenance, OpenProcessList,
     OpenQueryDigest, OpenServerVariables, OpenUserManagement, PreviousTab, QuickSwitcher,
-    Reconnect, Refresh, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs, SearchSchema,
+    Reconnect, Refresh, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs, SearchSchema, UploadFile,
 };
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -165,6 +165,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Refresh", Refresh),
             MenuItem::action("Reconnect", Reconnect),
             MenuItem::action("Disconnect", Disconnect),
+            MenuItem::action("Upload to SSH Host", UploadFile),
             MenuItem::separator(),
             MenuItem::action("New Table…", NewTable),
             MenuItem::action("Import SQL Dump…", ImportSqlDump),
@@ -249,6 +250,7 @@ mod tests {
             ("Close Connection", TypeId::of::<CloseConnection>()),
             ("Reconnect", TypeId::of::<Reconnect>()),
             ("Disconnect", TypeId::of::<Disconnect>()),
+            ("Upload to SSH Host", TypeId::of::<UploadFile>()),
             ("Run Query", TypeId::of::<RunQuery>()),
             ("Run All Queries", TypeId::of::<RunScript>()),
             (

@@ -16,7 +16,7 @@
 
 ## Highlights
 
-- **Connections.** Saved connections in tabs, passwords in the OS keychain, per-connection color tags, SSL modes, SSH tunnels. Your workspace restores on launch.
+- **Connections.** Saved connections in tabs, passwords in the OS keychain, per-connection color tags, SSL modes, SSH tunnels. Open a SQLite file that lives on an SSH host: it is copied down over SFTP, edited locally, and uploaded when you say so, with a warning if the server's copy changed in the meantime. Your workspace restores on launch.
 - **Safety modes.** Read-only (enforced by the server *and* your SQL), confirm writes, staged edits, or auto-apply — per connection.
 - **SQL editor.** Highlighting, table/column/keyword completion, run statement / selection / script, per-tab pinned connections so transactions survive across runs, `EXPLAIN` plan trees, and `:name` / `$name` query variables.
 - **Tables.** Page, sort, filter, and quick-search; stage cell edits, new rows, and deletions, then apply them together.

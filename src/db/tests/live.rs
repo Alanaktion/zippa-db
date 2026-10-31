@@ -275,6 +275,150 @@ async fn live_postgres_connects_through_an_ssh_tunnel() {
     connection.close().await;
 }
 
+/// A SQLite file on an SSH host opens as a local copy, a write to it is a
+/// change until it is uploaded, and an upload over a server file that changed
+/// since the download is held back until it is forced.
+///
+/// Needs the compose `ssh` service (SFTP on); see `live_ssh`.
+#[tokio::test]
+#[ignore = "needs a live SSH host with SFTP; see the doc comment"]
+async fn live_sqlite_file_on_an_ssh_host_round_trips() {
+    use crate::db::Upload;
+    use crate::db::remote::{put_for_test, remove_for_test, set_mtime_for_test, stat_for_test};
+
+    let (ssh, secret, _, _) = live_ssh();
+    let path = format!("zippa-remote-{}.sqlite", Uuid::new_v4().simple());
+    let seed = TempDatabase::new().await;
+    put_for_test(&ssh, &secret, &seed.path, &path).await;
+
+    let mut config = ConnectionConfig::new(Engine::Sqlite);
+    config.database = format!("~/{path}");
+    config.ssh = ssh.clone();
+    let open = |config: ConnectionConfig| {
+        Connection::open_with(
+            config,
+            Credentials {
+                password: None,
+                ssh: Some(secret.clone()),
+            },
+        )
+    };
+    let connection = open(config.clone())
+        .await
+        .expect("should download the file");
+    assert!(connection.is_remote_file());
+    assert_eq!(
+        connection.database(),
+        format!("~/{path}"),
+        "the saved path is kept"
+    );
+    assert!(!connection.has_unuploaded_changes(), "nothing written yet");
+
+    connection
+        .execute(
+            "INSERT INTO items (id, name) VALUES (3, 'gamma')",
+            Vec::new(),
+        )
+        .await
+        .expect("write to the copy");
+    assert!(connection.has_unuploaded_changes());
+    assert_eq!(
+        connection.upload(false).await.expect("upload"),
+        Upload::Uploaded
+    );
+    assert!(!connection.has_unuploaded_changes(), "the host has it now");
+
+    // A reconnect reopens the pool on the same copy and must not forget the
+    // write the host does not have yet.
+    connection
+        .execute(
+            "INSERT INTO items (id, name) VALUES (6, 'zeta')",
+            Vec::new(),
+        )
+        .await
+        .expect("write to the copy");
+    let connection = connection
+        .with_database(connection.database())
+        .await
+        .expect("reconnect");
+    assert!(
+        connection.has_unuploaded_changes(),
+        "a reconnect keeps the change"
+    );
+    assert_eq!(
+        connection.upload(false).await.expect("upload"),
+        Upload::Uploaded
+    );
+
+    // Someone else commits to the server's copy without changing its size,
+    // and its time is put back: only the header can tell, and the next
+    // upload is still held back.
+    let (size, mtime) = stat_for_test(&ssh, &secret, &path).await;
+    let other = TempDatabase::new().await;
+    let pool = sqlx::SqlitePool::connect_with(SqliteConnectOptions::new().filename(&other.path))
+        .await
+        .expect("open the other copy");
+    pool.execute("UPDATE items SET name = 'theirs' WHERE id = 1")
+        .await
+        .expect("change the other copy");
+    pool.close().await;
+    put_for_test(&ssh, &secret, &other.path, &path).await;
+    set_mtime_for_test(&ssh, &secret, &path, mtime).await;
+    assert_eq!(
+        stat_for_test(&ssh, &secret, &path).await,
+        (size, mtime),
+        "only the header differs"
+    );
+    connection
+        .execute(
+            "INSERT INTO items (id, name) VALUES (4, 'delta')",
+            Vec::new(),
+        )
+        .await
+        .expect("write to the copy");
+    assert!(matches!(
+        connection.upload(false).await.expect("upload"),
+        Upload::ServerChanged { .. }
+    ));
+    assert!(connection.has_unuploaded_changes(), "nothing went");
+    assert_eq!(
+        connection.upload(true).await.expect("forced upload"),
+        Upload::Uploaded
+    );
+    connection.close().await;
+    drop(connection);
+
+    let reopened = open(config).await.expect("should download again");
+    let result = reopened
+        .run_query("SELECT name FROM items WHERE id >= 3 ORDER BY id")
+        .await
+        .expect("read the uploaded rows");
+    let names: Vec<_> = result.rows.iter().map(|row| row[0].clone()).collect();
+    assert_eq!(
+        names,
+        ["gamma", "delta", "zeta"].map(|name| Some(name.to_string()))
+    );
+
+    // A file something on the host has open with changes in flight is never
+    // replaced, forced or not.
+    let wal = seed.path.with_extension("wal-for-test");
+    std::fs::write(&wal, b"frames").expect("write a stand-in wal");
+    put_for_test(&ssh, &secret, &wal, &format!("{path}-wal")).await;
+    reopened
+        .execute(
+            "INSERT INTO items (id, name) VALUES (5, 'epsilon')",
+            Vec::new(),
+        )
+        .await
+        .expect("write to the copy");
+    let error = reopened.upload(true).await.expect_err("in use");
+    assert!(format!("{error:#}").contains("in use"), "{error:#}");
+    let _ = std::fs::remove_file(&wal);
+    reopened.close().await;
+    remove_for_test(&ssh, &secret, &format!("{path}-wal")).await;
+    remove_for_test(&ssh, &secret, &path).await;
+}
+
 /// The types `postgres::cell` decodes field by field — geometry, ranges,
 /// `hstore`, `macaddr8` — read back as the text Postgres itself prints, and
 /// that text casts back to the same value, which is what makes them
