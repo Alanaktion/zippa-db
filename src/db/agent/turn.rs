@@ -563,7 +563,6 @@ mod tests {
             connection: std::sync::Arc::new(connection),
             catalog: std::sync::Arc::new(Catalog::default()),
             access,
-            approval: crate::db::WriteApproval::Ask,
             live: tools::LiveModes::new(access, crate::db::WriteApproval::Ask),
         }
     }

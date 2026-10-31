@@ -223,9 +223,9 @@ impl Approver for NeverApprove {
 }
 
 /// The access level and write-approval mode as the panel currently shows
-/// them, shared with a running turn. A change that tightens either applies
-/// to the turn's next tool call; one that loosens it waits for the next
-/// turn (see [`ToolContext::access_now`]).
+/// them, shared with a running turn: a write-approval change applies to the
+/// turn's next tool call, and so does lowering access, while raising access
+/// waits for the next turn (see [`ToolContext::access_now`]).
 #[derive(Clone)]
 pub struct LiveModes {
     access: Arc<RwLock<AgentAccess>>,
@@ -269,18 +269,17 @@ impl LiveModes {
     }
 }
 
-/// What a tool needs to run. `access` and `approval` are the modes the
-/// turn started with — the tool list was offered under `access` — and
-/// `live` is what the panel shows now. The gates read the stricter of the
-/// two, so tightening a mode mid-turn applies to the next tool call while
-/// loosening one waits for the next turn: raising access must not hand a
-/// running turn a tool it was never offered, and switching to Auto must not
-/// wave through writes the model planned while every write was asked about.
+/// What a tool needs to run. `access` is the level the turn started with,
+/// which its tool list was offered under, and `live` is what the panel
+/// shows now. Lowering access mid-turn refuses the next call, but raising
+/// it waits for the next turn, so a running turn is never handed a tool it
+/// was never offered. Write approval has no such asymmetry — it adds or
+/// removes no tool — so the panel's current mode applies to the next write
+/// either way.
 pub struct ToolContext {
     pub connection: Arc<Connection>,
     pub catalog: Arc<Catalog>,
     pub access: AgentAccess,
-    pub approval: WriteApproval,
     pub live: LiveModes,
 }
 
@@ -289,24 +288,6 @@ impl ToolContext {
     /// panel's current one.
     pub fn access_now(&self) -> AgentAccess {
         self.access.min(self.live.access())
-    }
-
-    /// The write-approval mode the gates use: the stricter of the turn's
-    /// and the panel's current one (Never, then Ask, then Auto).
-    pub fn approval_now(&self) -> WriteApproval {
-        fn strictness(approval: WriteApproval) -> u8 {
-            match approval {
-                WriteApproval::Auto => 0,
-                WriteApproval::Ask => 1,
-                WriteApproval::Never => 2,
-            }
-        }
-        let live = self.live.approval();
-        if strictness(live) > strictness(self.approval) {
-            live
-        } else {
-            self.approval
-        }
     }
 }
 
@@ -563,10 +544,10 @@ async fn run_write(context: &ToolContext, approver: &dyn Approver, sql: &str) ->
         Ok(kind) => kind,
         Err(message) => return ToolOutput::error(message),
     };
-    // A mode the user tightened mid-turn applies to this call; one they
-    // loosened waits for the next turn.
+    // Access the user lowered mid-turn applies to this call (raised waits
+    // for the next turn); the write-approval mode applies as it is now.
     let access = context.access_now();
-    let approval = context.approval_now();
+    let approval = context.live.approval();
     if let Err(message) = gate::allowed(&kind, access) {
         return ToolOutput::error(message);
     }
@@ -829,7 +810,6 @@ mod tests {
             connection: Arc::new(connection),
             catalog: Arc::new(catalog),
             access,
-            approval,
             live: LiveModes::new(access, approval),
         };
         (database, context)
@@ -1032,23 +1012,18 @@ mod tests {
     }
 
     #[test]
-    fn a_mid_turn_switch_to_auto_waits_for_the_next_turn() {
+    fn a_mid_turn_switch_to_auto_applies_to_the_next_write() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let (_database, context) = live(AgentAccess::Crud);
         let no = Answer(false, AtomicUsize::new(0));
 
-        // Ask at turn start, Auto by the time the write is called: the
-        // looser mode does not reach the running turn, so it still asks.
+        // Ask at turn start, Auto by the time the write is called: the write
+        // runs without a question (issue #133).
         context.live.set_approval(WriteApproval::Auto);
-        assert_eq!(context.approval_now(), WriteApproval::Ask);
         let out = futures::executor::block_on(call(&context, &no, "run_write", DELETE));
-        assert!(
-            out.is_error && out.text.contains("rejected"),
-            "{}",
-            out.text
-        );
-        assert_eq!(no.1.load(Ordering::SeqCst), 1);
-        assert_eq!(rows(&context), "2");
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(no.1.load(Ordering::SeqCst), 0);
+        assert_eq!(rows(&context), "1");
     }
 
     #[test]

@@ -150,9 +150,9 @@ pub struct AgentPanel {
     catalog: SharedCatalog,
     access: AgentAccess,
     approval: WriteApproval,
-    /// The modes as currently shown, shared with a running turn: a change
-    /// that tightens a mode reaches the turn's next tool call through this
-    /// (see `ToolContext::access_now`).
+    /// The modes as currently shown, shared with a running turn: a
+    /// write-approval change, or lowered access, reaches the turn's next
+    /// tool call through this (see `ToolContext`).
     live_modes: LiveModes,
     /// What goes back to the model each turn, system prompt excluded.
     thread: Vec<Message>,
@@ -350,7 +350,6 @@ impl AgentPanel {
             connection: self.connection.clone(),
             catalog,
             access: self.access,
-            approval: self.approval,
             live: self.live_modes.clone(),
         };
         let tools_supported = self.tools_supported;
