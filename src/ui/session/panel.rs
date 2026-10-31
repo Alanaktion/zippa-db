@@ -262,6 +262,12 @@ impl SessionPanel {
     ) {
         match event {
             QueryEditorEvent::Run(sql) => cx.emit(SessionPanelEvent::Run(sql.clone())),
+            // The panel owns the run, so the toolbar's Stop ends here
+            // rather than travelling up to the session, whose cancel also
+            // gives up on an import or backup in flight.
+            QueryEditorEvent::Cancel => {
+                self.cancel_running(cx);
+            }
             QueryEditorEvent::RunScript(sql) => cx.emit(SessionPanelEvent::RunScript(sql.clone())),
             QueryEditorEvent::RunScriptIgnoringErrors(sql) => {
                 cx.emit(SessionPanelEvent::RunScriptIgnoringErrors(sql.clone()))

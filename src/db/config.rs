@@ -556,12 +556,23 @@ impl ConnectionConfig {
         self.display_target()
     }
 
-    /// `localhost:5432/app`, or the file's path for SQLite.
+    /// `localhost:5432/app`, or the file's path for SQLite — written
+    /// `host:path`, the way `scp` does, for a file on an SSH host.
     pub fn display_target(&self) -> String {
         if self.engine.is_file_based() {
-            return self.database.clone();
+            return self.file_target(&self.database);
         }
         format!("{}:{}/{}", self.host, self.port, self.database)
+    }
+
+    /// `path` as the file's location: prefixed with the SSH host when the
+    /// file is on one.
+    pub fn file_target(&self, path: &str) -> String {
+        if self.ssh.enabled {
+            format!("{}:{path}", self.ssh.host.trim())
+        } else {
+            path.to_string()
+        }
     }
 
     /// Whether this connection is the footgun the colour exists to flag: one

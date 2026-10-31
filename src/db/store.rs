@@ -284,7 +284,8 @@ pub fn credentials(
         None if saved && server => password(&config.id)?,
         None => None,
     };
-    let ssh = if server && config.ssh.enabled && config.ssh.auth != SshAuth::Agent {
+    // A SQLite file on an SSH host signs in the same way a tunnel does.
+    let ssh = if config.ssh.enabled && config.ssh.auth != SshAuth::Agent {
         match &edits.ssh {
             Some(secret) => typed(secret),
             None if saved => ssh_secret(&config.id)?,

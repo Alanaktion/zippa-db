@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRow};
-use sqlx::{AssertSqlSafe, Row, TypeInfo, ValueRef};
+use sqlx::{AssertSqlSafe, ConnectOptions as _, Connection as _, Row, TypeInfo, ValueRef};
 
 use super::query::{self, Cell};
 use super::{ConnectionConfig, decode, pool_options, quote_literal};
@@ -73,6 +73,38 @@ pub(crate) async fn connect(config: &ConnectionConfig) -> Result<SqlitePool> {
         .await
         .with_context(|| format!("could not open {}", config.database))?;
     Ok(pool)
+}
+
+/// Write a consistent copy of the database `pool` has open to `to`, a path
+/// that must not exist yet: `VACUUM INTO`, which reads one snapshot of what
+/// is committed however busy the other connections are.
+///
+/// `VACUUM INTO` writes a rollback-journal file whatever the source uses, so
+/// a source in WAL mode has the copy switched to WAL too: a program on the
+/// other end that relies on the mode sticking keeps it.
+pub(crate) async fn snapshot(pool: &SqlitePool, to: &std::path::Path) -> Result<()> {
+    let path = to.to_string_lossy().into_owned();
+    let mut connection = pool.acquire().await?;
+    let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(&mut *connection)
+        .await?;
+    sqlx::query("VACUUM INTO ?")
+        .bind(&path)
+        .execute(&mut *connection)
+        .await
+        .context("could not take a snapshot of the database to upload")?;
+    drop(connection);
+
+    if mode.eq_ignore_ascii_case("wal") {
+        let mut copy = SqliteConnectOptions::new().filename(to).connect().await?;
+        sqlx::query("PRAGMA journal_mode = WAL")
+            .execute(&mut copy)
+            .await?;
+        // Closing the last connection checkpoints and removes the `-wal`,
+        // leaving one file to send.
+        copy.close().await?;
+    }
+    Ok(())
 }
 
 /// Primary key columns of a table, in key order.

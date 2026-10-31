@@ -145,6 +145,41 @@ fn scrollbars_stay_on_screen_unless_the_setting_says_otherwise(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+fn the_reduce_motion_setting_drives_gpui(cx: &mut TestAppContext) {
+    cx.update(init_ui);
+
+    // The fixture turns reduced motion on so one-shot animations settle;
+    // the setting is what should own the flag, so toggling it off must
+    // clear the flag the fixture set, and toggling it back on must set it.
+    cx.update(|cx| settings::update(cx, |settings| settings.reduce_motion = true));
+    cx.update(|cx| settings::update(cx, |settings| settings.reduce_motion = false));
+    assert!(
+        !cx.update(|cx| cx.reduce_motion()),
+        "turning the setting off should clear reduced motion"
+    );
+
+    cx.update(|cx| settings::update(cx, |settings| settings.reduce_motion = true));
+    assert!(
+        cx.update(|cx| cx.reduce_motion()),
+        "turning the setting on should set reduced motion"
+    );
+}
+
+#[gpui_kit::test]
+fn other_settings_leave_reduced_motion_alone(cx: &mut TestAppContext) {
+    cx.update(init_ui);
+    cx.update(|cx| cx.set_global(Settings::default()));
+
+    // The fixture's reduced motion is not the setting's to undo: changing
+    // something else must not write the (off) motion setting over it.
+    cx.update(|cx| settings::update(cx, |settings| settings.stripe_rows = false));
+    assert!(
+        cx.update(|cx| cx.reduce_motion()),
+        "an unrelated change should not turn reduced motion off"
+    );
+}
+
+#[gpui_kit::test]
 fn pinning_the_appearance_overrides_the_system(cx: &mut TestAppContext) {
     cx.update(init_ui);
     // The workspace is what subscribes to the window's appearance.

@@ -23,7 +23,7 @@ use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConnectionInfo,
     OpenConsole, OpenErd, OpenFile, OpenMaintenance, OpenProcessList, OpenQueryDigest,
     OpenServerVariables, OpenUserManagement, PreviousTab, QuickSwitcher, Reconnect, Refresh,
-    SaveFile, SaveFileAs, SaveQuery, SearchSchema,
+    SaveFile, SaveFileAs, SaveQuery, SearchSchema, UploadFile,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -199,6 +199,9 @@ pub fn bind(cx: &mut App) {
         // Open a fresh pool after the server dropped the connection or
         // stopped answering, keeping every tab where it is.
         KeyBinding::new("secondary-shift-r", Reconnect, Some("Session")),
+        // Send the local copy of a SQLite file opened from an SSH host back
+        // to it. Not the save key: that saves the query tab's buffer.
+        KeyBinding::new("secondary-alt-u", UploadFile, Some("Session")),
         // Reloads the schema, and the active table's rows; never re-runs a
         // query tab's buffer, so it is safe even if that buffer is a write.
         KeyBinding::new("secondary-r", Refresh, Some("Session")),

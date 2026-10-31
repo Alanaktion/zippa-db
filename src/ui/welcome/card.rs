@@ -181,7 +181,7 @@ fn actions_button(
 /// `localhost:5432/app`, or the file path for SQLite, middle-truncated.
 pub(super) fn subtitle(config: &ConnectionConfig) -> String {
     if config.engine.is_file_based() {
-        middle_truncate(&config.database, 40)
+        middle_truncate(&config.file_target(&config.database), 40)
     } else {
         format!("{}:{}/{}", config.host, config.port, config.database)
     }

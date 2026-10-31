@@ -37,6 +37,7 @@ mod files;
 mod limit;
 mod metadata;
 mod panel;
+mod remote;
 mod running;
 mod save_dialog;
 mod sidebar;
@@ -87,6 +88,7 @@ actions!(
         NewTable,
         SaveQuery,
         SaveQueryAs,
+        UploadFile,
     ]
 );
 
@@ -170,6 +172,9 @@ pub struct Session {
     /// finds names but not columns, indexes or triggers.
     catalog_error: Option<String>,
     switching: bool,
+    /// Whether the local copy of a remote file is on its way to the SSH
+    /// host, so a second upload is not started on top of it.
+    uploading: bool,
     /// The saved tabs a restore is holding while it switches to their
     /// database. Until they are built, they are what this session records,
     /// so a checkpoint or quit in the meantime does not save them away.
@@ -264,6 +269,7 @@ impl Session {
             metadata_generation: 0,
             catalog_error: None,
             switching: false,
+            uploading: false,
             restoring: None,
             reconnecting: false,
             next_key: 0,
@@ -741,6 +747,7 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_save_query_as))
             .on_action(cx.listener(Self::on_disconnect))
             .on_action(cx.listener(Self::on_reconnect))
+            .on_action(cx.listener(Self::on_upload_file))
             .child(
                 h_resizable("session-columns")
                     .with_state(&self.columns)

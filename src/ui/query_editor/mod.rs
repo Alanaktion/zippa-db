@@ -23,7 +23,7 @@ use crate::db::params::Variable;
 use crate::db::{Blocker, Engine, statement, transaction_blocker};
 use crate::settings::{self, CompletionKey, Settings};
 use crate::ui::completion::{SharedCatalog, SqlCompletions};
-use crate::ui::session::{OpenFile, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs};
+use crate::ui::session::{CancelQuery, OpenFile, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs};
 
 mod editing;
 #[cfg(test)]
@@ -63,6 +63,9 @@ pub enum QueryEditorEvent {
     /// The user asked to run one statement: what is selected, or the one the
     /// caret is in.
     Run(String),
+    /// The user asked to stop the run in flight, from the toolbar's Stop
+    /// button — the same cancel the menu and shortcut reach.
+    Cancel,
     /// The user asked to run the whole buffer, statement by statement.
     RunScript(String),
     /// The same, with no transaction and every failure skipped.
@@ -541,6 +544,26 @@ impl QueryEditor {
                             .disabled(self.running)
                             .on_click(cx.listener(|this, _, _window, cx| this.emit_run(cx))),
                     )
+                    // Only a run in flight needs a way to stop it on sight;
+                    // otherwise the button would sit there disabled beside
+                    // every idle Run, and the menu and shortcut cover it.
+                    .when(self.running, |this| {
+                        this.child(
+                            Button::new("stop")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Square)
+                                .label("Stop")
+                                .tooltip_with_action(
+                                    "Stop the running query",
+                                    &CancelQuery,
+                                    Some("Session"),
+                                )
+                                .on_click(cx.listener(|_, _, _window, cx| {
+                                    cx.emit(QueryEditorEvent::Cancel)
+                                })),
+                        )
+                    })
                     .child(
                         DropdownButton::new("run-script-split")
                             .ghost()

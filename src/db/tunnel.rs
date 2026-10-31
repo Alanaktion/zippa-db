@@ -67,35 +67,7 @@ impl Tunnel {
         target_host: &str,
         target_port: u16,
     ) -> Result<Self> {
-        let known_hosts = known_hosts_file()?;
-        let host = ssh.host.trim().to_string();
-        let config = Arc::new(client::Config {
-            nodelay: true,
-            keepalive_interval: Some(KEEPALIVE_INTERVAL),
-            keepalive_max: 3,
-            ..client::Config::default()
-        });
-        let check = HostCheck {
-            host: host.to_ascii_lowercase(),
-            port: ssh.port,
-            known_hosts,
-        };
-        let sign_in = async {
-            let mut session = client::connect(config, (host.as_str(), ssh.port), check)
-                .await
-                .with_context(|| format!("could not reach the SSH host {host}:{}", ssh.port))?;
-            authenticate(&mut session, ssh, secret).await?;
-            anyhow::Ok(session)
-        };
-        let session = tokio::time::timeout(SIGN_IN_TIMEOUT, sign_in)
-            .await
-            .map_err(|_| {
-                anyhow!(
-                    "the SSH host {host}:{} did not answer within {} seconds",
-                    ssh.port,
-                    SIGN_IN_TIMEOUT.as_secs()
-                )
-            })??;
+        let session = sign_in(ssh, secret).await?;
 
         // Bound before the session is shared, so a failure here still drops
         // the session and closes it.
@@ -145,6 +117,44 @@ impl Drop for Tunnel {
             });
         }
     }
+}
+
+/// Reach the jump host `ssh` names, check its key, and sign in: the session a
+/// tunnel forwards through, or an SFTP transfer
+/// ([`remote`](super::remote)) runs over.
+///
+/// `secret` is the SSH password or the key's passphrase, whichever the auth
+/// method takes; the agent takes neither.
+pub(crate) async fn sign_in(ssh: &SshConfig, secret: Option<&str>) -> Result<Handle<HostCheck>> {
+    let known_hosts = known_hosts_file()?;
+    let host = ssh.host.trim().to_string();
+    let config = Arc::new(client::Config {
+        nodelay: true,
+        keepalive_interval: Some(KEEPALIVE_INTERVAL),
+        keepalive_max: 3,
+        ..client::Config::default()
+    });
+    let check = HostCheck {
+        host: host.to_ascii_lowercase(),
+        port: ssh.port,
+        known_hosts,
+    };
+    let sign_in = async {
+        let mut session = client::connect(config, (host.as_str(), ssh.port), check)
+            .await
+            .with_context(|| format!("could not reach the SSH host {host}:{}", ssh.port))?;
+        authenticate(&mut session, ssh, secret).await?;
+        anyhow::Ok(session)
+    };
+    tokio::time::timeout(SIGN_IN_TIMEOUT, sign_in)
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "the SSH host {host}:{} did not answer within {} seconds",
+                ssh.port,
+                SIGN_IN_TIMEOUT.as_secs()
+            )
+        })?
 }
 
 /// Accept connections on `listener` for as long as the tunnel lives, carrying
