@@ -235,6 +235,40 @@ fn cancelling_stops_waiting_on_a_query(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui_kit::test]
+fn the_stop_button_cancels_a_running_query(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    prepare_editor(cx, handle, "select 1", 0);
+
+    // The same hand-set running state the shortcut test drives from: a
+    // real query finishes before a click can reach it under test.
+    handle
+        .update(cx, |session, _, cx| session.mark_running_for_test(cx))
+        .unwrap();
+    assert!(
+        handle
+            .update(cx, |session, _, cx| session.active_is_running(cx))
+            .unwrap()
+    );
+
+    click_in_session(cx, handle, "stop");
+    cx.run_until_parked();
+
+    assert_eq!(
+        handle
+            .update(cx, |session, _, cx| session.active_status_for_test(cx))
+            .unwrap(),
+        "Cancelled"
+    );
+    assert!(
+        !handle
+            .update(cx, |session, _, cx| session.active_is_running(cx))
+            .unwrap(),
+        "the editor should stop saying it is running"
+    );
+}
+
 /// Three inserts, the middle one into a table that is not there.
 const SCRIPT_FAILING_IN_THE_MIDDLE: &str = "insert into items values (3, 'gamma', 3.0, NULL);\n\
                                             insert into not_a_table values (1);\n\
