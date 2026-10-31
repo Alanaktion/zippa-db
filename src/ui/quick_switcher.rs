@@ -318,7 +318,13 @@ impl Render for QuickSwitcherView {
                 SwitcherTarget::OpenTool(Tool::Console),
                 "Console",
                 IconName::SquareTerminal,
-                &["console", "log", "statements", "history"],
+                &["console", "log", "statements", "sent"],
+            ),
+            action(
+                SwitcherTarget::OpenTool(Tool::History),
+                "Query History",
+                IconName::Clock,
+                &["history", "recent", "previous", "queries", "ran"],
             ),
             action(
                 SwitcherTarget::OpenTool(Tool::ConnectionInfo),

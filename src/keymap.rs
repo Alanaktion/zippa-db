@@ -21,7 +21,7 @@ use crate::ui::query_editor::{
 use crate::ui::session::dashboard::CloseWidgetDialog;
 use crate::ui::session::{
     CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConnectionInfo,
-    OpenConsole, OpenErd, OpenFile, OpenMaintenance, OpenProcessList, OpenQueryDigest,
+    OpenConsole, OpenErd, OpenFile, OpenHistory, OpenMaintenance, OpenProcessList, OpenQueryDigest,
     OpenServerVariables, OpenUserManagement, PreviousTab, QuickSwitcher, Reconnect, Refresh,
     SaveFile, SaveFileAs, SaveQuery, SearchSchema, UploadFile,
 };
@@ -209,6 +209,9 @@ pub fn bind(cx: &mut App) {
         // The backtick is the terminal/console toggle in several other
         // editors, which is the habit this borrows.
         KeyBinding::new("secondary-`", OpenConsole, Some("Session")),
+        // The query history: what was run from query tabs, kept per
+        // connection. H for history, as in a browser.
+        KeyBinding::new("secondary-shift-h", OpenHistory, Some("Session")),
         // The Agents panel beside the session: shown or hidden, with the
         // thread kept either way.
         KeyBinding::new("secondary-alt-a", ToggleAgents, Some("Session")),

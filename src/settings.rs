@@ -15,7 +15,7 @@ use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, AppContext as _, Global, SharedString, Window, WindowAppearance};
 use serde::{Deserialize, Serialize};
 
-use crate::db::store;
+use crate::db::{history, store};
 
 const FILE_NAME: &str = "settings.json";
 
@@ -180,6 +180,14 @@ pub struct Settings {
     /// after the app closes. Off by default: a thread can hold schema, row
     /// data, and pasted secrets, so keeping it is the user's choice.
     pub agent_save_threads: bool,
+    /// Where the statements run from query tabs are kept: on disk, one file
+    /// per connection; in memory until the app quits; or not at all.
+    pub query_history: history::Keep,
+    /// History entries kept per connection, newest first; `0` keeps every
+    /// one.
+    pub query_history_limit: usize,
+    /// Days a history entry is kept; `0` keeps it however old it is.
+    pub query_history_days: u32,
 }
 
 impl Default for Settings {
@@ -204,6 +212,9 @@ impl Default for Settings {
             agent_base_url: String::new(),
             agent_model: String::new(),
             agent_save_threads: false,
+            query_history: history::Keep::default(),
+            query_history_limit: history::DEFAULT_MAX_ENTRIES,
+            query_history_days: 0,
         }
     }
 }
@@ -211,6 +222,15 @@ impl Default for Settings {
 impl Global for Settings {}
 
 impl Settings {
+    /// What the query history keeps, as `db::history` takes it.
+    pub fn history_retention(&self) -> history::Retention {
+        history::Retention {
+            keep: self.query_history,
+            max_entries: self.query_history_limit,
+            max_age_days: self.query_history_days,
+        }
+    }
+
     /// The settings in force.
     ///
     /// Falls back to the defaults rather than panicking when [`init`] has not
@@ -248,6 +268,7 @@ pub fn init(cx: &mut App) {
     });
 
     let reduce_motion = settings.reduce_motion;
+    history::configure(settings.history_retention());
     cx.set_global(settings);
     apply(None, cx);
     // Off leaves GPUI's own default in place; see `update` for why the flag
@@ -265,6 +286,9 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
         return;
     }
     let motion_changed = settings.reduce_motion != Settings::global(cx).reduce_motion;
+    if settings.history_retention() != Settings::global(cx).history_retention() {
+        history::configure(settings.history_retention());
+    }
 
     // The file is small, but it is still disk I/O on every change; the write
     // goes to the background so toggling a switch never waits on it. The
@@ -528,6 +552,11 @@ mod tests {
         assert!(
             !settings.reduce_motion,
             "a file written before the setting existed should keep animating"
+        );
+        assert_eq!(
+            settings.history_retention(),
+            history::Retention::default(),
+            "a file written before query history existed should keep it on disk, capped"
         );
     }
 

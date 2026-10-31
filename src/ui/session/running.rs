@@ -341,6 +341,7 @@ impl Session {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
+                this.refresh_history(cx);
                 let Some(panel) = weak.upgrade() else {
                     // The tab was closed while the script ran; a run paused
                     // on a failure still holds a connection to let go of.
@@ -627,6 +628,9 @@ impl Session {
         let limited =
             limit.and_then(|rows| statement::with_limit(&sql, rows, self.connection.config.engine));
         let applied = limit.filter(|_| limited.is_some());
+        // History keeps what was typed; the limit is the tab's, not the
+        // statement's.
+        let typed = sql.clone();
         let sql = limited.unwrap_or(sql);
 
         panel.update(cx, |panel, cx| {
@@ -648,7 +652,7 @@ impl Session {
         let variables = editor.read(cx).variables();
         let task = runtime::spawn(async move {
             pinned
-                .run_query_with(&sql, &variables)
+                .run_query_recorded(&sql, &typed, &variables)
                 .await
                 .map(|result| vec![result])
         });
@@ -657,7 +661,9 @@ impl Session {
         let weak = panel.downgrade();
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            this.update_in(cx, |_this, window, cx| {
+            this.update_in(cx, |this, window, cx| {
+                // What just ran is now in the history, if a tab shows it.
+                this.refresh_history(cx);
                 // The tab may have been closed while the query ran.
                 let Some(panel) = weak.upgrade() else {
                     return;

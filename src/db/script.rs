@@ -254,9 +254,24 @@ impl ScriptRun {
         let mut rewritten = Vec::with_capacity(statements.len());
         let mut params: Vec<Vec<Cell>> = Vec::with_capacity(statements.len());
         for statement in &statements {
-            let (text, statement_params) =
-                params::substitute(&statement.text, variables, connection.config.engine)?;
-            connection.refuse_write(&text)?;
+            let checked = params::substitute(&statement.text, variables, connection.config.engine)
+                .and_then(|(text, statement_params)| {
+                    connection.refuse_write(&text)?;
+                    Ok((text, statement_params))
+                });
+            let (text, statement_params) = match checked {
+                Ok(checked) => checked,
+                Err(error) => {
+                    // Refused before anything ran, as a single run's refusal
+                    // is: still worth finding again to fix.
+                    connection.remember(
+                        &statement.text,
+                        Duration::ZERO,
+                        &QueryOutcome::Error(format!("{error:#}")),
+                    );
+                    return Err(error);
+                }
+            };
             rewritten.push(text);
             params.push(statement_params);
         }
@@ -464,23 +479,29 @@ impl ScriptRun {
         // user's own `BEGIN` or `COMMIT`, which the tab carries on with.
         session.note(&sql, result.as_ref().err());
 
+        // Recorded before the savepoint is cleaned up, so a cleanup that fails
+        // cannot lose a statement that did run.
         let outcome = match result {
             Ok(result) => {
+                let outcome = query_outcome(&result);
+                self.connection
+                    .remember(&self.statements[index].text, result.elapsed, &outcome);
+                self.connection
+                    .log(&sql, QuerySource::User, result.elapsed, outcome);
                 if transaction {
                     session
                         .execute(&format!("RELEASE SAVEPOINT {SAVEPOINT}"))
                         .await?;
                 }
-                self.connection.log(
-                    &sql,
-                    QuerySource::User,
-                    result.elapsed,
-                    query_outcome(&result),
-                );
                 Ok(result)
             }
             Err(error) => {
                 let message = format!("{error:#}");
+                let outcome = QueryOutcome::Error(message.clone());
+                self.connection
+                    .remember(&self.statements[index].text, elapsed, &outcome);
+                self.connection
+                    .log(&sql, QuerySource::User, elapsed, outcome);
                 if transaction {
                     session
                         .execute(&format!("ROLLBACK TO SAVEPOINT {SAVEPOINT}"))
@@ -490,12 +511,6 @@ impl ScriptRun {
                         .execute(&format!("RELEASE SAVEPOINT {SAVEPOINT}"))
                         .await?;
                 }
-                self.connection.log(
-                    &sql,
-                    QuerySource::User,
-                    elapsed,
-                    QueryOutcome::Error(message.clone()),
-                );
                 Err(message)
             }
         };

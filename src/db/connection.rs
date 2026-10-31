@@ -938,6 +938,19 @@ impl Connection {
         });
     }
 
+    /// Keep a statement the user ran from a query tab in their history, as
+    /// they wrote it (see [`super::history`] for what counts). Separate from
+    /// [`Self::log`], which every statement goes through for the console.
+    pub(crate) fn remember(&self, sql: &str, elapsed: Duration, outcome: &QueryOutcome) {
+        super::history::record(super::history::HistoryEntry::new(
+            self.config.id,
+            &self.config.database,
+            sql,
+            outcome.clone(),
+            elapsed,
+        ));
+    }
+
     /// Send `sql` with no client-side classification.
     ///
     /// The caller has already decided the statement is safe — [`Self::explain`]

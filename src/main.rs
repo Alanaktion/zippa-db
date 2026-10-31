@@ -70,6 +70,7 @@ gpui_kit::assets::icon_assets!(
         ZoomIn,
         ZoomOut,
         SendHorizontal,
+        Clock,
     ]
 );
 
@@ -142,6 +143,9 @@ fn main() {
                 let quitting = workspace.clone();
                 cx.on_app_quit(move |cx| {
                     quitting.update(cx, |workspace, cx| workspace.flush_state(cx));
+                    // History appends go to a writer thread; let the last
+                    // statement's land before the process goes.
+                    db::history::flush();
                     std::future::ready(())
                 })
                 .detach();

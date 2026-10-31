@@ -509,7 +509,6 @@ impl SessionPanel {
     }
 
     /// The tool view this tab holds, if it is a tool tab.
-    #[cfg(test)]
     pub(crate) fn tool_view(&self) -> Option<&ToolView> {
         match &self.content {
             TabContent::Tool(view) => Some(view),
