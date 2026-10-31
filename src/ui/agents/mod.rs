@@ -151,8 +151,8 @@ pub struct AgentPanel {
     access: AgentAccess,
     approval: WriteApproval,
     /// The modes as currently shown, shared with a running turn: a change
-    /// mid-turn reaches the turn's next tool call through this, not
-    /// through the snapshot the turn started with.
+    /// that tightens a mode reaches the turn's next tool call through this
+    /// (see `ToolContext::access_now`).
     live_modes: LiveModes,
     /// What goes back to the model each turn, system prompt excluded.
     thread: Vec<Message>,
@@ -350,6 +350,7 @@ impl AgentPanel {
             connection: self.connection.clone(),
             catalog,
             access: self.access,
+            approval: self.approval,
             live: self.live_modes.clone(),
         };
         let tools_supported = self.tools_supported;
@@ -815,9 +816,9 @@ impl AgentPanel {
     }
 
     /// Set the access level and remember it on the saved connection. The
-    /// live modes move with it, so a running turn's next tool call is
-    /// gated by the new level; the tools it was offered do not change
-    /// until the next turn.
+    /// live modes move with it: lowering it gates a running turn's next
+    /// tool call, while raising it waits for the next turn, as do the
+    /// tools offered.
     fn set_access(&mut self, access: AgentAccess, cx: &mut Context<Self>) {
         self.access = access;
         self.live_modes.set_access(access);
@@ -878,10 +879,10 @@ impl AgentPanel {
         );
     }
 
-    /// Whether the thread is drawn. Lowering access mid-turn does not hide
-    /// a turn already running: it keeps showing until it ends, and the new
-    /// level applies to the next turn only, which `send` and `start_turn`
-    /// already refuse while disabled.
+    /// Whether the thread is drawn. Turning access off mid-turn does not
+    /// hide a turn already running: it keeps showing until it ends (its
+    /// next tool call is refused), and `send` and `start_turn` refuse the
+    /// next turn while disabled.
     fn shows_thread(&self) -> bool {
         self.access.enabled() || self.running
     }
