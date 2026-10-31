@@ -39,7 +39,7 @@ use crate::ui::text_filter;
 
 use super::tab::ObjectViewMode;
 use super::{
-    BackupDatabase, ImportSqlDump, NewTable, OpenConnectionInfo, OpenConsole, OpenErd,
+    BackupDatabase, ImportSqlDump, NewTable, OpenConnectionInfo, OpenConsole, OpenErd, OpenHistory,
     OpenMaintenance, OpenProcessList, OpenQueryDigest, OpenServerVariables, OpenUserManagement,
     Refresh, SearchSchema, Session, Tool,
 };
@@ -553,6 +553,18 @@ impl Session {
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.open_tool(Tool::Console, window, cx);
+                })),
+            )
+            .child(
+                tool_row(
+                    "open-history",
+                    IconName::Clock,
+                    "Query History",
+                    "What you ran from query tabs, kept per connection",
+                    &OpenHistory,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_tool(Tool::History, window, cx);
                 })),
             )
             .when(!server, |this| {

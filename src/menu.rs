@@ -31,9 +31,10 @@ use crate::ui::query_editor::{
 };
 use crate::ui::session::{
     BackupDatabase, CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NewTable, NextTab,
-    OpenConnectionInfo, OpenConsole, OpenErd, OpenFile, OpenMaintenance, OpenProcessList,
-    OpenQueryDigest, OpenServerVariables, OpenUserManagement, PreviousTab, QuickSwitcher,
-    Reconnect, Refresh, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs, SearchSchema, UploadFile,
+    OpenConnectionInfo, OpenConsole, OpenErd, OpenFile, OpenHistory, OpenMaintenance,
+    OpenProcessList, OpenQueryDigest, OpenServerVariables, OpenUserManagement, PreviousTab,
+    QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs, SearchSchema,
+    UploadFile,
 };
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -175,6 +176,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("ER Diagram", OpenErd),
             MenuItem::separator(),
             MenuItem::action("Console", OpenConsole),
+            MenuItem::action("Query History", OpenHistory),
             MenuItem::action("Connection Info", OpenConnectionInfo),
             MenuItem::action("Processes", OpenProcessList),
             MenuItem::action("Server Variables", OpenServerVariables),
@@ -279,6 +281,7 @@ mod tests {
             ("Toggle Row Panel", TypeId::of::<ToggleRowPanel>()),
             ("Toggle Agents Panel", TypeId::of::<ToggleAgents>()),
             ("Console", TypeId::of::<OpenConsole>()),
+            ("Query History", TypeId::of::<OpenHistory>()),
             ("Connection Info", TypeId::of::<OpenConnectionInfo>()),
             ("Processes", TypeId::of::<OpenProcessList>()),
             ("Server Variables", TypeId::of::<OpenServerVariables>()),

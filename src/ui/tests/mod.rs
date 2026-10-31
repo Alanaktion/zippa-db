@@ -51,6 +51,7 @@ mod explain;
 mod export;
 mod files;
 mod filters;
+mod history;
 mod import;
 mod layout;
 mod messages;
@@ -272,6 +273,19 @@ impl Drop for ScratchDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+/// Point this test's config dir at a scratch directory and turn query
+/// history on, on disk — it is off under test unless asked for. Hold the
+/// directory for as long as the history is needed.
+fn record_history(keep: crate::db::history::Keep) -> ScratchDir {
+    let scratch = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(scratch.path.clone());
+    crate::db::history::configure(crate::db::history::Retention {
+        keep,
+        ..crate::db::history::Retention::default()
+    });
+    scratch
 }
 
 /// Draw the session and click a button in it by id.

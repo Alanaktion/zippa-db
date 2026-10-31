@@ -1,4 +1,4 @@
-//! The session's tool tabs: the console, the connection information, the
+//! The session's tool tabs: the console, the query history, the connection information, the
 //! server views, SQLite maintenance, user management, and the ER diagram. A session holds at most
 //! one of each, opened from the sidebar's Management tab, the View menu, or
 //! the quick switcher, and brought forward rather than duplicated.
@@ -18,6 +18,7 @@ use crate::db::{Connection, Engine};
 use crate::ui::connection_info::ConnectionInfoView;
 use crate::ui::console::ConsoleView;
 use crate::ui::erd::ErdView;
+use crate::ui::history::HistoryView;
 use crate::ui::process_list::ProcessListView;
 use crate::ui::query_digest::QueryDigestView;
 use crate::ui::server_variables::ServerVariablesView;
@@ -29,6 +30,7 @@ use crate::workspace_state::PanelState;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tool {
     Console,
+    History,
     ConnectionInfo,
     Processes,
     Variables,
@@ -43,6 +45,7 @@ impl Tool {
     pub(crate) fn title(self) -> &'static str {
         match self {
             Tool::Console => "Console",
+            Tool::History => "History",
             Tool::ConnectionInfo => "Connection Info",
             Tool::Processes => "Processes",
             Tool::Variables => "Variables",
@@ -60,7 +63,7 @@ impl Tool {
     /// facts are its file and its library version.
     pub(crate) fn offered(self, engine: Engine) -> bool {
         match self {
-            Tool::Console | Tool::Erd | Tool::ConnectionInfo => true,
+            Tool::Console | Tool::History | Tool::Erd | Tool::ConnectionInfo => true,
             Tool::Maintenance => engine == Engine::Sqlite,
             Tool::Processes | Tool::Variables | Tool::Digest | Tool::Users => {
                 engine != Engine::Sqlite
@@ -72,6 +75,7 @@ impl Tool {
     pub(crate) fn icon(self) -> IconName {
         match self {
             Tool::Console => IconName::ScrollText,
+            Tool::History => IconName::Clock,
             Tool::ConnectionInfo => IconName::Database,
             Tool::Processes => IconName::Activity,
             Tool::Variables => IconName::SlidersHorizontal,
@@ -86,6 +90,7 @@ impl Tool {
     pub(crate) fn kind(self) -> &'static str {
         match self {
             Tool::Console => "console",
+            Tool::History => "query history",
             Tool::ConnectionInfo => "connection information",
             Tool::Processes => "process list",
             Tool::Variables => "server variables",
@@ -100,6 +105,7 @@ impl Tool {
     pub(crate) fn state(self) -> PanelState {
         match self {
             Tool::Console => PanelState::Console,
+            Tool::History => PanelState::History,
             Tool::ConnectionInfo => PanelState::ConnectionInfo,
             Tool::Processes => PanelState::Processes,
             Tool::Variables => PanelState::Variables,
@@ -114,6 +120,7 @@ impl Tool {
     pub(crate) fn from_state(state: &PanelState) -> Option<Self> {
         match state {
             PanelState::Console => Some(Tool::Console),
+            PanelState::History => Some(Tool::History),
             PanelState::ConnectionInfo => Some(Tool::ConnectionInfo),
             PanelState::Processes => Some(Tool::Processes),
             PanelState::Variables => Some(Tool::Variables),
@@ -133,6 +140,7 @@ impl Tool {
 /// A tool tab's view.
 pub(crate) enum ToolView {
     Console(Entity<ConsoleView>),
+    History(Entity<HistoryView>),
     ConnectionInfo(Entity<ConnectionInfoView>),
     Processes(Entity<ProcessListView>),
     Variables(Entity<ServerVariablesView>),
@@ -148,6 +156,7 @@ macro_rules! each_view {
     ($tool:expr, $view:ident => $body:expr) => {
         match $tool {
             ToolView::Console($view) => $body,
+            ToolView::History($view) => $body,
             ToolView::ConnectionInfo($view) => $body,
             ToolView::Processes($view) => $body,
             ToolView::Variables($view) => $body,
@@ -170,6 +179,9 @@ impl ToolView {
         match tool {
             Tool::Console => {
                 ToolView::Console(cx.new(|cx| ConsoleView::new(connection, window, cx)))
+            }
+            Tool::History => {
+                ToolView::History(cx.new(|cx| HistoryView::new(connection, window, cx)))
             }
             Tool::ConnectionInfo => {
                 ToolView::ConnectionInfo(cx.new(|cx| ConnectionInfoView::new(connection, cx)))
@@ -196,6 +208,7 @@ impl ToolView {
     pub(crate) fn tool(&self) -> Tool {
         match self {
             ToolView::Console(_) => Tool::Console,
+            ToolView::History(_) => Tool::History,
             ToolView::ConnectionInfo(_) => Tool::ConnectionInfo,
             ToolView::Processes(_) => Tool::Processes,
             ToolView::Variables(_) => Tool::Variables,
@@ -218,6 +231,7 @@ impl ToolView {
         match self {
             ToolView::Maintenance(_) => {}
             ToolView::Console(view) => view.update(cx, |view, cx| view.refresh(cx)),
+            ToolView::History(view) => view.update(cx, |view, cx| view.refresh(cx)),
             ToolView::ConnectionInfo(view) => view.update(cx, |view, cx| view.refresh(cx)),
             ToolView::Processes(view) => view.update(cx, |view, cx| view.refresh(cx)),
             ToolView::Variables(view) => view.update(cx, |view, cx| view.refresh(cx)),

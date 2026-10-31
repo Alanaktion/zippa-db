@@ -10,17 +10,20 @@
 //! as soon as it is made.
 
 use gpui_kit::base::TestSupportExt;
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage,
     Settings as SettingsElement,
 };
-use gpui_kit::component::{ActiveTheme, IconName, Root, Sizable, Theme, ThemeMode};
+use gpui_kit::component::{ActiveTheme, IconName, Root, Sizable, Theme, ThemeMode, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Bounds, Context, FocusHandle, Global, SharedString, TitlebarOptions, Window, WindowBounds,
     WindowHandle, WindowOptions, actions, div, px, size,
 };
 
+use crate::db::history::{self, Keep};
 use crate::settings::{self, Appearance, CompletionKey, Settings};
 
 actions!(zippa_db, [OpenSettings, CloseSettings]);
@@ -102,6 +105,7 @@ impl Render for SettingsView {
                 appearance_page(cx),
                 editor_page(),
                 data_page(),
+                history_page(),
                 agents_page(),
             ]))
     }
@@ -405,6 +409,128 @@ fn agents_page() -> SettingPage {
                 ),
             ),
         )
+}
+
+/// The age limits offered for query history, in days; `0` is no limit.
+const HISTORY_DAYS: [(u32, &str); 5] = [
+    (0, "Forever"),
+    (7, "7 days"),
+    (30, "30 days"),
+    (90, "90 days"),
+    (365, "1 year"),
+];
+
+fn history_page() -> SettingPage {
+    SettingPage::new("History")
+        .icon(gpui_kit::assets::IconName::Clock)
+        .group(
+            SettingGroup::new()
+                .title("Query history")
+                .description(
+                    "What you run from query tabs, kept per connection and shown in its \
+                     History tab (View › Query History). The app's own reads and the \
+                     Agents panel's statements are not kept. SQL text can hold anything \
+                     you typed, so the files are readable only by you; passwords from \
+                     connections are never written.",
+                )
+                .item(
+                    SettingItem::new(
+                        "Keep query history",
+                        SettingField::dropdown(
+                            Keep::ALL
+                                .map(|keep| (keep.key().into(), keep.label().into()))
+                                .to_vec(),
+                            |cx| Settings::global(cx).query_history.key().into(),
+                            |value, cx| {
+                                settings::update(cx, |settings| {
+                                    settings.query_history = Keep::from_key(&value)
+                                })
+                            },
+                        )
+                        .default_value(Keep::default().key()),
+                    )
+                    .description(
+                        "\"Until the app quits\" keeps it in memory only. Changing this keeps \
+                         what is already saved; clear it below.",
+                    ),
+                )
+                .item(
+                    SettingItem::new(
+                        "Statements per connection",
+                        SettingField::number_input(
+                            NumberFieldOptions {
+                                min: 0.,
+                                max: history::MAX_ENTRIES_LIMIT as f64,
+                                step: 100.,
+                            },
+                            |cx| Settings::global(cx).query_history_limit as f64,
+                            |value, cx| {
+                                settings::update(cx, |settings| {
+                                    settings.query_history_limit =
+                                        (value.max(0.) as usize).min(history::MAX_ENTRIES_LIMIT)
+                                })
+                            },
+                        )
+                        .default_value(history::DEFAULT_MAX_ENTRIES as f64),
+                    )
+                    .description("The oldest go first. 0 keeps every statement."),
+                )
+                .item(
+                    SettingItem::new(
+                        "Keep statements for",
+                        SettingField::dropdown(
+                            HISTORY_DAYS
+                                .map(|(days, label)| (days.to_string().into(), label.into()))
+                                .to_vec(),
+                            |cx| Settings::global(cx).query_history_days.to_string().into(),
+                            |value, cx| {
+                                settings::update(cx, |settings| {
+                                    settings.query_history_days = value.parse().unwrap_or(0)
+                                })
+                            },
+                        )
+                        .default_value("0"),
+                    )
+                    .description("Older statements are dropped."),
+                )
+                .item(
+                    SettingItem::new(
+                        "Clear all query history",
+                        SettingField::render(|_options, _window, _cx| {
+                            Button::new("clear-all-history")
+                                .small()
+                                .danger()
+                                .label("Clear…")
+                                .on_click(|_, window, cx| confirm_clear_history(window, cx))
+                        }),
+                    )
+                    .description(
+                        "Every connection's. A single connection's is cleared from its \
+                         History tab; deleting a connection deletes its history.",
+                    ),
+                ),
+        )
+}
+
+/// Ask before forgetting every connection's history: it cannot be brought
+/// back.
+fn confirm_clear_history(window: &mut Window, cx: &mut App) {
+    window.open_alert_dialog(cx, |alert, _window, _cx| {
+        alert
+            .title("Clear all query history?")
+            .description("Every statement recorded for every connection is forgotten.")
+            .button_props(
+                DialogButtonProps::default()
+                    .ok_text("Clear History")
+                    .ok_variant(ButtonVariant::Danger)
+                    .cancel_text("Cancel")
+                    .show_cancel(true),
+            )
+            .on_ok(|_, _window, _cx| {
+                history::clear(None);
+                true
+            })
+    });
 }
 
 fn data_page() -> SettingPage {

@@ -527,6 +527,9 @@ impl Welcome {
         // Saved Agents threads go with their connection: they may hold
         // pasted secrets, and nothing could list them any more.
         let threads = crate::db::agent::threads::threads_dir(id).ok();
+        // So does its query history, for the same reasons; the removal is
+        // handed to the history's own writer, so it waits on nothing here.
+        crate::db::history::clear(Some(id));
         store_in_background(
             move || {
                 store::save(&connections, ticket)?;

@@ -1,7 +1,7 @@
 # SQL snippets library
 
 ## Context
-The backlog asks for a reusable SQL code snippets library. Users currently keep frequent queries in `.sql` files (`sql_file.rs` open/save) or retype them. Goal: named, tagged snippets stored locally, inserted into the editor from a searchable dialog, with optional `${placeholder}` fields. Shares the dialog pattern with [query-history.md](query-history.md); build history first or extract the shared list-dialog pieces when the second one lands.
+The backlog asks for a reusable SQL code snippets library. Users currently keep frequent queries in `.sql` files (`sql_file.rs` open/save) or retype them. Goal: named, tagged snippets stored locally, inserted into the editor from a searchable dialog, with optional `${placeholder}` fields. Query history shipped as a tool tab (`src/ui/history.rs`: a searchable `DataGrid` that emits `HistoryEvent::Open` for the session to open a tab), which is the nearest pattern to reuse for the snippet list.
 
 ## Decisions
 - Scope: snippets are global (available on every connection) with an optional engine tag (`Any`, `Postgres`, `MySql`, `Sqlite`) so the picker can prefer matching ones. No per-connection scoping in v1.

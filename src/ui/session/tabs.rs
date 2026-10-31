@@ -16,6 +16,7 @@ use gpui_kit::{App, ClipboardItem, Context, Entity, Window};
 use crate::dashboards::{self, Dashboard};
 use crate::db::{DatabaseObject, PinnedConnection, runtime};
 use crate::ui::filter_bar::FilterSpec;
+use crate::ui::history::{HistoryEvent, HistoryView};
 use crate::ui::schema_view::{SchemaView, SchemaViewEvent};
 use crate::ui::table_view::{TableView, TableViewEvent};
 
@@ -483,9 +484,44 @@ impl Session {
         let key = self.next_key;
         self.next_key += 1;
         let view = ToolView::new(tool, self.connection.clone(), window, cx);
+        if let ToolView::History(history) = &view {
+            cx.subscribe_in(history, window, Self::on_history_event)
+                .detach();
+        }
         let panel = cx.new(|cx| SessionPanel::tool(key, view, cx));
         self.install(panel, window, cx);
         true
+    }
+
+    /// The History tab asked for a statement in a new query tab.
+    fn on_history_event(
+        &mut self,
+        _: &Entity<HistoryView>,
+        event: &HistoryEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            HistoryEvent::Open(sql) => {
+                self.open_tab(None, sql.clone(), false, window, cx);
+            }
+        }
+    }
+
+    /// Re-read the History tab, if one is open: a run just finished, so
+    /// there is something new in it.
+    pub(crate) fn refresh_history(&self, cx: &mut App) {
+        let views: Vec<Entity<HistoryView>> = self
+            .panels
+            .iter()
+            .filter_map(|panel| match panel.read(cx).tool_view() {
+                Some(ToolView::History(view)) => Some(view.clone()),
+                _ => None,
+            })
+            .collect();
+        for view in views {
+            view.update(cx, |view, cx| view.refresh(cx));
+        }
     }
 
     /// A table view followed a foreign key; open (or reuse) the referenced

@@ -31,8 +31,10 @@ pub enum QuerySource {
     Agent,
 }
 
-/// How a logged statement ended.
-#[derive(Debug, Clone)]
+/// How a logged statement ended. Also what a query history entry records,
+/// so it is written to disk as `{"rows": 3}`, `"ran"`, `{"error": "…"}`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum QueryOutcome {
     /// A read: this many rows came back.
     Rows(usize),

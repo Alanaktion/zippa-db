@@ -471,12 +471,11 @@ impl ScriptRun {
                         .execute(&format!("RELEASE SAVEPOINT {SAVEPOINT}"))
                         .await?;
                 }
-                self.connection.log(
-                    &sql,
-                    QuerySource::User,
-                    result.elapsed,
-                    query_outcome(&result),
-                );
+                let outcome = query_outcome(&result);
+                self.connection
+                    .remember(&self.statements[index].text, result.elapsed, &outcome);
+                self.connection
+                    .log(&sql, QuerySource::User, result.elapsed, outcome);
                 Ok(result)
             }
             Err(error) => {
@@ -490,12 +489,11 @@ impl ScriptRun {
                         .execute(&format!("RELEASE SAVEPOINT {SAVEPOINT}"))
                         .await?;
                 }
-                self.connection.log(
-                    &sql,
-                    QuerySource::User,
-                    elapsed,
-                    QueryOutcome::Error(message.clone()),
-                );
+                let outcome = QueryOutcome::Error(message.clone());
+                self.connection
+                    .remember(&self.statements[index].text, elapsed, &outcome);
+                self.connection
+                    .log(&sql, QuerySource::User, elapsed, outcome);
                 Err(message)
             }
         };
