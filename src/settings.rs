@@ -241,8 +241,14 @@ pub fn init(cx: &mut App) {
         Settings::default()
     });
 
+    let reduce_motion = settings.reduce_motion;
     cx.set_global(settings);
     apply(None, cx);
+    // Off leaves GPUI's own default in place; see `update` for why the flag
+    // is only written when the setting says so.
+    if reduce_motion {
+        cx.set_reduce_motion(true);
+    }
 }
 
 /// Change the settings, then save and apply the result.
@@ -252,6 +258,7 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
     if settings == *Settings::global(cx) {
         return;
     }
+    let motion_changed = settings.reduce_motion != Settings::global(cx).reduce_motion;
 
     // The file is small, but it is still disk I/O on every change; the write
     // goes to the background so toggling a switch never waits on it. The
@@ -283,6 +290,13 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
     cx.set_global(settings);
 
     apply(None, cx);
+    // The motion flag is written only when this setting changes, not on
+    // every apply: `apply` also runs when the system appearance flips, and
+    // re-asserting the setting there would clobber a flag set elsewhere
+    // (the test harness turns it on so dialogs settle in one frame).
+    if motion_changed {
+        cx.set_reduce_motion(Settings::global(cx).reduce_motion);
+    }
     // Fonts and page sizes are read while rendering, so every window is stale.
     cx.refresh_windows();
 }
@@ -315,10 +329,6 @@ fn apply(window: Option<&mut Window>, cx: &mut App) {
 
     Theme::change(mode_for(settings.appearance, system), window, cx);
     apply_scrollbars(settings.always_show_scrollbars, cx);
-    // The motion flag is app state rather than theme state, but it rides
-    // the same apply path so a toggle takes effect at once and the saved
-    // value is in force from startup.
-    cx.set_reduce_motion(settings.reduce_motion);
 }
 
 /// Put the scrollbar setting into effect.
