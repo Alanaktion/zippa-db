@@ -175,6 +175,11 @@ pub struct Settings {
     pub agent_base_url: String,
     /// The model name sent with each request.
     pub agent_model: String,
+    /// Whether Agents threads are saved on this machine, one `.jsonl` file
+    /// per thread under the config dir, so a conversation can be reopened
+    /// after the app closes. Off by default: a thread can hold schema, row
+    /// data, and pasted secrets, so keeping it is the user's choice.
+    pub agent_save_threads: bool,
 }
 
 impl Default for Settings {
@@ -198,6 +203,7 @@ impl Default for Settings {
             implicit_limit_rows: DEFAULT_PAGE_SIZE,
             agent_base_url: String::new(),
             agent_model: String::new(),
+            agent_save_threads: false,
         }
     }
 }

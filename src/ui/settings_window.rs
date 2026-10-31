@@ -321,63 +321,90 @@ fn key_set() -> &'static std::sync::atomic::AtomicBool {
 }
 
 fn agents_page() -> SettingPage {
-    SettingPage::new("Agents").icon(IconName::Bot).group(
-        SettingGroup::new()
-            .title("Model endpoint")
-            .description(
-                "Any OpenAI-compatible chat endpoint. When you send a message in the \
+    SettingPage::new("Agents")
+        .icon(IconName::Bot)
+        .group(
+            SettingGroup::new()
+                .title("Model endpoint")
+                .description(
+                    "Any OpenAI-compatible chat endpoint. When you send a message in the \
                      Agents panel, schema names, query text, and result rows go to this \
                      endpoint. A local one (Ollama, LM Studio) keeps them on this machine; \
                      a hosted one is a data-sharing choice. Nothing is sent until you do.",
-            )
-            .item(SettingItem::new(
-                "Base URL",
-                SettingField::input(
-                    |cx| Settings::global(cx).agent_base_url.clone().into(),
-                    |value, cx| {
-                        settings::update(cx, |settings| {
-                            settings.agent_base_url = value.trim().to_string()
-                        })
-                    },
-                ),
-            ))
-            .item(SettingItem::new(
-                "Model",
-                SettingField::input(
-                    |cx| Settings::global(cx).agent_model.clone().into(),
-                    |value, cx| {
-                        settings::update(cx, |settings| {
-                            settings.agent_model = value.trim().to_string()
-                        })
-                    },
-                ),
-            ))
-            .item(
-                SettingItem::new(
-                    "API key",
+                )
+                .item(SettingItem::new(
+                    "Base URL",
                     SettingField::input(
-                        |_| {
-                            if key_set().load(std::sync::atomic::Ordering::Relaxed) {
-                                KEY_MASK.into()
-                            } else {
-                                "".into()
-                            }
-                        },
-                        |value, _| {
-                            if value.as_ref() == KEY_MASK {
-                                return;
-                            }
-                            let key = value.trim();
-                            if crate::db::store::set_api_key(key).is_ok() {
-                                key_set()
-                                    .store(!key.is_empty(), std::sync::atomic::Ordering::Relaxed);
-                            }
+                        |cx| Settings::global(cx).agent_base_url.clone().into(),
+                        |value, cx| {
+                            settings::update(cx, |settings| {
+                                settings.agent_base_url = value.trim().to_string()
+                            })
                         },
                     ),
+                ))
+                .item(SettingItem::new(
+                    "Model",
+                    SettingField::input(
+                        |cx| Settings::global(cx).agent_model.clone().into(),
+                        |value, cx| {
+                            settings::update(cx, |settings| {
+                                settings.agent_model = value.trim().to_string()
+                            })
+                        },
+                    ),
+                ))
+                .item(
+                    SettingItem::new(
+                        "API key",
+                        SettingField::input(
+                            |_| {
+                                if key_set().load(std::sync::atomic::Ordering::Relaxed) {
+                                    KEY_MASK.into()
+                                } else {
+                                    "".into()
+                                }
+                            },
+                            |value, _| {
+                                if value.as_ref() == KEY_MASK {
+                                    return;
+                                }
+                                let key = value.trim();
+                                if crate::db::store::set_api_key(key).is_ok() {
+                                    key_set().store(
+                                        !key.is_empty(),
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    );
+                                }
+                            },
+                        ),
+                    )
+                    .description("Kept in the OS keychain, never in a settings file."),
+                ),
+        )
+        .group(
+            SettingGroup::new().title("Thread history").item(
+                SettingItem::new(
+                    "Save threads on this machine",
+                    SettingField::switch(
+                        |cx| Settings::global(cx).agent_save_threads,
+                        |value, cx| {
+                            settings::update(cx, |settings| settings.agent_save_threads = value)
+                        },
+                    )
+                    .default_value(false),
                 )
-                .description("Kept in the OS keychain, never in a settings file."),
+                .description(
+                    "One file per thread, under this machine's config directory, \
+                     listed in the Agents panel's Threads menu by recency. A thread \
+                     can hold schema, row data, and pasted secrets, so it is only \
+                     written with this on — and restoring one brings its transcript \
+                     back, never a running turn or a waiting approval. Turning this off \
+                     keeps the threads already saved; deleting a connection deletes its \
+                     threads.",
+                ),
             ),
-    )
+        )
 }
 
 fn data_page() -> SettingPage {

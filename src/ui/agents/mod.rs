@@ -1,8 +1,10 @@
 //! The Agents panel: a chat beside the session, scoped to its connection.
 //!
-//! The thread lives here, in memory only — chat history can hold schema, row
-//! data and pasted secrets, so it is never written to `workspace.json` or
-//! anywhere else. The session owns one panel, so a thread follows its
+//! The thread lives here. Chat history can hold schema, row data and pasted
+//! secrets, so it is never written to `workspace.json`; with thread history
+//! on (Settings › Agents) it is also saved per connection as `.jsonl` files
+//! (see [`crate::db::agent::threads`]), listed in the header's Threads menu
+//! by recency. The session owns one panel, so a thread follows its
 //! connection through database switches and reconnects and ends when the
 //! connection does.
 //!
@@ -33,6 +35,7 @@ use gpui_kit::{
 use crate::db::agent::compaction;
 use crate::db::agent::context::{self, ContextInfo};
 use crate::db::agent::provider::{Endpoint, HttpProvider, Message, ProviderError};
+use crate::db::agent::threads;
 use crate::db::agent::tools::{Approver, ToolContext, UiAction, WriteRequest};
 use crate::db::agent::turn::{self, TurnEvent, TurnOutcome};
 use crate::db::{
@@ -40,6 +43,7 @@ use crate::db::{
 };
 use crate::settings::Settings;
 use crate::ui::completion::SharedCatalog;
+use uuid::Uuid;
 
 #[cfg(test)]
 mod test_support;
@@ -148,6 +152,15 @@ pub struct AgentPanel {
     approval: WriteApproval,
     /// What goes back to the model each turn, system prompt excluded.
     thread: Vec<Message>,
+    /// Whether each tool result in `thread` was an error, one flag per
+    /// [`Message::Tool`] in order, kept beside the thread rather than read
+    /// back off the drawn items: a stopped turn's tools stay drawn but its
+    /// messages never join the thread.
+    tool_errors: Vec<bool>,
+    /// The saved file this thread is written to, when thread history is on.
+    /// `None` until the first save: a thread that never finished a turn
+    /// has no file yet.
+    thread_id: Option<Uuid>,
     items: Vec<Item>,
     /// Where `items` ended when the running turn's user message was pushed,
     /// so `finish` can tell whether the turn showed anything at all.
@@ -203,6 +216,8 @@ impl AgentPanel {
             connection,
             catalog,
             thread: Vec::new(),
+            tool_errors: Vec::new(),
+            thread_id: None,
             items: Vec::new(),
             items_at_turn_start: 0,
             composer,
@@ -219,7 +234,12 @@ impl AgentPanel {
 
     /// Point the panel at the connection a database switch or reconnect
     /// opened. The thread stays; the next turn re-snapshots the context.
+    /// A different connection gets a different thread file, so the saved
+    /// id is dropped rather than carried onto another connection's history.
     pub fn set_connection(&mut self, connection: Arc<Connection>, cx: &mut Context<Self>) {
+        if connection.config.id != self.connection.config.id {
+            self.thread_id = None;
+        }
         self.connection = connection;
         cx.notify();
     }
@@ -438,7 +458,18 @@ impl AgentPanel {
         // waiting or running for the rest of the thread.
         self.settle_tools("not run");
 
+        // The turn's events are its tool results, one each and in the same
+        // order as its `Message::Tool`s.
+        let results = outcome
+            .messages
+            .iter()
+            .filter(|message| matches!(message, Message::Tool { .. }))
+            .count();
+        let mut errors = outcome.events.iter().map(|event| event.is_error);
+        self.tool_errors
+            .extend((0..results).map(|_| errors.next().unwrap_or(false)));
         self.thread.extend(outcome.messages);
+        self.save_thread(cx);
         if outcome.tools_unsupported {
             self.tools_supported = false;
             self.notice(
@@ -656,10 +687,116 @@ impl AgentPanel {
     pub fn new_thread(&mut self, cx: &mut Context<Self>) {
         self.stop(cx);
         self.thread.clear();
+        self.tool_errors.clear();
+        self.thread_id = None;
         self.items.clear();
         self.tools_supported = true;
         self.stream_supported = true;
         cx.notify();
+    }
+
+    /// Write the thread to its file, when thread history is on. A first
+    /// save for the connection warns in the transcript that history is now
+    /// kept on this machine, since it may hold pasted secrets. A failure
+    /// says so in the transcript rather than silently dropping history.
+    fn save_thread(&mut self, cx: &mut Context<Self>) {
+        if !Settings::global(cx).agent_save_threads || self.thread.is_empty() {
+            return;
+        }
+        let saved = threads::to_saved(&self.thread, self.tool_errors.iter().copied());
+        let id = *self.thread_id.get_or_insert_with(Uuid::new_v4);
+        // The directory is resolved here, not on the background thread, and
+        // the ticket is drawn with the snapshot, so a slow write cannot land
+        // over a later one.
+        let dir = match threads::threads_dir(self.connection.config.id) {
+            Ok(dir) => dir,
+            Err(error) => {
+                self.notice(&format!("Thread history was not saved: {error:#}"), true);
+                return;
+            }
+        };
+        let ticket = store::ticket();
+        let write = cx.background_spawn(async move { threads::save(&dir, id, &saved, ticket) });
+        cx.spawn(async move |panel, cx| {
+            let result = write.await;
+            panel
+                .update(cx, |panel, cx| {
+                    match result {
+                        Ok(true) => panel.notice(
+                            "Thread history is now saved on this machine, one file per thread, \
+                             and may contain pasted secrets. The Threads menu lists them.",
+                            false,
+                        ),
+                        Ok(false) => return,
+                        Err(error) => {
+                            panel.notice(&format!("Thread history was not saved: {error:#}"), true)
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Replace the thread with a saved one: messages and tool events come
+    /// back intact, while a running turn or a waiting approval is not
+    /// resumed — both ended when the app closed, and a turn in flight is
+    /// stopped first so its ending cannot write into the restored thread.
+    fn open_thread(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        self.stop(cx);
+        match threads::load(self.connection.config.id, id) {
+            Ok(saved) => {
+                self.thread = threads::to_messages(&saved);
+                self.tool_errors = threads::tool_errors(&saved);
+                self.items = items_from_saved(&saved);
+                self.thread_id = Some(id);
+                self.tools_supported = true;
+                self.stream_supported = true;
+            }
+            Err(error) => self.notice(&format!("Could not open that thread: {error:#}"), true),
+        }
+        cx.notify();
+    }
+
+    /// Ask before deleting the open thread's file: it cannot be undone.
+    fn confirm_delete_current_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.thread_id.is_none() {
+            return;
+        }
+        let panel = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let panel = panel.clone();
+            alert
+                .title("Delete this thread?")
+                .description("Its saved file is removed from this machine. This cannot be undone.")
+                .button_props(
+                    gpui_kit::component::dialog::DialogButtonProps::default()
+                        .ok_text("Delete")
+                        .cancel_text("Keep")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    panel.update(cx, |panel, cx| panel.delete_current_thread(cx));
+                    true
+                })
+        });
+    }
+
+    /// Delete the open thread's file and start over. Other threads are
+    /// deleted by opening one first; a thread list is for resuming, not
+    /// for bulk management.
+    fn delete_current_thread(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.thread_id else {
+            return;
+        };
+        match threads::delete(self.connection.config.id, id) {
+            Ok(()) => self.new_thread(cx),
+            Err(error) => {
+                self.notice(&format!("Thread was not deleted: {error:#}"), true);
+                cx.notify();
+            }
+        }
     }
 
     fn answer(&mut self, approved: bool, cx: &mut Context<Self>) {
@@ -736,6 +873,54 @@ impl AgentPanel {
         self.access.enabled() || self.running
     }
 
+    /// The saved threads for this connection, newest first, as a menu: a
+    /// row reopens its transcript, and the open thread can be deleted. The
+    /// list is read when the menu opens, not on every draw.
+    fn render_threads_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let panel = cx.entity();
+        let connection_id = self.connection.config.id;
+        let current = self.thread_id;
+        Button::new("agent-threads")
+            .ghost()
+            .xsmall()
+            .label("Threads")
+            .accessibility_label("Saved agent threads")
+            .tooltip("Open a saved thread")
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _, _| {
+                let threads = threads::list(connection_id).unwrap_or_default();
+                let mut menu = menu;
+                if threads.is_empty() {
+                    menu = menu.item(option_item(
+                        "No saved threads yet",
+                        "turn on thread history in Settings › Agents",
+                    ));
+                }
+                for thread in threads {
+                    let panel = panel.clone();
+                    let id = thread.id;
+                    let checked = current == Some(id);
+                    menu =
+                        menu.item(thread_row(thread.title, checked).on_click(move |_, _, cx| {
+                            panel.update(cx, |panel, cx| panel.open_thread(id, cx));
+                        }));
+                }
+                if current.is_some() {
+                    let panel = panel.clone();
+                    menu = menu.item(
+                        option_item("Delete current thread", "removes its file").on_click(
+                            move |_, window, cx| {
+                                panel.update(cx, |panel, cx| {
+                                    panel.confirm_delete_current_thread(window, cx)
+                                });
+                            },
+                        ),
+                    );
+                }
+                menu
+            })
+    }
+
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel = cx.entity();
         let current_access = self.access;
@@ -808,6 +993,7 @@ impl AgentPanel {
                             .child(access)
                             .when(self.access.writes_rows(), |this| this.child(approval)),
                     )
+                    .child(self.render_threads_button(cx))
                     .child(
                         Button::new("agent-new-thread")
                             .ghost()
@@ -1025,6 +1211,75 @@ impl AgentPanel {
                 .into_any_element(),
         )
     }
+}
+
+/// Draw a saved transcript: user and assistant words, tool calls with
+/// their results. Each result goes to the call it answers by id (see
+/// [`threads::answers`]); a call that never got one did not run, and is
+/// shown stopped rather than left waiting.
+fn items_from_saved(saved: &[threads::SavedMessage]) -> Vec<Item> {
+    let answered = threads::answers(saved);
+    let mut items = Vec::new();
+    let mut index = 0;
+    for (line_index, line) in saved.iter().enumerate() {
+        match line {
+            threads::SavedMessage::User { content } => items.push(Item::User(content.clone())),
+            threads::SavedMessage::Assistant {
+                content,
+                tool_calls,
+            } => {
+                if let Some(text) = content
+                    && !text.is_empty()
+                {
+                    items.push(Item::Assistant(text.clone()));
+                }
+                for (position, call) in tool_calls.iter().enumerate() {
+                    let answer = answered.get(&(line_index, position)).and_then(|tool_line| {
+                        match &saved[*tool_line] {
+                            threads::SavedMessage::Tool {
+                                content, is_error, ..
+                            } => Some((content.clone(), *is_error)),
+                            _ => None,
+                        }
+                    });
+                    let (result, status) = match answer {
+                        Some((content, true)) => (content, ToolStatus::Failed),
+                        Some((content, false)) => (content, ToolStatus::Done),
+                        None => ("not run".to_string(), ToolStatus::Stopped),
+                    };
+                    items.push(Item::Tool {
+                        index,
+                        name: call.name.clone(),
+                        arguments: call.arguments.clone(),
+                        result: Some(result),
+                        status,
+                        open: false,
+                    });
+                    index += 1;
+                }
+            }
+            threads::SavedMessage::Tool { .. } => {}
+        }
+    }
+    items
+}
+
+/// A saved thread's row: its title, with a check on the open one.
+fn thread_row(title: String, checked: bool) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, cx| {
+        h_flex()
+            .w_full()
+            .gap_4()
+            .justify_between()
+            .child(div().child(title.clone()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(if checked { "open" } else { "" }),
+            )
+    })
+    .checked(checked)
 }
 
 /// A dropdown choice: its name, then what it means in small muted text,

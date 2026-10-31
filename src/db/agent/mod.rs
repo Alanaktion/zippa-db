@@ -5,5 +5,6 @@ pub mod compaction;
 pub mod context;
 pub mod gate;
 pub mod provider;
+pub mod threads;
 pub mod tools;
 pub mod turn;

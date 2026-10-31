@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::db::agent::gate::Kind;
-use crate::db::agent::provider::Message;
+use crate::db::agent::provider::{Message, ToolCall};
 use crate::db::agent::tools::{UiAction, WriteRequest};
 use crate::db::agent::turn::{TurnEvent, TurnOutcome};
 use crate::db::{AgentAccess, WriteApproval};
@@ -572,4 +572,203 @@ fn a_catalog_refresh_action_reloads_the_session_catalog(cx: &mut TestAppContext)
         catalog.entries.iter().any(|entry| entry.name == "fresh"),
         "the re-read catalog should hold the new table"
     );
+}
+
+#[gpui_kit::test]
+fn a_saved_thread_restores_as_a_transcript(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+
+    let messages = vec![
+        Message::User("what tables are here?".into()),
+        Message::Assistant {
+            content: Some("Let me look.".into()),
+            tool_calls: vec![ToolCall {
+                id: "call-1".into(),
+                name: "list_tables".into(),
+                arguments: "{}".into(),
+            }],
+        },
+        Message::Tool {
+            id: "call-1".into(),
+            content: "items, orders".into(),
+        },
+    ];
+    // With history off, a finished turn saves nothing.
+    agents.update(cx, |agents, cx| {
+        agents.apply_turn_event_for_test(
+            TurnEvent::ToolPending {
+                index: 0,
+                name: "list_tables".into(),
+                arguments: "{}".into(),
+            },
+            cx,
+        );
+        agents.apply_turn_event_for_test(
+            TurnEvent::ToolFinished {
+                index: 0,
+                result: "items, orders".into(),
+                is_error: false,
+            },
+            cx,
+        );
+        agents.finish_for_test(
+            TurnOutcome {
+                messages: messages.clone(),
+                answer: Some("Two tables.".into()),
+                ..TurnOutcome::default()
+            },
+            cx,
+        );
+    });
+    assert_eq!(
+        agents.read_with(cx, |agents, _| agents.thread_id_for_test()),
+        None,
+        "history off must not write a thread file"
+    );
+
+    // With history on, the same turn saves, and reopening it brings the
+    // transcript back: words and the tool call with its result.
+    cx.update(|cx| settings::update(cx, |settings| settings.agent_save_threads = true));
+    agents.update(cx, |agents, cx| agents.new_thread(cx));
+    agents.update(cx, |agents, cx| {
+        agents.apply_turn_event_for_test(
+            TurnEvent::ToolPending {
+                index: 0,
+                name: "list_tables".into(),
+                arguments: "{}".into(),
+            },
+            cx,
+        );
+        agents.apply_turn_event_for_test(
+            TurnEvent::ToolFinished {
+                index: 0,
+                result: "items, orders".into(),
+                is_error: false,
+            },
+            cx,
+        );
+        agents.finish_for_test(
+            TurnOutcome {
+                messages: messages.clone(),
+                answer: Some("Two tables.".into()),
+                ..TurnOutcome::default()
+            },
+            cx,
+        );
+    });
+    let id = agents
+        .read_with(cx, |agents, _| agents.thread_id_for_test())
+        .expect("the thread should have a file once history is on");
+    // The write runs in the background.
+    cx.run_until_parked();
+
+    agents.update(cx, |agents, cx| agents.new_thread(cx));
+    assert!(
+        agents
+            .read_with(cx, |agents, _| agents.lines_for_test())
+            .is_empty()
+    );
+
+    agents.update(cx, |agents, cx| agents.open_thread_for_test(id, cx));
+    assert_eq!(
+        agents.read_with(cx, |agents, _| agents.lines_for_test()),
+        vec!["what tables are here?", "Let me look.", "tool list_tables"],
+    );
+    assert_eq!(
+        agents.read_with(cx, |agents, _| agents.tools_for_test()),
+        vec![(
+            "list_tables".to_string(),
+            "{}".to_string(),
+            Some("items, orders".to_string()),
+            "done"
+        )],
+    );
+
+    // Deleting the open thread starts over with nothing saved.
+    agents.update(cx, |agents, cx| agents.delete_current_thread_for_test(cx));
+    assert_eq!(
+        agents.read_with(cx, |agents, _| agents.thread_id_for_test()),
+        None
+    );
+    assert!(
+        agents
+            .read_with(cx, |agents, _| agents.lines_for_test())
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+fn a_stopped_turns_tools_do_not_shift_saved_error_flags(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let agents = handle
+        .update(cx, |session, _, _| session.agents_for_test())
+        .unwrap();
+    cx.update(|cx| settings::update(cx, |settings| settings.agent_save_threads = true));
+
+    // A stopped turn: its tool finished and stays drawn, but the turn's
+    // messages never join the thread.
+    agents.update(cx, |agents, cx| {
+        agents.begin_turn_for_test("stopped question", cx);
+        agents.apply_turn_event_for_test(
+            TurnEvent::ToolPending {
+                index: 0,
+                name: "list_tables".into(),
+                arguments: "{}".into(),
+            },
+            cx,
+        );
+        agents.apply_turn_event_for_test(
+            TurnEvent::ToolFinished {
+                index: 0,
+                result: "items".into(),
+                is_error: false,
+            },
+            cx,
+        );
+    });
+
+    // Then a turn whose one tool call failed.
+    agents.update(cx, |agents, cx| {
+        agents.finish_for_test(
+            TurnOutcome {
+                messages: vec![
+                    Message::User("next question".into()),
+                    Message::Assistant {
+                        content: None,
+                        tool_calls: vec![ToolCall {
+                            id: "call_0".into(),
+                            name: "run_select".into(),
+                            arguments: "{}".into(),
+                        }],
+                    },
+                    Message::Tool {
+                        id: "call_0".into(),
+                        content: "Error: no such table".into(),
+                    },
+                ],
+                events: vec![crate::db::agent::turn::ToolEvent {
+                    name: "run_select".into(),
+                    arguments: "{}".into(),
+                    result: "Error: no such table".into(),
+                    is_error: true,
+                }],
+                answer: Some("That table is missing.".into()),
+                ..TurnOutcome::default()
+            },
+            cx,
+        );
+    });
+    let id = agents
+        .read_with(cx, |agents, _| agents.thread_id_for_test())
+        .expect("the thread should save");
+    cx.run_until_parked();
+
+    agents.update(cx, |agents, cx| agents.open_thread_for_test(id, cx));
+    let tools = agents.read_with(cx, |agents, _| agents.tools_for_test());
+    assert_eq!(tools.len(), 1, "only the finished turn's call is saved");
+    assert_eq!(tools[0].0, "run_select");
+    assert_eq!(tools[0].3, "failed", "the failed call must stay failed");
 }
