@@ -36,7 +36,7 @@ use crate::db::agent::compaction;
 use crate::db::agent::context::{self, ContextInfo};
 use crate::db::agent::provider::{Endpoint, HttpProvider, Message, ProviderError};
 use crate::db::agent::threads;
-use crate::db::agent::tools::{Approver, ToolContext, UiAction, WriteRequest};
+use crate::db::agent::tools::{Approver, LiveModes, ToolContext, UiAction, WriteRequest};
 use crate::db::agent::turn::{self, TurnEvent, TurnOutcome};
 use crate::db::{
     AgentAccess, Connection, DatabaseObject, WriteApproval, is_risky_agent, runtime, store,
@@ -150,6 +150,10 @@ pub struct AgentPanel {
     catalog: SharedCatalog,
     access: AgentAccess,
     approval: WriteApproval,
+    /// The modes as currently shown, shared with a running turn: a
+    /// write-approval change, or lowered access, reaches the turn's next
+    /// tool call through this (see `ToolContext`).
+    live_modes: LiveModes,
     /// What goes back to the model each turn, system prompt excluded.
     thread: Vec<Message>,
     /// Whether each tool result in `thread` was an error, one flag per
@@ -213,6 +217,10 @@ impl AgentPanel {
         Self {
             access: connection.config.agent_access,
             approval: connection.config.agent_approval,
+            live_modes: LiveModes::new(
+                connection.config.agent_access,
+                connection.config.agent_approval,
+            ),
             connection,
             catalog,
             thread: Vec::new(),
@@ -342,7 +350,7 @@ impl AgentPanel {
             connection: self.connection.clone(),
             catalog,
             access: self.access,
-            approval: self.approval,
+            live: self.live_modes.clone(),
         };
         let tools_supported = self.tools_supported;
         let stream_supported = self.stream_supported;
@@ -806,15 +814,20 @@ impl AgentPanel {
         }
     }
 
-    /// Set the access level and remember it on the saved connection.
+    /// Set the access level and remember it on the saved connection. The
+    /// live modes move with it: lowering it gates a running turn's next
+    /// tool call, while raising it waits for the next turn, as do the
+    /// tools offered.
     fn set_access(&mut self, access: AgentAccess, cx: &mut Context<Self>) {
         self.access = access;
+        self.live_modes.set_access(access);
         self.remember(cx);
         cx.notify();
     }
 
     fn set_approval(&mut self, approval: WriteApproval, cx: &mut Context<Self>) {
         self.approval = approval;
+        self.live_modes.set_approval(approval);
         self.remember(cx);
         cx.notify();
     }
@@ -865,10 +878,10 @@ impl AgentPanel {
         );
     }
 
-    /// Whether the thread is drawn. Lowering access mid-turn does not hide
-    /// a turn already running: it keeps showing until it ends, and the new
-    /// level applies to the next turn only, which `send` and `start_turn`
-    /// already refuse while disabled.
+    /// Whether the thread is drawn. Turning access off mid-turn does not
+    /// hide a turn already running: it keeps showing until it ends (its
+    /// next tool call is refused), and `send` and `start_turn` refuse the
+    /// next turn while disabled.
     fn shows_thread(&self) -> bool {
         self.access.enabled() || self.running
     }

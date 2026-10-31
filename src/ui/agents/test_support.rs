@@ -67,8 +67,12 @@ impl AgentPanel {
     }
 
     pub(crate) fn set_access_for_test(&mut self, access: AgentAccess, cx: &mut Context<Self>) {
-        self.access = access;
-        cx.notify();
+        self.set_access(access, cx);
+    }
+
+    /// The modes a running turn's gates would read right now.
+    pub(crate) fn live_modes_for_test(&self) -> (AgentAccess, crate::db::WriteApproval) {
+        (self.live_modes.access(), self.live_modes.approval())
     }
 
     /// Put a write in front of the user, as a turn would, and hand back what
