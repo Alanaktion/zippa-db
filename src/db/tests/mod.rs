@@ -304,6 +304,42 @@ pub(crate) async fn live_postgres(var: &str, database: &str) -> Connection {
     live_postgres_with(var, database, |_| {}).await
 }
 
+/// Counts what a streamed read hands over, and can stop it partway. For the
+/// live streaming tests.
+struct CountingSink {
+    columns: Vec<String>,
+    rows: usize,
+    last: Option<String>,
+    stop_after: Option<usize>,
+}
+
+impl CountingSink {
+    fn new(stop_after: Option<usize>) -> Self {
+        Self {
+            columns: Vec::new(),
+            rows: 0,
+            last: None,
+            stop_after,
+        }
+    }
+}
+
+impl crate::db::connection::RowSink for CountingSink {
+    fn columns(&mut self, columns: &[String], _types: &[String]) -> anyhow::Result<()> {
+        self.columns = columns.to_vec();
+        Ok(())
+    }
+
+    fn row(&mut self, row: Vec<Cell>) -> anyhow::Result<()> {
+        if self.stop_after == Some(self.rows) {
+            anyhow::bail!("stopped");
+        }
+        self.rows += 1;
+        self.last = row.into_iter().next().flatten();
+        Ok(())
+    }
+}
+
 mod agent;
 mod binary;
 mod classifier;

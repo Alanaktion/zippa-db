@@ -472,13 +472,14 @@ impl ConnectionEditor {
     /// without a word.
     fn invalid(&self, cx: &App) -> Option<&'static str> {
         if self.engine.is_file_based() {
-            return self
-                .database
-                .read(cx)
-                .value()
-                .trim()
-                .is_empty()
-                .then_some("Enter the path to the database file.");
+            if self.database.read(cx).value().trim().is_empty() {
+                return Some(if self.ssh_enabled {
+                    "Enter the path to the database file on the SSH host."
+                } else {
+                    "Enter the path to the database file."
+                });
+            }
+            return self.ssh(cx).invalid();
         }
 
         if self.host.read(cx).value().trim().is_empty() {
@@ -861,12 +862,28 @@ impl ConnectionEditor {
 
     /// Whether to connect through an SSH tunnel and, when so, the jump host
     /// and how to sign in to it. The database's host and port above are then
-    /// as the jump host sees them.
+    /// as the jump host sees them. For SQLite the same settings say where the
+    /// file is: on the SSH host, copied down over SFTP and uploaded on
+    /// request, rather than on this computer.
     fn render_ssh(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = self.ssh_enabled;
+        let file_based = self.engine.is_file_based();
         // A certificate is checked against the host the driver dials, which
         // through a tunnel is the tunnel's own loopback end.
-        let verify_full = enabled && self.ssl_mode == SslMode::VerifyFull;
+        let verify_full = enabled && !file_based && self.ssl_mode == SslMode::VerifyFull;
+        let (heading, on_tip, off_tip) = if file_based {
+            (
+                "File on an SSH host",
+                "Download the file over SFTP, edit a local copy, and upload it back",
+                "Open a file on this computer",
+            )
+        } else {
+            (
+                "SSH tunnel",
+                "Connect through an SSH jump host",
+                "Connect to the database directly",
+            )
+        };
 
         v_flex()
             .gap_3()
@@ -877,7 +894,7 @@ impl ConnectionEditor {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("SSH tunnel"),
+                            .child(heading),
                     )
                     .child(
                         h_flex()
@@ -886,11 +903,7 @@ impl ConnectionEditor {
                                 let button =
                                     Button::new(SharedString::from(format!("ssh-{label}")))
                                         .label(label)
-                                        .tooltip(if on {
-                                            "Connect through an SSH jump host"
-                                        } else {
-                                            "Connect to the database directly"
-                                        })
+                                        .tooltip(if on { on_tip } else { off_tip })
                                         .on_click(cx.listener(move |this, _, _window, cx| {
                                             this.set_ssh_enabled(on, cx)
                                         }));
@@ -952,7 +965,13 @@ impl ConnectionEditor {
             .child(self.render_engines(cx))
             .child(field("Name", &self.name, cx))
             .when(file_based, |this| {
-                this.child(field("Database file", &self.database, cx))
+                let label = if self.ssh_enabled {
+                    "Database file on the SSH host"
+                } else {
+                    "Database file"
+                };
+                this.child(field(label, &self.database, cx))
+                    .child(self.render_ssh(cx))
             })
             .when(!file_based, |this| {
                 this.child(

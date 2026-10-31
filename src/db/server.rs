@@ -258,7 +258,7 @@ impl Connection {
                 let result = self.run_query(sqlite::CONNECTION_INFO_SQL).await?;
                 let row = result.rows.first().context("no connection info row")?;
                 info.version = cell_text(row, 0);
-                info.size_bytes = std::fs::metadata(&self.config.database)
+                info.size_bytes = std::fs::metadata(self.sqlite_file())
                     .ok()
                     .map(|metadata| metadata.len());
             }

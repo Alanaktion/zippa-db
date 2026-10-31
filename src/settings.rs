@@ -156,6 +156,12 @@ pub struct Settings {
     /// scrollbar, and a bar that is only there while it is already moving
     /// cannot be grabbed with a mouse.
     pub always_show_scrollbars: bool,
+    /// Whether motion is reduced app-wide: dialog transitions settle on
+    /// their first frame instead of animating, and so does every other
+    /// animation. Off by default. One switch for all motion — gpui has
+    /// no dialog-only flag — for users who prefer reduced motion or
+    /// run on a slow GPU.
+    pub reduce_motion: bool,
     /// The key that takes a completion suggestion in the SQL editor.
     pub accept_completion: CompletionKey,
     /// Whether a query tab adds `LIMIT` to a lone `SELECT` that has none, so
@@ -188,6 +194,7 @@ impl Default for Settings {
             coerce_null_literal: true,
             stripe_rows: true,
             always_show_scrollbars: true,
+            reduce_motion: false,
             accept_completion: CompletionKey::default(),
             wrap_scripts_in_transaction: true,
             share_connection_across_buffers: false,
@@ -240,8 +247,14 @@ pub fn init(cx: &mut App) {
         Settings::default()
     });
 
+    let reduce_motion = settings.reduce_motion;
     cx.set_global(settings);
     apply(None, cx);
+    // Off leaves GPUI's own default in place; see `update` for why the flag
+    // is only written when the setting says so.
+    if reduce_motion {
+        cx.set_reduce_motion(true);
+    }
 }
 
 /// Change the settings, then save and apply the result.
@@ -251,6 +264,7 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
     if settings == *Settings::global(cx) {
         return;
     }
+    let motion_changed = settings.reduce_motion != Settings::global(cx).reduce_motion;
 
     // The file is small, but it is still disk I/O on every change; the write
     // goes to the background so toggling a switch never waits on it. The
@@ -282,6 +296,13 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
     cx.set_global(settings);
 
     apply(None, cx);
+    // The motion flag is written only when this setting changes, not on
+    // every apply: `apply` also runs when the system appearance flips, and
+    // re-asserting the setting there would clobber a flag set elsewhere
+    // (the test harness turns it on so dialogs settle in one frame).
+    if motion_changed {
+        cx.set_reduce_motion(Settings::global(cx).reduce_motion);
+    }
     // Fonts and page sizes are read while rendering, so every window is stale.
     cx.refresh_windows();
 }
@@ -504,6 +525,10 @@ mod tests {
             !settings.parallel_dashboard_queries,
             "a file written before the setting existed should keep dashboard widgets sequential"
         );
+        assert!(
+            !settings.reduce_motion,
+            "a file written before the setting existed should keep animating"
+        );
     }
 
     #[test]
@@ -521,6 +546,10 @@ mod tests {
             !settings.parallel_dashboard_queries,
             "dashboard widgets should keep running one at a time unless the user opts in"
         );
+        assert!(
+            !settings.reduce_motion,
+            "the app should keep animating unless the user opts out"
+        );
     }
 
     #[test]
@@ -529,6 +558,7 @@ mod tests {
             wrap_scripts_in_transaction: false,
             share_connection_across_buffers: true,
             parallel_dashboard_queries: true,
+            reduce_motion: true,
             ..Settings::default()
         };
 
@@ -537,6 +567,7 @@ mod tests {
         assert!(!read.wrap_scripts_in_transaction);
         assert!(read.share_connection_across_buffers);
         assert!(read.parallel_dashboard_queries);
+        assert!(read.reduce_motion);
     }
 
     #[test]

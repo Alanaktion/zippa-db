@@ -175,6 +175,25 @@ fn appearance_page(cx: &App) -> SettingPage {
                     .description("Off follows the system setting."),
                 ),
         )
+        .group(
+            SettingGroup::new()
+                .title("Motion")
+                .item(
+                    SettingItem::new(
+                        "Reduce motion",
+                        SettingField::switch(
+                            |cx| Settings::global(cx).reduce_motion,
+                            |value, cx| {
+                                settings::update(cx, |settings| settings.reduce_motion = value)
+                            },
+                        )
+                        .default_value(false),
+                    )
+                    .description(
+                        "Dialog transitions and other animations settle immediately instead of animating.",
+                    ),
+                ),
+        )
 }
 
 fn editor_page() -> SettingPage {

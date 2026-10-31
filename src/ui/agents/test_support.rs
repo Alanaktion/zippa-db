@@ -104,6 +104,23 @@ impl AgentPanel {
         self.delete_current_thread(cx);
     }
 
+    /// The messages area's vertical scroll offset: 0 at the top, negative
+    /// going down, `-scroll_max_for_test` at the bottom.
+    pub(crate) fn scroll_offset_for_test(&self) -> gpui_kit::Pixels {
+        self.messages_scroll.offset().y
+    }
+
+    /// The farthest the messages area can scroll down, as last laid out.
+    pub(crate) fn scroll_max_for_test(&self) -> gpui_kit::Pixels {
+        self.messages_scroll.max_offset().y
+    }
+
+    /// Move the messages area, as a wheel or a drag would.
+    pub(crate) fn set_scroll_offset_for_test(&mut self, y: gpui_kit::Pixels) {
+        self.messages_scroll
+            .set_offset(gpui_kit::point(gpui_kit::px(0.), y));
+    }
+
     /// Type into the message box and put the focus there.
     pub(crate) fn type_for_test(
         &mut self,

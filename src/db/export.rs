@@ -68,6 +68,9 @@ pub struct Rendered {
 /// `table` is what an `INSERT` names, as SQL: already quoted and, where the
 /// table has a schema, qualified with it (`sql::qualified_name`). Only the
 /// owner knows the schema, so the quoting is the owner's too.
+///
+/// Every format but Markdown is laid out by a [`Writer`], the same one a
+/// streamed export uses, so a copy and a file never disagree.
 pub fn render(
     format: Format,
     engine: Engine,
@@ -76,47 +79,225 @@ pub fn render(
     types: &[String],
     rows: &[Vec<Cell>],
 ) -> Rendered {
-    match format {
-        Format::Tsv => render_tsv(columns, types, rows),
-        Format::Csv => render_csv(columns, types, rows),
-        Format::Json => render_json(columns, types, rows),
-        Format::Markdown => render_markdown(columns, types, rows),
-        Format::Sql => render_sql(engine, table, columns, types, rows),
+    let Some(mut writer) = Writer::new(format, engine, table, columns.to_vec(), types.to_vec())
+    else {
+        return render_markdown(columns, types, rows);
+    };
+
+    let mut text = String::new();
+    writer.header(&mut text);
+    for row in rows {
+        writer.row(row, &mut text);
+    }
+    writer.finish(&mut text);
+    Rendered {
+        text,
+        skipped: writer.skipped(),
     }
 }
 
-/// A header line, then one line per row, columns separated by tabs. Tabs and
-/// line breaks inside a value become spaces so one row stays one line, which is
-/// lossy and why the menu says so.
-fn render_tsv(columns: &[String], types: &[String], rows: &[Vec<Cell>]) -> Rendered {
-    let mut skipped = 0;
-    let mut text = String::new();
+/// Lays a result out one row at a time, so one too large to hold can be
+/// written as it is read: [`Self::header`] once, [`Self::row`] per row, then
+/// [`Self::finish`], each appending to whatever buffer the caller is filling.
+///
+/// Every format but Markdown can be written this way. A Markdown table pads
+/// each column to its widest value, which is not known until the last row
+/// has been read, so it has no writer: it is only offered for a copy, which
+/// already holds its rows.
+pub struct Writer {
+    format: Format,
+    engine: Engine,
+    table: String,
+    columns: Vec<String>,
+    types: Vec<String>,
+    /// The `INSERT` column list, quoted once rather than per row.
+    names: String,
+    rows: usize,
+    skipped: usize,
+}
 
-    text.push_str(
-        &columns
-            .iter()
-            .map(|name| tsv_field(name))
-            .collect::<Vec<String>>()
-            .join("\t"),
-    );
-    text.push('\n');
-
-    for row in rows {
-        let fields: Vec<String> = (0..columns.len())
-            .map(|index| match row.get(index) {
-                Some(cell) if query::is_placeholder(cell, type_of(types, index)) => {
-                    skipped += 1;
-                    String::new()
-                }
-                Some(Some(value)) => tsv_field(value),
-                _ => String::new(),
-            })
-            .collect();
-        text.push_str(&fields.join("\t"));
-        text.push('\n');
+impl Writer {
+    /// A writer for `format`, or `None` for Markdown, which cannot be
+    /// written a row at a time. `table` is as [`render`] takes it.
+    pub fn new(
+        format: Format,
+        engine: Engine,
+        table: &str,
+        columns: Vec<String>,
+        types: Vec<String>,
+    ) -> Option<Self> {
+        if format == Format::Markdown {
+            return None;
+        }
+        let names = match format {
+            Format::Sql => columns
+                .iter()
+                .map(|name| quote_identifier(name, engine))
+                .collect::<Vec<String>>()
+                .join(", "),
+            _ => String::new(),
+        };
+        Some(Self {
+            format,
+            engine,
+            table: table.to_string(),
+            columns,
+            types,
+            names,
+            rows: 0,
+            skipped: 0,
+        })
     }
 
-    Rendered { text, skipped }
+    /// How many rows have been written.
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// How many cells were written as `NULL` because the driver had only a
+    /// description of their value.
+    pub fn skipped(&self) -> usize {
+        self.skipped
+    }
+
+    /// What comes before the first row: the header line of TSV and CSV.
+    pub fn header(&self, out: &mut String) {
+        let separator = match self.format {
+            Format::Tsv => "\t",
+            Format::Csv => ",",
+            Format::Json | Format::Markdown | Format::Sql => return,
+        };
+        for (index, name) in self.columns.iter().enumerate() {
+            if index > 0 {
+                out.push_str(separator);
+            }
+            match self.format {
+                Format::Tsv => out.push_str(&tsv_field(name)),
+                _ => out.push_str(&csv_field(name)),
+            }
+        }
+        out.push('\n');
+    }
+
+    /// One row.
+    pub fn row(&mut self, row: &[Cell], out: &mut String) {
+        match self.format {
+            Format::Tsv => self.delimited_row(row, "\t", tsv_field, out),
+            Format::Csv => self.delimited_row(row, ",", csv_field, out),
+            Format::Json => self.json_row(row, out),
+            Format::Sql => self.sql_row(row, out),
+            Format::Markdown => return,
+        }
+        self.rows += 1;
+    }
+
+    /// What comes after the last row: the end of a JSON array.
+    pub fn finish(&self, out: &mut String) {
+        if self.format == Format::Json {
+            out.push_str(if self.rows == 0 { "[]" } else { "\n]" });
+        }
+    }
+
+    /// Whether the cell in column `index` is a stand-in for a value, counting
+    /// it if so.
+    fn placeholder(&mut self, cell: Option<&Cell>, index: usize) -> bool {
+        let placeholder =
+            cell.is_some_and(|cell| query::is_placeholder(cell, type_of(&self.types, index)));
+        if placeholder {
+            self.skipped += 1;
+        }
+        placeholder
+    }
+
+    /// A TSV or CSV line, with `NULL` and placeholders empty.
+    fn delimited_row(
+        &mut self,
+        row: &[Cell],
+        separator: &str,
+        field: fn(&str) -> String,
+        out: &mut String,
+    ) {
+        for index in 0..self.columns.len() {
+            if index > 0 {
+                out.push_str(separator);
+            }
+            let cell = row.get(index);
+            if self.placeholder(cell, index) {
+                continue;
+            }
+            if let Some(Some(value)) = cell {
+                out.push_str(&field(value));
+            }
+        }
+        out.push('\n');
+    }
+
+    /// One object of an array, one value per line, in column order.
+    fn json_row(&mut self, row: &[Cell], out: &mut String) {
+        out.push_str(if self.rows == 0 { "[" } else { "," });
+        out.push_str("\n  {");
+        for index in 0..self.columns.len() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str("\n    ");
+            out.push_str(&json_string(&self.columns[index]));
+            out.push_str(": ");
+
+            let cell = row.get(index);
+            if self.placeholder(cell, index) {
+                out.push_str("null");
+                continue;
+            }
+            out.push_str(&json_value(
+                cell.and_then(Option::as_deref),
+                type_of(&self.types, index),
+            ));
+        }
+        out.push_str("\n  }");
+    }
+
+    /// One `INSERT`, with numbers bare and everything else quoted.
+    fn sql_row(&mut self, row: &[Cell], out: &mut String) {
+        // A row of a table with no columns (Postgres allows one) has no
+        // values to name, but still has to come back as a row.
+        if self.columns.is_empty() {
+            let values = match self.engine {
+                Engine::MySql => "() values ()",
+                Engine::Postgres | Engine::Sqlite => "default values",
+            };
+            out.push_str(&format!("insert into {} {values};\n", self.table));
+            return;
+        }
+        let mut values = Vec::with_capacity(self.columns.len());
+        for index in 0..self.columns.len() {
+            let cell = row.get(index);
+            if self.placeholder(cell, index) {
+                values.push("NULL".to_string());
+                continue;
+            }
+            let type_name = type_of(&self.types, index);
+            values.push(match cell.and_then(Option::as_deref) {
+                None => "NULL".to_string(),
+                Some(value) if is_number(type_name, value) => value.to_string(),
+                // A staged value on a blob column is hex text, not the
+                // bytes: quoting it would store the hex characters, so
+                // it goes out as the engine's binary literal instead.
+                // A value that does not read as hex is not staged hex,
+                // so it keeps the quoted rendering it always had.
+                Some(value) if query::is_blob_type(type_name) && is_staged_hex(value) => {
+                    binary_literal(self.engine, value)
+                }
+                Some(value) => quote_literal_for(self.engine, value),
+            });
+        }
+        out.push_str(&format!(
+            "insert into {} ({}) values ({});\n",
+            self.table,
+            self.names,
+            values.join(", ")
+        ));
+    }
 }
 
 /// The driver type of column `index`, or nothing when the result has none.
@@ -127,38 +308,6 @@ fn type_of(types: &[String], index: usize) -> &str {
 /// Tabs and line breaks become spaces so one row stays one line.
 pub(crate) fn tsv_field(value: &str) -> String {
     value.replace(['\t', '\n', '\r'], " ")
-}
-
-/// A header row, then one line per row, with `NULL` and placeholders empty.
-fn render_csv(columns: &[String], types: &[String], rows: &[Vec<Cell>]) -> Rendered {
-    let mut skipped = 0;
-    let mut text = String::new();
-
-    text.push_str(
-        &columns
-            .iter()
-            .map(|name| csv_field(name))
-            .collect::<Vec<String>>()
-            .join(","),
-    );
-    text.push('\n');
-
-    for row in rows {
-        let fields: Vec<String> = (0..columns.len())
-            .map(|index| match row.get(index) {
-                Some(cell) if query::is_placeholder(cell, type_of(types, index)) => {
-                    skipped += 1;
-                    String::new()
-                }
-                Some(Some(value)) => csv_field(value),
-                _ => String::new(),
-            })
-            .collect();
-        text.push_str(&fields.join(","));
-        text.push('\n');
-    }
-
-    Rendered { text, skipped }
 }
 
 /// Quote a CSV field that holds a comma, a quote, or a line break.
@@ -261,47 +410,6 @@ fn display_width(value: &str) -> usize {
     value.chars().count()
 }
 
-/// An array of objects, one value per line, in column order.
-fn render_json(columns: &[String], types: &[String], rows: &[Vec<Cell>]) -> Rendered {
-    let mut skipped = 0;
-    if rows.is_empty() {
-        return Rendered {
-            text: "[]".to_string(),
-            skipped,
-        };
-    }
-
-    let mut text = String::from("[");
-    for (position, row) in rows.iter().enumerate() {
-        if position > 0 {
-            text.push(',');
-        }
-        text.push_str("\n  {");
-        for (index, name) in columns.iter().enumerate() {
-            if index > 0 {
-                text.push(',');
-            }
-            text.push_str("\n    ");
-            text.push_str(&json_string(name));
-            text.push_str(": ");
-
-            let cell = row.get(index);
-            let type_name = type_of(types, index);
-            if cell.is_some_and(|cell| query::is_placeholder(cell, type_name)) {
-                skipped += 1;
-                text.push_str("null");
-                continue;
-            }
-
-            text.push_str(&json_value(cell.and_then(Option::as_deref), type_name));
-        }
-        text.push_str("\n  }");
-    }
-    text.push_str("\n]");
-
-    Rendered { text, skipped }
-}
-
 /// One cell as JSON: `null` for `NULL`, a bare number or boolean where the
 /// column's type says so, an embedded value for a JSON column, and a string
 /// otherwise.
@@ -397,64 +505,6 @@ pub fn in_list(engine: Engine, type_name: &str, cells: &[Cell]) -> Rendered {
     } else {
         format!("({})", values.join(", "))
     };
-
-    Rendered { text, skipped }
-}
-
-/// One row per `INSERT`, with numbers bare and everything else quoted.
-fn render_sql(
-    engine: Engine,
-    table: &str,
-    columns: &[String],
-    types: &[String],
-    rows: &[Vec<Cell>],
-) -> Rendered {
-    let mut skipped = 0;
-    if columns.is_empty() {
-        return Rendered {
-            text: String::new(),
-            skipped,
-        };
-    }
-
-    let target = table;
-    let names = columns
-        .iter()
-        .map(|name| quote_identifier(name, engine))
-        .collect::<Vec<String>>()
-        .join(", ");
-
-    let mut text = String::new();
-    for row in rows {
-        let values: Vec<String> = (0..columns.len())
-            .map(|index| {
-                let cell = row.get(index);
-                let type_name = type_of(types, index);
-                if cell.is_some_and(|cell| query::is_placeholder(cell, type_name)) {
-                    skipped += 1;
-                    return "NULL".to_string();
-                }
-                match cell.and_then(Option::as_deref) {
-                    None => "NULL".to_string(),
-                    Some(value) if is_number(type_name, value) => value.to_string(),
-                    // A staged value on a blob column is hex text, not the
-                    // bytes: quoting it would store the hex characters, so
-                    // it goes out as the engine's binary literal instead.
-                    // A value that does not read as hex is not staged hex,
-                    // so it keeps the quoted rendering it always had.
-                    Some(value) if query::is_blob_type(type_name) && is_staged_hex(value) => {
-                        binary_literal(engine, value)
-                    }
-                    Some(value) => quote_literal_for(engine, value),
-                }
-            })
-            .collect();
-
-        text.push_str(&format!(
-            "insert into {target} ({names}) values ({});\n",
-            values.join(", ")
-        ));
-    }
 
     Rendered { text, skipped }
 }
@@ -738,6 +788,26 @@ mod tests {
         assert_eq!(empty.text, "[]");
         let csv = render(Format::Csv, Engine::Sqlite, "t", &names(), &[], &[]);
         assert_eq!(csv.text, "id,name\n");
+    }
+
+    #[test]
+    fn sql_writes_a_row_with_no_columns_as_default_values() {
+        let mut writer = Writer::new(Format::Sql, Engine::Postgres, "t", vec![], vec![])
+            .expect("SQL has a writer");
+        let mut text = String::new();
+        writer.row(&[], &mut text);
+        assert_eq!(text, "insert into t default values;\n");
+        assert_eq!(writer.rows(), 1);
+    }
+
+    #[test]
+    fn sql_writes_a_mysql_row_with_no_columns_as_empty_values() {
+        let mut writer =
+            Writer::new(Format::Sql, Engine::MySql, "t", vec![], vec![]).expect("SQL has a writer");
+        let mut text = String::new();
+        writer.row(&[], &mut text);
+        assert_eq!(text, "insert into t () values ();\n");
+        assert_eq!(writer.rows(), 1);
     }
 
     #[test]
