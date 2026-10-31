@@ -61,27 +61,31 @@ impl Dedicated {
     /// `SAVEPOINT` form, `LOCK TABLES`, and `USE` (error 1295), which are
     /// exactly what a script's transaction and a `mysqldump` file send.
     pub(crate) async fn execute(&mut self, sql: &str) -> Result<()> {
+        self.execute_raw(sql).await.map(drop).map_err(health::plain)
+    }
+
+    /// [`Self::execute`], reporting how many rows the statement changed.
+    pub(crate) async fn execute_counted(&mut self, sql: &str) -> Result<u64> {
         self.execute_raw(sql).await.map_err(health::plain)
     }
 
-    async fn execute_raw(&mut self, sql: &str) -> Result<()> {
+    async fn execute_raw(&mut self, sql: &str) -> Result<u64> {
         // The statement is either the user's own or one of the job's fixed
         // transaction-control statements; nothing in it is bound. It goes by
         // the text protocol, since MySQL refuses `BEGIN` and `SAVEPOINT` over
         // the prepared-statement one (error 1295).
         let statement = AssertSqlSafe(sql.to_string());
-        match self {
+        Ok(match self {
             Dedicated::Postgres(connection, _) => {
-                sqlx::raw_sql(statement).execute(&mut **connection).await?;
+                postgres::rows_affected(&sqlx::raw_sql(statement).execute(&mut **connection).await?)
             }
             Dedicated::MySql(connection) => {
-                sqlx::raw_sql(statement).execute(&mut **connection).await?;
+                mysql::rows_affected(&sqlx::raw_sql(statement).execute(&mut **connection).await?)
             }
             Dedicated::Sqlite(connection) => {
-                sqlx::raw_sql(statement).execute(&mut **connection).await?;
+                sqlite::rows_affected(&sqlx::raw_sql(statement).execute(&mut **connection).await?)
             }
-        }
-        Ok(())
+        })
     }
 
     /// Run one statement and read back its rows, the way a query tab shows
@@ -97,11 +101,16 @@ impl Dedicated {
             .map_err(health::plain)
     }
 
-    /// [`Self::fetch`], reading at most `max_rows` rows. A read that reaches
-    /// the cap leaves the rest of the statement unread, so the connection
-    /// should be dropped after it rather than used again.
-    pub(crate) async fn fetch_capped(&mut self, sql: &str, max_rows: usize) -> Result<QueryResult> {
-        self.fetch_raw(sql, Vec::new(), Some(max_rows))
+    /// [`Self::fetch_with`], reading at most `max_rows` rows when given. A
+    /// read that reaches the cap leaves the rest of the statement unread, so
+    /// the connection should be dropped after it rather than used again.
+    pub(crate) async fn fetch_bounded(
+        &mut self,
+        sql: &str,
+        params: Vec<Cell>,
+        max_rows: Option<usize>,
+    ) -> Result<QueryResult> {
+        self.fetch_raw(sql, params, max_rows)
             .await
             .map_err(health::plain)
     }

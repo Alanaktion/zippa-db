@@ -34,6 +34,43 @@ async fn live_postgres_an_agent_read_cannot_write_through_a_function() {
     connection.close().await;
 }
 
+/// A dashboard's read cannot write through a function either, and binds
+/// its variables as the query tab does. Against `compose.yaml`'s `postgres`
+/// service.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_a_dashboard_read_cannot_write_through_a_function() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    connection
+        .execute("DROP SEQUENCE IF EXISTS zippa_dashboard_probe", vec![])
+        .await
+        .expect("could not drop the probe sequence");
+    connection
+        .execute("CREATE SEQUENCE zippa_dashboard_probe", vec![])
+        .await
+        .expect("could not create the probe sequence");
+
+    let refused = connection
+        .run_read_with("SELECT nextval('zippa_dashboard_probe')", vec![])
+        .await;
+    assert!(refused.is_err(), "nextval should be refused read-only");
+    let read = connection
+        .run_read_with(
+            "SELECT is_called, $1::text FROM zippa_dashboard_probe",
+            vec![Some("bound".to_string())],
+        )
+        .await
+        .expect("reading the sequence should run");
+    assert_eq!(read.rows[0][0].as_deref(), Some("0"));
+    assert_eq!(read.rows[0][1].as_deref(), Some("bound"));
+
+    connection
+        .execute("DROP SEQUENCE zippa_dashboard_probe", vec![])
+        .await
+        .expect("could not drop the probe sequence");
+    connection.close().await;
+}
+
 /// An agent read past its row cap stops reading, without draining the rest,
 /// and the pool answers normally afterwards. Against `compose.yaml`'s
 /// `postgres` service.

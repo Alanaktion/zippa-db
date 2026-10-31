@@ -9,9 +9,12 @@
 //! and editable from the header. A widget that fails, or whose columns
 //! moved, is its own error cell; the rest of the dashboard still renders.
 //!
-//! The run path is the query tab's: substitute the dashboard's variables,
-//! apply the implicit limit, refuse writes the session refuses, and run
-//! through [`Connection::run_query_with`] on the runtime thread. Widgets
+//! The run path is the query tab's — substitute the dashboard's variables,
+//! apply the implicit limit, run on the runtime thread — except that a
+//! dashboard only reads, whatever the connection's safety mode: every
+//! widget runs through [`Connection::run_read_with`], so opening or
+//! refreshing one can never repeat a write, and a widget that writes is its
+//! own error cell. Widgets
 //! run from a queue, each named by a stable id rather than a position.
 //! Sequential is the default — one widget at a time — and the
 //! `parallel_dashboard_queries` setting runs the queued widgets at once,
@@ -185,7 +188,7 @@ impl DashboardView {
 
     /// A new connection (or database) invalidates every result, the way a
     /// query tab's results are invalidated; it does not re-run anything,
-    /// because a run could repeat a write the user did not ask for.
+    /// since a switch is not a request to run.
     pub(crate) fn set_connection(&mut self, connection: Arc<Connection>, cx: &mut Context<Self>) {
         self.cancel_refresh(cx);
         self.connection = connection.clone();
@@ -278,47 +281,12 @@ impl DashboardView {
         self.widgets.iter().position(|widget| widget.id == id)
     }
 
-    /// The Refresh button's run path: one confirmation for the whole
-    /// refresh when any widget writes, the way a script is confirmed as a
-    /// whole, and per-widget refusals for the rest.
-    pub(crate) fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The Refresh button's run path. There is no question to answer:
+    /// every widget runs as a read (see [`Connection::run_read_with`]), so
+    /// a refresh can never repeat a write, and a widget that writes is its
+    /// own error cell.
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.refreshing {
-            return;
-        }
-        if self.connection.config.safety.confirms_writes()
-            && self
-                .dashboard
-                .widgets
-                .iter()
-                .any(|widget| statement::first_write(&widget.sql, self.engine).is_some())
-        {
-            // One question at a time: a second Refresh while the dialog is
-            // open must not stack another, or run the writes unconfirmed.
-            if window.has_active_dialog(cx) {
-                return;
-            }
-            let view = cx.entity().downgrade();
-            window.open_alert_dialog(cx, move |alert, _, _| {
-                // The builder can run more than once, so it clones the
-                // weak handle for the confirmation rather than moving its
-                // own capture into it.
-                let view = view.clone();
-                alert
-                    .title("Run this dashboard?")
-                    .description("This dashboard runs queries that change data. Run it anyway?")
-                    .button_props(
-                        DialogButtonProps::default()
-                            .ok_text("Run dashboard")
-                            .cancel_text("Cancel")
-                            .show_cancel(true),
-                    )
-                    .on_ok(move |_, _, cx| {
-                        if let Some(view) = view.upgrade() {
-                            view.update(cx, |view, cx| view.start_refresh_all(cx));
-                        }
-                        true
-                    })
-            });
             return;
         }
         self.start_refresh_all(cx);
@@ -458,9 +426,7 @@ impl DashboardView {
                     };
                     let connection = connection.clone();
                     let task =
-                        runtime::spawn(
-                            async move { connection.run_query_with(&sql, params).await },
-                        );
+                        runtime::spawn(async move { connection.run_read_with(&sql, params).await });
                     // A drop between the spawn and this store must not hand
                     // the stale handle to the next run.
                     this.update_in(cx, |view, _, _| {
@@ -510,44 +476,13 @@ impl DashboardView {
         .detach();
     }
 
-    /// Run one widget after an edit, with its own confirmation when it
-    /// writes. It queues behind whatever is running rather than stopping it.
-    fn refresh_one(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(widget) = self.dashboard.widgets.get(index) else {
+    /// Run one widget after an edit. It queues behind whatever is running
+    /// rather than stopping it.
+    fn refresh_one(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(state) = self.widgets.get(index) else {
             return;
         };
-        let id = self.widgets[index].id;
-        if self.connection.config.safety.confirms_writes()
-            && statement::first_write(&widget.sql, self.engine).is_some()
-        {
-            // One question at a time, as in [`DashboardView::refresh`].
-            if window.has_active_dialog(cx) {
-                return;
-            }
-            let view = cx.entity().downgrade();
-            window.open_alert_dialog(cx, move |alert, _, _| {
-                // The builder can run more than once, so it clones the
-                // weak handle for the confirmation rather than moving its
-                // own capture into it.
-                let view = view.clone();
-                alert
-                    .title("Run this widget?")
-                    .description("This widget runs a query that changes data. Run it anyway?")
-                    .button_props(
-                        DialogButtonProps::default()
-                            .ok_text("Run widget")
-                            .cancel_text("Cancel")
-                            .show_cancel(true),
-                    )
-                    .on_ok(move |_, _, cx| {
-                        if let Some(view) = view.upgrade() {
-                            view.update(cx, |view, cx| view.start_refresh(vec![id], cx));
-                        }
-                        true
-                    })
-            });
-            return;
-        }
+        let id = state.id;
         self.start_refresh(vec![id], cx);
     }
 
@@ -636,9 +571,8 @@ impl DashboardView {
                 if self.refreshing {
                     self.cancel_refresh(cx);
                 }
-                // Close first, so a write confirmation for the re-run can open.
                 window.close_dialog(cx);
-                self.refresh(window, cx);
+                self.refresh(cx);
                 cx.notify();
             }
         }
@@ -673,7 +607,7 @@ impl DashboardView {
     ) {
         match event {
             WidgetEditEvent::Saved { index, widget } => match index {
-                Some(index) => self.replace_widget(*index, widget.clone(), window, cx),
+                Some(index) => self.replace_widget(*index, widget.clone(), cx),
                 None => self.add_widget(widget.clone(), window, cx),
             },
         }
@@ -688,30 +622,22 @@ impl DashboardView {
         dashboards::upsert(&self.dashboard, cx);
         cx.notify();
         let index = self.widgets.len() - 1;
-        self.refresh_one(index, window, cx);
+        self.refresh_one(index, cx);
     }
 
-    fn replace_widget(
-        &mut self,
-        index: usize,
-        widget: Widget,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn replace_widget(&mut self, index: usize, widget: Widget, cx: &mut Context<Self>) {
         let Some(slot) = self.dashboard.widgets.get_mut(index) else {
             return;
         };
         *slot = widget;
-        // The old rows belong to the old SQL; if the re-run is declined
-        // they must not stay on screen under the new one.
-        // Whatever it had queued or in flight was for the old SQL, and if
-        // the re-run is declined it must not run unasked.
+        // The old rows, and whatever it had queued or in flight, belong to
+        // the old SQL.
         let id = self.widgets[index].id;
         self.withdraw(id);
         self.widgets[index].reset(cx);
         dashboards::upsert(&self.dashboard, cx);
         cx.notify();
-        self.refresh_one(index, window, cx);
+        self.refresh_one(index, cx);
     }
 
     /// Ask first, since the widget's SQL and picks go with it.
@@ -926,7 +852,7 @@ impl DashboardView {
                             })
                             .loading(refreshing)
                             .disabled(refreshing)
-                            .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
+                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                     ),
             )
     }
@@ -1415,8 +1341,7 @@ impl WidgetEditDialog {
         }
     }
 
-    /// Save, then close: saving runs the widget, and a write needs its own
-    /// confirmation dialog — which cannot open while this one is up.
+    /// Save, then close: saving runs the widget.
     fn save_and_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let widget = self.collect_widget(cx);
         if widget.sql.trim().is_empty() {
@@ -1742,11 +1667,10 @@ impl DashboardView {
         &mut self,
         index: usize,
         widget: Widget,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.refresh(window, cx);
-        self.replace_widget(index, widget, window, cx);
+        self.refresh(cx);
+        self.replace_widget(index, widget, cx);
     }
 
     pub(crate) fn variables_dialog_for_test(&self) -> Option<Entity<VariablesView>> {
