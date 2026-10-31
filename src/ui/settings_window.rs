@@ -428,7 +428,7 @@ fn history_page() -> SettingPage {
                 .title("Query history")
                 .description(
                     "What you run from query tabs, kept per connection and shown in its \
-                     History tab (View › Query History). The app's own reads and the \
+                     History tab (Database › Query History). The app's own reads and the \
                      Agents panel's statements are not kept. SQL text can hold anything \
                      you typed, so the files are readable only by you; passwords from \
                      connections are never written.",
@@ -526,8 +526,8 @@ fn confirm_clear_history(window: &mut Window, cx: &mut App) {
                     .cancel_text("Cancel")
                     .show_cancel(true),
             )
-            .on_ok(|_, _window, _cx| {
-                history::clear(None);
+            .on_ok(|_, _window, cx| {
+                crate::ui::history::clear_all(cx);
                 true
             })
     });

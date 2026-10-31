@@ -18,7 +18,7 @@ use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, Window, div};
+use gpui_kit::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, Global, Window, div};
 use regex::Regex;
 use uuid::Uuid;
 
@@ -50,9 +50,29 @@ pub struct HistoryView {
     /// Saved connections' names by id, for the "All connections" column.
     names: HashMap<Uuid, String>,
     loading: bool,
+    /// Advanced by every read and every clear; a read that lands after a
+    /// newer one began, or after a clear, is stale and dropped.
+    generation: u64,
 }
 
 impl EventEmitter<HistoryEvent> for HistoryView {}
+
+/// Bumped when history is cleared from outside a History tab — Settings'
+/// Clear all — so every open tab re-reads rather than keep showing it.
+#[derive(Default)]
+pub struct HistoryCleared(u64);
+
+impl Global for HistoryCleared {}
+
+/// Forget every connection's history, and tell every open History tab.
+pub fn clear_all(cx: &mut App) {
+    history::clear(None);
+    let next = cx
+        .try_global::<HistoryCleared>()
+        .map_or(0, |cleared| cleared.0)
+        + 1;
+    cx.set_global(HistoryCleared(next));
+}
 
 impl HistoryView {
     pub fn new(connection: Arc<Connection>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -71,6 +91,8 @@ impl HistoryView {
         let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search history"));
         cx.subscribe_in(&filter_input, window, Self::on_filter_event)
             .detach();
+        cx.observe_global::<HistoryCleared>(|this, cx| this.refresh(cx))
+            .detach();
 
         let mut this = Self {
             connection,
@@ -81,6 +103,7 @@ impl HistoryView {
             entries: Vec::new(),
             names: HashMap::new(),
             loading: false,
+            generation: 0,
         };
         this.refresh(cx);
         this
@@ -104,6 +127,8 @@ impl HistoryView {
             .or_insert_with(|| self.connection.config.display_name());
 
         self.loading = true;
+        self.generation += 1;
+        let generation = self.generation;
         cx.notify();
         let scope = (!self.all_connections).then_some(self.connection.config.id);
         cx.spawn(async move |this, cx| {
@@ -116,6 +141,9 @@ impl HistoryView {
                 })
                 .await;
             this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
                 this.loading = false;
                 this.entries = entries;
                 this.apply_filter(cx);
@@ -210,6 +238,9 @@ impl HistoryView {
 
     pub(crate) fn clear(&mut self, scope: Option<Uuid>, cx: &mut Context<Self>) {
         history::clear(scope);
+        // A read already under way would bring back what was just cleared.
+        self.generation += 1;
+        self.loading = false;
         // The removal is queued behind any write still landing, so show the
         // empty list now rather than read back a file about to go.
         self.entries.clear();
@@ -271,7 +302,9 @@ impl HistoryView {
                 Button::new("history-open")
                     .ghost()
                     .xsmall()
-                    .disabled(!has_focus)
+                    // Mid-read the grid still has the old layout, whose SQL
+                    // column may not be where the new one's is.
+                    .disabled(self.loading || !has_focus)
                     .label("Open in Query Tab")
                     .tooltip("Open the selected statement in a new query tab")
                     .on_click(cx.listener(|this, _, _window, cx| this.open_focused(cx))),

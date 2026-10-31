@@ -505,7 +505,10 @@ impl Welcome {
             let welcome = welcome.clone();
             alert
                 .title(format!("Delete \"{name}\"?"))
-                .description("This removes the saved connection and its stored password.")
+                .description(
+                    "This removes the saved connection, its stored password, its query \
+                     history, and its saved Agents threads.",
+                )
                 .button_props(
                     DialogButtonProps::default()
                         .ok_text("Delete")
@@ -527,12 +530,13 @@ impl Welcome {
         // Saved Agents threads go with their connection: they may hold
         // pasted secrets, and nothing could list them any more.
         let threads = crate::db::agent::threads::threads_dir(id).ok();
-        // So does its query history, for the same reasons; the removal is
-        // handed to the history's own writer, so it waits on nothing here.
-        crate::db::history::clear(Some(id));
         store_in_background(
             move || {
                 store::save(&connections, ticket)?;
+                // Its query history goes too, for the same reasons — once the
+                // list without it is saved, so a failed save keeps both. The
+                // removal is handed to the history's own writer.
+                crate::db::history::clear(Some(id));
                 store::delete_password(&id)?;
                 store::delete_ssh_secret(&id)?;
                 match threads {

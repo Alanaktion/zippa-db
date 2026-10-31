@@ -60,7 +60,7 @@ const DIR: &str = "query-history";
 pub const DEFAULT_MAX_ENTRIES: usize = 1_000;
 
 /// The largest count cap the settings accept; `0` means no cap at all.
-pub const MAX_ENTRIES_LIMIT: usize = 1_000_000;
+pub const MAX_ENTRIES_LIMIT: usize = 100_000;
 
 /// A statement longer than this is kept cut short, with a comment saying so,
 /// so one pasted dump cannot make every later read of the file slow.
@@ -133,8 +133,13 @@ impl Retention {
     /// anything older than the age limit, then the oldest past the count.
     pub fn apply(&self, mut entries: Vec<HistoryEntry>, now: DateTime<Utc>) -> Vec<HistoryEntry> {
         if self.max_age_days > 0 {
-            let cutoff = now - chrono::Duration::days(i64::from(self.max_age_days));
-            entries.retain(|entry| entry.at >= cutoff);
+            // A limit past what a date can hold (a hand-edited settings
+            // file) keeps everything rather than panicking.
+            let cutoff = chrono::Duration::try_days(i64::from(self.max_age_days))
+                .and_then(|age| now.checked_sub_signed(age));
+            if let Some(cutoff) = cutoff {
+                entries.retain(|entry| entry.at >= cutoff);
+            }
         }
         if self.max_entries > 0 && entries.len() > self.max_entries {
             entries.drain(..entries.len() - self.max_entries);
@@ -184,7 +189,7 @@ impl HistoryEntry {
             at: Utc::now(),
             connection,
             database: database.to_string(),
-            sql: truncate(sql.trim()),
+            sql: truncate(sql),
             outcome,
             elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         }
@@ -267,13 +272,16 @@ fn with_state<R>(change: impl FnOnce(&mut State) -> R) -> R {
 /// Put `retention` in force. Called at startup and whenever the settings
 /// change; the files on disk are compacted to it in the background.
 pub fn configure(retention: Retention) {
+    let dir = history_dir();
+    // The compaction is queued under the same lock `record` holds, so no
+    // append decided under the old retention can land after it.
     with_state(|state| {
         state.retention = retention;
         state.prune_memory(Utc::now());
+        if let Ok(dir) = dir {
+            submit(Job::CompactAll { dir, retention });
+        }
     });
-    if let Ok(dir) = history_dir() {
-        submit(Job::CompactAll { dir, retention });
-    }
 }
 
 /// The retention in force.
@@ -287,24 +295,29 @@ pub fn record(entry: HistoryEntry) {
     if entry.sql.trim().is_empty() {
         return;
     }
-    let retention = retention();
-    match retention.keep {
-        Keep::Off => {}
-        Keep::Memory => with_state(|state| {
-            let entries = state.memory.entry(entry.connection).or_default();
-            entries.push_back(entry);
-            let kept = retention.apply(entries.drain(..).collect(), Utc::now());
-            entries.extend(kept);
-        }),
-        Keep::Disk => match history_file(entry.connection) {
-            Ok(path) => submit(Job::Append {
-                path,
-                entry,
-                retention,
-            }),
-            Err(error) => eprintln!("could not record query history: {error:#}"),
-        },
-    }
+    let path = history_file(entry.connection);
+    // One lock across reading the retention and acting on it, so a switch to
+    // Off cannot be overtaken by an append decided just before it.
+    with_state(|state| {
+        let retention = state.retention;
+        match retention.keep {
+            Keep::Off => {}
+            Keep::Memory => {
+                let entries = state.memory.entry(entry.connection).or_default();
+                entries.push_back(entry);
+                let kept = retention.apply(entries.drain(..).collect(), Utc::now());
+                entries.extend(kept);
+            }
+            Keep::Disk => match path {
+                Ok(path) => submit(Job::Append {
+                    path,
+                    entry,
+                    retention,
+                }),
+                Err(error) => eprintln!("could not record query history: {error:#}"),
+            },
+        }
+    });
 }
 
 /// One connection's history, newest first: its file and whatever this run
@@ -312,6 +325,9 @@ pub fn record(entry: HistoryEntry) {
 ///
 /// Reads the file, so call it off the UI thread.
 pub fn entries(connection: Uuid) -> Vec<HistoryEntry> {
+    // A run's append is queued just before its tab asks for a re-read; let
+    // it land first so the statement that just finished is in what is read.
+    flush();
     let mut entries = history_file(connection)
         .map(|path| read_file(&path))
         .unwrap_or_default();
@@ -324,6 +340,7 @@ pub fn entries(connection: Uuid) -> Vec<HistoryEntry> {
 ///
 /// Reads every file, so call it off the UI thread.
 pub fn all_entries() -> Vec<HistoryEntry> {
+    flush();
     let mut by_connection: HashMap<Uuid, Vec<HistoryEntry>> = HashMap::new();
     if let Ok(dir) = history_dir() {
         for (connection, path) in history_files(&dir) {
@@ -368,8 +385,9 @@ pub fn clear(connection: Option<Uuid>) {
     }
 }
 
-/// Wait, briefly, for the writes already handed off to land: called at quit,
-/// so the last statement run is not lost with the process.
+/// Wait, briefly, for the writes already handed off to land: at quit, so the
+/// last statement run is not lost with the process, and before a read, so it
+/// sees them. Bounded, so a stuck disk cannot hang the app on its way out.
 pub fn flush() {
     #[cfg(not(test))]
     {
@@ -435,13 +453,26 @@ fn history_files(dir: &Path) -> Vec<(Uuid, PathBuf)> {
 /// line that does not parse — torn by a crash, or written by a newer build
 /// in a shape this one cannot read — is skipped rather than costing the rest.
 fn read_file(path: &Path) -> Vec<HistoryEntry> {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(bytes) = fs::read(path) else {
         return Vec::new();
     };
-    text.lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
+    parse_lines(&bytes).0
+}
+
+/// Every entry in a file's bytes, and how many non-blank lines there were.
+/// Split as bytes rather than read as one string, so a line torn in the
+/// middle of a multi-byte character costs only itself, not the whole file.
+fn parse_lines(bytes: &[u8]) -> (Vec<HistoryEntry>, usize) {
+    let lines: Vec<&[u8]> = bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
+        .collect();
+    let count = lines.len();
+    let entries = lines
+        .into_iter()
+        .filter_map(|line| serde_json::from_slice(line).ok())
+        .collect();
+    (entries, count)
 }
 
 /// Disk work, done in order on the writer thread.
@@ -597,14 +628,10 @@ fn append_line(path: &Path, entry: &HistoryEntry) -> Result<()> {
 /// do not parse. Left alone when nothing would change; removed when nothing
 /// is left.
 fn compact(path: &Path, retention: Retention) -> Result<()> {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(bytes) = fs::read(path) else {
         return Ok(());
     };
-    let lines = text.lines().filter(|line| !line.trim().is_empty()).count();
-    let entries: Vec<HistoryEntry> = text
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
+    let (entries, lines) = parse_lines(&bytes);
     let kept = retention.apply(oldest_first(entries), Utc::now());
     if kept.len() == lines {
         return Ok(());
@@ -849,6 +876,36 @@ mod tests {
 
         record(entry(connection, "select 2"));
         assert_eq!(sql_of(&entries(connection)), ["select 2", "select 1"]);
+    }
+
+    #[test]
+    fn a_line_torn_mid_character_costs_only_itself() {
+        let _dir = scratch(on_disk());
+        let connection = Uuid::new_v4();
+        record(entry(connection, "select 'café'"));
+        let path = history_file(connection).expect("a path");
+        // Half of a two-byte character, then the crash.
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("the file should open");
+        file.write_all(b"{\"sql\":\"caf\xc3")
+            .expect("the torn line should write");
+        drop(file);
+
+        record(entry(connection, "select 2"));
+        assert_eq!(sql_of(&entries(connection)), ["select 2", "select 'café'"]);
+    }
+
+    #[test]
+    fn an_age_limit_past_any_date_keeps_everything() {
+        let retention = Retention {
+            max_age_days: u32::MAX,
+            ..Retention::default()
+        };
+        let connection = Uuid::new_v4();
+        let kept = retention.apply(vec![aged(connection, "old", 400)], Utc::now());
+        assert_eq!(sql_of(&kept), ["old"]);
     }
 
     #[test]
