@@ -1887,3 +1887,42 @@ async fn live_mysql_a_streamed_read_hands_over_every_row() {
     assert_eq!(after.rows[0][0].as_deref(), Some("1"));
     connection.close().await;
 }
+
+/// A Postgres server error reads with its SQLSTATE and its own Detail and
+/// Hint lines. Against `compose.yaml`'s `postgres` service.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_describe_shows_sqlstate_detail_and_hint() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    let error = connection
+        .run_query(
+            "DO $$ BEGIN RAISE EXCEPTION 'zippa probe' \
+             USING ERRCODE = '22023', DETAIL = 'probe detail', HINT = 'probe hint'; END $$",
+        )
+        .await
+        .expect_err("the probe should fail");
+    let shown = crate::db::health::describe(&error);
+    assert!(
+        shown.ends_with("zippa probe (SQLSTATE 22023)\nDetail: probe detail\nHint: probe hint"),
+        "{shown}"
+    );
+    connection.close().await;
+}
+
+/// A MySQL server error reads with its error number. Against
+/// `compose.yaml`'s `mysql` service.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see the doc comment"]
+async fn live_mysql_describe_shows_the_error_number() {
+    let (connection, _pool) = live_mysql().await;
+    let error = connection
+        .run_query("SELECT * FROM zippa_no_such_table")
+        .await
+        .expect_err("the probe should fail");
+    let shown = crate::db::health::describe(&error);
+    assert!(
+        shown.ends_with("(MySQL error 1146)") && shown.contains("zippa_no_such_table"),
+        "{shown}"
+    );
+    connection.close().await;
+}

@@ -559,7 +559,10 @@ fn base_type(type_name: &str) -> String {
 /// Whether a driver type name (`int4`, `numeric(10,2)`, `INT UNSIGNED`) is
 /// a number type, so its values read best right-aligned.
 pub fn is_numeric_type(type_name: &str) -> bool {
-    is_numeric(&base_type(type_name))
+    // MySQL's YEAR is written as a JSON number, but it is a date part and
+    // reads with the other dates, left-aligned.
+    let base = base_type(type_name);
+    is_numeric(&base) && base != "YEAR"
 }
 
 /// Column types whose values go into JSON as numbers.
@@ -642,7 +645,15 @@ mod tests {
         ] {
             assert!(is_numeric_type(name), "{name}");
         }
-        for name in ["TEXT", "varchar(20)", "INT4[]", "BOOL", "timestamp", ""] {
+        for name in [
+            "TEXT",
+            "varchar(20)",
+            "INT4[]",
+            "BOOL",
+            "timestamp",
+            "YEAR",
+            "",
+        ] {
             assert!(!is_numeric_type(name), "{name}");
         }
     }

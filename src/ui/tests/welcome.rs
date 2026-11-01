@@ -1014,6 +1014,55 @@ fn a_failed_connect_keeps_the_editor_and_what_was_typed(cx: &mut TestAppContext)
         1
     );
     assert!(welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+    // The save landed, so closing now loses nothing.
+    assert!(!welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.is_dirty_for_test(cx))
+    }));
+}
+
+#[gpui_kit::test]
+fn a_card_connect_failing_under_a_new_editor_shows_on_the_launcher(cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+    let database = runtime::block_on(TempDatabase::new());
+    let config = ConnectionConfig {
+        database: dir
+            .path
+            .join("missing")
+            .join("nowhere.db")
+            .to_string_lossy()
+            .to_string(),
+        ..database.config()
+    };
+    let id = config.id;
+
+    let handle = workspace(cx);
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("the active tab should be showing the connection manager");
+    welcome.update(cx, |welcome, cx| {
+        welcome.set_connections_for_test(vec![config], cx)
+    });
+    // The card's connect is still out when New connection opens a form.
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| welcome.open(id, window, cx))
+    })
+    .unwrap();
+    let welcome = new_connection_editor(cx, &handle);
+    cx.run_until_parked();
+
+    let error = welcome.update(cx, |welcome, _| welcome.error_for_test());
+    assert!(
+        error.is_some(),
+        "the card's failure belongs on the launcher"
+    );
+    assert_eq!(
+        editor_status(cx, &welcome),
+        "",
+        "the new form had no part in it"
+    );
+    assert!(welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
 }
 
 #[gpui_kit::test]

@@ -162,6 +162,30 @@ fn discarding_several_rows_asks_first_and_command_z_does_not_discard(cx: &mut Te
 }
 
 #[gpui_kit::test]
+fn discarding_counts_the_cell_still_being_typed_into(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // One row staged, a second still in the open cell editor: two rows
+    // would be lost, so the key asks rather than dropping both.
+    stage_cell(cx, &view, 0, 1, "first");
+    stage_cell(cx, &view, 1, 1, "second");
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    assert!(grid.read_with(cx, |grid, cx| grid.editing_for_test(cx).is_some()));
+    press(cx, handle, "secondary-alt-z");
+    cx.run_until_parked();
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.staged(cx).len()),
+        2,
+        "the open editor's row should count toward the question"
+    );
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string())
+    );
+}
+
+#[gpui_kit::test]
 fn setting_a_cell_to_null_writes_null(cx: &mut TestAppContext) {
     let (database, _handle, view) = table_view(cx);
     cx.run_until_parked();

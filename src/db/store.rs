@@ -229,14 +229,13 @@ where
         return Ok((items, None));
     };
 
-    let aside = free_aside_path(path);
     let count = unread.len();
     let noun = if count == 1 { one } else { many };
     let kept = serde_json::to_string_pretty(&unread)
         .map_err(anyhow::Error::from)
-        .and_then(|text| write_restricted(&aside, &text).map_err(anyhow::Error::from));
+        .and_then(|text| write_aside(path, &text).map_err(anyhow::Error::from));
     let notice = match kept {
-        Ok(()) => {
+        Ok(aside) => {
             // Only once the entries are safe elsewhere is the file rewritten
             // without them.
             if let Err(rewrite) = serde_json::to_string_pretty(&items)
@@ -259,6 +258,33 @@ where
         ),
     };
     Ok((items, Some(notice)))
+}
+
+/// Write `contents` to a new aside file next to `path`, owner-only like
+/// [`write_restricted`], and say where. The name is taken with an exclusive
+/// create, so a second launcher setting the same file aside at the same
+/// moment takes the next name rather than truncating this one's copy.
+fn write_aside(path: &Path, contents: &str) -> std::io::Result<PathBuf> {
+    use std::io::Write as _;
+
+    loop {
+        let aside = free_aside_path(path);
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        match options.open(&aside) {
+            Ok(mut file) => {
+                file.write_all(contents.as_bytes())?;
+                return Ok(aside);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// `<path>.unreadable`, or the first `<path>.unreadable.N` not yet taken, so

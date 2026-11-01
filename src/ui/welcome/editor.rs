@@ -12,7 +12,7 @@ use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants, D
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::scroll::ScrollableElement;
-use gpui_kit::component::{ActiveTheme, Icon, Selectable, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Selectable, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Task, Window, actions, div, px};
 use uuid::Uuid;
@@ -622,15 +622,20 @@ impl ConnectionEditor {
     /// Everything the form would save, as one comparable string: the config
     /// (under a fixed id, since a new connection draws a fresh one each
     /// time) and what the two secret boxes hold.
-    fn snapshot(&self, cx: &App) -> String {
+    pub(super) fn snapshot(&self, cx: &App) -> String {
         let mut config = self.config(cx);
         config.id = Uuid::nil();
         config.last_connected = None;
+        // The number boxes go in as typed too: `config` reads a port that does
+        // not parse as the default, which would make a typo look untouched.
         format!(
-            "{}\u{0}{}\u{0}{}",
+            "{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}",
             serde_json::to_string(&config).unwrap_or_default(),
             self.password.read(cx).value(),
             self.ssh_secret.read(cx).value(),
+            self.port.read(cx).value(),
+            self.ssh_port.read(cx).value(),
+            self.statement_timeout.read(cx).value(),
         )
     }
 
@@ -662,12 +667,17 @@ impl ConnectionEditor {
         cx.emit(EditorEvent::Dismissed);
     }
 
-    /// The launcher saved the form: it now edits that saved connection, so a
-    /// second Connect updates it rather than adding another, and closing has
-    /// nothing left to lose.
-    pub(super) fn mark_saved(&mut self, id: Uuid, cx: &mut Context<Self>) {
+    /// The launcher is saving the form as `id`: it now edits that saved
+    /// connection, so a second Connect updates it rather than adding another.
+    pub(super) fn adopt_id(&mut self, id: Uuid, cx: &mut Context<Self>) {
         self.id = Some(id);
-        self.baseline = Some(self.snapshot(cx));
+        cx.notify();
+    }
+
+    /// The save of `submitted` (a [`Self::snapshot`]) has landed: closing
+    /// loses nothing unless the form has changed since.
+    pub(super) fn mark_saved(&mut self, submitted: String, cx: &mut Context<Self>) {
+        self.baseline = Some(submitted);
         cx.notify();
     }
 
@@ -690,6 +700,7 @@ impl ConnectionEditor {
     fn render_engines(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex().gap_2().children(Engine::ALL.map(|engine| {
             let button = Button::new(SharedString::from(format!("engine-{}", engine.label())))
+                .disabled(self.connecting)
                 .label(engine.label())
                 // The logo travels with the label so the engine is picked by
                 // sight as well as by reading; the button's own variant colours
@@ -725,6 +736,7 @@ impl ConnectionEditor {
                         let selected = self.color == Some(color);
                         let swatch = color.hsla(cx);
                         Button::new(SharedString::from(format!("color-{}", color.key())))
+                            .disabled(self.connecting)
                             .xsmall()
                             .rounded_full()
                             // A custom variant rather than a plain `bg`, so the
@@ -753,6 +765,7 @@ impl ConnectionEditor {
                     }))
                     .child(
                         Button::new("color-none")
+                            .disabled(self.connecting)
                             .ghost()
                             .xsmall()
                             .label("None")
@@ -793,6 +806,7 @@ impl ConnectionEditor {
                     .flex_wrap()
                     .children(SafetyMode::ALL.map(|safety| {
                         let button = Button::new(SharedString::from(format!("safety-{safety:?}")))
+                            .disabled(self.connecting)
                             .label(safety.label())
                             .tooltip(safety.description())
                             .on_click(cx.listener(move |this, _, _window, cx| {
@@ -837,6 +851,7 @@ impl ConnectionEditor {
                     .children(AgentAccess::ALL.map(|access| {
                         let button =
                             Button::new(SharedString::from(format!("agent-access-{access:?}")))
+                                .disabled(self.connecting)
                                 .label(access.label())
                                 .tooltip(access.description())
                                 .on_click(cx.listener(move |this, _, _window, cx| {
@@ -860,6 +875,7 @@ impl ConnectionEditor {
                             let button = Button::new(SharedString::from(format!(
                                 "agent-approval-{approval:?}"
                             )))
+                            .disabled(self.connecting)
                             .label(approval.label())
                             .tooltip(approval.description())
                             .on_click(cx.listener(
@@ -903,6 +919,7 @@ impl ConnectionEditor {
                             .children(SslMode::ALL.map(|mode| {
                                 let button =
                                     Button::new(SharedString::from(format!("ssl-{mode:?}")))
+                                        .disabled(self.connecting)
                                         .label(mode.label())
                                         .tooltip(mode.description())
                                         .on_click(cx.listener(move |this, _, _window, cx| {
@@ -918,16 +935,21 @@ impl ConnectionEditor {
                     ),
             )
             .when(files, |this| {
-                this.child(field("CA certificate", &self.ssl_ca, cx)).child(
-                    h_flex()
-                        .gap_3()
-                        .child(div().flex_1().child(field(
-                            "Client certificate",
-                            &self.ssl_cert,
-                            cx,
-                        )))
-                        .child(div().flex_1().child(field("Client key", &self.ssl_key, cx))),
-                )
+                this.child(self.field("CA certificate", &self.ssl_ca, cx))
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(div().flex_1().child(self.field(
+                                "Client certificate",
+                                &self.ssl_cert,
+                                cx,
+                            )))
+                            .child(div().flex_1().child(self.field(
+                                "Client key",
+                                &self.ssl_key,
+                                cx,
+                            ))),
+                    )
             })
     }
 
@@ -973,6 +995,7 @@ impl ConnectionEditor {
                             .children([(false, "Off"), (true, "On")].map(|(on, label)| {
                                 let button =
                                     Button::new(SharedString::from(format!("ssh-{label}")))
+                                        .disabled(self.connecting)
                                         .label(label)
                                         .tooltip(if on { on_tip } else { off_tip })
                                         .on_click(cx.listener(move |this, _, _window, cx| {
@@ -997,10 +1020,18 @@ impl ConnectionEditor {
                 this.child(
                     h_flex()
                         .gap_3()
-                        .child(div().flex_1().child(field("SSH host", &self.ssh_host, cx)))
-                        .child(div().w_24().child(field("SSH port", &self.ssh_port, cx))),
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(self.field("SSH host", &self.ssh_host, cx)),
+                        )
+                        .child(
+                            div()
+                                .w_24()
+                                .child(self.field("SSH port", &self.ssh_port, cx)),
+                        ),
                 )
-                .child(field("SSH user", &self.ssh_user, cx))
+                .child(self.field("SSH user", &self.ssh_user, cx))
                 .child(
                     h_flex()
                         .gap_2()
@@ -1008,6 +1039,7 @@ impl ConnectionEditor {
                         .children(SshAuth::ALL.map(|auth| {
                             let button =
                                 Button::new(SharedString::from(format!("ssh-auth-{auth:?}")))
+                                    .disabled(self.connecting)
                                     .label(auth.label())
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         this.set_ssh_auth(auth, cx)
@@ -1020,10 +1052,10 @@ impl ConnectionEditor {
                         })),
                 )
                 .when(self.ssh_auth == SshAuth::PrivateKey, |this| {
-                    this.child(field("Private key", &self.ssh_key, cx))
+                    this.child(self.field("Private key", &self.ssh_key, cx))
                 })
                 .when_some(secret, |this, label| {
-                    this.child(field(label, &self.ssh_secret, cx))
+                    this.child(self.field(label, &self.ssh_secret, cx))
                 })
             })
     }
@@ -1034,34 +1066,42 @@ impl ConnectionEditor {
         v_flex()
             .gap_3()
             .child(self.render_engines(cx))
-            .child(field("Name", &self.name, cx))
+            .child(self.field("Name", &self.name, cx))
             .when(file_based, |this| {
                 let label = if self.ssh_enabled {
                     "Database file on the SSH host"
                 } else {
                     "Database file"
                 };
-                this.child(field(label, &self.database, cx))
+                this.child(self.field(label, &self.database, cx))
                     .child(self.render_ssh(cx))
             })
             .when(!file_based, |this| {
                 this.child(
                     h_flex()
                         .gap_3()
-                        .child(div().flex_1().child(field("Host", &self.host, cx)))
-                        .child(div().w_24().child(field("Port", &self.port, cx))),
+                        .child(div().flex_1().child(self.field("Host", &self.host, cx)))
+                        .child(div().w_24().child(self.field("Port", &self.port, cx))),
                 )
                 .child(
                     h_flex()
                         .gap_3()
-                        .child(div().flex_1().child(field("User", &self.username, cx)))
-                        .child(div().flex_1().child(field("Password", &self.password, cx))),
+                        .child(div().flex_1().child(self.field("User", &self.username, cx)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(self.field("Password", &self.password, cx)),
+                        ),
                 )
                 .child(
                     h_flex()
                         .gap_3()
-                        .child(div().flex_1().child(field("Database", &self.database, cx)))
-                        .child(div().w_40().child(field(
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(self.field("Database", &self.database, cx)),
+                        )
+                        .child(div().w_40().child(self.field(
                             "Statement timeout (s)",
                             &self.statement_timeout,
                             cx,
@@ -1258,6 +1298,11 @@ impl ConnectionEditor {
 
     /// The line below the form, as the user reads it; empty when there is none.
     #[cfg(test)]
+    pub(crate) fn is_dirty_for_test(&self, cx: &App) -> bool {
+        self.is_dirty(cx)
+    }
+
+    #[cfg(test)]
     pub(crate) fn status_for_test(&self) -> String {
         match &self.status {
             Status::None => String::new(),
@@ -1366,20 +1411,25 @@ impl Render for ConnectionEditor {
     }
 }
 
-/// A label and its input, the form's repeated row.
-fn field(label: &str, input: &Entity<InputState>, cx: &App) -> impl IntoElement {
-    v_flex()
-        .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(label.to_string()),
-        )
-        .child(
-            div()
-                .id(SharedString::from(format!("field-{label}")))
-                .test_support()
-                .child(Input::new(input)),
-        )
+impl ConnectionEditor {
+    /// A label and its input, the form's repeated row.
+    fn field(&self, label: &str, input: &Entity<InputState>, cx: &App) -> impl IntoElement {
+        v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label.to_string()),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("field-{label}")))
+                    .test_support()
+                    // Fixed while a Connect is out, so nothing typed
+                    // after it is lost when the connection opens and the
+                    // form closes.
+                    .child(Input::new(input).disabled(self.connecting)),
+            )
+    }
 }

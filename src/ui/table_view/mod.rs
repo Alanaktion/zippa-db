@@ -613,6 +613,9 @@ impl TableView {
         };
 
         self.grid.update(cx, |grid, cx| grid.discard(cx));
+        // A Confirm Writes question built from the dropped edits must not
+        // outlive them, or its Apply would write what was just discarded.
+        self.confirming = None;
         // Nothing is staged now, so these run straight through their own
         // guard rather than asking again.
         match action {
@@ -1122,6 +1125,9 @@ impl TableView {
     /// lost: there is no undo for this, so a slip of the key should not cost
     /// a table's worth of typing.
     fn on_discard_edits(&mut self, _: &DiscardEdits, _window: &mut Window, cx: &mut Context<Self>) {
+        // A cell still being typed into is a staged edit too, so it counts
+        // toward whether to ask.
+        self.grid.update(cx, |grid, cx| grid.commit_editor(cx));
         let (edited, inserted, deleted) = self.grid.read(cx).pending_counts(cx);
         if edited + inserted + deleted <= 1 {
             self.discard_now(cx);
@@ -1134,6 +1140,7 @@ impl TableView {
     /// Drop every staged edit, with no question.
     pub(super) fn discard_now(&mut self, cx: &mut Context<Self>) {
         self.grid.update(cx, |grid, cx| grid.discard(cx));
+        self.confirming = None;
         self.notice = None;
         cx.notify();
     }
