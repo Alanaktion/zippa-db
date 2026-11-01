@@ -911,24 +911,187 @@ fn launchers_in_two_tabs_keep_each_others_connections(cx: &mut TestAppContext) {
     assert_eq!(saved, [staging.id, local.id]);
 }
 
-/// A file this build cannot read is moved aside before anything can save
-/// over it, and the error says where it went.
+/// A file that is not a list at all is moved aside whole before anything
+/// can save over it, and the error says where it went.
 #[gpui_kit::test]
 fn an_unreadable_connections_file_is_kept_aside(_cx: &mut TestAppContext) {
     let dir = ScratchDir::new();
     crate::db::store::set_config_dir_for_test(dir.path.clone());
     std::fs::create_dir_all(&dir.path).unwrap();
-    std::fs::write(
-        dir.path.join("connections.json"),
-        "[{\"engine\": \"Oracle\"}]",
-    )
-    .unwrap();
+    std::fs::write(dir.path.join("connections.json"), "{ not json").unwrap();
 
-    let error = crate::db::store::load().expect_err("an unknown engine should not parse");
+    let error = crate::db::store::load().expect_err("garbage should not parse");
     assert!(
         format!("{error:#}").contains("connections.json.unreadable"),
         "{error:#}"
     );
     assert!(dir.path.join("connections.json.unreadable").exists());
     assert!(!dir.path.join("connections.json").exists());
+}
+
+/// One entry this build cannot read costs that entry alone: the rest load,
+/// the bad one is kept aside, and an unknown colour costs nothing at all.
+#[gpui_kit::test]
+fn one_unreadable_connection_is_set_aside_alone(_cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+    std::fs::create_dir_all(&dir.path).unwrap();
+    let good = ConnectionConfig {
+        name: "Race Entry".into(),
+        ..ConnectionConfig::new(Engine::Sqlite)
+    };
+    let mut newer_colour = serde_json::to_value(ConnectionConfig {
+        name: "Rodeo Ticket".into(),
+        ..ConnectionConfig::new(Engine::Postgres)
+    })
+    .unwrap();
+    newer_colour["color"] = "ultraviolet".into();
+    let file = serde_json::json!([
+        serde_json::to_value(&good).unwrap(),
+        {"engine": "Oracle", "name": "From the future"},
+        newer_colour,
+    ]);
+    std::fs::write(dir.path.join("connections.json"), file.to_string()).unwrap();
+
+    let (list, notice) = crate::db::store::load_with_notice().expect("the list should load");
+    let names: Vec<_> = list.iter().map(|config| config.name.as_str()).collect();
+    assert_eq!(names, ["Race Entry", "Rodeo Ticket"]);
+    assert_eq!(list[1].color, None, "an unknown colour reads as none");
+    let notice = notice.expect("the set-aside entry should be reported");
+    assert!(
+        notice.starts_with("1 saved connection could not be read"),
+        "{notice}"
+    );
+    assert!(notice.contains("connections.json.unreadable"), "{notice}");
+
+    let aside = std::fs::read_to_string(dir.path.join("connections.json.unreadable")).unwrap();
+    assert!(aside.contains("From the future"), "{aside}");
+    // The file no longer holds it, so the next launch reads clean.
+    let (_, again) = crate::db::store::load_with_notice().unwrap();
+    assert_eq!(again, None);
+}
+
+#[gpui_kit::test]
+fn a_failed_connect_keeps_the_editor_and_what_was_typed(cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+    let missing = dir.path.join("missing").join("nowhere.db");
+    let path = missing.to_string_lossy().to_string();
+    fill_editor(cx, &handle, &welcome, Engine::Sqlite, &path);
+
+    // Without saving: nothing else holds these settings, so the form must.
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.connect_for_test(false, cx))
+    });
+    cx.run_until_parked();
+    assert!(
+        welcome.update(cx, |welcome, _| welcome.editor_open_for_test()),
+        "a failed connect should leave the editor open"
+    );
+    let status = editor_status(cx, &welcome);
+    assert!(
+        status.starts_with("Error: "),
+        "the failure should show in the editor, not {status:?}"
+    );
+    let typed = welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.config_for_test(cx))
+    });
+    assert_eq!(typed.database, path, "the form should keep what was typed");
+
+    // Saving and failing twice keeps one saved connection, not two: the
+    // first save makes the form that connection's editor.
+    for _ in 0..2 {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| editor.connect_for_test(true, cx))
+        });
+        cx.run_until_parked();
+    }
+    assert_eq!(
+        welcome.update(cx, |welcome, cx| welcome.connections_for_test(cx).len()),
+        1
+    );
+    assert!(welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+    // The save landed, so closing now loses nothing.
+    assert!(!welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.is_dirty_for_test(cx))
+    }));
+}
+
+#[gpui_kit::test]
+fn a_card_connect_failing_under_a_new_editor_shows_on_the_launcher(cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+    let database = runtime::block_on(TempDatabase::new());
+    let config = ConnectionConfig {
+        database: dir
+            .path
+            .join("missing")
+            .join("nowhere.db")
+            .to_string_lossy()
+            .to_string(),
+        ..database.config()
+    };
+    let id = config.id;
+
+    let handle = workspace(cx);
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("the active tab should be showing the connection manager");
+    welcome.update(cx, |welcome, cx| {
+        welcome.set_connections_for_test(vec![config], cx)
+    });
+    // The card's connect is still out when New connection opens a form.
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| welcome.open(id, window, cx))
+    })
+    .unwrap();
+    let welcome = new_connection_editor(cx, &handle);
+    cx.run_until_parked();
+
+    let error = welcome.update(cx, |welcome, _| welcome.error_for_test());
+    assert!(
+        error.is_some(),
+        "the card's failure belongs on the launcher"
+    );
+    assert_eq!(
+        editor_status(cx, &welcome),
+        "",
+        "the new form had no part in it"
+    );
+    assert!(welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+}
+
+#[gpui_kit::test]
+fn escape_closes_an_untouched_editor_and_asks_about_an_edited_one(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+
+    // Nothing typed: Escape just closes.
+    let welcome = new_connection_editor(cx, &handle);
+    press_workspace(cx, &handle, "escape");
+    assert!(!welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+
+    // Something typed: Escape asks, a second Escape keeps editing…
+    let welcome = new_connection_editor(cx, &handle);
+    fill_editor(cx, &handle, &welcome, Engine::Sqlite, "/tmp/typed.db");
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| editor.focus_name_for_test(window, cx))
+        });
+    })
+    .unwrap();
+    press_workspace(cx, &handle, "escape");
+    assert!(welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+    assert_eq!(editor_status(cx, &welcome), "confirm close");
+    press_workspace(cx, &handle, "escape");
+    assert!(welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+    assert_eq!(editor_status(cx, &welcome), "");
+
+    // …and only Discard Changes throws the form away.
+    press_workspace(cx, &handle, "escape");
+    click_workspace(cx, &handle, "editor-discard");
+    assert!(!welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
 }

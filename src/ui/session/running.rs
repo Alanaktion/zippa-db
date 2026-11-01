@@ -529,7 +529,7 @@ impl Session {
             return;
         };
         editor.update(cx, |editor, cx| editor.set_running(false, cx));
-        let message = format!("{error:#}");
+        let message = crate::db::health::describe(&error);
         panel.update(cx, |panel, cx| {
             panel.set_status(Status::Error(message.clone()));
             panel.show_pane_error(message.clone());
@@ -676,7 +676,7 @@ impl Session {
                     match result {
                         Ok(Ok(results)) => panel.show_results(results, cx),
                         Ok(Err(error)) => {
-                            let message = format!("{error:#}");
+                            let message = crate::db::health::describe(&error);
                             panel.set_status(Status::Error(message.clone()));
                             panel.show_pane_error(message.clone());
                             grid.update(cx, |grid, cx| grid.clear(cx));
@@ -803,7 +803,7 @@ impl Session {
             match params::substitute(&sql, &variables, self.connection.config.engine) {
                 Ok(substituted) => substituted,
                 Err(error) => {
-                    let message = format!("{error:#}");
+                    let message = crate::db::health::describe(&error);
                     panel.update(cx, |panel, cx| {
                         panel.set_status(Status::Error(message.clone()));
                         panel.show_pane_error(message.clone());
@@ -853,7 +853,7 @@ impl Session {
                             ));
                         }
                         Ok(Err(error)) => {
-                            let message = format!("{error:#}");
+                            let message = crate::db::health::describe(&error);
                             panel.set_status(Status::Error(message.clone()));
                             panel.show_pane_error(message.clone());
                             grid.update(cx, |grid, cx| grid.clear(cx));

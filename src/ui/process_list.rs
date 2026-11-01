@@ -76,7 +76,7 @@ impl ProcessListView {
                     // Rows from before the failure must not stay pickable:
                     // "End Selected" would act on a list that is out of date.
                     Ok(Err(error)) => {
-                        this.error = Some(format!("{error:#}"));
+                        this.error = Some(crate::db::health::describe(&error));
                         this.grid.update(cx, |grid, cx| grid.clear(cx));
                     }
                     Err(_) => this.error = Some("loading the process list was cancelled".into()),

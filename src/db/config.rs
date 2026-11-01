@@ -488,8 +488,10 @@ pub struct ConnectionConfig {
     /// The palette colour the connection is marked with, if any: a dot in the
     /// title bar and a tint on its tab. Absent in files written before
     /// colouring existed. (Files from when a connection also had a free-text
-    /// `tag` still read: serde skips the field.)
-    #[serde(default)]
+    /// `tag` still read: serde skips the field.) A colour this build does not
+    /// know, from a newer release, reads as none rather than costing the
+    /// connection: a colour is only a marker.
+    #[serde(default, deserialize_with = "lenient_color")]
     pub color: Option<TagColor>,
     /// When this connection was last opened, for most-recent-first ordering.
     #[serde(default)]
@@ -519,6 +521,15 @@ pub struct ConnectionConfig {
     /// read back as asking.
     #[serde(default)]
     pub agent_approval: WriteApproval,
+}
+
+/// A saved colour, or none when it is not one this build knows.
+fn lenient_color<'de, D>(deserializer: D) -> Result<Option<TagColor>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 impl ConnectionConfig {

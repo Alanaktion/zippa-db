@@ -977,7 +977,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            format!("{error:#}").contains("single database"),
+            crate::db::health::describe(&error).contains("single database"),
             "{error:#}"
         );
     }
@@ -1011,7 +1011,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            format!("{error:#}").contains("at least one database"),
+            crate::db::health::describe(&error).contains("at least one database"),
             "{error:#}"
         );
     }
@@ -1019,7 +1019,10 @@ mod tests {
     #[test]
     fn sqlite_has_no_dump_tool() {
         let error = tool_name(Engine::Sqlite).unwrap_err();
-        assert!(format!("{error:#}").contains("SQLite"), "{error:#}");
+        assert!(
+            crate::db::health::describe(&error).contains("SQLite"),
+            "{error:#}"
+        );
         assert!(
             commands_for(
                 Engine::Sqlite,

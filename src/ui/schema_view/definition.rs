@@ -159,7 +159,7 @@ impl SchemaView {
                         cx.notify();
                     }
                     Err(error) => {
-                        this.error = Some(format!("{error:#}"));
+                        this.error = Some(crate::db::health::describe(&error));
                         cx.notify();
                     }
                 })
@@ -168,7 +168,7 @@ impl SchemaView {
             Ok(None) => {}
             Err(error) => {
                 this.update(cx, |this, cx| {
-                    this.error = Some(format!("{error:#}"));
+                    this.error = Some(crate::db::health::describe(&error));
                     cx.notify();
                 })
                 .ok();

@@ -106,7 +106,7 @@ fn discarding_reverts_staged_edits_without_writing(cx: &mut TestAppContext) {
 
     stage_cell(cx, &view, 0, 1, "thrown away");
     focus_grid(cx, &view);
-    press(cx, handle, "secondary-z");
+    press(cx, handle, "secondary-alt-z");
     cx.run_until_parked();
 
     let grid = view.read_with(cx, |view, _| view.grid_for_test());
@@ -122,6 +122,66 @@ fn discarding_reverts_staged_edits_without_writing(cx: &mut TestAppContext) {
         runtime::block_on(name_of(&database, 1)),
         Some("alpha".to_string()),
         "discard must not write anything"
+    );
+}
+
+#[gpui_kit::test]
+fn discarding_several_rows_asks_first_and_command_z_does_not_discard(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "first");
+    stage_cell(cx, &view, 1, 1, "second");
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+
+    // ⌘Z is undo everywhere else; it must not throw a table's edits away.
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-z");
+    cx.run_until_parked();
+    assert_eq!(grid.read_with(cx, |grid, cx| grid.staged(cx).len()), 2);
+
+    // The discard key asks when more than one row would be lost…
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-alt-z");
+    cx.run_until_parked();
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.staged(cx).len()),
+        2,
+        "nothing should be dropped before the question is answered"
+    );
+
+    // …and drops them all once the user says so.
+    click_in_session(cx, handle, "discard-and-continue");
+    cx.run_until_parked();
+    assert!(grid.read_with(cx, |grid, cx| grid.staged(cx).is_empty()));
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string()),
+        "discard must not write anything"
+    );
+}
+
+#[gpui_kit::test]
+fn discarding_counts_the_cell_still_being_typed_into(cx: &mut TestAppContext) {
+    let (database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // One row staged, a second still in the open cell editor: two rows
+    // would be lost, so the key asks rather than dropping both.
+    stage_cell(cx, &view, 0, 1, "first");
+    stage_cell(cx, &view, 1, 1, "second");
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    assert!(grid.read_with(cx, |grid, cx| grid.editing_for_test(cx).is_some()));
+    press(cx, handle, "secondary-alt-z");
+    cx.run_until_parked();
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.staged(cx).len()),
+        2,
+        "the open editor's row should count toward the question"
+    );
+    assert_eq!(
+        runtime::block_on(name_of(&database, 1)),
+        Some("alpha".to_string())
     );
 }
 

@@ -202,7 +202,7 @@ impl ImportView {
 
         match result {
             Ok(Ok(summary)) => self.summary = Some(summary),
-            Ok(Err(error)) => self.failure = Some(format!("{error:#}")),
+            Ok(Err(error)) => self.failure = Some(crate::db::health::describe(&error)),
             // The sender is dropped when the run is given up on.
             Err(_) => self.failure = Some("Cancelled".to_string()),
         }

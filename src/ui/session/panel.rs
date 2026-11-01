@@ -1026,7 +1026,7 @@ impl SessionPanel {
                 Ok(Some(path)) => path,
                 Ok(None) => return,
                 Err(error) => {
-                    let message = format!("{error:#}");
+                    let message = crate::db::health::describe(&error);
                     this.update_in(cx, |this, window, cx| this.fail_export(message, window, cx))
                         .ok();
                     return;
@@ -1052,7 +1052,7 @@ impl SessionPanel {
                         this.set_status(Status::Done(export_notice(row_count, &path, skipped)))
                     }
                     Err(error) => {
-                        let message = format!("{error:#}");
+                        let message = crate::db::health::describe(&error);
                         this.set_status(Status::Error(message.clone()));
                         crate::ui::notify_error(window, cx, format!("Error: {message}"));
                     }

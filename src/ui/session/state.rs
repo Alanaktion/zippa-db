@@ -110,7 +110,10 @@ impl Session {
                         crate::ui::notify_error(
                             window,
                             cx,
-                            format!("Error: could not switch to the saved database: {error:#}"),
+                            format!(
+                                "Error: could not switch to the saved database: {shown}",
+                                shown = crate::db::health::describe(&error)
+                            ),
                         );
                     }
                     Err(_) => {

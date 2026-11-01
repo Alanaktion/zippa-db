@@ -58,15 +58,21 @@ impl Session {
                     Ok((databases, objects, stored, catalog)) => {
                         match databases {
                             Ok(databases) => this.databases = databases,
-                            Err(error) => this.metadata_error = Some(format!("{error:#}")),
+                            Err(error) => {
+                                this.metadata_error = Some(crate::db::health::describe(&error))
+                            }
                         }
                         match objects {
                             Ok(objects) => this.objects = objects,
-                            Err(error) => this.metadata_error = Some(format!("{error:#}")),
+                            Err(error) => {
+                                this.metadata_error = Some(crate::db::health::describe(&error))
+                            }
                         }
                         match stored {
                             Ok(stored) => this.stored = stored,
-                            Err(error) => this.metadata_error = Some(format!("{error:#}")),
+                            Err(error) => {
+                                this.metadata_error = Some(crate::db::health::describe(&error))
+                            }
                         }
                         this.store_catalog(catalog);
                         this.catalog
@@ -109,7 +115,7 @@ impl Session {
                     .collect();
                 fallback.total = fallback.entries.len();
                 self.catalog.set(Arc::new(fallback));
-                self.catalog_error = Some(format!("{error:#}"));
+                self.catalog_error = Some(crate::db::health::describe(&error));
             }
         }
     }
@@ -286,7 +292,7 @@ impl Session {
                         }
                     }
                     Ok(Err(error)) => {
-                        let message = format!("{error:#}");
+                        let message = crate::db::health::describe(&error);
                         if let Some(panel) = this.active_panel() {
                             panel.update(cx, |panel, _| {
                                 panel.set_status(Status::Error(message.clone()))

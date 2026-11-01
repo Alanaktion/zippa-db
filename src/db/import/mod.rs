@@ -287,7 +287,7 @@ pub(crate) async fn run(
             let entry = ImportError {
                 line: statement.line,
                 statement: excerpt(&statement.sql),
-                message: format!("{error:#}"),
+                message: crate::db::health::describe(&error),
             };
             match policy {
                 OnError::Stop => {
@@ -504,7 +504,7 @@ pub(crate) fn preflight(path: &std::path::Path, engine: Engine) -> Preflight {
             total_bytes: 0,
             dialect_mismatch: None,
             destructive: 0,
-            error: Some(format!("{error:#}")),
+            error: Some(crate::db::health::describe(&error)),
         },
     }
 }
@@ -806,7 +806,10 @@ mod database_tests {
         let error = import(&connection, &dump.path, OnError::Stop)
             .await
             .expect_err("a read-only connection should refuse");
-        assert!(format!("{error:#}").contains("read-only"), "{error:#}");
+        assert!(
+            crate::db::health::describe(&error).contains("read-only"),
+            "{error:#}"
+        );
 
         connection.close().await;
     }

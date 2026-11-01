@@ -203,7 +203,7 @@ mod tests {
         drop(file);
         let error = futures::executor::block_on(read_bytes(path.clone())).unwrap_err();
         assert!(
-            format!("{error:#}").contains("64 MiB"),
+            crate::db::health::describe(&error).contains("64 MiB"),
             "unexpected error: {error:#}"
         );
         std::fs::remove_file(&path).unwrap();

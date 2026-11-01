@@ -92,7 +92,7 @@ fn a_marked_row_can_be_restored_or_discarded(cx: &mut TestAppContext) {
     grid.update(cx, |grid, cx| grid.delete_selected(cx));
     cx.run_until_parked();
     focus_grid(cx, &view);
-    press(cx, handle, "secondary-z");
+    press(cx, handle, "secondary-alt-z");
     cx.run_until_parked();
 
     assert!(grid.read_with(cx, |grid, cx| grid.deletions(cx).is_empty()));
@@ -244,7 +244,7 @@ fn a_new_row_can_be_thrown_away(cx: &mut TestAppContext) {
     click_in_session(cx, handle, "insert-row");
     cx.run_until_parked();
     focus_grid(cx, &view);
-    press(cx, handle, "secondary-z");
+    press(cx, handle, "secondary-alt-z");
     cx.run_until_parked();
     assert_eq!(
         grid.read_with(cx, |grid, cx| grid.row_count_for_test(cx)),

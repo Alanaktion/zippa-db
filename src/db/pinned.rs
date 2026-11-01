@@ -180,7 +180,7 @@ impl PinnedConnection {
             Err(error) => {
                 // Refused before anything was sent: nothing for the console,
                 // but the attempt is still worth finding again to fix.
-                let outcome = QueryOutcome::Error(format!("{error:#}"));
+                let outcome = QueryOutcome::Error(crate::db::health::describe(&error));
                 self.connection.remember(typed, started.elapsed(), &outcome);
                 return Err(error);
             }
@@ -188,7 +188,10 @@ impl PinnedConnection {
         let result = self.fetch_with(&sql, params).await;
         let (elapsed, outcome) = match &result {
             Ok(result) => (result.elapsed, query_outcome(result)),
-            Err(error) => (started.elapsed(), QueryOutcome::Error(format!("{error:#}"))),
+            Err(error) => (
+                started.elapsed(),
+                QueryOutcome::Error(crate::db::health::describe(error)),
+            ),
         };
         self.connection.remember(typed, elapsed, &outcome);
         self.connection

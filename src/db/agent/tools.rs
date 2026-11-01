@@ -478,7 +478,7 @@ async fn describe_table(context: &ToolContext, name: &str, schema: &str) -> Tool
     .await;
     match loaded {
         Ok(Ok((schema, definition))) => ToolOutput::ok(describe(&object, &schema, definition)),
-        Ok(Err(error)) => ToolOutput::error(format!("{error:#}")),
+        Ok(Err(error)) => ToolOutput::error(crate::db::health::describe(&error)),
         Err(_) => ToolOutput::error("cancelled"),
     }
 }
@@ -587,7 +587,7 @@ async fn run_write(context: &ToolContext, approver: &dyn Approver, sql: &str) ->
             }
             out
         }
-        Ok(Err(error)) => ToolOutput::error(format!("{error:#}")),
+        Ok(Err(error)) => ToolOutput::error(crate::db::health::describe(&error)),
         Err(_) => ToolOutput::error("cancelled"),
     }
 }
@@ -631,7 +631,7 @@ async fn run_select(context: &ToolContext, sql: &str, explain: bool) -> ToolOutp
     .await
     {
         Ok(Ok(result)) => ToolOutput::ok(format_result(&result)),
-        Ok(Err(error)) => ToolOutput::error(format!("{error:#}")),
+        Ok(Err(error)) => ToolOutput::error(crate::db::health::describe(&error)),
         Err(_) => ToolOutput::error("cancelled"),
     }
 }

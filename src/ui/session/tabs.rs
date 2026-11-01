@@ -373,7 +373,10 @@ impl Session {
                         crate::ui::notify_info(
                             window,
                             cx,
-                            format!("Could not read definition: {error:#}"),
+                            format!(
+                                "Could not read definition: {shown}",
+                                shown = crate::db::health::describe(&error)
+                            ),
                         );
                     }
                     Err(_) => {

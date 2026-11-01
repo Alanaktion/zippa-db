@@ -20,8 +20,8 @@ use crate::ui::query_editor::{
 };
 use crate::ui::session::dashboard::CloseWidgetDialog;
 use crate::ui::session::{
-    CancelQuery, CloseTab, Disconnect, ImportSqlDump, NewTab, NextTab, OpenConnectionInfo,
-    OpenConsole, OpenErd, OpenFile, OpenHistory, OpenMaintenance, OpenProcessList, OpenQueryDigest,
+    CancelQuery, CloseTab, ImportSqlDump, NewTab, NextTab, OpenConnectionInfo, OpenConsole,
+    OpenErd, OpenFile, OpenHistory, OpenMaintenance, OpenProcessList, OpenQueryDigest,
     OpenServerVariables, OpenUserManagement, PreviousTab, QuickSwitcher, Reconnect, Refresh,
     SaveFile, SaveFileAs, SaveQuery, SearchSchema, UploadFile,
 };
@@ -192,10 +192,10 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("secondary-enter", RunQuery, Some("QueryEditor")),
         KeyBinding::new("secondary-t", NewTab, Some("Session")),
         KeyBinding::new("secondary-w", CloseTab, Some("Session")),
-        // Leave the connection without dropping the tab: the workspace swaps a
-        // fresh manager into it, so another connection can be opened from where
-        // this one was. Closing the tab outright is the key above.
-        KeyBinding::new("secondary-d", Disconnect, Some("Session")),
+        // `Disconnect` has no key of its own: `secondary-d` is the editor's
+        // Select Next Occurrence, and the same chord ending the whole session
+        // whenever the focus was on the grid or the sidebar made it too easy
+        // to hit by accident. The menu and the connection picker reach it.
         // Open a fresh pool after the server dropped the connection or
         // stopped answering, keeping every tab where it is.
         KeyBinding::new("secondary-shift-r", Reconnect, Some("Session")),
@@ -275,7 +275,9 @@ pub fn bind(cx: &mut App) {
             ApplyEdits,
             Some("TableView > DataTable > Input"),
         ),
-        KeyBinding::new("secondary-z", DiscardEdits, Some("TableView")),
+        // Not `secondary-z`: everywhere else that is undo, and throwing away
+        // every staged edit is the opposite of undoing the last one.
+        KeyBinding::new("secondary-alt-z", DiscardEdits, Some("TableView")),
         KeyBinding::new("secondary-\\", ToggleRowPanel, Some("TableView")),
         // The table binds the arrows, tab, and escape for its own selection
         // but leaves `enter` free, so that opens the editor. Both are scoped

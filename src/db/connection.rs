@@ -839,7 +839,7 @@ impl Connection {
         let result = self.fetch_read_only(sql, Vec::new(), Some(max_rows)).await;
         let outcome = match &result {
             Ok(result) => query_outcome(result),
-            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+            Err(error) => QueryOutcome::Error(crate::db::health::describe(error)),
         };
         self.log(sql, QuerySource::Agent, started.elapsed(), outcome);
         result
@@ -862,7 +862,7 @@ impl Connection {
         let result = self.fetch_read_only(sql, params, None).await;
         let outcome = match &result {
             Ok(result) => query_outcome(result),
-            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+            Err(error) => QueryOutcome::Error(crate::db::health::describe(error)),
         };
         self.log(sql, QuerySource::Internal, started.elapsed(), outcome);
         result
@@ -915,7 +915,7 @@ impl Connection {
         let result = self.fetch(sql, params).await;
         let outcome = match &result {
             Ok(result) => query_outcome(result),
-            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+            Err(error) => QueryOutcome::Error(crate::db::health::describe(error)),
         };
         self.log(sql, source, started.elapsed(), outcome);
         result
@@ -1005,7 +1005,7 @@ impl Connection {
         };
         let outcome = match &result {
             Ok(rows) => QueryOutcome::Rows(*rows),
-            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+            Err(error) => QueryOutcome::Error(crate::db::health::describe(error)),
         };
         self.log(sql, QuerySource::Internal, started.elapsed(), outcome);
         result
@@ -1056,7 +1056,7 @@ impl Connection {
         let result = self.explain_inner(sql, params, analyze).await;
         let outcome = match &result {
             Ok(_) => QueryOutcome::Ran,
-            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+            Err(error) => QueryOutcome::Error(crate::db::health::describe(error)),
         };
         self.log(sql, QuerySource::User, started.elapsed(), outcome);
         result
@@ -1292,7 +1292,7 @@ impl Connection {
         };
         let outcome = match &result {
             Ok(affected) => QueryOutcome::Affected(*affected),
-            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+            Err(error) => QueryOutcome::Error(crate::db::health::describe(error)),
         };
         self.log(sql, QuerySource::Agent, started.elapsed(), outcome);
         result
@@ -1318,7 +1318,7 @@ impl Connection {
         .map_err(health::plain);
         let outcome = match &result {
             Ok(affected) => QueryOutcome::Affected(*affected),
-            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+            Err(error) => QueryOutcome::Error(crate::db::health::describe(error)),
         };
         self.log(shown, source, started.elapsed(), outcome);
         result
@@ -1372,7 +1372,7 @@ impl Connection {
     fn log_script(&self, statements: &[String], elapsed: Duration, result: &Result<()>) {
         let outcome = match result {
             Ok(()) => QueryOutcome::Ran,
-            Err(error) => QueryOutcome::Error(format!("{error:#}")),
+            Err(error) => QueryOutcome::Error(crate::db::health::describe(error)),
         };
         self.log(
             &statements.join("; "),

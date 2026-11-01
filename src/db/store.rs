@@ -64,8 +64,15 @@ fn config_file() -> Result<PathBuf> {
 
 /// Read the saved connections. A missing file means "none saved yet"; an
 /// unreadable one is moved aside (see [`load_json`]).
+#[cfg(test)]
 pub fn load() -> Result<Vec<ConnectionConfig>> {
-    load_json(&config_file()?)
+    Ok(load_with_notice()?.0)
+}
+
+/// The saved connections, and what to tell the user when some of them could
+/// not be read and were set aside (see [`load_json_list`]).
+pub fn load_with_notice() -> Result<(Vec<ConnectionConfig>, Option<String>)> {
+    load_json_list(&config_file()?, ["saved connection", "saved connections"])
 }
 
 /// Write `contents` to `path`, restricted to the owner where the platform
@@ -187,6 +194,116 @@ where
                 .context(format!("could not parse {}; {kept}", path.display())))
         }
     }
+}
+
+/// Read a JSON list one entry at a time, so one entry this build cannot read
+/// (a colour or mode added by a newer release, a hand edit) costs that entry
+/// alone rather than the whole list.
+///
+/// The entries that do not read are written to `<name>.unreadable` (or
+/// `<name>.unreadable.N` when that is taken) and the file is rewritten
+/// without them, so the next launch does not set them aside again; the
+/// second value says so in words, naming an entry `one` and several `many`. A file that is
+/// not a JSON list at all goes aside whole, as [`load_json`] does.
+pub(crate) fn load_json_list<T>(
+    path: &Path,
+    [one, many]: [&str; 2],
+) -> Result<(Vec<T>, Option<String>)>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let entries: Vec<serde_json::Value> = load_json(path)?;
+    let mut items = Vec::with_capacity(entries.len());
+    let mut unread = Vec::new();
+    let mut first_error = None;
+    for entry in entries {
+        match serde_json::from_value::<T>(entry.clone()) {
+            Ok(item) => items.push(item),
+            Err(error) => {
+                first_error.get_or_insert(error);
+                unread.push(entry);
+            }
+        }
+    }
+    let Some(error) = first_error else {
+        return Ok((items, None));
+    };
+
+    let count = unread.len();
+    let noun = if count == 1 { one } else { many };
+    let kept = serde_json::to_string_pretty(&unread)
+        .map_err(anyhow::Error::from)
+        .and_then(|text| write_aside(path, &text).map_err(anyhow::Error::from));
+    let notice = match kept {
+        Ok(aside) => {
+            // Only once the entries are safe elsewhere is the file rewritten
+            // without them.
+            if let Err(rewrite) = serde_json::to_string_pretty(&items)
+                .map_err(anyhow::Error::from)
+                .and_then(|text| write_atomic(path, &text, ticket()))
+            {
+                eprintln!("could not rewrite {}: {rewrite:#}", path.display());
+            }
+            format!(
+                "{count} {noun} could not be read by this version and {verb} set aside in {} \
+                 ({error}).",
+                aside.display(),
+                verb = if count == 1 { "was" } else { "were" },
+            )
+        }
+        Err(write) => format!(
+            "{count} {noun} could not be read by this version ({error}), and could not be set \
+             aside ({write:#}); {} was left as it is.",
+            path.display()
+        ),
+    };
+    Ok((items, Some(notice)))
+}
+
+/// Write `contents` to a new aside file next to `path`, owner-only like
+/// [`write_restricted`], and say where. The name is taken with an exclusive
+/// create, so a second launcher setting the same file aside at the same
+/// moment takes the next name rather than truncating this one's copy.
+fn write_aside(path: &Path, contents: &str) -> std::io::Result<PathBuf> {
+    use std::io::Write as _;
+
+    loop {
+        let aside = free_aside_path(path);
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        match options.open(&aside) {
+            Ok(mut file) => {
+                file.write_all(contents.as_bytes())?;
+                return Ok(aside);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// `<path>.unreadable`, or the first `<path>.unreadable.N` not yet taken, so
+/// setting entries aside never replaces ones set aside before.
+fn free_aside_path(path: &Path) -> PathBuf {
+    let mut base = path.as_os_str().to_owned();
+    base.push(".unreadable");
+    let base = PathBuf::from(base);
+    if !base.exists() {
+        return base;
+    }
+    (1..)
+        .map(|n| {
+            let mut candidate = base.as_os_str().to_owned();
+            candidate.push(format!(".{n}"));
+            PathBuf::from(candidate)
+        })
+        .find(|candidate| !candidate.exists())
+        .unwrap_or(base)
 }
 
 #[cfg(not(test))]

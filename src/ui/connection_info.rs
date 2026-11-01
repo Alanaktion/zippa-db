@@ -65,7 +65,7 @@ impl ConnectionInfoView {
                         this.info = Some(info);
                     }
                     Ok(Err(error)) => {
-                        this.error = Some(format!("{error:#}"));
+                        this.error = Some(crate::db::health::describe(&error));
                         this.info = None;
                     }
                     Err(_) => {

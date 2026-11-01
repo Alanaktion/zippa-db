@@ -470,7 +470,9 @@ impl SchemaView {
                                 input.set_value(definition, window, cx);
                             });
                         }
-                        Ok(Err(error)) => this.definition_error = Some(format!("{error:#}")),
+                        Ok(Err(error)) => {
+                            this.definition_error = Some(crate::db::health::describe(&error))
+                        }
                         Err(_) => {
                             this.definition_error =
                                 Some("reading the view's definition was cancelled".into())
@@ -526,7 +528,7 @@ impl SchemaView {
                                 });
                             }
                             Err(error) => {
-                                this.definition_error = Some(format!("{error:#}"));
+                                this.definition_error = Some(crate::db::health::describe(&error));
                             }
                         }
                         match extras {
@@ -536,7 +538,7 @@ impl SchemaView {
                                 // extras: showing old triggers beside a
                                 // fresh error would read as current.
                                 this.extras = TableExtras::default();
-                                this.extras_error = Some(format!("{error:#}"));
+                                this.extras_error = Some(crate::db::health::describe(&error));
                             }
                         }
                         match schema {
@@ -580,7 +582,7 @@ impl SchemaView {
                                 this.schema = Some(schema);
                                 this.rebuild_source = source;
                             }
-                            Err(error) => this.error = Some(format!("{error:#}")),
+                            Err(error) => this.error = Some(crate::db::health::describe(&error)),
                         }
                     }
                     Err(_) => {
@@ -621,7 +623,9 @@ impl SchemaView {
                             input.set_value(definition, window, cx);
                         });
                     }
-                    Ok(Err(error)) => this.definition_error = Some(format!("{error:#}")),
+                    Ok(Err(error)) => {
+                        this.definition_error = Some(crate::db::health::describe(&error))
+                    }
                     Err(_) => {
                         this.definition_error = Some("reading the definition was cancelled".into())
                     }
@@ -847,7 +851,7 @@ impl SchemaView {
                             this.reload(cx);
                         }
                     }
-                    Ok(Err(error)) => this.error = Some(format!("{error:#}")),
+                    Ok(Err(error)) => this.error = Some(crate::db::health::describe(&error)),
                     Err(_) => this.error = Some("applying the changes was cancelled".into()),
                 }
                 cx.notify();

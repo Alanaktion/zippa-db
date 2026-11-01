@@ -10,13 +10,16 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use chrono::Utc;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
-use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, EventEmitter, FocusHandle, Global, Window, div, px};
+use gpui_kit::{
+    App, Context, Entity, EntityId, EventEmitter, FocusHandle, Global, Window, div, px,
+};
 use uuid::Uuid;
 
 use crate::app::NewConnection;
@@ -57,9 +60,9 @@ impl SavedConnections {
     /// The list, read from disk the first time anything asks.
     pub(crate) fn get(cx: &mut App) -> &[ConnectionConfig] {
         if !cx.has_global::<Self>() {
-            let (list, load_error) = match store::load() {
-                Ok(list) => (list, None),
-                Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+            let (list, load_error) = match store::load_with_notice() {
+                Ok((list, notice)) => (list, notice),
+                Err(error) => (Vec::new(), Some(crate::db::health::describe(&error))),
             };
             cx.set_global(Self { list, load_error });
         }
@@ -81,6 +84,10 @@ pub struct Welcome {
     connecting: Option<Uuid>,
     /// An error to show in the banner at the top of the screen.
     error: Option<String>,
+    /// Whether the saved list failed to load, so an empty screen may not
+    /// mean there are none. Kept apart from `error`, which a failed connect
+    /// also sets.
+    load_failed: bool,
     /// The editor dialog open over the screen, if any.
     editor: Option<Entity<ConnectionEditor>>,
     /// Held by the launcher itself, so its own key context answers even when
@@ -107,6 +114,7 @@ impl Welcome {
         Self {
             query,
             connecting: None,
+            load_failed: error.is_some(),
             error,
             editor: None,
             focus: cx.focus_handle(),
@@ -166,12 +174,33 @@ impl Welcome {
 
         let welcome = cx.entity().downgrade();
         let body = editor.clone();
+        let closer = editor.downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let welcome = welcome.clone();
+            let closer = closer.clone();
+            // The dialog's own ✕ and a click on the backdrop would close it
+            // with no say from the form, losing whatever was typed; this ✕
+            // goes through the form's own close, which asks first.
             dialog
                 .w(px(EDITOR_WIDTH))
                 .h(px(600.))
-                .title(title)
+                .title(
+                    h_flex().w_full().justify_between().child(title).child(
+                        Button::new("editor-close")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .accessibility_label("Close")
+                            .tooltip_with_action("Close", &EditorClose, Some("ConnectionEditor"))
+                            .on_click(move |_, _window, cx| {
+                                closer
+                                    .update(cx, |editor, cx| editor.request_close(cx))
+                                    .ok();
+                            }),
+                    ),
+                )
+                .close_button(false)
+                .overlay_closable(false)
                 .keyboard(false)
                 .on_close(move |_, _window, cx| {
                     welcome
@@ -196,14 +225,14 @@ impl Welcome {
 
     fn on_editor_event(
         &mut self,
-        _editor: &Entity<ConnectionEditor>,
+        editor: &Entity<ConnectionEditor>,
         event: &EditorEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             EditorEvent::Saved { config, secrets } => {
-                self.save(config.clone(), secrets.clone(), window, cx);
+                self.save(config.clone(), secrets.clone(), None, window, cx);
                 self.close_editor(window, cx);
             }
             EditorEvent::Connect {
@@ -218,14 +247,32 @@ impl Welcome {
                     .iter()
                     .any(|saved| saved.id == config.id);
                 if *save {
-                    self.save(config.clone(), secrets.clone(), window, cx);
+                    // The form edits the saved connection from here on, so a
+                    // second Connect updates it rather than adding another;
+                    // it reads as saved only once the write has landed, and
+                    // only as far as what was submitted.
+                    let submitted = editor.read(cx).snapshot(cx);
+                    editor.update(cx, |editor, cx| editor.adopt_id(config.id, cx));
+                    let weak = editor.downgrade();
+                    let on_saved: OnSaved = Box::new(move |cx| {
+                        weak.update(cx, |editor, cx| editor.mark_saved(submitted, cx))
+                            .ok();
+                    });
+                    self.save(config.clone(), secrets.clone(), Some(on_saved), window, cx);
                 }
-                self.close_editor(window, cx);
-                // An untouched box reports no secret; a saved connection then
+                // The editor stays open until the connection does: a failure
+                // is reported in it, with the form as it was typed. An
+                // untouched box reports no secret; a saved connection then
                 // connects with whatever the keychain holds, the way a card
                 // click does (`store::credentials` decides). A box the user
                 // emptied is no secret at all.
-                self.connect_resolving(config.clone(), secrets.clone(), saved, cx);
+                self.connect_resolving(
+                    config.clone(),
+                    secrets.clone(),
+                    saved,
+                    Some(editor.entity_id()),
+                    cx,
+                );
             }
             EditorEvent::Dismissed => self.close_editor(window, cx),
         }
@@ -245,10 +292,13 @@ impl Welcome {
     /// Each of `secrets` is `None` when the user never touched its box, which
     /// leaves whatever the keychain already holds alone; an empty string means
     /// they emptied the box on purpose, which forgets it.
+    ///
+    /// `on_saved` runs once the list and the secrets are both stored.
     fn save(
         &mut self,
         config: ConnectionConfig,
         secrets: SecretEdits,
+        on_saved: Option<OnSaved>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -270,11 +320,12 @@ impl Welcome {
         // The list is small, but writing it is still disk I/O; the keychain is a
         // second, slower one behind it.
         let id = config.id;
-        store_in_background(
+        store_in_background_then(
             move || {
                 store::save(&connections, ticket)?;
                 secrets.save(&id)
             },
+            on_saved,
             cx,
         );
     }
@@ -340,7 +391,7 @@ impl Welcome {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.connect_resolving(config, SecretEdits::default(), true, cx);
+        self.connect_resolving(config, SecretEdits::default(), true, None, cx);
     }
 
     /// Work out the secrets to connect with off the UI thread, then connect.
@@ -349,11 +400,15 @@ impl Welcome {
     /// the UI thread; the connect starts when the secrets come back. Only the
     /// secrets the connection can use are asked for (`store::credentials`), so
     /// a file database never touches the keychain at all.
+    ///
+    /// `from` is the editor the connect was started from, if any: only that
+    /// editor hears how it went.
     fn connect_resolving(
         &mut self,
         config: ConnectionConfig,
         secrets: SecretEdits,
         saved: bool,
+        from: Option<EntityId>,
         cx: &mut Context<Self>,
     ) {
         let credentials = {
@@ -363,10 +418,9 @@ impl Welcome {
         cx.spawn(async move |this, cx| {
             let credentials = credentials.await;
             this.update_in(cx, |this, window, cx| match credentials {
-                Ok(credentials) => this.connect(config, credentials, window, cx),
+                Ok(credentials) => this.connect(config, credentials, from, window, cx),
                 Err(error) => {
-                    this.error = Some(format!("{error:#}"));
-                    cx.notify();
+                    this.connect_failed(crate::db::health::describe(&error), from, window, cx)
                 }
             })
             .ok();
@@ -395,13 +449,23 @@ impl Welcome {
         &mut self,
         config: ConnectionConfig,
         credentials: Credentials,
+        from: Option<EntityId>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // One connection attempt at a time: a second activation while the
         // first is still opening must not start another, or two live sessions
-        // would open on the one connection.
+        // would open on the one connection. An editor that asked is told, or
+        // its Connect would spin on with nothing behind it.
         if self.connecting.is_some() {
+            if let Some(editor) = self.origin_editor(from) {
+                editor.update(cx, |editor, cx| {
+                    editor.connect_failed(
+                        "another connection is still opening; try again once it has".into(),
+                        cx,
+                    )
+                });
+            }
             return;
         }
 
@@ -418,16 +482,24 @@ impl Welcome {
                 match result {
                     Ok(Ok(connection)) => {
                         this.error = None;
+                        // Only the editor that asked: one opened over the
+                        // launcher since a card click has nothing to do with it.
+                        if this.origin_editor(from).is_some() {
+                            this.close_editor(window, cx);
+                        }
                         this.mark_connected(&connection.config.id, cx);
                         cx.emit(WelcomeEvent::Connected(Arc::new(connection)));
                     }
                     Ok(Err(error)) => {
-                        let message = format!("{error:#}");
-                        this.error = Some(message.clone());
-                        notify_error(window, cx, format!("Error: {message}"));
+                        this.connect_failed(crate::db::health::describe(&error), from, window, cx);
                     }
                     Err(_) => {
-                        this.error = Some("the connection was cancelled".into());
+                        this.connect_failed(
+                            "the connection was cancelled".into(),
+                            from,
+                            window,
+                            cx,
+                        );
                     }
                 }
                 cx.notify();
@@ -435,6 +507,33 @@ impl Welcome {
             .ok();
         })
         .detach();
+    }
+
+    /// Say why a connect failed: in the editor when it was started from
+    /// there, so the form is still in front of the user to fix, otherwise in
+    /// the launcher's banner.
+    fn connect_failed(
+        &mut self,
+        message: String,
+        from: Option<EntityId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editor) = self.origin_editor(from) {
+            editor.update(cx, |editor, cx| editor.connect_failed(message, cx));
+            return;
+        }
+        self.error = Some(message.clone());
+        notify_error(window, cx, format!("Error: {message}"));
+        cx.notify();
+    }
+
+    /// The open editor, when it is the one `from` names.
+    fn origin_editor(&self, from: Option<EntityId>) -> Option<Entity<ConnectionEditor>> {
+        let from = from?;
+        self.editor
+            .clone()
+            .filter(|editor| editor.entity_id() == from)
     }
 
     /// Record that a connection was just opened, for most-recent-first order.
@@ -603,14 +702,24 @@ impl Welcome {
     }
 
     fn render_error(&self, error: &str, cx: &mut Context<Self>) -> impl IntoElement {
-        div().id("error-banner").flex_none().px_6().pt_3().child(
-            div()
-                .max_h(px(96.))
-                .overflow_y_scrollbar()
-                .text_sm()
-                .text_color(cx.theme().danger)
-                .child(format!("Error: {error}")),
-        )
+        // In the same column as the search box and the cards, so it reads as
+        // part of the list it is about.
+        div()
+            .id("error-banner")
+            .flex_none()
+            .w_full()
+            .max_w(px(640.))
+            .mx_auto()
+            .px_6()
+            .pt_3()
+            .child(
+                div()
+                    .max_h(px(96.))
+                    .overflow_y_scrollbar()
+                    .text_sm()
+                    .text_color(cx.theme().danger)
+                    .child(format!("Error: {error}")),
+            )
     }
 
     /// The search box and the cards it filters, or the empty state.
@@ -672,7 +781,12 @@ impl Welcome {
             .justify_center()
             .gap_2()
             .p_6()
-            .child(div().text_lg().child("No connections yet"))
+            // Beside a load error, "yet" would say there never were any.
+            .child(div().text_lg().child(if self.load_failed {
+                "No connections to show"
+            } else {
+                "No connections yet"
+            }))
             .child(
                 div()
                     .text_sm()
@@ -717,6 +831,12 @@ impl Welcome {
         cx.notify();
     }
 
+    /// The banner's message, if one is showing.
+    #[cfg(test)]
+    pub(crate) fn error_for_test(&self) -> Option<String> {
+        self.error.clone()
+    }
+
     /// Whether the editor dialog is open over the launcher.
     #[cfg(test)]
     pub(crate) fn editor_open_for_test(&self) -> bool {
@@ -743,7 +863,7 @@ impl Welcome {
             password: password.map(str::to_string),
             ssh: None,
         };
-        self.save(config, secrets, window, cx);
+        self.save(config, secrets, None, window, cx);
     }
 
     /// Open the editor pre-filled from a saved connection, as its card does.
@@ -863,14 +983,30 @@ pub(crate) fn remember_agent_settings(
     .detach();
 }
 
+/// What to do once a save has landed on disk.
+type OnSaved = Box<dyn FnOnce(&mut App)>;
+
 fn store_in_background<F>(work: F, cx: &mut Context<Welcome>)
 where
     F: FnOnce() -> anyhow::Result<()> + Send + 'static,
 {
+    store_in_background_then(work, None, cx);
+}
+
+/// [`store_in_background`], running `on_ok` if the work succeeded.
+fn store_in_background_then<F>(work: F, on_ok: Option<OnSaved>, cx: &mut Context<Welcome>)
+where
+    F: FnOnce() -> anyhow::Result<()> + Send + 'static,
+{
     let result = cx.background_spawn(async move { work() });
-    cx.spawn(async move |this, cx| {
-        if let Err(error) = result.await {
-            let message = format!("{error:#}");
+    cx.spawn(async move |this, cx| match result.await {
+        Ok(()) => {
+            if let Some(on_ok) = on_ok {
+                cx.update(on_ok);
+            }
+        }
+        Err(error) => {
+            let message = crate::db::health::describe(&error);
             this.update_in(cx, |this, window, cx| {
                 notify_error(window, cx, format!("Error: {message}"));
                 this.error = Some(message);

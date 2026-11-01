@@ -267,7 +267,7 @@ impl ScriptRun {
                     connection.remember(
                         &statement.text,
                         Duration::ZERO,
-                        &QueryOutcome::Error(format!("{error:#}")),
+                        &QueryOutcome::Error(crate::db::health::describe(&error)),
                     );
                     return Err(error);
                 }
@@ -496,7 +496,7 @@ impl ScriptRun {
                 Ok(result)
             }
             Err(error) => {
-                let message = format!("{error:#}");
+                let message = crate::db::health::describe(&error);
                 let outcome = QueryOutcome::Error(message.clone());
                 self.connection
                     .remember(&self.statements[index].text, elapsed, &outcome);

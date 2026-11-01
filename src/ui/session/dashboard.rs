@@ -417,7 +417,11 @@ impl DashboardView {
                             this.update_in(cx, |view, _, cx| {
                                 if view.token_current(id, token) {
                                     view.in_flight.remove(&id);
-                                    view.set_widget_error(id, format!("{error:#}"), cx);
+                                    view.set_widget_error(
+                                        id,
+                                        crate::db::health::describe(&error),
+                                        cx,
+                                    );
                                 }
                             })
                             .ok();
@@ -456,7 +460,9 @@ impl DashboardView {
                         view.running.remove(&id);
                         match result {
                             Ok(Ok(result)) => view.set_widget_result(id, result, applied, cx),
-                            Ok(Err(error)) => view.set_widget_error(id, format!("{error:#}"), cx),
+                            Ok(Err(error)) => {
+                                view.set_widget_error(id, crate::db::health::describe(&error), cx)
+                            }
                             Err(_) => view.set_widget_error(id, "Cancelled".to_string(), cx),
                         }
                     });

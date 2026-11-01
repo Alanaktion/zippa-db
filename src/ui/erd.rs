@@ -231,7 +231,7 @@ impl ErdView {
                         };
                     }
                     Err(error) => {
-                        this.phase = ErdPhase::Failed(format!("{error:#}"));
+                        this.phase = ErdPhase::Failed(crate::db::health::describe(&error));
                     }
                 }
                 // The resting state is the fitted state (see the module docs).
