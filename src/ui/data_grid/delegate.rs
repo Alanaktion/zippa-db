@@ -368,7 +368,16 @@ impl TableDelegate for ResultDelegate {
         // the table only reaches its owner after that, so the cell the menu is
         // about is noted here — in the capture phase, before the table answers
         // the click itself.
+        // Clipped text ends in an ellipsis, so a value that runs on past the
+        // column edge does not look like one that stops there; numbers line
+        // up on their last digit so magnitudes can be compared down a column.
+        let numeric = self.is_numeric_column(col_ix);
         let cell = div()
+            .w_full()
+            .min_w_0()
+            .truncate()
+            // The gap keeps a right-aligned number off the next column's text.
+            .when(numeric, |cell| cell.text_right().pr_2())
             .font_family(self.font.clone())
             .text_xs()
             .capture_any_mouse_down(cx.listener(move |table, event: &MouseDownEvent, _, _cx| {
@@ -447,9 +456,12 @@ impl TableDelegate for ResultDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        if self.data_column(col_ix).is_some() {
+        if let Some(data_ix) = self.data_column(col_ix) {
             return div()
                 .size_full()
+                .when(self.is_numeric_column(data_ix), |header| {
+                    header.text_right()
+                })
                 .child(self.column(col_ix, cx).name.clone())
                 .into_any_element();
         }
@@ -479,6 +491,14 @@ impl TableDelegate for ResultDelegate {
 }
 
 impl ResultDelegate {
+    /// Whether the result's column `col_ix` holds numbers, by its driver type.
+    pub(super) fn is_numeric_column(&self, col_ix: usize) -> bool {
+        self.result
+            .column_types
+            .get(col_ix)
+            .is_some_and(|name| crate::db::export::is_numeric_type(name))
+    }
+
     /// Index into the result's rows of the row shown at `row_ix`.
     ///
     /// `None` for a draft row, which the server has never seen.

@@ -190,7 +190,7 @@ impl PinnedConnection {
             Ok(result) => (result.elapsed, query_outcome(result)),
             Err(error) => (
                 started.elapsed(),
-                QueryOutcome::Error(crate::db::health::describe(&error)),
+                QueryOutcome::Error(crate::db::health::describe(error)),
             ),
         };
         self.connection.remember(typed, elapsed, &outcome);
