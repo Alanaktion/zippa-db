@@ -29,6 +29,7 @@ const GROUPS: &[Group] = &[
             ("Show this list", &["ctrl-/"]),
             ("Quick switcher", &["secondary-k"]),
             ("Search the schema", &["secondary-shift-o"]),
+            ("Show or hide the sidebar", &["secondary-b"]),
             ("Settings", &["secondary-,"]),
             (
                 "Close the settings window",
@@ -66,6 +67,7 @@ const GROUPS: &[Group] = &[
         title: "Files",
         rows: &[
             ("Open a SQL file", &["secondary-o"]),
+            ("Open a SQLite file (from the launcher)", &["secondary-o"]),
             ("Import a SQL dump", &["secondary-shift-i"]),
             ("Save the active tab", &["secondary-s"]),
             (

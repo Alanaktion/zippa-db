@@ -31,13 +31,14 @@ use crate::menu::Quit;
 
 use crate::db::{Connection, TagColor, runtime, store};
 use crate::settings;
+use crate::ui::layout;
 use crate::ui::session::{
     Disconnect, QuickSwitcher, Reconnect, SearchSchema, Session, SessionEvent, UploadFile,
 };
 use crate::ui::shortcuts_dialog::{self, ShowShortcuts};
 use crate::ui::value_dialog::{self, Dismissed, ValueView};
 use crate::ui::welcome::{SavedConnections, Welcome, WelcomeEvent};
-use crate::workspace_state::{self, SessionState, WorkspaceState};
+use crate::workspace_state::{self, SessionState, WindowPlacement, WorkspaceState};
 
 /// The value dialog is a reading pane rather than a prompt, so it is wider
 /// and taller than a dialog's default.
@@ -48,6 +49,7 @@ actions!(
     zippa_db,
     [
         NewConnection,
+        OpenSqliteFile,
         CloseConnection,
         NextConnection,
         PreviousConnection
@@ -218,16 +220,15 @@ pub struct Workspace {
     pending: HashMap<EntityId, SessionState>,
     /// The snapshot last written, so an unchanged one is not written again.
     last_saved: Option<WorkspaceState>,
+    /// Where the window is, as last reported; `None` until it first moves
+    /// or resizes when nothing was saved.
+    placement: Option<WindowPlacement>,
 }
 
 impl Workspace {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // A workspace file that cannot be read must not keep the app from
-        // starting; an empty one is simply the first launch.
-        let state = workspace_state::load().unwrap_or_else(|error| {
-            eprintln!("could not read the workspace: {error:#}");
-            WorkspaceState::default()
-        });
+    /// The workspace `state` describes; `main` reads it before the window
+    /// opens, since the window's own bounds come from it too.
+    pub fn new(state: WorkspaceState, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::build(state, window, cx)
     }
 
@@ -243,6 +244,17 @@ impl Workspace {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
 
+        // The splits are read by every session as it draws, so they are in
+        // place before the first one is restored.
+        layout::init(state.layout, cx);
+        // Recorded as the window moves and resizes, and written at the next
+        // checkpoint (or the quit-time flush) rather than on every step of a
+        // drag.
+        cx.observe_window_bounds(window, |this, window, _| {
+            this.placement = Some(layout::placement(window.window_bounds()));
+        })
+        .detach();
+
         let mut workspace = Self {
             tabs: Vec::new(),
             active: 0,
@@ -251,6 +263,7 @@ impl Workspace {
             menu_bar: AppMenuBar::new(cx),
             pending: HashMap::new(),
             last_saved: None,
+            placement: state.window,
         };
         workspace.restore_tabs(state, window, cx);
         workspace
@@ -340,13 +353,14 @@ impl Workspace {
     }
 
     /// Add a tab showing the connection manager and make it active.
-    fn open_connect_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_connect_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<Welcome> {
         let welcome = Self::welcome(window, cx);
-        self.tabs.push(TabContent::Connect(welcome));
+        self.tabs.push(TabContent::Connect(welcome.clone()));
         self.active = self.tabs.len() - 1;
         self.focus_active(window, cx);
         self.save_state(cx);
         cx.notify();
+        welcome
     }
 
     fn welcome(window: &mut Window, cx: &mut Context<Self>) -> Entity<Welcome> {
@@ -653,6 +667,8 @@ impl Workspace {
         WorkspaceState {
             active,
             sessions,
+            window: self.placement,
+            layout: layout::current(cx),
             ..WorkspaceState::default()
         }
     }
@@ -775,6 +791,42 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.open_connect_tab(window, cx);
+    }
+
+    /// Pick a SQLite file and set up a connection to it, from anywhere: in
+    /// the launcher in front if there is one, otherwise in a new one.
+    fn on_open_sqlite_file(
+        &mut self,
+        _: &OpenSqliteFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let welcome = self.connect_tab_for_open(window, cx);
+        welcome.update(cx, |welcome, cx| welcome.open_sqlite_file(window, cx));
+    }
+
+    /// Open the SQLite file at `path` (a path on the command line, or a file
+    /// dropped on the window) in the connection editor, ready to connect.
+    pub(crate) fn open_sqlite_path(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let welcome = self.connect_tab_for_open(window, cx);
+        welcome.update(cx, |welcome, cx| welcome.open_sqlite_path(path, window, cx));
+    }
+
+    /// The launcher in front, or a new one when a session is.
+    fn connect_tab_for_open(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<Welcome> {
+        if let Some(TabContent::Connect(welcome)) = self.tabs.get(self.active) {
+            return welcome.clone();
+        }
+        self.open_connect_tab(window, cx)
     }
 
     fn on_show_shortcuts(
@@ -1235,6 +1287,7 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .key_context("Workspace")
             .on_action(cx.listener(Self::on_new_connection))
+            .on_action(cx.listener(Self::on_open_sqlite_file))
             .on_action(cx.listener(Self::on_close_connection))
             .on_action(cx.listener(Self::on_quit))
             .on_action(cx.listener(Self::on_show_shortcuts))

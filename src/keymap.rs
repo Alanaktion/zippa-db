@@ -5,7 +5,9 @@
 
 use gpui_kit::{App, KeyBinding, NoAction};
 
-use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
+use crate::app::{
+    CloseConnection, NewConnection, NextConnection, OpenSqliteFile, PreviousConnection,
+};
 use crate::ui::agents::{ApproveWrite, RejectWrite, ToggleAgents};
 use crate::ui::create_database_dialog::CloseCreateDatabase;
 use crate::ui::data_grid::{
@@ -23,7 +25,7 @@ use crate::ui::session::{
     CancelQuery, CloseTab, ImportSqlDump, NewTab, NextTab, OpenConnectionInfo, OpenConsole,
     OpenErd, OpenFile, OpenHistory, OpenMaintenance, OpenProcessList, OpenQueryDigest,
     OpenServerVariables, OpenUserManagement, PreviousTab, QuickSwitcher, Reconnect, Refresh,
-    SaveFile, SaveFileAs, SaveQuery, SearchSchema, UploadFile,
+    SaveFile, SaveFileAs, SaveQuery, SearchSchema, ToggleSidebar, UploadFile,
 };
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -212,6 +214,10 @@ pub fn bind(cx: &mut App) {
         // The query history: what was run from query tabs, kept per
         // connection. H for history, as in a browser.
         KeyBinding::new("secondary-shift-h", OpenHistory, Some("Session")),
+        // The sidebar, hidden so a wide result has the window. Cmd+B is the
+        // sidebar key in most editors; neither the editor nor the grid binds
+        // it, so the session hears it from anywhere inside.
+        KeyBinding::new("secondary-b", ToggleSidebar, Some("Session")),
         // The Agents panel beside the session: shown or hidden, with the
         // thread kept either way.
         KeyBinding::new("secondary-alt-a", ToggleAgents, Some("Session")),
@@ -253,6 +259,9 @@ pub fn bind(cx: &mut App) {
         // On the welcome screen the same key opens the editor dialog instead
         // of another tab: the more specific context wins.
         KeyBinding::new("secondary-n", NewConnection, Some("Welcome")),
+        // The launcher has no query tab to open a SQL file into, so its open
+        // key opens a SQLite database instead.
+        KeyBinding::new("secondary-o", OpenSqliteFile, Some("Welcome")),
         KeyBinding::new("secondary-shift-w", CloseConnection, Some("Workspace")),
         KeyBinding::new("secondary-shift-]", NextConnection, Some("Workspace")),
         KeyBinding::new("secondary-shift-[", PreviousConnection, Some("Workspace")),

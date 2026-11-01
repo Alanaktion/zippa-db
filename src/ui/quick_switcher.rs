@@ -4,7 +4,7 @@
 //! - Open query and table tabs
 //! - Tables and views in the active database schema
 //! - Saved dashboards, by name
-//! - Quick actions (New Query Tab, Open SQL File, Refresh)
+//! - Quick actions (New Query Tab, Open SQL File, Open SQLite File, Refresh)
 //! - Available databases on the current connection
 //!
 //! Matching is done here, not by the `Command` component: every keystroke
@@ -33,6 +33,7 @@ pub(crate) enum SwitcherTarget {
     Object(DatabaseObject),
     NewTab,
     OpenFile,
+    OpenSqliteFile,
     Refresh,
     Explain,
     ExplainAnalyze,
@@ -97,6 +98,12 @@ impl QuickSwitcherView {
                 session.update(cx, |session, cx| session.new_query_tab(window, cx))
             }
             SwitcherTarget::OpenFile => session.update(cx, |session, cx| session.open_file(cx)),
+            // The workspace's to answer, not the session's: it opens a
+            // launcher for the file. The dialog's focus path runs to the
+            // workspace, so a dispatched action reaches it.
+            SwitcherTarget::OpenSqliteFile => {
+                window.dispatch_action(Box::new(crate::app::OpenSqliteFile), cx)
+            }
             SwitcherTarget::Refresh => session.update(cx, |session, cx| session.refresh(cx)),
             SwitcherTarget::Explain => {
                 session.update(cx, |session, cx| session.explain_active(false, cx))
@@ -287,6 +294,12 @@ impl Render for QuickSwitcherView {
                 "Open SQL File...",
                 IconName::FolderOpen,
                 &["open", "file", "sql", "load", "import"],
+            ),
+            action(
+                SwitcherTarget::OpenSqliteFile,
+                "Open SQLite File...",
+                IconName::Database,
+                &["open", "sqlite", "file", "database", "db", "connect"],
             ),
             action(
                 SwitcherTarget::Refresh,

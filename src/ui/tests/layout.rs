@@ -442,3 +442,65 @@ fn striped_rows_follow_the_setting(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(view.read_with(cx, |view, _| view.loaded_rows_for_test()), 2);
 }
+
+#[gpui_kit::test]
+fn the_sidebar_key_hides_and_shows_the_sidebar(cx: &mut TestAppContext) {
+    let (_database, handle, _session) = workspace_session(cx);
+    let window_width = px(WINDOW.0);
+
+    let sidebar_shown = |cx: &mut TestAppContext| {
+        cx.update_window(handle.window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.try_find("sidebar").is_some()
+        })
+        .unwrap()
+    };
+    assert!(sidebar_shown(cx));
+
+    press_workspace(cx, &handle, "secondary-b");
+    assert!(!sidebar_shown(cx), "Cmd+B should hide the sidebar");
+    assert!(crate::ui::layout::current(&cx.app.borrow()).sidebar_hidden);
+    // The tabs take the whole width.
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        let dock = window.find("dock-area");
+        assert!(
+            dock.bounds().size.width > window_width - px(40.),
+            "the tabs should fill the window: {:?}",
+            dock.bounds()
+        );
+    })
+    .unwrap();
+    // And the workspace records it for the next launch.
+    let state = handle
+        .update(cx, |workspace, _, cx| workspace.state_for_test(cx))
+        .unwrap();
+    assert!(state.layout.sidebar_hidden);
+
+    press_workspace(cx, &handle, "secondary-b");
+    assert!(sidebar_shown(cx), "Cmd+B again should bring it back");
+}
+
+#[gpui_kit::test]
+fn a_remembered_sidebar_width_is_used_by_a_new_session(cx: &mut TestAppContext) {
+    let state = WorkspaceState {
+        layout: crate::workspace_state::Layout {
+            sidebar: Some(400.),
+            ..Default::default()
+        },
+        ..WorkspaceState::default()
+    };
+    let handle = workspace_from(cx, state);
+    let _database = connect(cx, &handle);
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        let sidebar = window.find("sidebar");
+        let width = sidebar.bounds().size.width;
+        assert!(
+            (width - px(400.)).abs() < px(2.),
+            "the sidebar should open at its remembered width: {width:?}"
+        );
+    })
+    .unwrap();
+}

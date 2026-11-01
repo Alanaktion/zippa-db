@@ -33,6 +33,7 @@ use crate::db::{PinnedConnection, ScriptMode, ScriptRun, TxnState};
 use crate::ui::busy::busy_label;
 use crate::ui::completion::SharedCatalog;
 use crate::ui::data_grid::{Copied, DataGrid};
+use crate::ui::layout::{self, Split};
 use crate::ui::plan_view::PlanView;
 use crate::ui::query_editor::{QueryEditor, QueryEditorEvent};
 use crate::ui::schema_view::SchemaView;
@@ -179,7 +180,7 @@ impl SessionPanel {
             },
             focus: cx.focus_handle(),
             group: None,
-            panes: cx.new(|_| ResizableState::default()),
+            panes: layout::tracked(Split::Results, cx),
             saved_as: None,
         }
     }
@@ -197,7 +198,7 @@ impl SessionPanel {
             content: TabContent::Table { view },
             focus: cx.focus_handle(),
             group: None,
-            panes: cx.new(|_| ResizableState::default()),
+            panes: layout::tracked(Split::Results, cx),
             saved_as: None,
         }
     }
@@ -215,7 +216,7 @@ impl SessionPanel {
             content: TabContent::Schema { view },
             focus: cx.focus_handle(),
             group: None,
-            panes: cx.new(|_| ResizableState::default()),
+            panes: layout::tracked(Split::Results, cx),
             saved_as: None,
         }
     }
@@ -229,7 +230,7 @@ impl SessionPanel {
             content: TabContent::Tool(view),
             focus: cx.focus_handle(),
             group: None,
-            panes: cx.new(|_| ResizableState::default()),
+            panes: layout::tracked(Split::Results, cx),
             saved_as: None,
         }
     }
@@ -248,7 +249,7 @@ impl SessionPanel {
             content: TabContent::Dashboard { view },
             focus: cx.focus_handle(),
             group: None,
-            panes: cx.new(|_| ResizableState::default()),
+            panes: layout::tracked(Split::Results, cx),
             saved_as: None,
         }
     }
@@ -1955,7 +1956,10 @@ impl Render for SessionPanel {
                                 )
                                 .child(
                                     resizable_panel()
-                                        .size(window.viewport_size().height * RESULTS_SHARE)
+                                        .size(Split::Results.size(
+                                            window.viewport_size().height * RESULTS_SHARE,
+                                            cx,
+                                        ))
                                         .size_range(px(80.)..px(10_000.))
                                         .child(
                                             v_flex()

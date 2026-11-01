@@ -114,9 +114,24 @@ fn main() {
             menu::init(cx);
             ui::settings_window::init(cx);
 
-            let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+            // A workspace file that cannot be read must not keep the app from
+            // starting; an empty one is simply the first launch.
+            let state = workspace_state::load().unwrap_or_else(|error| {
+                eprintln!("could not read the workspace: {error:#}");
+                workspace_state::WorkspaceState::default()
+            });
+            let displays: Vec<_> = cx
+                .displays()
+                .iter()
+                .map(|display| display.bounds())
+                .collect();
+            let window_bounds = ui::layout::restore(state.window, &displays).unwrap_or_else(|| {
+                WindowBounds::Windowed(Bounds::centered(None, size(px(1280.), px(800.)), cx))
+            });
+            let (min_width, min_height) = ui::layout::MIN_WINDOW;
             let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_bounds: Some(window_bounds),
+                window_min_size: Some(size(px(min_width), px(min_height))),
                 // Keep the OS-level title for the window menu; the bar itself
                 // is ours to draw, alongside the traffic lights.
                 titlebar: Some(TitlebarOptions {
@@ -132,8 +147,8 @@ fn main() {
             // dialogs, sheets, and notifications; the builder just returns
             // the workspace.
             #[allow(clippy::expect_used, reason = "the message states the invariant")]
-            let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
-                let workspace = cx.new(|cx| Workspace::new(window, cx));
+            let (window, workspace) = gpui_kit::open_window(options, cx, |window, cx| {
+                let workspace = cx.new(|cx| Workspace::new(state, window, cx));
 
                 // The last save before the process ends: a checkpoint on every
                 // change covers most of it, but text typed since the last one
@@ -153,6 +168,22 @@ fn main() {
                 workspace
             })
             .expect("failed to open window");
+
+            // `zippa-db path/to.db`, which is also what the OS's "Open with"
+            // runs: the file opens in the connection editor, ready to connect.
+            if let Some(path) = std::env::args_os()
+                .nth(1)
+                .map(std::path::PathBuf::from)
+                .filter(|path| path.is_file())
+            {
+                window
+                    .update(cx, |_, window, cx| {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.open_sqlite_path(path, window, cx)
+                        })
+                    })
+                    .ok();
+            }
 
             // The crash dialog needs the root layer above to exist.
             window

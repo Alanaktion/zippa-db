@@ -17,6 +17,7 @@ pub mod filter_bar;
 mod fuzzy;
 pub mod history;
 pub mod import_dialog;
+pub mod layout;
 pub mod plan_view;
 pub mod process_list;
 pub mod query_digest;

@@ -37,6 +37,44 @@ pub struct WorkspaceState {
     pub active: usize,
     /// One per connection tab, in tab order.
     pub sessions: Vec<SessionState>,
+    /// Where the window was and how big, so a relaunch opens it there. An
+    /// older file has none, which opens the default window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowPlacement>,
+    /// The split sizes the user dragged to, app-wide rather than per session.
+    pub layout: Layout,
+}
+
+/// The window's bounds, in logical pixels, and whether it was maximised.
+///
+/// A maximised window keeps the bounds it restores to, so un-maximising
+/// after a relaunch lands where it was before, too.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowPlacement {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+/// The splits a user can drag, and whether the sidebar is hidden. A size
+/// left `None` takes the built-in default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Layout {
+    /// The session sidebar's width.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sidebar: Option<f32>,
+    /// The query tab's results pane height, below the editor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub results: Option<f32>,
+    /// The Agents panel's width.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<f32>,
+    /// Hidden with View › Toggle Sidebar, so a wide result has the window.
+    pub sidebar_hidden: bool,
 }
 
 impl Default for WorkspaceState {
@@ -45,6 +83,8 @@ impl Default for WorkspaceState {
             version: VERSION,
             active: 0,
             sessions: Vec::new(),
+            window: None,
+            layout: Layout::default(),
         }
     }
 }
@@ -227,6 +267,19 @@ mod tests {
                     PanelState::Schema { object: object() },
                 ],
             }],
+            window: Some(WindowPlacement {
+                x: 40.,
+                y: 60.,
+                width: 1400.,
+                height: 900.,
+                maximized: true,
+            }),
+            layout: Layout {
+                sidebar: Some(300.),
+                results: Some(240.),
+                agents: None,
+                sidebar_hidden: true,
+            },
             ..WorkspaceState::default()
         };
 

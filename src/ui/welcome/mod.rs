@@ -18,11 +18,12 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, Entity, EntityId, EventEmitter, FocusHandle, Global, Window, div, px,
+    App, Context, Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Global, Window, div,
+    px,
 };
 use uuid::Uuid;
 
-use crate::app::NewConnection;
+use crate::app::{NewConnection, OpenSqliteFile};
 use crate::db::store::SecretEdits;
 use crate::db::{Connection, ConnectionConfig, Credentials, Engine, runtime, store};
 use crate::ui::{notify_error, sql_file};
@@ -648,7 +649,7 @@ impl Welcome {
     }
 
     /// Open the platform file picker and start a SQLite connection from it.
-    fn open_sqlite_file(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_sqlite_file(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let prompt = sql_file::prompt_for_open(cx);
         cx.spawn(async move |this, cx| {
             let paths = match prompt.await {
@@ -660,13 +661,36 @@ impl Welcome {
             };
 
             this.update_in(cx, |this, window, cx| {
-                let mut config = ConnectionConfig::new(Engine::Sqlite);
-                config.database = path.to_string_lossy().into_owned();
-                this.open_editor(Some(config), window, cx);
+                this.open_sqlite_path(path, window, cx)
             })
             .ok();
         })
         .detach();
+    }
+
+    /// The connection editor for the SQLite file at `path`, named after the
+    /// file, so a connection is one click away (and saving it is the
+    /// editor's to offer, as for any other).
+    pub(crate) fn open_sqlite_path(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_editor(Some(sqlite_config(&path)), window, cx);
+    }
+
+    /// A SQLite file dropped on the launcher: the first one that looks like
+    /// a database opens in the editor.
+    fn on_drop_paths(
+        &mut self,
+        paths: &ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(path) = paths.paths().iter().find(|path| is_sqlite_path(path)) {
+            self.open_sqlite_path(path.clone(), window, cx);
+        }
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -691,12 +715,31 @@ impl Welcome {
                     ),
             )
             .child(
-                Button::new("welcome-new-connection")
-                    .primary()
-                    .label("New connection")
-                    .tooltip_with_action("New connection", &NewConnection, Some("Welcome"))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_editor(None, window, cx)),
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("welcome-open-sqlite-file")
+                            .outline()
+                            .label("Open SQLite file…")
+                            .tooltip_with_action(
+                                "Open SQLite file",
+                                &OpenSqliteFile,
+                                Some("Welcome"),
+                            )
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.open_sqlite_file(window, cx)
+                                }),
+                            ),
+                    )
+                    .child(
+                        Button::new("welcome-new-connection")
+                            .primary()
+                            .label("New connection")
+                            .tooltip_with_action("New connection", &NewConnection, Some("Welcome"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_editor(None, window, cx)
+                            })),
                     ),
             )
     }
@@ -806,6 +849,7 @@ impl Welcome {
                 Button::new("open-sqlite-file")
                     .outline()
                     .label("Open SQLite file…")
+                    .tooltip_with_action("Open SQLite file", &OpenSqliteFile, Some("Welcome"))
                     .on_click(cx.listener(|this, _, window, cx| this.open_sqlite_file(window, cx))),
             )
     }
@@ -841,6 +885,14 @@ impl Welcome {
     #[cfg(test)]
     pub(crate) fn editor_open_for_test(&self) -> bool {
         self.editor.is_some()
+    }
+
+    /// What the open editor would connect with.
+    #[cfg(test)]
+    pub(crate) fn editor_config_for_test(&self, cx: &App) -> Option<ConnectionConfig> {
+        self.editor
+            .as_ref()
+            .map(|editor| editor.read(cx).config_for_test(cx))
     }
 
     /// The saved connections as the launcher holds them.
@@ -1025,12 +1077,38 @@ impl Render for Welcome {
             .track_focus(&self.focus)
             .key_context("Welcome")
             .on_action(cx.listener(Self::on_new_connection))
+            .on_drop(cx.listener(Self::on_drop_paths))
             .child(self.render_header(cx))
             .when_some(self.error.clone(), |this, error| {
                 this.child(self.render_error(&error, cx))
             })
             .child(self.render_body(cx))
     }
+}
+
+/// The extensions a SQLite database is usually saved under, for a dropped
+/// file or a path on the command line.
+const SQLITE_EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db", "db3", "s3db", "sl3"];
+
+/// Whether `path` names a file that is probably a SQLite database.
+pub(crate) fn is_sqlite_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            SQLITE_EXTENSIONS
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(extension))
+        })
+}
+
+/// A new SQLite connection to `path`, named after the file.
+fn sqlite_config(path: &std::path::Path) -> ConnectionConfig {
+    let mut config = ConnectionConfig::new(Engine::Sqlite);
+    config.database = path.to_string_lossy().into_owned();
+    if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+        config.name = stem.to_string();
+    }
+    config
 }
 
 /// Saved connections, most recently connected first, then by name.
