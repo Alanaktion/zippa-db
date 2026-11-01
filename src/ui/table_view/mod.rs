@@ -24,7 +24,7 @@ use crate::db::query::Cell;
 use crate::db::{Connection, DatabaseObject, ForeignKeyDef, ObjectKind, RowKey, runtime};
 use crate::settings::{self, Settings};
 use crate::ui::data_grid::{
-    BinaryPreviewRequested, Copied, DataGrid, ExportRequested, GridEdit, GridNavigate,
+    BinaryPreviewRequested, Copied, DataGrid, ExportRequested, GridEdit, GridNavigate, Pasted,
     SortRequested, Sorting, StagedRow,
 };
 use crate::ui::filter_bar::{FilterBar, FilterSpec, FiltersChanged, Operator};
@@ -238,6 +238,8 @@ impl TableView {
         cx.subscribe_in(&grid, window, Self::on_grid_navigate)
             .detach();
         cx.subscribe_in(&grid, window, Self::on_grid_export)
+            .detach();
+        cx.subscribe_in(&grid, window, Self::on_grid_pasted)
             .detach();
         cx.subscribe_in(&grid, window, Self::on_grid_copied)
             .detach();
@@ -971,6 +973,18 @@ impl TableView {
         cx: &mut Context<Self>,
     ) {
         self.export_picked(event.format, cx);
+    }
+
+    /// A paste staged cells; the footer says how many, and what it left out.
+    fn on_grid_pasted(
+        &mut self,
+        _: &Entity<DataGrid>,
+        event: &Pasted,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.notice = Some(event.message.clone());
+        cx.notify();
     }
 
     /// A copy went to the clipboard; the footer says what it was.

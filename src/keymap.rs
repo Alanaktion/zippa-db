@@ -3,6 +3,7 @@
 //! GPUI resolves `secondary` per platform: Cmd on macOS, Ctrl on Linux and
 //! Windows. Every shortcut here uses it so the app matches the OS it runs on.
 
+use gpui_kit::base::input::Paste;
 use gpui_kit::{App, KeyBinding, NoAction};
 
 use crate::app::{
@@ -292,6 +293,10 @@ pub fn bind(cx: &mut App) {
         // but leaves `enter` free, so that opens the editor. Both are scoped
         // under the table view, leaving query results read-only.
         KeyBinding::new("enter", EditCell, Some("TableView > DataTable")),
+        // The text boxes' own paste, bound on a table's rows too: there it
+        // stages the clipboard into the cells from the selected one on. A
+        // query result is read-only and leaves it alone.
+        KeyBinding::new("secondary-v", Paste, Some("TableView > DataTable")),
         KeyBinding::new("secondary-shift-n", SetNull, Some("TableView > DataTable")),
         // Bound on the grid, like the other row commands: that is the node
         // that holds the focus while the user is looking at rows.

@@ -16,10 +16,10 @@
 
 ## Highlights
 
-- **Connections.** Saved connections in tabs, passwords in the OS keychain, per-connection color tags, SSL modes, SSH tunnels. Open a SQLite file that lives on an SSH host: it is copied down over SFTP, edited locally, and uploaded when you say so, with a warning if the server's copy changed in the meantime. Your workspace restores on launch.
+- **Connections.** Saved connections in tabs, passwords in the OS keychain, per-connection color tags, SSL modes, SSH tunnels. Open a SQLite file that lives on an SSH host: it is copied down over SFTP, edited locally, and uploaded when you say so, with a warning if the server's copy changed in the meantime. Open a local SQLite file from the launcher, File › Open SQLite File…, by dropping it on the launcher, or with `zippa-db path/to.db`. Your workspace restores on launch, window size and splits included.
 - **Safety modes.** Read-only (enforced by the server *and* your SQL), confirm writes, staged edits, or auto-apply — per connection.
 - **SQL editor.** Highlighting, table/column/keyword completion, run statement / selection / script, per-tab pinned connections so transactions survive across runs, `EXPLAIN` plan trees, and `:name` / `$name` query variables.
-- **Tables.** Page, sort, filter, and quick-search; stage cell edits, new rows, and deletions, then apply them together.
+- **Tables.** Page, sort, filter, and quick-search; stage cell edits (type over a cell, or paste a tab-separated block from a spreadsheet), new rows, and deletions, then apply them together.
 - **Structure.** Edit columns, indexes, and foreign keys with a generated-SQL preview; switch any structure tab to its SQL panel for the table's or view's current definition as read-only text, with its check constraints and triggers, copyable or openable in a query tab; see every table, its columns, and the foreign keys between them as a pannable, zoomable ER diagram, exportable to SVG.
 - **Import & export.** Results out as CSV, TSV, JSON, Markdown, or SQL `INSERT`; SQL dumps in (plain, gzip, bzip2, zstd) with progress and per-error choices.
 - **Charts & dashboards.** Chart any query result as a line, bar, area, or stacked bar, and save named dashboards of SQL widgets (charts or grids) that share variables.

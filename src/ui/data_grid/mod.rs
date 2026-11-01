@@ -7,7 +7,8 @@
 //!
 //! The work is split by concern: [`layout`] sizes the columns, [`format`] lays
 //! one value out for reading, [`delegate`] holds the result together with
-//! everything staged on top of it, and [`clipboard`] decides what a copy takes.
+//! everything staged on top of it, [`clipboard`] decides what a copy takes,
+//! and [`paste`] stages typing and pasting the way a spreadsheet takes them.
 //! What is left here is the view — the events it emits, and the commands its
 //! owner drives it with.
 
@@ -35,6 +36,7 @@ mod clipboard;
 mod delegate;
 mod format;
 mod layout;
+mod paste;
 #[cfg(test)]
 mod test_support;
 
@@ -185,6 +187,12 @@ pub struct Copied {
     pub message: String,
 }
 
+/// What a paste staged, and what it had to leave out, for the owner's status
+/// line.
+pub struct Pasted {
+    pub message: String,
+}
+
 /// One row's staged cells, by column index, for the owner to turn into SQL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedRow {
@@ -226,6 +234,7 @@ impl EventEmitter<GridNavigate> for DataGrid {}
 impl EventEmitter<BinaryPreviewRequested> for DataGrid {}
 impl EventEmitter<ExportRequested> for DataGrid {}
 impl EventEmitter<Copied> for DataGrid {}
+impl EventEmitter<Pasted> for DataGrid {}
 
 impl DataGrid {
     pub fn new(engine: Engine, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -580,6 +589,19 @@ impl DataGrid {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.begin_edit_seeded(row_ix, col_ix, None, window, cx);
+    }
+
+    /// Open the editor on a cell holding `seed` in place of its value, or the
+    /// value as it stands when there is none.
+    pub(super) fn begin_edit_seeded(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        seed: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.commit_editor(cx);
 
         if !self.table.read(cx).delegate().is_editable(row_ix, col_ix) {
@@ -588,13 +610,14 @@ impl DataGrid {
 
         // A NULL opens empty: there is no text to put in front of the cursor,
         // and leaving it empty stores an empty string rather than a NULL.
-        let value = self
-            .table
-            .read(cx)
-            .delegate()
-            .cell(row_ix, col_ix)
-            .clone()
-            .unwrap_or_default();
+        let value = seed.unwrap_or_else(|| {
+            self.table
+                .read(cx)
+                .delegate()
+                .cell(row_ix, col_ix)
+                .clone()
+                .unwrap_or_default()
+        });
 
         self.editor
             .update(cx, |editor, cx| editor.set_value(value, window, cx));
@@ -1429,6 +1452,8 @@ impl Render for DataGrid {
             .on_action(cx.listener(Self::on_toggle_row))
             .on_action(cx.listener(Self::on_extend_up))
             .on_action(cx.listener(Self::on_extend_down))
+            .on_action(cx.listener(Self::on_paste))
+            .on_key_down(cx.listener(Self::on_key_down))
             // Releasing the button ends a sweep across the pick boxes, so a
             // later drag that happens to pass over them picks nothing up.
             // Captured, since the table stops a click on a cell before it

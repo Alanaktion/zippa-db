@@ -41,6 +41,11 @@ impl DataGrid {
         self.begin_edit(row_ix, col_ix, window, cx);
     }
 
+    /// What the open cell editor holds.
+    pub(crate) fn editor_value_for_test(&self, cx: &App) -> String {
+        self.editor.read(cx).value().to_string()
+    }
+
     /// Put `value` in the open editor, the way typing into it does.
     pub(crate) fn set_editor_value_for_test(
         &mut self,

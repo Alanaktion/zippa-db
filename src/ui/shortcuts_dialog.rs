@@ -162,6 +162,10 @@ const GROUPS: &[Group] = &[
         title: "Editing a table",
         rows: &[
             ("Edit the selected cell", &["enter"]),
+            (
+                "Paste into the cells from the selected one",
+                &["secondary-v"],
+            ),
             ("Set the selected cell to NULL", &["secondary-shift-n"]),
             ("Add a row to fill in", &["secondary-shift-i"]),
             ("Mark rows for deletion", &["secondary-backspace"]),
