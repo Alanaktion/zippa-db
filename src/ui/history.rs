@@ -322,7 +322,7 @@ impl HistoryView {
                 Button::new("history-clear")
                     .ghost()
                     .xsmall()
-                    .disabled(count == 0)
+                    .disabled(self.loading || count == 0)
                     .label("Clear…")
                     .tooltip(if self.all_connections {
                         "Forget every connection's query history"

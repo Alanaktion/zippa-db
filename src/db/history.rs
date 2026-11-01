@@ -219,6 +219,13 @@ struct State {
     retention: Retention,
     /// The in-memory mode's entries, oldest first, per connection.
     memory: HashMap<Uuid, VecDeque<HistoryEntry>>,
+    /// When each connection's history was last cleared this run. The file's
+    /// removal is queued behind other disk work, so a read that gives up
+    /// waiting for it could still find the file; anything it finds from
+    /// before the clear is dropped here instead.
+    cleared: HashMap<Uuid, DateTime<Utc>>,
+    /// When every connection's history was last cleared this run.
+    cleared_all: Option<DateTime<Utc>>,
 }
 
 impl State {
@@ -235,7 +242,19 @@ impl State {
                 Retention::default()
             },
             memory: HashMap::new(),
+            cleared: HashMap::new(),
+            cleared_all: None,
         }
+    }
+
+    /// Whether `entry` predates a clear that covers its connection.
+    fn was_cleared(&self, entry: &HistoryEntry) -> bool {
+        let cutoff = self
+            .cleared
+            .get(&entry.connection)
+            .copied()
+            .max(self.cleared_all);
+        cutoff.is_some_and(|cutoff| entry.at <= cutoff)
     }
 
     fn prune_memory(&mut self, now: DateTime<Utc>) {
@@ -332,6 +351,7 @@ pub fn entries(connection: Uuid) -> Vec<HistoryEntry> {
         .map(|path| read_file(&path))
         .unwrap_or_default();
     entries.extend(memory_entries(Some(connection)));
+    drop_cleared(&mut entries);
     newest_first(retention().apply(oldest_first(entries), Utc::now()))
 }
 
@@ -357,6 +377,9 @@ pub fn all_entries() -> Vec<HistoryEntry> {
             .push(entry);
     }
 
+    for entries in by_connection.values_mut() {
+        drop_cleared(entries);
+    }
     let retention = retention();
     let now = Utc::now();
     let merged = by_connection
@@ -369,11 +392,17 @@ pub fn all_entries() -> Vec<HistoryEntry> {
 /// Forget one connection's history — `None` forgets every connection's —
 /// in memory at once and on disk in the background.
 pub fn clear(connection: Option<Uuid>) {
+    let now = Utc::now();
     with_state(|state| match connection {
         Some(id) => {
             state.memory.remove(&id);
+            state.cleared.insert(id, now);
         }
-        None => state.memory.clear(),
+        None => {
+            state.memory.clear();
+            state.cleared.clear();
+            state.cleared_all = Some(now);
+        }
     });
     let path = match connection {
         Some(id) => history_file(id),
@@ -396,6 +425,10 @@ pub fn flush() {
             let _ = wait.recv_timeout(Duration::from_secs(2));
         }
     }
+}
+
+fn drop_cleared(entries: &mut Vec<HistoryEntry>) {
+    with_state(|state| entries.retain(|entry| !state.was_cleared(entry)));
 }
 
 fn memory_entries(connection: Option<Uuid>) -> Vec<HistoryEntry> {
@@ -923,6 +956,29 @@ mod tests {
         clear(None);
         assert!(all_entries().is_empty());
         assert!(!history_dir().expect("a path").exists());
+    }
+
+    #[test]
+    fn a_file_the_removal_has_not_reached_yet_reads_as_cleared() {
+        let _dir = scratch(on_disk());
+        let id = Uuid::new_v4();
+        record(entry(id, "select 'before'"));
+        let path = history_file(id).expect("a path");
+        let stale = fs::read(&path).expect("the file");
+
+        // As if the read gave up waiting before the queued removal ran.
+        clear(Some(id));
+        fs::write(&path, &stale).expect("put the file back");
+        assert!(entries(id).is_empty());
+        assert!(all_entries().is_empty());
+
+        record(entry(id, "select 'after'"));
+        assert_eq!(sql_of(&entries(id)), ["select 'after'"]);
+
+        clear(None);
+        fs::create_dir_all(history_dir().expect("a path")).expect("the directory");
+        fs::write(&path, &stale).expect("put the file back");
+        assert!(all_entries().is_empty());
     }
 
     #[test]
