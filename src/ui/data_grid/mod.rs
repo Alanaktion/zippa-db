@@ -101,6 +101,45 @@ type ExportReporter = Rc<dyn Fn(Format, &mut App)>;
 /// menu the delegate built.
 type CopyAsReporter = Rc<dyn Fn(CopyAs, &mut App)>;
 
+/// A cell or row command from the menu the delegate built, carried out by the
+/// grid (or handed on to its owner) with the window the click came with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MenuCommand {
+    /// Open the editor on the cell.
+    Edit(usize, usize),
+    /// Stage `NULL` on the cell.
+    SetNull(usize, usize),
+    /// Drop the cell's staged edit.
+    Revert(usize, usize),
+    /// Drop every staged edit on the row.
+    RevertRow(usize),
+    /// Filter the table to rows with (or, excluding, without) the cell's
+    /// value in its column.
+    Filter {
+        row: usize,
+        col: usize,
+        exclude: bool,
+    },
+    /// Start a new row filled in from this one.
+    Duplicate(usize),
+}
+
+type CommandReporter = Rc<dyn Fn(MenuCommand, &mut Window, &mut App)>;
+
+/// Asks the owner to filter the table by a cell's value: `column = value`,
+/// `IS NULL` for a NULL, or the opposite of either when excluding.
+pub struct FilterByValue {
+    pub column: String,
+    pub value: Cell,
+    pub exclude: bool,
+}
+
+/// Asks the owner to start a new row from the row shown at `row`: the owner
+/// knows which columns are its key, and leaves those for the server to fill.
+pub struct DuplicateRow {
+    pub row: usize,
+}
+
 /// Emitted when the user clicks a column header on a [`Sorting::Delegated`]
 /// grid.
 pub struct SortRequested {
@@ -235,6 +274,8 @@ impl EventEmitter<BinaryPreviewRequested> for DataGrid {}
 impl EventEmitter<ExportRequested> for DataGrid {}
 impl EventEmitter<Copied> for DataGrid {}
 impl EventEmitter<Pasted> for DataGrid {}
+impl EventEmitter<FilterByValue> for DataGrid {}
+impl EventEmitter<DuplicateRow> for DataGrid {}
 
 impl DataGrid {
     pub fn new(engine: Engine, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -321,6 +362,16 @@ impl DataGrid {
             }
         });
 
+        let report_command: CommandReporter = Rc::new({
+            let grid = cx.weak_entity();
+            move |command: MenuCommand, window: &mut Window, cx: &mut App| {
+                let Some(grid) = grid.upgrade() else {
+                    return;
+                };
+                grid.update(cx, |grid, cx| grid.run_menu_command(command, window, cx));
+            }
+        });
+
         let editor = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
@@ -350,6 +401,7 @@ impl DataGrid {
                     report_copy,
                     report_export,
                     report_copy_as,
+                    report_command,
                     engine,
                     table: None,
                     foreign_keys: HashSet::new(),
@@ -656,6 +708,83 @@ impl DataGrid {
         self.table.update(cx, |table, cx| {
             table.delegate_mut().stage(row_ix, col_ix, None);
             cx.notify();
+        });
+        cx.emit(GridEdit::Staged);
+    }
+
+    /// Carry out a command from the row menu, on the cell or row it was
+    /// opened on rather than wherever the selection happens to be.
+    pub(crate) fn run_menu_command(
+        &mut self,
+        command: MenuCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match command {
+            MenuCommand::Edit(row, col) => self.begin_edit(row, col, window, cx),
+            MenuCommand::SetNull(row, col) => {
+                if !self.table.read(cx).delegate().is_editable(row, col) {
+                    return;
+                }
+                self.cancel_editor(window, cx);
+                self.table.update(cx, |table, cx| {
+                    table.delegate_mut().stage(row, col, None);
+                    cx.notify();
+                });
+                cx.emit(GridEdit::Staged);
+            }
+            MenuCommand::Revert(..) | MenuCommand::RevertRow(_) => {
+                let (row, col) = match command {
+                    MenuCommand::Revert(row, col) => (row, Some(col)),
+                    MenuCommand::RevertRow(row) => (row, None),
+                    _ => return,
+                };
+                self.commit_editor(cx);
+                self.table.update(cx, |table, cx| {
+                    table.delegate_mut().revert(row, col);
+                    cx.notify();
+                });
+                cx.emit(GridEdit::Staged);
+            }
+            MenuCommand::Filter { row, col, exclude } => {
+                let delegate = self.table.read(cx).delegate();
+                let Some(column) = delegate.result.columns.get(col).cloned() else {
+                    return;
+                };
+                // The value as the server has it: filtering on a staged edit
+                // would look for a row that does not exist yet.
+                let value = delegate.baseline(row, col).clone();
+                cx.emit(FilterByValue {
+                    column,
+                    value,
+                    exclude,
+                });
+            }
+            MenuCommand::Duplicate(row) => cx.emit(DuplicateRow { row }),
+        }
+    }
+
+    /// Start a new row holding `cells` (by result column), as typed into it,
+    /// with the editor left closed. Values the grid only describes are left
+    /// out, so the server fills those columns as it would any untyped one.
+    pub fn add_draft_from(&mut self, row: usize, skip: &HashSet<usize>, cx: &mut Context<Self>) {
+        if !self.table.read(cx).delegate().editable {
+            return;
+        }
+        self.commit_editor(cx);
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            let draft: HashMap<usize, Cell> = (0..delegate.result.columns.len())
+                .filter(|col| !skip.contains(col))
+                .filter(|col| {
+                    let value = delegate.cell(row, *col);
+                    let type_name = delegate.column_type(*col);
+                    !query::is_binary_type(type_name) && !query::is_placeholder(value, type_name)
+                })
+                .map(|col| (col, delegate.cell(row, col).clone()))
+                .collect();
+            delegate.drafts.push(draft);
+            table.refresh(cx);
         });
         cx.emit(GridEdit::Staged);
     }

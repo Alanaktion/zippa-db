@@ -286,6 +286,29 @@ impl FilterBar {
         cx.notify();
     }
 
+    /// Add one filter already filled in, AND'd onto the ones there — the row
+    /// menu's "Filter by this value" — and apply it.
+    pub fn add_filled(
+        &mut self,
+        column: &str,
+        operator: Operator,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let known = self.columns.iter().any(|name| name == column);
+        let items = if known {
+            self.columns.clone()
+        } else {
+            vec![SharedString::from(column)]
+        };
+        let column_index = items.iter().position(|name| name == column).unwrap_or(0);
+        let row = Self::build_row(items, column_index, operator, value, window, cx);
+        self.rows.push(row);
+        cx.notify();
+        self.apply(cx);
+    }
+
     /// Replace every filter with one already filled in, e.g. for a foreign
     /// key jump: the matching row is what the user asked to see, not one more
     /// condition AND'd onto whatever was filtered before.

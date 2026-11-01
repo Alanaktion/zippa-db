@@ -28,9 +28,11 @@ use crate::settings::Settings;
 use super::layout::MIN_COLUMN_WIDTH;
 
 use super::{
-    ChangeReporter, CopyAs, CopyAsReporter, CopyReporter, CopyValue, CopyWithHeaders,
-    ExportReporter, NavReporter, SortReporter, Sorting, ViewCell, ViewReporter,
+    ChangeReporter, CommandReporter, CopyAs, CopyAsReporter, CopyReporter, CopyValue,
+    CopyWithHeaders, ExportReporter, MenuCommand, NavReporter, SortReporter, Sorting, ViewCell,
+    ViewReporter,
 };
+use crate::ui::table_view::{EditCell, SetNull};
 
 pub(super) struct ResultDelegate {
     pub(super) result: QueryResult,
@@ -79,6 +81,8 @@ pub(super) struct ResultDelegate {
     pub(super) report_copy_as: CopyAsReporter,
     /// Asks the owner to export the picked rows in a format.
     pub(super) report_export: ExportReporter,
+    /// Runs a cell or row command from the menu.
+    pub(super) report_command: CommandReporter,
     /// The engine a copied value is quoted for.
     pub(super) engine: Engine,
     /// The table a SQL `INSERT` copy names, set by the table view. A query
@@ -588,7 +592,7 @@ impl ResultDelegate {
                 });
 
                 // Nothing to jump to for a NULL foreign key value.
-                if self.foreign_keys.contains(&col) && self.cell(row, col).is_some() {
+                let menu = if self.foreign_keys.contains(&col) && self.cell(row, col).is_some() {
                     let report = self.report_navigate.clone();
                     menu.item(
                         PopupMenuItem::new("Go to referenced row")
@@ -596,7 +600,8 @@ impl ResultDelegate {
                     )
                 } else {
                     menu
-                }
+                };
+                self.cell_menu_items(row, col, menu)
             }
             None => menu,
         };
@@ -739,6 +744,28 @@ impl ResultDelegate {
             ));
         }
 
+        // A copy of the row to finish by hand, beside the row it came from.
+        let menu = {
+            let report = self.report_command.clone();
+            menu.separator().item(
+                PopupMenuItem::new("Duplicate row").on_click(move |_, window, cx| {
+                    report(MenuCommand::Duplicate(row_ix), window, cx)
+                }),
+            )
+        };
+
+        // Taking a row's typed changes back without discarding the rest of
+        // the tab's.
+        let menu =
+            if self.row_has_edits(row_ix) {
+                let report = self.report_command.clone();
+                menu.item(PopupMenuItem::new("Revert row changes").on_click(
+                    move |_, window, cx| report(MenuCommand::RevertRow(row_ix), window, cx),
+                ))
+            } else {
+                menu
+            };
+
         let deleted = self.is_deleted(row_ix);
         let rows = self.mark_for_menu(row_ix);
         let label = match (deleted, rows) {
@@ -762,6 +789,103 @@ impl ResultDelegate {
             });
             report(cx);
         }))
+    }
+
+    /// The items about the one cell the menu was opened on: filtering by its
+    /// value, and editing it. Each is left out where it cannot apply — a
+    /// query result has no filter bar, a read-only grid no edits — the way
+    /// Copy as… leaves out SQL without a table.
+    fn cell_menu_items(&self, row: usize, col: usize, menu: PopupMenu) -> PopupMenu {
+        // A value the grid only describes (`<3 bytes>`, `<XML>`) is not the
+        // value, so it cannot be matched on; nor can a row not yet written.
+        let value = self.cell(row, col);
+        let describable = !query::is_binary_type(self.column_type(col))
+            && !query::is_placeholder(value, self.column_type(col));
+        let menu = if self.table.is_some() && self.source(row).is_some() && describable {
+            let report = self.report_command.clone();
+            let exclude = self.report_command.clone();
+            let (keep, drop) = match value {
+                Some(_) => ("Filter by this value", "Exclude this value"),
+                None => ("Filter to NULL", "Exclude NULL"),
+            };
+            menu.separator()
+                .item(PopupMenuItem::new(keep).on_click(move |_, window, cx| {
+                    report(
+                        MenuCommand::Filter {
+                            row,
+                            col,
+                            exclude: false,
+                        },
+                        window,
+                        cx,
+                    )
+                }))
+                .item(PopupMenuItem::new(drop).on_click(move |_, window, cx| {
+                    exclude(
+                        MenuCommand::Filter {
+                            row,
+                            col,
+                            exclude: true,
+                        },
+                        window,
+                        cx,
+                    )
+                }))
+        } else {
+            menu
+        };
+
+        if !self.is_editable(row, col) {
+            return menu;
+        }
+        let edit = self.report_command.clone();
+        let null = self.report_command.clone();
+        let menu = menu
+            .separator()
+            .item(
+                PopupMenuItem::new("Edit cell")
+                    .action(Box::new(EditCell))
+                    .on_click(move |_, window, cx| edit(MenuCommand::Edit(row, col), window, cx)),
+            )
+            .item(
+                PopupMenuItem::new("Set NULL")
+                    .action(Box::new(SetNull))
+                    .on_click(move |_, window, cx| {
+                        null(MenuCommand::SetNull(row, col), window, cx)
+                    }),
+            );
+        // A draft's typed cells are the draft: discarding it is the row's
+        // own item, so only a loaded row's edit can be reverted here.
+        if self.source(row).is_some() && self.is_staged(row, col) {
+            let report = self.report_command.clone();
+            menu.item(
+                PopupMenuItem::new("Revert change").on_click(move |_, window, cx| {
+                    report(MenuCommand::Revert(row, col), window, cx)
+                }),
+            )
+        } else {
+            menu
+        }
+    }
+
+    /// Whether the loaded row shown at `row_ix` has a staged edit.
+    pub(super) fn row_has_edits(&self, row_ix: usize) -> bool {
+        self.source(row_ix)
+            .is_some_and(|source| self.edits.keys().any(|(row, _)| *row == source))
+    }
+
+    /// Drop the staged edit on one cell, or on every cell of the row when
+    /// `col` is `None`.
+    pub(super) fn revert(&mut self, row_ix: usize, col: Option<usize>) {
+        let Some(source) = self.source(row_ix) else {
+            return;
+        };
+        match col {
+            Some(col) => {
+                self.edits.remove(&(source, col));
+            }
+            None => self.edits.retain(|(row, _), _| *row != source),
+        }
     }
 
     /// Whether the row shown at `row_ix` is marked for deletion.

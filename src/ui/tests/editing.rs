@@ -610,3 +610,72 @@ fn a_query_result_ignores_typing_and_paste(cx: &mut TestAppContext) {
         })
         .unwrap();
 }
+
+#[gpui_kit::test]
+fn the_row_menu_edits_nulls_and_reverts_a_cell(cx: &mut TestAppContext) {
+    use crate::ui::data_grid::MenuCommand;
+    let (_database, _handle, view) = sheet_view(cx);
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    let run = |cx: &mut TestAppContext, command| {
+        grid.downgrade()
+            .update_in(cx, |grid, window, cx| {
+                grid.run_menu_command(command, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+    };
+
+    run(cx, MenuCommand::Edit(1, 2));
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.editing_for_test(cx)),
+        Some((1, 2))
+    );
+    focus_grid(cx, &view);
+
+    run(cx, MenuCommand::SetNull(0, 1));
+    run(cx, MenuCommand::SetNull(0, 2));
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.cell_for_test(0, 1, cx)),
+        None
+    );
+
+    // One cell back, the other still staged.
+    run(cx, MenuCommand::Revert(0, 1));
+    grid.read_with(cx, |grid, cx| {
+        assert_eq!(grid.cell_for_test(0, 1, cx).as_deref(), Some("x"));
+        assert_eq!(grid.cell_for_test(0, 2, cx), None);
+    });
+
+    // And the row's lot.
+    run(cx, MenuCommand::RevertRow(0));
+    assert!(grid.read_with(cx, |grid, cx| grid.staged(cx).is_empty()));
+}
+
+#[gpui_kit::test]
+fn duplicating_a_row_stages_a_new_row_without_its_key(cx: &mut TestAppContext) {
+    let (database, handle, view) = sheet_view(cx);
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+
+    grid.downgrade()
+        .update_in(cx, |grid, window, cx| {
+            grid.run_menu_command(crate::ui::data_grid::MenuCommand::Duplicate(1), window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let drafts = grid.read_with(cx, |grid, cx| grid.drafts(cx));
+    assert_eq!(
+        drafts,
+        [vec![
+            (1, Some("y".to_string())),
+            (2, Some("y".to_string())),
+            (3, Some("y".to_string())),
+        ]],
+        "the key column is left for the server to fill"
+    );
+
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-s");
+    cx.run_until_parked();
+    assert_eq!(runtime::block_on(sheet_of(&database)).len(), 3);
+}

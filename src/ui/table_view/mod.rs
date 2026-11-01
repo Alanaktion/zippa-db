@@ -24,8 +24,8 @@ use crate::db::query::Cell;
 use crate::db::{Connection, DatabaseObject, ForeignKeyDef, ObjectKind, RowKey, runtime};
 use crate::settings::{self, Settings};
 use crate::ui::data_grid::{
-    BinaryPreviewRequested, Copied, DataGrid, ExportRequested, GridEdit, GridNavigate, Pasted,
-    SortRequested, Sorting, StagedRow,
+    BinaryPreviewRequested, Copied, DataGrid, DuplicateRow, ExportRequested, FilterByValue,
+    GridEdit, GridNavigate, Pasted, SortRequested, Sorting, StagedRow,
 };
 use crate::ui::filter_bar::{FilterBar, FilterSpec, FiltersChanged, Operator};
 use crate::ui::value_dialog;
@@ -240,6 +240,10 @@ impl TableView {
         cx.subscribe_in(&grid, window, Self::on_grid_export)
             .detach();
         cx.subscribe_in(&grid, window, Self::on_grid_pasted)
+            .detach();
+        cx.subscribe_in(&grid, window, Self::on_filter_by_value)
+            .detach();
+        cx.subscribe_in(&grid, window, Self::on_duplicate_row)
             .detach();
         cx.subscribe_in(&grid, window, Self::on_grid_copied)
             .detach();
@@ -973,6 +977,50 @@ impl TableView {
         cx: &mut Context<Self>,
     ) {
         self.export_picked(event.format, cx);
+    }
+
+    /// The row menu asked for the rows with (or without) a cell's value: one
+    /// more filter on the bar, which re-reads the table through the same
+    /// staged-edit guard as any other filter change.
+    fn on_filter_by_value(
+        &mut self,
+        _: &Entity<DataGrid>,
+        event: &FilterByValue,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (operator, value) = match (&event.value, event.exclude) {
+            (Some(value), false) => (Operator::Equals, value.as_str()),
+            (Some(value), true) => (Operator::NotEquals, value.as_str()),
+            (None, false) => (Operator::IsNull, ""),
+            (None, true) => (Operator::IsNotNull, ""),
+        };
+        self.filters.update(cx, |filters, cx| {
+            filters.add_filled(&event.column, operator, value, window, cx)
+        });
+    }
+
+    /// The row menu asked for a copy of a row to finish by hand. The key is
+    /// left out so the server assigns a new one, as it would for Add Row.
+    fn on_duplicate_row(
+        &mut self,
+        _: &Entity<DataGrid>,
+        event: &DuplicateRow,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let skip: HashSet<usize> = match &self.row_key {
+            Some(RowKey::Columns(key)) => self
+                .columns
+                .iter()
+                .enumerate()
+                .filter(|(_, name)| key.contains(name))
+                .map(|(index, _)| index)
+                .collect(),
+            _ => HashSet::new(),
+        };
+        self.grid
+            .update(cx, |grid, cx| grid.add_draft_from(event.row, &skip, cx));
     }
 
     /// A paste staged cells; the footer says how many, and what it left out.
