@@ -59,7 +59,7 @@ impl SavedConnections {
         if !cx.has_global::<Self>() {
             let (list, load_error) = match store::load() {
                 Ok(list) => (list, None),
-                Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+                Err(error) => (Vec::new(), Some(crate::db::health::describe(&error))),
             };
             cx.set_global(Self { list, load_error });
         }
@@ -365,7 +365,7 @@ impl Welcome {
             this.update_in(cx, |this, window, cx| match credentials {
                 Ok(credentials) => this.connect(config, credentials, window, cx),
                 Err(error) => {
-                    this.error = Some(format!("{error:#}"));
+                    this.error = Some(crate::db::health::describe(&error));
                     cx.notify();
                 }
             })
@@ -422,7 +422,7 @@ impl Welcome {
                         cx.emit(WelcomeEvent::Connected(Arc::new(connection)));
                     }
                     Ok(Err(error)) => {
-                        let message = format!("{error:#}");
+                        let message = crate::db::health::describe(&error);
                         this.error = Some(message.clone());
                         notify_error(window, cx, format!("Error: {message}"));
                     }
@@ -870,7 +870,7 @@ where
     let result = cx.background_spawn(async move { work() });
     cx.spawn(async move |this, cx| {
         if let Err(error) = result.await {
-            let message = format!("{error:#}");
+            let message = crate::db::health::describe(&error);
             this.update_in(cx, |this, window, cx| {
                 notify_error(window, cx, format!("Error: {message}"));
                 this.error = Some(message);

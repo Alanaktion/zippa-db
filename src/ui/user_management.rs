@@ -79,7 +79,7 @@ impl UserManagementView {
                     // Rows from before the failure must not stay pickable:
                     // "Drop Selected" would act on a list that is out of date.
                     Ok(Err(error)) => {
-                        this.error = Some(format!("{error:#}"));
+                        this.error = Some(crate::db::health::describe(&error));
                         this.grid.update(cx, |grid, cx| grid.clear(cx));
                     }
                     Err(_) => this.error = Some("loading the user list was cancelled".into()),
@@ -245,7 +245,11 @@ impl UserManagementView {
                 if let Err(error) = connection.drop_user(&name, host.as_deref()).await {
                     failed += 1;
                     first_error.get_or_insert_with(|| {
-                        format!("{}: {error:#}", user_label(&name, host.as_deref()))
+                        format!(
+                            "{}: {}",
+                            user_label(&name, host.as_deref()),
+                            crate::db::health::describe(&error)
+                        )
                     });
                 }
             }
@@ -513,7 +517,7 @@ impl UserDialogView {
                 match result {
                     Ok(Ok(_)) => cx.emit(UserDialogEvent::Changed),
                     Ok(Err(error)) => {
-                        this.error = Some(format!("{error:#}"));
+                        this.error = Some(crate::db::health::describe(&error));
                         cx.notify();
                     }
                     Err(_) => {

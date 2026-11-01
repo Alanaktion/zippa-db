@@ -83,7 +83,7 @@ impl QueryDigestView {
                         this.grid.update(cx, |grid, cx| grid.clear(cx));
                     }
                     Ok(Err(error)) => {
-                        this.error = Some(format!("{error:#}"));
+                        this.error = Some(crate::db::health::describe(&error));
                         this.grid.update(cx, |grid, cx| grid.clear(cx));
                     }
                     Err(_) => this.error = Some("loading the query digest was cancelled".into()),

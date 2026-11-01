@@ -77,6 +77,63 @@ pub(crate) fn plain(error: anyhow::Error) -> anyhow::Error {
     }
 }
 
+/// `error` in the words the UI shows: each cause in turn, as `{error:#}`
+/// would, except that a server's own error is said once, in the server's
+/// words.
+///
+/// sqlx displays a server error as `error returned from database: …` and
+/// also hands the same error back as its source, so `{error:#}` printed the
+/// message twice behind driver wording. Here the chain stops at that error
+/// and shows its message, its code (which is what a search needs), and on
+/// Postgres the `DETAIL` and `HINT` lines.
+pub fn describe(error: &anyhow::Error) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for cause in error.chain() {
+        if let Some(sqlx::Error::Database(database)) = cause.downcast_ref::<sqlx::Error>() {
+            parts.push(server_message(database.as_ref()));
+            break;
+        }
+        let text = cause.to_string();
+        // A cause that only repeats the one before it (a `context` naming its
+        // own source, or a wrapper printing its inner error) says nothing new.
+        if parts.last().is_some_and(|last| last.ends_with(&text)) {
+            continue;
+        }
+        parts.push(text);
+    }
+    parts.join(": ")
+}
+
+/// One server error: the message, then the engine's code in brackets.
+fn server_message(error: &dyn sqlx::error::DatabaseError) -> String {
+    if let Some(postgres) = error.try_downcast_ref::<sqlx::postgres::PgDatabaseError>() {
+        let mut text = format!("{} (SQLSTATE {})", postgres.message(), postgres.code());
+        if let Some(detail) = postgres.detail() {
+            text.push_str(&format!("\nDetail: {detail}"));
+        }
+        if let Some(hint) = postgres.hint() {
+            text.push_str(&format!("\nHint: {hint}"));
+        }
+        return text;
+    }
+    if let Some(mysql) = error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>() {
+        return format!("{} (MySQL error {})", mysql.message(), mysql.number());
+    }
+    if error
+        .try_downcast_ref::<sqlx::sqlite::SqliteError>()
+        .is_some()
+    {
+        return match error.code() {
+            Some(code) => format!("{} (SQLite error {code})", error.message()),
+            None => error.message().to_string(),
+        };
+    }
+    match error.code() {
+        Some(code) => format!("{} ({code})", error.message()),
+        None => error.message().to_string(),
+    }
+}
+
 /// MySQL's `ER_CLIENT_INTERACTION_TIMEOUT`: the server closed a session that
 /// sat idle past `wait_timeout`.
 const MYSQL_IDLE_DISCONNECT: u16 = 4031;
@@ -153,5 +210,35 @@ mod tests {
         assert_eq!(format!("{error:#}"), "syntax error at or near \"SELEC\"");
         let error = plain(sqlx::Error::RowNotFound.into());
         assert_eq!(ConnectionTrouble::of(&error), None);
+    }
+    #[test]
+    fn a_server_error_is_said_once_without_driver_wording() {
+        let error = anyhow::Error::new(sqlx::Error::Protocol("unused".into()));
+        // A non-server sqlx error keeps its own text.
+        assert_eq!(describe(&error), format!("{error:#}"));
+
+        let error = anyhow::anyhow!("no such table: runnerz").context("statement 2 of 2");
+        assert_eq!(describe(&error), "statement 2 of 2: no such table: runnerz");
+    }
+
+    #[test]
+    fn a_sqlite_error_shows_its_message_and_code_once() {
+        let error = crate::db::runtime::block_on(async move {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect("sqlite::memory:")
+                .await
+                .expect("an in-memory pool");
+            sqlx::query("SELECT * FROM runnerz")
+                .fetch_all(&pool)
+                .await
+                .expect_err("the table does not exist")
+        });
+        let error = anyhow::Error::new(error);
+        assert_eq!(describe(&error), "no such table: runnerz (SQLite error 1)");
+        let error = error.context("statement 2 of 2");
+        assert_eq!(
+            describe(&error),
+            "statement 2 of 2: no such table: runnerz (SQLite error 1)"
+        );
     }
 }

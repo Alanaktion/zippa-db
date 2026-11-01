@@ -122,7 +122,7 @@ impl Dashboards {
         if !cx.has_global::<Self>() {
             let (list, error) = match load() {
                 Ok(list) => (list, None),
-                Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+                Err(error) => (Vec::new(), Some(crate::db::health::describe(&error))),
             };
             cx.set_global(Self { list, error });
         }
@@ -162,7 +162,10 @@ fn change(cx: &mut App, change: impl FnOnce(&mut Vec<Dashboard>)) {
 
     let written = cx.background_spawn(async move { save(&dashboards, ticket) });
     cx.spawn(async move |cx| {
-        let error = written.await.err().map(|error| format!("{error:#}"));
+        let error = written
+            .await
+            .err()
+            .map(|error| crate::db::health::describe(&error));
         cx.update(|cx| cx.global_mut::<Dashboards>().error = error);
     })
     .detach();

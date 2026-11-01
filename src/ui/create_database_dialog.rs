@@ -111,7 +111,7 @@ impl CreateDatabaseView {
                         cx.emit(CreateDatabaseEvent::Dismissed);
                     }
                     Ok(Err(error)) => {
-                        this.error = Some(format!("{error:#}"));
+                        this.error = Some(crate::db::health::describe(&error));
                         cx.notify();
                     }
                     Err(_) => {

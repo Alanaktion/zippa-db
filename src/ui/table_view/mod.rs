@@ -571,7 +571,7 @@ impl TableView {
                         // types — from the retry query, and the table
                         // would come back unfiltered while the box still
                         // shows the term.
-                        let message = format!("{error:#}");
+                        let message = crate::db::health::describe(&error);
                         this.error = Some(message.clone());
                         this.grid.update(cx, |grid, cx| grid.clear(cx));
                         crate::ui::notify_error(window, cx, format!("Error: {message}"));
@@ -874,7 +874,7 @@ impl TableView {
                         }
                     }
                     Ok(Err(error)) => {
-                        let message = format!("{error:#}");
+                        let message = crate::db::health::describe(&error);
                         this.error = Some(message.clone());
                         crate::ui::notify_error(window, cx, format!("Error: {message}"));
                     }

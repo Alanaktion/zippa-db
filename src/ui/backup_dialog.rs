@@ -148,8 +148,9 @@ impl BackupView {
                     Err(error) => {
                         self.databases = vec![current.clone()];
                         self.list_warning = Some(format!(
-                            "Could not list the server's databases ({error:#}); only the \
-                             current database is offered."
+                            "Could not list the server's databases ({shown}); only the \
+                             current database is offered.",
+                            shown = crate::db::health::describe(&error)
                         ));
                     }
                 }
@@ -157,8 +158,9 @@ impl BackupView {
                     Ok(objects) => self.objects = objects,
                     Err(error) => {
                         self.list_warning = Some(format!(
-                            "Could not list this database's tables ({error:#}); it can \
-                             still be backed up whole."
+                            "Could not list this database's tables ({shown}); it can \
+                             still be backed up whole.",
+                            shown = crate::db::health::describe(&error)
                         ));
                     }
                 }
@@ -268,7 +270,7 @@ impl BackupView {
                 Ok(None) => return,
                 Err(error) => {
                     this.update(cx, |this, cx| {
-                        this.failure = Some(format!("{error:#}"));
+                        this.failure = Some(crate::db::health::describe(&error));
                         cx.notify();
                     })
                     .ok();
@@ -351,7 +353,7 @@ impl BackupView {
         self.state = State::Done;
         match result {
             Ok(Ok(summary)) => self.result = Some(summary),
-            Ok(Err(error)) => self.failure = Some(format!("{error:#}")),
+            Ok(Err(error)) => self.failure = Some(crate::db::health::describe(&error)),
             // The sender is dropped when the run is given up on.
             Err(_) => self.failure = Some("Cancelled".to_string()),
         }

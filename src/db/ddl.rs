@@ -192,7 +192,8 @@ impl Connection {
             }
             Err(error) => {
                 note = Some(format!(
-                    "-- Note: triggers could not be read ({error:#}); the DDL above omits them."
+                    "-- Note: triggers could not be read ({shown}); the DDL above omits them.",
+                    shown = crate::db::health::describe(&error)
                 ));
             }
         }
@@ -328,7 +329,10 @@ impl Connection {
             }
             Err(error) => (
                 Vec::new(),
-                Some(format!("could not read triggers ({error:#})")),
+                Some(format!(
+                    "could not read triggers ({shown})",
+                    shown = crate::db::health::describe(&error)
+                )),
             ),
         };
 

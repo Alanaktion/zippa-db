@@ -567,11 +567,11 @@ impl ConnectionEditor {
                     .abort_on_drop();
                     match task.await {
                         Ok(Ok(())) => Status::Succeeded,
-                        Ok(Err(error)) => Status::Failed(format!("{error:#}")),
+                        Ok(Err(error)) => Status::Failed(crate::db::health::describe(&error)),
                         Err(_) => Status::Failed("the test was cancelled".into()),
                     }
                 }
-                Err(error) => Status::Failed(format!("{error:#}")),
+                Err(error) => Status::Failed(crate::db::health::describe(&error)),
             };
             this.update(cx, |this, cx| {
                 this.status = outcome;

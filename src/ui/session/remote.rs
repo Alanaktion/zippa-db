@@ -81,7 +81,14 @@ impl Session {
                         this.confirm_overwrite(&target, modified, window, cx);
                     }
                     Ok(Err(error)) => {
-                        crate::ui::notify_error(window, cx, format!("Error: {error:#}"));
+                        crate::ui::notify_error(
+                            window,
+                            cx,
+                            format!(
+                                "Error: {shown}",
+                                shown = crate::db::health::describe(&error)
+                            ),
+                        );
                     }
                     Err(_) => {
                         crate::ui::notify_error(window, cx, "Error: the upload was cancelled");

@@ -122,7 +122,7 @@ impl SqliteMaintenanceView {
                         });
                         this.grid.update(cx, |grid, cx| grid.set_result(result, cx));
                     }
-                    Ok(Err(error)) => this.error = Some(format!("{error:#}")),
+                    Ok(Err(error)) => this.error = Some(crate::db::health::describe(&error)),
                     Err(_) => this.error = Some(format!("{} was cancelled", task.label())),
                 }
                 cx.notify();

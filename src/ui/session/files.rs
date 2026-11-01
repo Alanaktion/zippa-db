@@ -415,7 +415,7 @@ impl Session {
 
                 let error = match written {
                     Ok(()) => None,
-                    Err(error) => Some(format!("{error:#}")),
+                    Err(error) => Some(crate::db::health::describe(&error)),
                 };
                 panel.update(cx, |panel, cx| {
                     match &error {
@@ -450,7 +450,7 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let message = format!("{error:#}");
+        let message = crate::db::health::describe(&error);
         // The toast is raised whether or not there is a status bar to put the
         // error in too: with no query tab open there is nowhere else to say it.
         if let Some(panel) = self.nearest_query_panel(cx) {

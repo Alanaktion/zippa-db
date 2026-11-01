@@ -93,7 +93,7 @@ impl ServerVariablesView {
                         this.apply_filter(cx);
                     }
                     Ok(Err(error)) => {
-                        this.error = Some(format!("{error:#}"));
+                        this.error = Some(crate::db::health::describe(&error));
                         this.all = Default::default();
                         this.grid.update(cx, |grid, cx| grid.clear(cx));
                     }

@@ -60,7 +60,7 @@ impl TableView {
                 Ok(Some(path)) => path,
                 Ok(None) => return,
                 Err(error) => {
-                    let message = format!("{error:#}");
+                    let message = crate::db::health::describe(&error);
                     this.update_in(cx, |this, window, cx| this.fail_export(message, window, cx))
                         .ok();
                     return;
@@ -148,7 +148,7 @@ impl TableView {
                         cx.notify();
                     }
                     Ok(Err(error)) if !cancelled => {
-                        this.fail_export(format!("{error:#}"), window, cx)
+                        this.fail_export(crate::db::health::describe(&error), window, cx)
                     }
                     // The work was dropped, or stopped short of putting the
                     // file in place: the half-written file went with it.
@@ -214,7 +214,7 @@ impl TableView {
                 Ok(Some(path)) => path,
                 Ok(None) => return,
                 Err(error) => {
-                    let message = format!("{error:#}");
+                    let message = crate::db::health::describe(&error);
                     this.update_in(cx, |this, window, cx| this.fail_export(message, window, cx))
                         .ok();
                     return;
@@ -248,7 +248,7 @@ impl TableView {
                         this.notice = Some(export_notice(rows, &path, skipped));
                     }
                     Err(error) => {
-                        let message = format!("{error:#}");
+                        let message = crate::db::health::describe(&error);
                         this.error = Some(message.clone());
                         crate::ui::notify_error(window, cx, format!("Error: {message}"));
                     }

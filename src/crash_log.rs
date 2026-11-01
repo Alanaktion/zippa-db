@@ -47,7 +47,8 @@ pub(crate) fn summary(report: &str) -> String {
 }
 
 fn append(info: &std::panic::PanicHookInfo) -> std::io::Result<()> {
-    let dir = store::config_dir().map_err(|error| std::io::Error::other(format!("{error:#}")))?;
+    let dir = store::config_dir()
+        .map_err(|error| std::io::Error::other(crate::db::health::describe(&error)))?;
     std::fs::create_dir_all(&dir)?;
     let mut file = OpenOptions::new()
         .create(true)
