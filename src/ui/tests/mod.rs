@@ -556,6 +556,20 @@ fn press_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, keystroke:
     cx.run_until_parked();
 }
 
+/// Send `action` to whatever holds the keyboard, as a menu item does.
+fn dispatch_workspace(
+    cx: &mut TestAppContext,
+    handle: &WorkspaceWindow,
+    action: Box<dyn gpui_kit::Action>,
+) {
+    cx.update_window(handle.window.into(), move |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.dispatch_action(action, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
 fn click_workspace(cx: &mut TestAppContext, handle: &WorkspaceWindow, id: impl Into<ElementId>) {
     let id = id.into();
     cx.update_window(handle.window.into(), move |_, window, cx| {

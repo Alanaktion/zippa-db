@@ -119,6 +119,9 @@ enum Pending {
     /// The term as submitted: the box may hold different text by the time
     /// the answer comes, and only the submitted term is applied.
     Search(String),
+    /// Throwing every staged edit away, which is the whole point rather than
+    /// a side effect.
+    Discard,
 }
 
 impl Pending {
@@ -131,6 +134,7 @@ impl Pending {
             Pending::Limit(_) => "Changing the row limit",
             Pending::Filter => "Filtering",
             Pending::Search(_) => "Searching",
+            Pending::Discard => "Discarding",
         }
     }
 }
@@ -618,6 +622,10 @@ impl TableView {
             Pending::Limit(limit) => self.set_limit(limit, cx),
             Pending::Filter => self.apply_filters(cx),
             Pending::Search(term) => self.apply_search_term(term, cx),
+            Pending::Discard => {
+                self.notice = None;
+                cx.notify();
+            }
         }
     }
 
@@ -1109,7 +1117,22 @@ impl TableView {
         self.commit(cx);
     }
 
+    /// Throw the staged edits away, asking first (in the footer, like the
+    /// other actions that would lose them) when more than one row would be
+    /// lost: there is no undo for this, so a slip of the key should not cost
+    /// a table's worth of typing.
     fn on_discard_edits(&mut self, _: &DiscardEdits, _window: &mut Window, cx: &mut Context<Self>) {
+        let (edited, inserted, deleted) = self.grid.read(cx).pending_counts(cx);
+        if edited + inserted + deleted <= 1 {
+            self.discard_now(cx);
+            return;
+        }
+        self.pending = Some(Pending::Discard);
+        cx.notify();
+    }
+
+    /// Drop every staged edit, with no question.
+    pub(super) fn discard_now(&mut self, cx: &mut Context<Self>) {
         self.grid.update(cx, |grid, cx| grid.discard(cx));
         self.notice = None;
         cx.notify();

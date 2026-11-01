@@ -41,7 +41,6 @@ const GROUPS: &[Group] = &[
         rows: &[
             ("New connection (or another tab)", &["secondary-n"]),
             ("Close the active connection", &["secondary-shift-w"]),
-            ("Disconnect the active connection", &["secondary-d"]),
             ("Next connection", &["secondary-shift-]"]),
             ("Previous connection", &["secondary-shift-["]),
             ("Connect from the connection editor", &["secondary-enter"]),
@@ -166,7 +165,7 @@ const GROUPS: &[Group] = &[
             ("Mark rows for deletion", &["secondary-backspace"]),
             ("Take the deletion mark off", &["secondary-shift-backspace"]),
             ("Apply staged changes", &["secondary-s"]),
-            ("Discard staged changes", &["secondary-z"]),
+            ("Discard staged changes", &["secondary-alt-z"]),
             ("Toggle the row panel", &["secondary-\\"]),
             ("Save the value dialog", &["secondary-enter"]),
             ("Cancel a cell edit or dismiss a dialog", &["escape"]),

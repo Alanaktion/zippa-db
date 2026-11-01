@@ -382,6 +382,7 @@ mod tests {
             TypeId::of::<SaveQueryAs>(),
             TypeId::of::<EditVariables>(),
             TypeId::of::<BackupDatabase>(),
+            TypeId::of::<Disconnect>(),
         ];
 
         cx.update(|cx| {

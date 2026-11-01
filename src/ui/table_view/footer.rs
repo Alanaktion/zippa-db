@@ -11,7 +11,7 @@ use gpui_kit::{Context, div, px};
 
 use crate::ui::busy::busy_label;
 
-use super::{ApplyEdits, DiscardEdits, InsertRow, TableView, change_summary};
+use super::{ApplyEdits, DiscardEdits, InsertRow, Pending, TableView, change_summary};
 
 impl TableView {
     /// The changes waiting for an answer, above the footer.
@@ -88,6 +88,13 @@ impl TableView {
             // The question comes first: it is the one thing here waiting on
             // an answer.
             (None, false, _) => match (&self.pending, &changed, &self.notice) {
+                (Some(Pending::Discard), _, _) => (
+                    format!(
+                        "Discard {}?",
+                        change_summary(edited, inserted, deleted)
+                    ),
+                    cx.theme().danger,
+                ),
                 (Some(action), _, _) => (
                     format!(
                         "{} discards {}",

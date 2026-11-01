@@ -246,11 +246,10 @@ fn disconnecting_returns_the_tab_to_the_manager(cx: &mut TestAppContext) {
     new_connection(cx, &handle);
     let _second = connect(cx, &handle);
 
-    // ⌘D disconnects from outside the query editor; inside it, it selects
-    // the next occurrence, so the keystroke is sent with the sidebar filter
-    // holding the focus.
+    // Disconnect has no key (⌘D is the editor's Select Next Occurrence), so
+    // it is sent the way the menu item sends it, from the sidebar filter.
     click(cx, &handle, "object-filter");
-    press_workspace(cx, &handle, "secondary-d");
+    dispatch_workspace(cx, &handle, Box::new(crate::ui::session::Disconnect));
 
     assert_eq!(
         titles(cx, &handle),
@@ -261,6 +260,23 @@ fn disconnecting_returns_the_tab_to_the_manager(cx: &mut TestAppContext) {
         active(cx, &handle),
         1,
         "the tab that was disconnected stays in front"
+    );
+}
+
+#[gpui_kit::test]
+fn command_d_outside_the_editor_does_not_disconnect(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let first = connect(cx, &handle);
+
+    // The chord the editor uses for Select Next Occurrence, pressed with the
+    // focus elsewhere, must not end the session.
+    click(cx, &handle, "object-filter");
+    press_workspace(cx, &handle, "secondary-d");
+
+    assert_eq!(
+        titles(cx, &handle),
+        [first.config().display_name()],
+        "⌘D should no longer disconnect"
     );
 }
 
@@ -281,11 +297,10 @@ fn disconnecting_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
         })
         .unwrap();
 
-    // ⌘D disconnects from outside the query editor; inside it, it selects
-    // the next occurrence, so the keystroke is sent with the sidebar filter
-    // holding the focus.
+    // Disconnect has no key (⌘D is the editor's Select Next Occurrence), so
+    // it is sent the way the menu item sends it, from the sidebar filter.
     click(cx, &handle, "object-filter");
-    press_workspace(cx, &handle, "secondary-d");
+    dispatch_workspace(cx, &handle, Box::new(crate::ui::session::Disconnect));
     assert_eq!(
         titles(cx, &handle),
         [first.config().display_name()],
@@ -297,13 +312,13 @@ fn disconnecting_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
     assert_eq!(titles(cx, &handle), [first.config().display_name()]);
     cx.run_until_parked();
 
-    // The keystroke goes to whatever holds the focus, so put it somewhere
-    // deterministic — outside the query editor, where ⌘D still disconnects —
-    // rather than depending on where the closed dialog leaves it.
+    // The action goes to whatever holds the focus, so put it somewhere
+    // deterministic rather than depending on where the closed dialog leaves
+    // it.
     click(cx, &handle, "object-filter");
 
     // Saying yes disconnects it, keeping the tab for the next connection.
-    press_workspace(cx, &handle, "secondary-d");
+    dispatch_workspace(cx, &handle, Box::new(crate::ui::session::Disconnect));
     click(cx, &handle, "ok");
     cx.run_until_parked();
     assert_eq!(
