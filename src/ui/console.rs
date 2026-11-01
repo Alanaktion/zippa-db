@@ -184,7 +184,7 @@ fn source_label(source: QuerySource) -> &'static str {
     }
 }
 
-fn outcome_label(outcome: &QueryOutcome) -> String {
+pub(crate) fn outcome_label(outcome: &QueryOutcome) -> String {
     match outcome {
         QueryOutcome::Rows(count) => format!("{count} row{}", if *count == 1 { "" } else { "s" }),
         QueryOutcome::Affected(count) => {

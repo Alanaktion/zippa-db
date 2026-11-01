@@ -146,20 +146,51 @@ impl PinnedConnection {
     /// A placeholder in a value position becomes a bind parameter; one where
     /// a bind cannot go is pasted in as written. A variable without a value
     /// refuses the run before anything is sent.
+    ///
+    /// The tests' way in: a query tab uses [`Self::run_query_recorded`] so
+    /// the history keeps the text without the tab's implicit `LIMIT`.
+    #[cfg(test)]
     pub async fn run_query_with(
         &self,
         sql: &str,
         variables: &[super::params::Variable],
     ) -> Result<QueryResult> {
+        self.run_query_recorded(sql, sql, variables).await
+    }
+
+    /// The same, keeping `typed` in the query history rather than `sql`:
+    /// a tab sends its implicit `LIMIT` along, but what the user wrote is
+    /// what reopening the entry should give back. The console still shows
+    /// what was sent.
+    pub async fn run_query_recorded(
+        &self,
+        sql: &str,
+        typed: &str,
+        variables: &[super::params::Variable],
+    ) -> Result<QueryResult> {
         let engine = self.connection.config.engine;
-        let (sql, params) = super::params::substitute(sql, variables, engine)?;
-        self.connection.refuse_write(&sql)?;
         let started = Instant::now();
+        let substituted =
+            super::params::substitute(sql, variables, engine).and_then(|(sql, params)| {
+                self.connection.refuse_write(&sql)?;
+                Ok((sql, params))
+            });
+        let (sql, params) = match substituted {
+            Ok(substituted) => substituted,
+            Err(error) => {
+                // Refused before anything was sent: nothing for the console,
+                // but the attempt is still worth finding again to fix.
+                let outcome = QueryOutcome::Error(format!("{error:#}"));
+                self.connection.remember(typed, started.elapsed(), &outcome);
+                return Err(error);
+            }
+        };
         let result = self.fetch_with(&sql, params).await;
         let (elapsed, outcome) = match &result {
             Ok(result) => (result.elapsed, query_outcome(result)),
             Err(error) => (started.elapsed(), QueryOutcome::Error(format!("{error:#}"))),
         };
+        self.connection.remember(typed, elapsed, &outcome);
         self.connection
             .log(&sql, QuerySource::User, elapsed, outcome);
         result

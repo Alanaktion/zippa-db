@@ -12,6 +12,8 @@
 //! * [`binary`] — sniffing and laying out the bytes behind a binary value.
 //! * [`query_log`] — the bounded record of every statement a connection has
 //!   sent, for the console pane.
+//! * [`history`] — the user's own statements, kept per connection on disk
+//!   (or in memory) for the History tab.
 //! * [`catalog`] — the whole schema once per session, and the search over it.
 //! * [`completion`] — what the SQL editor offers for the word under the caret.
 //! * [`schema`] — a table's own definition: columns, indexes, foreign keys.
@@ -51,6 +53,7 @@ pub mod erd;
 pub mod export;
 pub mod export_file;
 pub mod health;
+pub mod history;
 pub mod import;
 pub mod mysql;
 pub mod params;

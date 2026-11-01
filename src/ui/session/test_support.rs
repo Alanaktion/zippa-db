@@ -14,6 +14,7 @@ use crate::ui::console::ConsoleView;
 use crate::ui::create_database_dialog::CreateDatabaseView;
 use crate::ui::data_grid::DataGrid;
 use crate::ui::erd::ErdView;
+use crate::ui::history::HistoryView;
 use crate::ui::import_dialog::ImportView;
 use crate::ui::plan_view::PlanView;
 use crate::ui::process_list::ProcessListView;
@@ -167,6 +168,14 @@ impl Session {
     pub(crate) fn active_console_view(&self, cx: &App) -> Option<Entity<ConsoleView>> {
         match self.active_tool_view(cx)? {
             ToolView::Console(view) => Some(view.clone()),
+            _ => None,
+        }
+    }
+
+    /// The view in the active tab, if this is the query history tab.
+    pub(crate) fn active_history_view(&self, cx: &App) -> Option<Entity<HistoryView>> {
+        match self.active_tool_view(cx)? {
+            ToolView::History(view) => Some(view.clone()),
             _ => None,
         }
     }
