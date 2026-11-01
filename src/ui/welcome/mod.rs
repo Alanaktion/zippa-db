@@ -10,11 +10,12 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use chrono::Utc;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
-use gpui_kit::component::{ActiveTheme, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, EventEmitter, FocusHandle, Global, Window, div, px};
 use uuid::Uuid;
@@ -166,12 +167,33 @@ impl Welcome {
 
         let welcome = cx.entity().downgrade();
         let body = editor.clone();
+        let closer = editor.downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let welcome = welcome.clone();
+            let closer = closer.clone();
+            // The dialog's own ✕ and a click on the backdrop would close it
+            // with no say from the form, losing whatever was typed; this ✕
+            // goes through the form's own close, which asks first.
             dialog
                 .w(px(EDITOR_WIDTH))
                 .h(px(600.))
-                .title(title)
+                .title(
+                    h_flex().w_full().justify_between().child(title).child(
+                        Button::new("editor-close")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .accessibility_label("Close")
+                            .tooltip_with_action("Close", &EditorClose, Some("ConnectionEditor"))
+                            .on_click(move |_, _window, cx| {
+                                closer
+                                    .update(cx, |editor, cx| editor.request_close(cx))
+                                    .ok();
+                            }),
+                    ),
+                )
+                .close_button(false)
+                .overlay_closable(false)
                 .keyboard(false)
                 .on_close(move |_, _window, cx| {
                     welcome
@@ -219,9 +241,14 @@ impl Welcome {
                     .any(|saved| saved.id == config.id);
                 if *save {
                     self.save(config.clone(), secrets.clone(), window, cx);
+                    let id = config.id;
+                    if let Some(editor) = self.editor.clone() {
+                        editor.update(cx, |editor, cx| editor.mark_saved(id, cx));
+                    }
                 }
-                self.close_editor(window, cx);
-                // An untouched box reports no secret; a saved connection then
+                // The editor stays open until the connection does: a failure
+                // is reported in it, with the form as it was typed. An
+                // untouched box reports no secret; a saved connection then
                 // connects with whatever the keychain holds, the way a card
                 // click does (`store::credentials` decides). A box the user
                 // emptied is no secret at all.
@@ -364,10 +391,7 @@ impl Welcome {
             let credentials = credentials.await;
             this.update_in(cx, |this, window, cx| match credentials {
                 Ok(credentials) => this.connect(config, credentials, window, cx),
-                Err(error) => {
-                    this.error = Some(crate::db::health::describe(&error));
-                    cx.notify();
-                }
+                Err(error) => this.connect_failed(crate::db::health::describe(&error), window, cx),
             })
             .ok();
         })
@@ -418,16 +442,17 @@ impl Welcome {
                 match result {
                     Ok(Ok(connection)) => {
                         this.error = None;
+                        if this.editor.is_some() {
+                            this.close_editor(window, cx);
+                        }
                         this.mark_connected(&connection.config.id, cx);
                         cx.emit(WelcomeEvent::Connected(Arc::new(connection)));
                     }
                     Ok(Err(error)) => {
-                        let message = crate::db::health::describe(&error);
-                        this.error = Some(message.clone());
-                        notify_error(window, cx, format!("Error: {message}"));
+                        this.connect_failed(crate::db::health::describe(&error), window, cx);
                     }
                     Err(_) => {
-                        this.error = Some("the connection was cancelled".into());
+                        this.connect_failed("the connection was cancelled".into(), window, cx);
                     }
                 }
                 cx.notify();
@@ -435,6 +460,19 @@ impl Welcome {
             .ok();
         })
         .detach();
+    }
+
+    /// Say why a connect failed: in the editor when it was started from
+    /// there, so the form is still in front of the user to fix, otherwise in
+    /// the launcher's banner.
+    fn connect_failed(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.editor.clone() {
+            editor.update(cx, |editor, cx| editor.connect_failed(message, cx));
+            return;
+        }
+        self.error = Some(message.clone());
+        notify_error(window, cx, format!("Error: {message}"));
+        cx.notify();
     }
 
     /// Record that a connection was just opened, for most-recent-first order.

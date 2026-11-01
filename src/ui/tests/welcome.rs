@@ -932,3 +932,79 @@ fn an_unreadable_connections_file_is_kept_aside(_cx: &mut TestAppContext) {
     assert!(dir.path.join("connections.json.unreadable").exists());
     assert!(!dir.path.join("connections.json").exists());
 }
+
+#[gpui_kit::test]
+fn a_failed_connect_keeps_the_editor_and_what_was_typed(cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+
+    let handle = workspace(cx);
+    let welcome = new_connection_editor(cx, &handle);
+    let missing = dir.path.join("missing").join("nowhere.db");
+    let path = missing.to_string_lossy().to_string();
+    fill_editor(cx, &handle, &welcome, Engine::Sqlite, &path);
+
+    // Without saving: nothing else holds these settings, so the form must.
+    welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.connect_for_test(false, cx))
+    });
+    cx.run_until_parked();
+    assert!(
+        welcome.update(cx, |welcome, _| welcome.editor_open_for_test()),
+        "a failed connect should leave the editor open"
+    );
+    let status = editor_status(cx, &welcome);
+    assert!(
+        status.starts_with("Error: "),
+        "the failure should show in the editor, not {status:?}"
+    );
+    let typed = welcome.update(cx, |welcome, cx| {
+        welcome.with_editor_for_test(cx, |editor, cx| editor.config_for_test(cx))
+    });
+    assert_eq!(typed.database, path, "the form should keep what was typed");
+
+    // Saving and failing twice keeps one saved connection, not two: the
+    // first save makes the form that connection's editor.
+    for _ in 0..2 {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| editor.connect_for_test(true, cx))
+        });
+        cx.run_until_parked();
+    }
+    assert_eq!(
+        welcome.update(cx, |welcome, cx| welcome.connections_for_test(cx).len()),
+        1
+    );
+    assert!(welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+}
+
+#[gpui_kit::test]
+fn escape_closes_an_untouched_editor_and_asks_about_an_edited_one(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+
+    // Nothing typed: Escape just closes.
+    let welcome = new_connection_editor(cx, &handle);
+    press_workspace(cx, &handle, "escape");
+    assert!(!welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+
+    // Something typed: Escape asks, a second Escape keeps editing…
+    let welcome = new_connection_editor(cx, &handle);
+    fill_editor(cx, &handle, &welcome, Engine::Sqlite, "/tmp/typed.db");
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        welcome.update(cx, |welcome, cx| {
+            welcome.with_editor_for_test(cx, |editor, cx| editor.focus_name_for_test(window, cx))
+        });
+    })
+    .unwrap();
+    press_workspace(cx, &handle, "escape");
+    assert!(welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+    assert_eq!(editor_status(cx, &welcome), "confirm close");
+    press_workspace(cx, &handle, "escape");
+    assert!(welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+    assert_eq!(editor_status(cx, &welcome), "");
+
+    // …and only Discard Changes throws the form away.
+    press_workspace(cx, &handle, "escape");
+    click_workspace(cx, &handle, "editor-discard");
+    assert!(!welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
+}

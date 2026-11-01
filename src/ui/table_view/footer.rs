@@ -89,10 +89,7 @@ impl TableView {
             // an answer.
             (None, false, _) => match (&self.pending, &changed, &self.notice) {
                 (Some(Pending::Discard), _, _) => (
-                    format!(
-                        "Discard {}?",
-                        change_summary(edited, inserted, deleted)
-                    ),
+                    format!("Discard {}?", change_summary(edited, inserted, deleted)),
                     cx.theme().danger,
                 ),
                 (Some(action), _, _) => (

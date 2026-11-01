@@ -97,6 +97,13 @@ pub struct ConnectionEditor {
     /// The connection test under way, dropped (and so cancelled) with the
     /// editor or by the next test.
     test: Option<Task<()>>,
+    /// The form as it was opened (or last saved), to tell whether closing it
+    /// would throw anything away. Taken on the first draw, once every box
+    /// holds its starting value.
+    baseline: Option<String>,
+    /// A Connect is under way: the dialog stays open until it succeeds, so a
+    /// failure leaves the form as it was typed.
+    connecting: bool,
 }
 
 /// The line between the form and its buttons.
@@ -106,6 +113,9 @@ enum Status {
     Testing,
     Succeeded,
     Failed(String),
+    /// Closing was asked for with changes in the form: the line asks whether
+    /// to throw them away.
+    ConfirmClose,
 }
 
 /// What each field shows while it is empty, for one engine: `(name, user,
@@ -189,6 +199,8 @@ impl ConnectionEditor {
             password_edited: false,
             status: Status::None,
             test: None,
+            baseline: None,
+            connecting: false,
         };
 
         if let Some(config) = config {
@@ -518,11 +530,14 @@ impl ConnectionEditor {
 
     /// Connect, saving the connection first unless `save` is off.
     fn connect(&mut self, save: bool, cx: &mut Context<Self>) {
-        if self.refuse_invalid(cx) {
+        if self.connecting || self.refuse_invalid(cx) {
             return;
         }
         let config = self.config(cx);
         let secrets = self.secrets(cx);
+        self.connecting = true;
+        self.status = Status::None;
+        cx.notify();
         cx.emit(EditorEvent::Connect {
             config,
             secrets,
@@ -604,12 +619,68 @@ impl ConnectionEditor {
         }
     }
 
+    /// Everything the form would save, as one comparable string: the config
+    /// (under a fixed id, since a new connection draws a fresh one each
+    /// time) and what the two secret boxes hold.
+    fn snapshot(&self, cx: &App) -> String {
+        let mut config = self.config(cx);
+        config.id = Uuid::nil();
+        config.last_connected = None;
+        format!(
+            "{}\u{0}{}\u{0}{}",
+            serde_json::to_string(&config).unwrap_or_default(),
+            self.password.read(cx).value(),
+            self.ssh_secret.read(cx).value(),
+        )
+    }
+
+    /// Whether closing now would lose something the user typed.
+    pub(super) fn is_dirty(&self, cx: &App) -> bool {
+        self.baseline
+            .as_ref()
+            .is_some_and(|baseline| *baseline != self.snapshot(cx))
+    }
+
+    /// Close if nothing would be lost; otherwise ask, below the form. Asked
+    /// again while the question stands (a second `Escape`), it is the careful
+    /// answer: keep editing.
+    pub(super) fn request_close(&mut self, cx: &mut Context<Self>) {
+        if self.status == Status::ConfirmClose {
+            self.status = Status::None;
+            cx.notify();
+            return;
+        }
+        if self.is_dirty(cx) {
+            self.status = Status::ConfirmClose;
+            cx.notify();
+            return;
+        }
+        self.close(cx);
+    }
+
     fn close(&mut self, cx: &mut Context<Self>) {
         cx.emit(EditorEvent::Dismissed);
     }
 
+    /// The launcher saved the form: it now edits that saved connection, so a
+    /// second Connect updates it rather than adding another, and closing has
+    /// nothing left to lose.
+    pub(super) fn mark_saved(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        self.id = Some(id);
+        self.baseline = Some(self.snapshot(cx));
+        cx.notify();
+    }
+
+    /// The Connect started from this form failed: say why below the fields,
+    /// leaving every box as it was.
+    pub(super) fn connect_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.connecting = false;
+        self.status = Status::Failed(message);
+        cx.notify();
+    }
+
     fn on_close(&mut self, _: &EditorClose, _window: &mut Window, cx: &mut Context<Self>) {
-        self.close(cx);
+        self.request_close(cx);
     }
 
     fn on_connect(&mut self, _: &EditorConnect, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1006,11 +1077,14 @@ impl ConnectionEditor {
 
     /// The test's progress or outcome, or why the inputs were refused. Told in
     /// words as well as colour.
-    fn render_status(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+    fn render_status(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
         let testing = self.status == Status::Testing;
         let theme = cx.theme();
+        if self.status == Status::ConfirmClose {
+            return Some(self.render_confirm_close(cx).into_any_element());
+        }
         let (icon, color, text) = match &self.status {
-            Status::None => return None,
+            Status::None | Status::ConfirmClose => return None,
             Status::Testing => (
                 IconName::Loader,
                 theme.muted_foreground,
@@ -1039,8 +1113,43 @@ impl ConnectionEditor {
                 } else {
                     Icon::new(icon).flex_none().mt_0p5().into_any_element()
                 })
-                .child(div().flex_1().min_w_0().child(text)),
+                .child(div().flex_1().min_w_0().child(text))
+                .into_any_element(),
         )
+    }
+
+    /// The question a close with changes in the form raises: in words, with
+    /// the careful answer first.
+    fn render_confirm_close(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .id("editor-confirm-close")
+            .flex_none()
+            .gap_2()
+            .text_sm()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(cx.theme().warning)
+                    .child("Close without saving? The changes in this form will be lost."),
+            )
+            .child(
+                Button::new("editor-keep-editing")
+                    .ghost()
+                    .small()
+                    .label("Keep Editing")
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.status = Status::None;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("editor-discard")
+                    .danger()
+                    .small()
+                    .label("Discard Changes")
+                    .on_click(cx.listener(|this, _, _window, cx| this.close(cx))),
+            )
     }
 
     /// Connect, which saves first, with a menu for connecting without saving.
@@ -1057,6 +1166,7 @@ impl ConnectionEditor {
             .button(
                 Button::new("editor-connect")
                     .label("Connect")
+                    .loading(self.connecting)
                     .tooltip_with_action(
                         "Save and connect",
                         &EditorConnect,
@@ -1154,6 +1264,7 @@ impl ConnectionEditor {
             Status::Testing => "testing".into(),
             Status::Succeeded => "succeeded".into(),
             Status::Failed(message) => format!("Error: {message}"),
+            Status::ConfirmClose => "confirm close".into(),
         }
     }
 
@@ -1193,6 +1304,9 @@ impl ConnectionEditor {
 
 impl Render for ConnectionEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.baseline.is_none() {
+            self.baseline = Some(self.snapshot(cx));
+        }
         v_flex()
             .id("connection-editor")
             .size_full()
@@ -1238,7 +1352,7 @@ impl Render for ConnectionEditor {
                         Button::new("editor-cancel")
                             .ghost()
                             .label("Cancel")
-                            .on_click(cx.listener(|this, _, _window, cx| this.close(cx))),
+                            .on_click(cx.listener(|this, _, _window, cx| this.request_close(cx))),
                     )
                     .child(
                         Button::new("editor-save")
