@@ -104,6 +104,7 @@ const GROUPS: &[Group] = &[
                 &["secondary-shift-e"],
             ),
             ("Stop a running query", &["secondary-."]),
+            ("Go to where the last run failed", &["f8"]),
         ],
     },
     Group {

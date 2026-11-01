@@ -26,10 +26,11 @@ use anyhow::{Context as _, Result};
 
 use super::config::Engine;
 use super::connection::{Connection, query_outcome};
+use super::error_location;
 use super::import::excerpt;
 use super::params::{self, Variable};
 use super::pinned::{PinGuard, PinnedConnection, TxnState};
-use super::query::{Cell, QueryResult};
+use super::query::QueryResult;
 use super::query_log::{QueryOutcome, QuerySource};
 use super::statement::{self, Statement};
 
@@ -81,6 +82,9 @@ pub struct ScriptFailure {
     /// The statement, flattened to one line and shortened.
     pub statement: String,
     pub message: String,
+    /// Where in the statement's text the server says it went wrong, as a
+    /// byte offset, when it said.
+    pub offset: Option<usize>,
 }
 
 impl ScriptFailure {
@@ -222,8 +226,7 @@ pub struct ScriptRun {
     /// Each statement with its `:name`/`$name` variables substituted, and the bind
     /// parameters in order. A variable without a value refuses the run in
     /// `start`, before anything executes.
-    rewritten: Vec<String>,
-    params: Vec<Vec<Cell>>,
+    rewritten: Vec<params::Rewrite>,
     lines: Vec<usize>,
     next: usize,
     mode: ScriptMode,
@@ -252,14 +255,13 @@ impl ScriptRun {
         let connection = pinned.connection().clone();
         let statements = statement::split(sql, connection.config.engine);
         let mut rewritten = Vec::with_capacity(statements.len());
-        let mut params: Vec<Vec<Cell>> = Vec::with_capacity(statements.len());
         for statement in &statements {
-            let checked = params::substitute(&statement.text, variables, connection.config.engine)
-                .and_then(|(text, statement_params)| {
-                    connection.refuse_write(&text)?;
-                    Ok((text, statement_params))
+            let checked = params::rewrite(&statement.text, variables, connection.config.engine)
+                .and_then(|rewrite| {
+                    connection.refuse_write(&rewrite.sql)?;
+                    Ok(rewrite)
                 });
-            let (text, statement_params) = match checked {
+            let rewrite = match checked {
                 Ok(checked) => checked,
                 Err(error) => {
                     // Refused before anything ran, as a single run's refusal
@@ -272,8 +274,7 @@ impl ScriptRun {
                     return Err(error);
                 }
             };
-            rewritten.push(text);
-            params.push(statement_params);
+            rewritten.push(rewrite);
         }
         // Counted forward from the statement before, not from the top each
         // time, which on a large file made the count quadratic.
@@ -327,7 +328,6 @@ impl ScriptRun {
             joined,
             statements,
             rewritten,
-            params,
             lines,
             next: 0,
             mode,
@@ -420,13 +420,14 @@ impl ScriptRun {
 
             match self.run_one(index).await? {
                 Ok(result) => self.results.push(result),
-                Err(message) => {
+                Err((message, offset)) => {
                     let failure = ScriptFailure {
                         index,
                         total: self.statements.len(),
                         line: self.lines[index],
                         statement: excerpt(&self.statements[index].text),
                         message,
+                        offset,
                     };
                     match self.on_failure {
                         OnFailure::Skip => self.failures.push(failure),
@@ -462,10 +463,13 @@ impl ScriptRun {
     /// The inner error is the statement's own failure, which the run answers;
     /// the outer one is the connection or the transaction going wrong under
     /// it, which ends the run.
-    async fn run_one(&mut self, index: usize) -> Result<Result<QueryResult, String>> {
+    async fn run_one(
+        &mut self,
+        index: usize,
+    ) -> Result<Result<QueryResult, (String, Option<usize>)>> {
         let transaction = self.mode == ScriptMode::Transaction || self.joined;
-        let sql = self.rewritten[index].clone();
-        let params = self.params[index].clone();
+        let sql = self.rewritten[index].sql.clone();
+        let params = self.rewritten[index].params.clone();
         let session = self.session.as_mut().context(CLOSED)?;
 
         if transaction {
@@ -497,6 +501,12 @@ impl ScriptRun {
             }
             Err(error) => {
                 let message = crate::db::health::describe(&error);
+                // Found in what was sent, then in what was typed: the
+                // variables changed the text in between.
+                let offset = error_location::spot(&error)
+                    .and_then(|spot| spot.resolve(&sql))
+                    .map(|at| self.rewritten[index].original_offset(at))
+                    .map(|at| at.min(self.statements[index].text.len()));
                 let outcome = QueryOutcome::Error(message.clone());
                 self.connection
                     .remember(&self.statements[index].text, elapsed, &outcome);
@@ -511,7 +521,7 @@ impl ScriptRun {
                         .execute(&format!("RELEASE SAVEPOINT {SAVEPOINT}"))
                         .await?;
                 }
-                Err(message)
+                Err((message, offset))
             }
         };
         Ok(outcome)
@@ -752,6 +762,7 @@ mod tests {
             line: 1,
             statement: "x".into(),
             message: "no".into(),
+            offset: None,
         };
         let outcome = |failures, rolled_back, stopped, results: usize| ScriptOutcome {
             results: vec![QueryResult::default(); results],

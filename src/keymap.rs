@@ -18,7 +18,7 @@ use crate::ui::data_grid::{
 use crate::ui::import_dialog::CloseImport;
 use crate::ui::query_editor::{
     CopyLine, CutLine, DeleteLine, DuplicateLineDown, DuplicateLineUp, Explain, ExplainAnalyze,
-    FormatQuery, MoveLineDown, MoveLineUp, RunQuery, RunScript, RunScriptIgnoringErrors,
+    FormatQuery, GoToError, MoveLineDown, MoveLineUp, RunQuery, RunScript, RunScriptIgnoringErrors,
     SelectLine, SelectNextOccurrence, SelectPreviousOccurrence, SmartHome, ToggleComment,
 };
 use crate::ui::session::dashboard::CloseWidgetDialog;
@@ -166,6 +166,10 @@ pub fn bind(cx: &mut App) {
             SelectPreviousOccurrence,
             Some("QueryEditor"),
         ),
+        // The last run's failure. F8 is the "next problem" key in the editors
+        // this borrows from.
+        KeyBinding::new("f8", GoToError, Some("QueryEditor > Input")),
+        KeyBinding::new("f8", GoToError, Some("QueryEditor")),
         // The caret's whole line; pressing again extends through the next one.
         KeyBinding::new("secondary-l", SelectLine, Some("QueryEditor > Input")),
         KeyBinding::new("secondary-l", SelectLine, Some("QueryEditor")),

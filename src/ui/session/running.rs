@@ -9,6 +9,7 @@ use gpui_kit::component::dialog::{DialogButtonProps, DialogFooter};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, ClickEvent, Context, Entity, Window};
 
+use crate::db::error_location;
 use crate::db::{
     Blocker, Decision, Explained, OnFailure, PinnedConnection, ScriptFailure, ScriptMode,
     ScriptOutcome, ScriptRun, Step, params, runtime, statement, transaction_blocker,
@@ -392,6 +393,7 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        mark_failure(&panel, &failure, cx);
         let transaction = mode == ScriptMode::Transaction;
         let description = format!(
             "{} failed: {}\n\n{}",
@@ -489,6 +491,9 @@ impl Session {
             editor.update(cx, |editor, cx| editor.set_running(false, cx));
         }
 
+        if let Some(failure) = outcome.failures.first() {
+            mark_failure(panel, failure, cx);
+        }
         let summary = outcome.summary();
         let failed = outcome.rolled_back || outcome.stopped;
         let refresh = writes && outcome.applied_anything();
@@ -650,6 +655,10 @@ impl Session {
         // here, on the tab, so a missing value refuses the run with its name
         // rather than a database error about a placeholder.
         let variables = editor.read(cx).variables();
+        // What went out, for finding a server's error position again in the
+        // buffer: the variables change the text in between.
+        let sent = (sql.clone(), variables.clone(), typed.len());
+        let engine = self.connection.config.engine;
         let task = runtime::spawn(async move {
             pinned
                 .run_query_recorded(&sql, &typed, &variables)
@@ -681,6 +690,15 @@ impl Session {
                             panel.show_pane_error(message.clone());
                             grid.update(cx, |grid, cx| grid.clear(cx));
                             crate::ui::notify_error(window, cx, format!("Error: {message}"));
+                            let (sql, variables, typed) = &sent;
+                            let offset = error_location::spot(&error).and_then(|spot| {
+                                let rewrite = params::rewrite(sql, variables, engine).ok()?;
+                                let at = spot.resolve(&rewrite.sql)?;
+                                Some(rewrite.original_offset(at).min(*typed))
+                            });
+                            editor.update(cx, |editor, cx| {
+                                editor.mark_error(0, offset, &message, cx)
+                            });
                         }
                         // The sender is dropped when the run is given up on,
                         // which is what cancelling does.
@@ -887,5 +905,14 @@ impl Session {
                 panel.cancel_running(cx);
             });
         }
+    }
+}
+
+/// Mark a script's failed statement in the tab's buffer.
+fn mark_failure(panel: &Entity<SessionPanel>, failure: &ScriptFailure, cx: &mut App) {
+    if let Some((editor, _)) = panel.read(cx).query_parts() {
+        editor.update(cx, |editor, cx| {
+            editor.mark_error(failure.index, failure.offset, &failure.message, cx)
+        });
     }
 }

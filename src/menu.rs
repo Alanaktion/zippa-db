@@ -28,7 +28,7 @@ use crate::ui::data_grid::{
     ClearRowSelection, CopyValue, CopyWithHeaders, SelectAllRows, ViewCell,
 };
 use crate::ui::query_editor::{
-    EditVariables, Explain, ExplainAnalyze, FormatQuery, RunQuery, RunScript,
+    EditVariables, Explain, ExplainAnalyze, FormatQuery, GoToError, RunQuery, RunScript,
     RunScriptIgnoringErrors, ToggleComment,
 };
 use crate::ui::session::{
@@ -142,6 +142,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Edit Variables…", EditVariables),
             MenuItem::action("Format Query", FormatQuery),
             MenuItem::action("Toggle Comment", ToggleComment),
+            MenuItem::action("Go to Error", GoToError),
             MenuItem::separator(),
             MenuItem::action("Cancel Query", CancelQuery),
         ]),
@@ -268,6 +269,7 @@ mod tests {
             ("Explain Analyze", TypeId::of::<ExplainAnalyze>()),
             ("Toggle Comment", TypeId::of::<ToggleComment>()),
             ("Format Query", TypeId::of::<FormatQuery>()),
+            ("Go to Error", TypeId::of::<GoToError>()),
             ("Cancel Query", TypeId::of::<CancelQuery>()),
             ("Add Row", TypeId::of::<InsertRow>()),
             ("Set NULL", TypeId::of::<SetNull>()),

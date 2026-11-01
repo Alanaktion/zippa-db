@@ -48,4 +48,18 @@ impl QueryEditor {
     pub(crate) fn analyze_disabled_for_test(&self, cx: &gpui_kit::App) -> bool {
         self.running || self.statement_writes(cx) || !self.analyze_supported()
     }
+
+    /// Where the caret is, as a byte offset.
+    pub(crate) fn cursor_for_test(&self, cx: &gpui_kit::App) -> usize {
+        self.state.read(cx).cursor()
+    }
+
+    /// The range of the marked error's underline, if any.
+    pub(crate) fn error_marks_for_test(&self, cx: &gpui_kit::App) -> Vec<std::ops::Range<usize>> {
+        self.state
+            .read(cx)
+            .diagnostics()
+            .map(|set| set.iter().map(|entry| entry.range.clone()).collect())
+            .unwrap_or_default()
+    }
 }
