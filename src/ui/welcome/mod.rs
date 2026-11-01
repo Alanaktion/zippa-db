@@ -58,8 +58,8 @@ impl SavedConnections {
     /// The list, read from disk the first time anything asks.
     pub(crate) fn get(cx: &mut App) -> &[ConnectionConfig] {
         if !cx.has_global::<Self>() {
-            let (list, load_error) = match store::load() {
-                Ok(list) => (list, None),
+            let (list, load_error) = match store::load_with_notice() {
+                Ok((list, notice)) => (list, notice),
                 Err(error) => (Vec::new(), Some(crate::db::health::describe(&error))),
             };
             cx.set_global(Self { list, load_error });
@@ -641,14 +641,24 @@ impl Welcome {
     }
 
     fn render_error(&self, error: &str, cx: &mut Context<Self>) -> impl IntoElement {
-        div().id("error-banner").flex_none().px_6().pt_3().child(
-            div()
-                .max_h(px(96.))
-                .overflow_y_scrollbar()
-                .text_sm()
-                .text_color(cx.theme().danger)
-                .child(format!("Error: {error}")),
-        )
+        // In the same column as the search box and the cards, so it reads as
+        // part of the list it is about.
+        div()
+            .id("error-banner")
+            .flex_none()
+            .w_full()
+            .max_w(px(640.))
+            .mx_auto()
+            .px_6()
+            .pt_3()
+            .child(
+                div()
+                    .max_h(px(96.))
+                    .overflow_y_scrollbar()
+                    .text_sm()
+                    .text_color(cx.theme().danger)
+                    .child(format!("Error: {error}")),
+            )
     }
 
     /// The search box and the cards it filters, or the empty state.
@@ -710,7 +720,12 @@ impl Welcome {
             .justify_center()
             .gap_2()
             .p_6()
-            .child(div().text_lg().child("No connections yet"))
+            // Beside a load error, "yet" would say there never were any.
+            .child(div().text_lg().child(if self.error.is_some() {
+                "No connections to show"
+            } else {
+                "No connections yet"
+            }))
             .child(
                 div()
                     .text_sm()

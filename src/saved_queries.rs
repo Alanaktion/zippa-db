@@ -51,8 +51,8 @@ impl SavedQueries {
 
     fn ensure(cx: &mut App) {
         if !cx.has_global::<Self>() {
-            let (list, error) = match load() {
-                Ok(list) => (list, None),
+            let (list, error) = match load_with_notice() {
+                Ok((list, notice)) => (list, notice),
                 Err(error) => (Vec::new(), Some(crate::db::health::describe(&error))),
             };
             cx.set_global(Self { list, error });
@@ -108,8 +108,15 @@ fn file_path() -> Result<PathBuf> {
 /// Read the saved queries: none when there is no file yet. A file that
 /// cannot be parsed is moved aside (see [`store::load_json`]) rather than
 /// replaced by the next save.
+#[cfg(test)]
 pub(crate) fn load() -> Result<Vec<SavedQuery>> {
-    store::load_json(&file_path()?)
+    Ok(load_with_notice()?.0)
+}
+
+/// The same, with what to tell the user when some entries could not be read
+/// and were set aside (see [`store::load_json_list`]).
+fn load_with_notice() -> Result<(Vec<SavedQuery>, Option<String>)> {
+    store::load_json_list(&file_path()?, ["saved query", "saved queries"])
 }
 
 /// Replace the saved queries on disk, whole or not at all.

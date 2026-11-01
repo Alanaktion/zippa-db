@@ -911,26 +911,64 @@ fn launchers_in_two_tabs_keep_each_others_connections(cx: &mut TestAppContext) {
     assert_eq!(saved, [staging.id, local.id]);
 }
 
-/// A file this build cannot read is moved aside before anything can save
-/// over it, and the error says where it went.
+/// A file that is not a list at all is moved aside whole before anything
+/// can save over it, and the error says where it went.
 #[gpui_kit::test]
 fn an_unreadable_connections_file_is_kept_aside(_cx: &mut TestAppContext) {
     let dir = ScratchDir::new();
     crate::db::store::set_config_dir_for_test(dir.path.clone());
     std::fs::create_dir_all(&dir.path).unwrap();
-    std::fs::write(
-        dir.path.join("connections.json"),
-        "[{\"engine\": \"Oracle\"}]",
-    )
-    .unwrap();
+    std::fs::write(dir.path.join("connections.json"), "{ not json").unwrap();
 
-    let error = crate::db::store::load().expect_err("an unknown engine should not parse");
+    let error = crate::db::store::load().expect_err("garbage should not parse");
     assert!(
         format!("{error:#}").contains("connections.json.unreadable"),
         "{error:#}"
     );
     assert!(dir.path.join("connections.json.unreadable").exists());
     assert!(!dir.path.join("connections.json").exists());
+}
+
+/// One entry this build cannot read costs that entry alone: the rest load,
+/// the bad one is kept aside, and an unknown colour costs nothing at all.
+#[gpui_kit::test]
+fn one_unreadable_connection_is_set_aside_alone(_cx: &mut TestAppContext) {
+    let dir = ScratchDir::new();
+    crate::db::store::set_config_dir_for_test(dir.path.clone());
+    std::fs::create_dir_all(&dir.path).unwrap();
+    let good = ConnectionConfig {
+        name: "Race Entry".into(),
+        ..ConnectionConfig::new(Engine::Sqlite)
+    };
+    let mut newer_colour = serde_json::to_value(ConnectionConfig {
+        name: "Rodeo Ticket".into(),
+        ..ConnectionConfig::new(Engine::Postgres)
+    })
+    .unwrap();
+    newer_colour["color"] = "ultraviolet".into();
+    let file = serde_json::json!([
+        serde_json::to_value(&good).unwrap(),
+        {"engine": "Oracle", "name": "From the future"},
+        newer_colour,
+    ]);
+    std::fs::write(dir.path.join("connections.json"), file.to_string()).unwrap();
+
+    let (list, notice) = crate::db::store::load_with_notice().expect("the list should load");
+    let names: Vec<_> = list.iter().map(|config| config.name.as_str()).collect();
+    assert_eq!(names, ["Race Entry", "Rodeo Ticket"]);
+    assert_eq!(list[1].color, None, "an unknown colour reads as none");
+    let notice = notice.expect("the set-aside entry should be reported");
+    assert!(
+        notice.starts_with("1 saved connection could not be read"),
+        "{notice}"
+    );
+    assert!(notice.contains("connections.json.unreadable"), "{notice}");
+
+    let aside = std::fs::read_to_string(dir.path.join("connections.json.unreadable")).unwrap();
+    assert!(aside.contains("From the future"), "{aside}");
+    // The file no longer holds it, so the next launch reads clean.
+    let (_, again) = crate::db::store::load_with_notice().unwrap();
+    assert_eq!(again, None);
 }
 
 #[gpui_kit::test]
