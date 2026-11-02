@@ -348,7 +348,8 @@ fn a_modified_click_in_a_row_picks_it_out_away_from_the_box(cx: &mut TestAppCont
     cx.run_until_parked();
 
     // The platform's own modifier takes one row, anywhere in it.
-    click_row(cx, handle, 0, Modifiers::secondary_key());
+    let secondary = cx.update(|cx| Modifiers::secondary_key(cx));
+    click_row(cx, handle, 0, secondary);
     cx.run_until_parked();
     assert_eq!(picked(cx, &view), vec![0]);
 

@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, h_flex};
 use gpui_kit::prelude::*;
@@ -71,6 +71,10 @@ pub(super) struct ResultDelegate {
     pub(super) menu_row: Option<usize>,
     /// Cell it landed on, when it landed on one at all.
     pub(super) menu_cell: Option<(usize, usize)>,
+    /// The result column the table's selected cell was in when the click
+    /// landed: what the menu's column copies fall back to when the click was
+    /// beside the cells rather than on one.
+    pub(super) menu_column: Option<usize>,
     /// Rows marked for deletion, by their index into the result. They stay on
     /// screen, struck through, until the owner writes them away.
     pub(super) deletions: HashSet<usize>,
@@ -147,18 +151,24 @@ const FOCUS_BAR_WIDTH: f32 = 2.;
 /// How much of the selection tint has to be there for a row to read as marked.
 const MIN_SELECTION_ALPHA: f32 = 0.25;
 
-/// Keeps the table from marking the cell a right click landed on.
+/// The grid's right-click menu, as a cell or a pick box carries it.
 ///
-/// The table outlines that cell while its own menu is up and clears the mark
-/// when the next click lands outside — but it only registers that click-out
-/// handler for a right click on a *row*, so a right click on a cell leaves the
-/// outline behind for good. The grid's menu is its own (see `row_menu`) and
-/// does not need the table's mark at all, so the click is stopped before the
-/// table's handler sees it: that handler stops the event itself, one listener
-/// later, and the grid's own menu — whose listener sits at the root and runs
-/// before either of them — has already opened by then.
-fn stop_right_click(_: &MouseDownEvent, _: &mut Window, cx: &mut App) {
-    cx.stop_propagation();
+/// Each cell carries the menu itself rather than leaving it to an element
+/// around the table: a context menu listens before the elements inside it
+/// paint, so the innermost one answers first, and the table answers a right
+/// click on a cell by stopping it there. Being innermost, the cell's menu also
+/// stops the click before the table sees it, so the table never outlines the
+/// cell. Built when the menu opens, so it is about the row the click noted.
+fn grid_menu(
+    cx: &mut Context<TableState<ResultDelegate>>,
+) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+    let table = cx.entity().downgrade();
+    move |menu, window, cx| {
+        let Some(table) = table.upgrade() else {
+            return menu;
+        };
+        table.update(cx, |table, cx| table.delegate_mut().menu(menu, window, cx))
+    }
 }
 
 /// A theme is free to make its table-selection tint nearly transparent — the
@@ -173,6 +183,19 @@ fn readable(tint: Hsla) -> Hsla {
 }
 
 impl TableDelegate for ResultDelegate {
+    /// A right click on a row beside its cells — past the last column — is
+    /// the table's own to answer; the cells and pick boxes carry the same menu
+    /// themselves (`grid_menu`).
+    fn context_menu(
+        &mut self,
+        _row_ix: usize,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        self.menu(menu, window, cx)
+    }
+
     fn columns_count(&self, _: &App) -> usize {
         // The checkbox column sits in front of the result's own columns.
         self.result.columns.len() + 1
@@ -311,15 +334,19 @@ impl TableDelegate for ResultDelegate {
                         .bg(border),
                 )
             })
-            // The table answers a right click on a cell itself and stops it
-            // there, so the row this one landed on is noted in the capture
-            // phase, before that happens. The menu the grid opens reads it.
+            // A right click on a cell is stopped by the cell's own menu, so
+            // the row it landed on is noted in the capture phase, before that
+            // happens. The menu (`grid_menu`) reads it.
             // Picking rows with the pointer rides along here for the same
             // reason: the table stops a click on a cell before it bubbles.
             .capture_any_mouse_down(cx.listener(move |table, event: &MouseDownEvent, _, cx| {
                 if event.button == MouseButton::Right {
+                    let selected_column = table
+                        .selected_cell()
+                        .and_then(|(_, col)| table.delegate().data_column(col));
                     let delegate = table.delegate_mut();
                     delegate.menu_row = Some(row_ix);
+                    delegate.menu_column = selected_column;
                     // The cell is filled in by the cell's own handler, which
                     // runs after this one. A click beside the cells — the row
                     // header, the space after the last column — leaves it
@@ -340,7 +367,7 @@ impl TableDelegate for ResultDelegate {
                 if event.modifiers.shift {
                     table.delegate_mut().pick(row_ix, true);
                     cx.notify();
-                } else if event.modifiers.secondary() {
+                } else if event.modifiers.secondary(cx) {
                     table.delegate_mut().pick(row_ix, false);
                     cx.notify();
                 }
@@ -377,13 +404,14 @@ impl TableDelegate for ResultDelegate {
 
         // The menu is built on the frame after the click, but an event from
         // the table only reaches its owner after that, so the cell the menu is
-        // about is noted here — in the capture phase, before the table answers
-        // the click itself.
+        // about is noted here — in the capture phase, before the cell's own
+        // menu answers the click.
         // Clipped text ends in an ellipsis, so a value that runs on past the
         // column edge does not look like one that stops there; numbers line
         // up on their last digit so magnitudes can be compared down a column.
         let numeric = self.is_numeric_column(col_ix);
         let cell = div()
+            .id(("value", col_ix))
             .w_full()
             .min_w_0()
             .truncate()
@@ -396,7 +424,7 @@ impl TableDelegate for ResultDelegate {
                     table.delegate_mut().menu_cell = Some((row_ix, col_ix));
                 }
             }))
-            .on_mouse_down(MouseButton::Right, stop_right_click);
+            .context_menu(grid_menu(cx));
         let deleted = self.is_deleted(row_ix);
         let cell = if deleted {
             // A deleted row is going whatever its cells hold, so the value is
@@ -591,15 +619,25 @@ impl ResultDelegate {
             .is_some_and(|draft| !self.drafts[draft].contains_key(&col_ix))
     }
 
+    /// The menu for the row and cell the last right click noted. A click
+    /// that landed on no row has nothing to offer.
+    pub(super) fn menu(
+        &mut self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(row_ix) = self.menu_row else {
+            return menu;
+        };
+        self.row_menu_items(row_ix, menu, self.menu_column, window, cx)
+    }
+
     /// The items a right click on `row_ix` offers.
     ///
     /// Right-clicking a row outside the sweep acts on that row alone, the way
     /// a file manager does. An empty menu is never shown, so a grid that
     /// cannot be written to simply has none.
-    ///
-    /// This is deliberately not `TableDelegate::context_menu`: the table opens
-    /// a menu of its own for right clicks it handles itself, and leaving that
-    /// one empty is what keeps two menus from appearing at once.
     pub(super) fn row_menu_items(
         &mut self,
         row_ix: usize,
@@ -1096,10 +1134,10 @@ impl ResultDelegate {
             // box's own click is still what answers a plain click, and a drag
             // that ends on another row never produces one.
             .capture_any_mouse_down(cx.listener(
-                move |table, event: &MouseDownEvent, _window, _cx| {
+                move |table, event: &MouseDownEvent, _window, cx| {
                     if event.button != MouseButton::Left
                         || event.modifiers.shift
-                        || event.modifiers.secondary()
+                        || event.modifiers.secondary(cx)
                     {
                         return;
                     }
@@ -1112,7 +1150,6 @@ impl ResultDelegate {
             ))
             // Dragging down the boxes sweeps a range, which is how a run of
             // rows is picked out without counting them first.
-            .on_mouse_down(MouseButton::Right, stop_right_click)
             .on_mouse_move(
                 cx.listener(move |table, event: &MouseMoveEvent, _window, cx| {
                     if event.pressed_button != Some(MouseButton::Left) {
@@ -1134,7 +1171,7 @@ impl ResultDelegate {
                         let modifiers = window.modifiers();
                         // The row's own capture handler has already answered
                         // this one; toggling again here would undo it.
-                        if modifiers.secondary() {
+                        if modifiers.secondary(cx) {
                             return;
                         }
 
@@ -1146,6 +1183,7 @@ impl ResultDelegate {
                         table.focus_handle(cx).focus(window, cx);
                     })),
             )
+            .context_menu(grid_menu(cx))
     }
 
     /// Index into the result's columns of the column shown at `col_ix`.
@@ -1270,6 +1308,7 @@ impl ResultDelegate {
         self.focused_row = self.focused_row.map(follow);
         self.menu_row = None;
         self.menu_cell = None;
+        self.menu_column = None;
 
         self.order = order;
     }

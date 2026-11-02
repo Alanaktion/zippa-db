@@ -694,3 +694,49 @@ fn a_null_foreign_key_has_nothing_to_follow(cx: &mut TestAppContext) {
         "a NULL foreign key value has no row to jump to"
     );
 }
+
+#[gpui_kit::test]
+fn right_clicking_a_cell_opens_the_grid_menu_about_that_cell(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+    focus_grid(cx, &view);
+    assert!(grid_focused(cx, handle, &view));
+
+    right_click_cell(cx, handle, 1);
+    assert!(
+        !grid_focused(cx, handle, &view),
+        "the menu should open and take the keyboard"
+    );
+    assert_eq!(
+        view.read_with(cx, |view, cx| view
+            .grid_for_test()
+            .read(cx)
+            .right_clicked_cell_for_test(cx)),
+        None,
+        "the cell's own menu should answer the click before the table marks the cell"
+    );
+
+    // The first item looks at the value the click landed on: row 2's id.
+    let mut window = VisualTestContext::from_window(handle.into(), cx);
+    window.simulate_keystrokes("down enter");
+    window.run_until_parked();
+    assert_eq!(pending_value(cx).text, "2");
+}
+
+#[gpui_kit::test]
+fn right_clicking_a_picked_rows_box_offers_to_copy_it(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+    pick_row(cx, handle, 0);
+    focus_grid(cx, &view);
+
+    right_click_at(cx, handle, |window| {
+        window.find(("pick", 0usize)).bounds().center()
+    });
+    // A picked row's menu leads with copying the picked rows.
+    let mut window = VisualTestContext::from_window(handle.into(), cx);
+    window.simulate_keystrokes("down enter");
+    window.run_until_parked();
+    let copied = clipboard(cx).expect("the menu should have copied the row");
+    assert!(copied.contains("alpha"), "{copied:?}");
+}

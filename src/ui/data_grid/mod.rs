@@ -16,7 +16,6 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu};
 use gpui_kit::component::table::{ColumnSort, DataTable, TableEvent, TableState};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -403,6 +402,7 @@ impl DataGrid {
                     sweeping: None,
                     menu_row: None,
                     menu_cell: None,
+                    menu_column: None,
                     deletions: HashSet::new(),
                     report_change,
                     report_view,
@@ -941,45 +941,6 @@ impl DataGrid {
         let text = delegate.editor.read(cx).value().to_string();
         let value = staged_value(text, Settings::global(cx).coerce_null_literal);
         delegate.cell(row_ix, col_ix) != &value
-    }
-
-    /// The menu a right click anywhere in the grid opens.
-    ///
-    /// Built when the menu opens rather than now, so it is about the row the
-    /// click landed on and knows how many rows the sweep holds by then.
-    fn row_menu(
-        &self,
-    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
-        let table = self.table.downgrade();
-
-        move |menu, window, cx| {
-            let Some(table) = table.upgrade() else {
-                return menu;
-            };
-
-            // A click that landed on no row — the header, or the space below
-            // the last one — has nothing to offer. The selected column is the
-            // fallback for the menu's column copies when the click was beside
-            // the cells rather than on one.
-            let (row_ix, selected_column) = {
-                let table = table.read(cx);
-                (
-                    table.delegate().menu_row,
-                    table
-                        .selected_cell()
-                        .and_then(|(_, col)| table.delegate().data_column(col)),
-                )
-            };
-            let Some(row_ix) = row_ix else {
-                return menu;
-            };
-
-            table.update(cx, |table, cx| {
-                table
-                    .delegate_mut()
-                    .row_menu_items(row_ix, menu, selected_column, window, cx)
-            })
-        }
     }
 
     fn on_view_cell(&mut self, _: &ViewCell, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1637,7 +1598,6 @@ impl Render for DataGrid {
                     table.delegate_mut().sweeping = None;
                 });
             }))
-            .context_menu(self.row_menu())
             .child(
                 DataTable::new(&self.table)
                     .xsmall()

@@ -130,7 +130,7 @@ Small in number and mostly guarded, but they are panics in paths that process us
 
 Coverage is concentrated in SQLite-backed and pure-logic paths. Gaps worth naming:
 
-- **The right-click menu is untested by design** — the test harness reports the `PopupMenu` as a leaked entity (see the note in `src/ui/tests/mod.rs`). That leaves `menu_row`/`menu_cell` staleness, the export gate, and `stop_right_click` unverified.
+- **The right-click menu has only two tests** — gpui-kit 0.9 stopped leaking the `PopupMenu` in the test harness, so `right_click_at` (`src/ui/tests/mod.rs`) now drives it, but only a cell's View value and a picked row's Copy are covered. `menu_row`/`menu_cell` staleness, the export gate, and the table's own menu past the last column are still unverified.
 - **In `#[cfg(test)]` the keychain is a no-op** (`src/db/store.rs`), so the real credential-store contract is never exercised and each call site has two code paths to keep right.
 - **Column dragging, the row-limit entry/stepper, and a grid keybinding inside a query tab** have no tests (`src/ui/table_view/mod.rs` `on_limit_event`/`on_limit_step`; `src/ui/tests/rows.rs` calls `copy_as` directly).
 - **MySQL is only tested for metadata and imports through paths that cannot reach most of them** — every pure test under `src/db/tests/` opens a SQLite `TempDatabase`, and the MySQL rollback→stop fallback and session-variable restore (`src/db/import/mod.rs`) are MySQL-only.

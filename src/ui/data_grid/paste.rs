@@ -209,7 +209,9 @@ mod tests {
 
     #[test]
     fn only_a_plain_printable_key_starts_an_edit() {
-        let key = |source: &str| Keystroke::parse(source).expect("a keystroke");
+        let key = |source: &str| {
+            Keystroke::parse_with_os(source, gpui_kit::OperatingSystem::Linux).expect("a keystroke")
+        };
         assert_eq!(typed_text(&key("a->a")), Some("a"));
         assert_eq!(typed_text(&key("shift-a->A")), Some("A"));
         assert_eq!(typed_text(&key("5->5")), Some("5"));
