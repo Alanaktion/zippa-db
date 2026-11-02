@@ -356,7 +356,7 @@ fn a_failing_script_of_reads_lists_the_failure_without_asking(cx: &mut TestAppCo
         cx,
         &handle,
         &session,
-        "select name from items;\nselect * from itemz;",
+        "select name from items;\nselect * from itemz;\nselect name from items;",
     );
     press_workspace(cx, &handle, "secondary-shift-enter");
     cx.run_until_parked();
@@ -366,7 +366,10 @@ fn a_failing_script_of_reads_lists_the_failure_without_asking(cx: &mut TestAppCo
         "a script that only reads has nothing to roll back, so nothing to ask"
     );
     let (results, _) = session.read_with(cx, |session, cx| session.results_for_test(cx));
-    assert_eq!(results, 2, "the first statement's rows, then the failure");
+    assert_eq!(
+        results, 3,
+        "both reads' rows, then the failure: the run carries on past it"
+    );
     assert_eq!(
         transaction(cx, &session),
         TxnState::Idle,

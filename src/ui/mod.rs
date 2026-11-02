@@ -76,7 +76,8 @@ pub fn notify_info(window: &mut Window, cx: &mut App, message: impl Into<SharedS
 
 /// A small Copy button beside an error, putting `message` on the clipboard
 /// as the server or the app said it: the whole text, never the shown
-/// excerpt, and without the `Error: ` the display adds. Error text is drawn
+/// excerpt, and without the `Error: ` the display adds (callers pass the
+/// message before it is added). Error text is drawn
 /// as plain text that cannot be selected, so this is the way to get it into
 /// a search, a ticket, or the Agents panel.
 pub fn copy_error_button(id: impl Into<ElementId>, message: impl Into<SharedString>) -> Button {
@@ -93,14 +94,12 @@ pub fn copy_error_button(id: impl Into<ElementId>, message: impl Into<SharedStri
         })
 }
 
-/// What [`copy_error_button`] copies: the message less any `Error: ` a
-/// caller already put in front of it.
+/// What [`copy_error_button`] copies: the message as the caller holds it,
+/// less surrounding whitespace. Callers pass it before the display's
+/// `Error: ` is added, so a server message that itself starts with
+/// `Error: ` is copied whole.
 pub(crate) fn copied_error(message: &str) -> String {
-    message
-        .strip_prefix("Error: ")
-        .unwrap_or(message)
-        .trim()
-        .to_string()
+    message.trim().to_string()
 }
 
 /// A ghost button whose text is the theme's muted colour: it reads as chrome
@@ -208,9 +207,11 @@ mod copy_error_tests {
     use super::copied_error;
 
     #[test]
-    fn a_copied_error_leaves_the_display_prefix_behind() {
-        assert_eq!(copied_error("Error: no such table: x"), "no such table: x");
+    fn a_copied_error_is_the_message_whole() {
         assert_eq!(copied_error("no such table: x\n"), "no such table: x");
-        assert_eq!(copied_error("Errors: 3"), "Errors: 3");
+        assert_eq!(
+            copied_error("Error: from the server"),
+            "Error: from the server"
+        );
     }
 }
