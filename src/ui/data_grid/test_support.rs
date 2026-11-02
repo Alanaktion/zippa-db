@@ -123,6 +123,11 @@ impl DataGrid {
     }
 
     /// The rows a sweep has picked out, in display order.
+    /// The cell the table itself has marked as right-clicked, if any.
+    pub(crate) fn right_clicked_cell_for_test(&self, cx: &App) -> Option<(usize, usize)> {
+        self.table.read(cx).right_clicked_cell()
+    }
+
     pub(crate) fn rows_selected_for_test(&self, cx: &App) -> Vec<usize> {
         let mut rows: Vec<usize> = self
             .table

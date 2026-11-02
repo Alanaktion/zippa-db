@@ -1212,6 +1212,7 @@ impl ConnectionEditor {
 
         DropdownButton::new("editor-connect-split")
             .primary()
+            .menu_accessibility_label("More ways to connect")
             .button(
                 Button::new("editor-connect")
                     .label("Connect")

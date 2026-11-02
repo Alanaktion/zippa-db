@@ -18,7 +18,7 @@
 use gpui_kit::SystemMenuType;
 use gpui_kit::base::GlobalState;
 use gpui_kit::base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
-use gpui_kit::{App, KeyBinding, Menu, MenuItem, OsAction, actions};
+use gpui_kit::{App, Menu, MenuItem, OsAction, actions};
 
 use crate::app::{
     CloseConnection, NewConnection, NextConnection, OpenSqliteFile, PreviousConnection,
@@ -58,8 +58,8 @@ pub fn init(cx: &mut App) {
     // No context: these apply to the app as a whole, not to whatever has
     // focus, the same way `OpenSettings` is bound in `keymap.rs`.
     cx.bind_keys([
-        KeyBinding::new("secondary-q", Quit, None),
-        KeyBinding::new("secondary-h", Hide, None),
+        crate::keymap::key(cx, "secondary-q", Quit, None),
+        crate::keymap::key(cx, "secondary-h", Hide, None),
     ]);
 
     cx.set_menus(menus());

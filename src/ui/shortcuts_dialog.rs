@@ -9,7 +9,7 @@
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Keystroke, Window, actions, div, px};
+use gpui_kit::{App, Keystroke, OperatingSystem, Window, actions, div, px};
 
 actions!(zippa_db, [ShowShortcuts]);
 
@@ -190,26 +190,28 @@ pub fn open(window: &mut Window, cx: &mut App) {
         return;
     }
 
-    window.open_dialog(cx, |dialog, _window, _cx| {
+    // `secondary-` is spelled for whichever OS the app is running on.
+    let os = cx.platform_info().os;
+    window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
             .w(px(WIDTH))
             .h(px(HEIGHT))
             .title("Keyboard shortcuts")
             .overlay_closable(true)
             .keyboard(true)
-            .child(body())
+            .child(body(os))
     });
 }
 
-fn body() -> impl IntoElement {
-    div()
-        .id("shortcuts")
-        .size_full()
-        .overflow_y_scroll()
-        .child(v_flex().gap_4().children(GROUPS.iter().map(group)))
+fn body(os: OperatingSystem) -> impl IntoElement {
+    div().id("shortcuts").size_full().overflow_y_scroll().child(
+        v_flex()
+            .gap_4()
+            .children(GROUPS.iter().map(|group| render_group(group, os))),
+    )
 }
 
-fn group(group: &Group) -> impl IntoElement {
+fn render_group(group: &Group, os: OperatingSystem) -> impl IntoElement {
     v_flex()
         .gap_1()
         .child(
@@ -218,10 +220,10 @@ fn group(group: &Group) -> impl IntoElement {
                 .font_weight(gpui_kit::FontWeight::BOLD)
                 .child(group.title),
         )
-        .children(group.rows.iter().map(|(what, keys)| row(what, keys)))
+        .children(group.rows.iter().map(|(what, keys)| row(what, keys, os)))
 }
 
-fn row(what: &'static str, keys: &'static [&'static str]) -> impl IntoElement {
+fn row(what: &'static str, keys: &'static [&'static str], os: OperatingSystem) -> impl IntoElement {
     h_flex()
         .justify_between()
         .gap_4()
@@ -234,13 +236,18 @@ fn row(what: &'static str, keys: &'static [&'static str]) -> impl IntoElement {
                 .children(keys.iter().enumerate().flat_map(|(ix, keys)| {
                     let separator =
                         (ix > 0).then(|| div().text_xs().child("or").into_any_element());
-                    let stroke = Keystroke::parse(keys)
-                        .unwrap_or_else(|_| panic!("bad keystroke {keys:?} in the shortcut list"));
+                    let stroke = keystroke(keys, os);
                     separator
                         .into_iter()
                         .chain([Kbd::new(stroke).into_any_element()])
                 })),
         )
+}
+
+/// A listed keystroke as the keyboard of `os` spells it.
+fn keystroke(keys: &str, os: OperatingSystem) -> Keystroke {
+    Keystroke::parse_with_os(keys, os)
+        .unwrap_or_else(|_| panic!("bad keystroke {keys:?} in the shortcut list"))
 }
 
 #[cfg(test)]
@@ -249,12 +256,29 @@ mod tests {
 
     #[test]
     fn every_listed_keystroke_parses() {
-        for group in GROUPS {
-            for (what, keys) in group.rows {
-                for keys in *keys {
-                    assert!(Keystroke::parse(keys).is_ok(), "{what}: {keys:?}");
+        for os in [
+            OperatingSystem::Mac,
+            OperatingSystem::Linux,
+            OperatingSystem::Windows,
+        ] {
+            for group in GROUPS {
+                for (what, keys) in group.rows {
+                    for keys in *keys {
+                        assert!(
+                            Keystroke::parse_with_os(keys, os).is_ok(),
+                            "{what}: {keys:?} on {os:?}"
+                        );
+                    }
                 }
             }
         }
+    }
+
+    #[test]
+    fn secondary_is_shown_as_each_platforms_own_key() {
+        let mac = keystroke("secondary-k", OperatingSystem::Mac).modifiers;
+        assert!(mac.platform && !mac.control);
+        let linux = keystroke("secondary-k", OperatingSystem::Linux).modifiers;
+        assert!(linux.control && !linux.platform);
     }
 }

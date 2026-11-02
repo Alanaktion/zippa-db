@@ -15,8 +15,8 @@ use gpui_kit::component::{Root, Theme, ThemeMode, WindowExt};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     App, AppContext as _, Bounds, Context, ElementId, Entity, InputEvent as _, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, TestAppContext, Window,
-    WindowHandle, point, px, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, TestAppContext,
+    VisualTestContext, Window, WindowHandle, point, px, size,
 };
 use uuid::Uuid;
 
@@ -972,33 +972,13 @@ fn export_query_result(
 fn pick_through(cx: &mut TestAppContext, handle: WindowHandle<Session>, row_ix: usize) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
-        let position = window.find(("pick", row_ix)).bounds().center();
-        let modifiers = Modifiers {
+        let shift = Modifiers {
             shift: true,
             ..Default::default()
         };
-
-        window.dispatch_event(
-            MouseDownEvent {
-                button: MouseButton::Left,
-                position,
-                modifiers,
-                click_count: 1,
-                first_mouse: false,
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.dispatch_event(
-            MouseUpEvent {
-                button: MouseButton::Left,
-                position,
-                modifiers,
-                click_count: 1,
-            }
-            .to_platform_input(),
-            cx,
-        );
+        // Lets Shift go afterwards, as the keyboard would, so the next click
+        // is a plain one.
+        window.click_with_modifiers(("pick", row_ix), shift, cx);
     })
     .unwrap();
 }
@@ -1023,13 +1003,25 @@ fn click_row(
 ) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.draw(cx).clear(cx);
-        let position = window.find(("row", row_ix)).bounds().center();
+        window.click_with_modifiers(("row", row_ix), modifiers, cx);
+    })
+    .unwrap();
+}
 
+/// Right-click a point in the window and let the menu that opens draw.
+fn right_click_at(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Session>,
+    at: impl FnOnce(&mut Window) -> Point<Pixels>,
+) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        let position = at(window);
         window.dispatch_event(
             MouseDownEvent {
-                button: MouseButton::Left,
+                button: MouseButton::Right,
                 position,
-                modifiers,
+                modifiers: Modifiers::default(),
                 click_count: 1,
                 first_mouse: false,
             }
@@ -1038,9 +1030,9 @@ fn click_row(
         );
         window.dispatch_event(
             MouseUpEvent {
-                button: MouseButton::Left,
+                button: MouseButton::Right,
                 position,
-                modifiers,
+                modifiers: Modifiers::default(),
                 click_count: 1,
             }
             .to_platform_input(),
@@ -1048,17 +1040,20 @@ fn click_row(
         );
     })
     .unwrap();
+    // The menu is built, and takes the keyboard, a frame after the click.
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    cx.run_until_parked();
 }
 
-// The real right-click path — pointer over a cell, menu opens, item chosen —
-// was checked by hand against a running grid and by a throwaway test: the
-// assertions passed, but `PopupMenu` keeps itself alive through the
-// subscription its own context menu registers, so every such test ends in the
-// harness's leaked-entity panic. The menu's own logic is covered through
-// `request_delete_for_test` and `discard_draft_for_test`, which call exactly
-// what the items call. A tab's menu takes the same two steps: the throwaway
-// test confirmed that a right click on a tab's title opens it and that its
-// items run, and `Session::close_scope_for_test` calls what they call.
+/// Right-click a row's first value cell, just past its pick box.
+fn right_click_cell(cx: &mut TestAppContext, handle: WindowHandle<Session>, row_ix: usize) {
+    right_click_at(cx, handle, |window| {
+        let row = window.find(("row", row_ix)).bounds();
+        point(row.left() + px(60.), row.center().y)
+    });
+}
 
 /// Put one saved SQLite connection in the manager's list.
 fn saved_connection(cx: &mut TestAppContext, handle: &WorkspaceWindow) -> (TempDatabase, Uuid) {

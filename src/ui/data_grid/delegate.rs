@@ -12,9 +12,9 @@ use std::collections::{HashMap, HashSet};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, h_flex};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, h_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Context, Div, Entity, Focusable as _, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -71,6 +71,10 @@ pub(super) struct ResultDelegate {
     pub(super) menu_row: Option<usize>,
     /// Cell it landed on, when it landed on one at all.
     pub(super) menu_cell: Option<(usize, usize)>,
+    /// The result column the table's selected cell was in when the click
+    /// landed: what the menu's column copies fall back to when the click was
+    /// beside the cells rather than on one.
+    pub(super) menu_column: Option<usize>,
     /// Rows marked for deletion, by their index into the result. They stay on
     /// screen, struck through, until the owner writes them away.
     pub(super) deletions: HashSet<usize>,
@@ -147,18 +151,34 @@ const FOCUS_BAR_WIDTH: f32 = 2.;
 /// How much of the selection tint has to be there for a row to read as marked.
 const MIN_SELECTION_ALPHA: f32 = 0.25;
 
-/// Keeps the table from marking the cell a right click landed on.
+/// The grid's right-click menu, as a cell or a pick box carries it.
 ///
-/// The table outlines that cell while its own menu is up and clears the mark
-/// when the next click lands outside — but it only registers that click-out
-/// handler for a right click on a *row*, so a right click on a cell leaves the
-/// outline behind for good. The grid's menu is its own (see `row_menu`) and
-/// does not need the table's mark at all, so the click is stopped before the
-/// table's handler sees it: that handler stops the event itself, one listener
-/// later, and the grid's own menu — whose listener sits at the root and runs
-/// before either of them — has already opened by then.
-fn stop_right_click(_: &MouseDownEvent, _: &mut Window, cx: &mut App) {
-    cx.stop_propagation();
+/// Each cell carries the menu itself rather than leaving it to an element
+/// around the table: a context menu listens before the elements inside it
+/// paint, so the innermost one answers first, and the table answers a right
+/// click on a cell by stopping it there. Being innermost, the cell's menu also
+/// stops the click before the table sees it, so the table never outlines the
+/// cell. Built when the menu opens, so it is about the row the click noted.
+fn grid_menu(
+    cx: &mut Context<TableState<ResultDelegate>>,
+) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+    let table = cx.entity().downgrade();
+    move |menu, window, cx| {
+        let Some(table) = table.upgrade() else {
+            return menu;
+        };
+        table.update(cx, |table, cx| table.delegate_mut().menu(menu, window, cx))
+    }
+}
+
+/// The padding the table gives an `xsmall` cell.
+///
+/// Every column is built with none (`Column::p_0`) and the delegate's own
+/// cells and headers carry this instead, so the whole cell is the element
+/// that holds the grid's menu: left to the table, a right click in the
+/// padding lands on the table's own cell, which stops it before any menu.
+fn cell_padding() -> gpui_kit::Edges<Pixels> {
+    Size::XSmall.table_cell_padding()
 }
 
 /// A theme is free to make its table-selection tint nearly transparent — the
@@ -173,6 +193,19 @@ fn readable(tint: Hsla) -> Hsla {
 }
 
 impl TableDelegate for ResultDelegate {
+    /// A right click on a row beside its cells — past the last column — is
+    /// the table's own to answer; the cells and pick boxes carry the same menu
+    /// themselves (`grid_menu`).
+    fn context_menu(
+        &mut self,
+        _row_ix: usize,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        self.menu(menu, window, cx)
+    }
+
     fn columns_count(&self, _: &App) -> usize {
         // The checkbox column sits in front of the result's own columns.
         self.result.columns.len() + 1
@@ -187,7 +220,10 @@ impl TableDelegate for ResultDelegate {
         let Some(data_ix) = self.data_column(col_ix) else {
             // Picking rows is not a value, so its column neither sorts nor
             // resizes.
-            return Column::new("", "").width(px(PICK_WIDTH)).resizable(false);
+            return Column::new("", "")
+                .width(px(PICK_WIDTH))
+                .resizable(false)
+                .p_0();
         };
 
         let name = self
@@ -212,6 +248,7 @@ impl TableDelegate for ResultDelegate {
             .resizable(true)
             .sortable()
             .sort(sort)
+            .p_0()
     }
 
     /// Answer a header click.
@@ -311,15 +348,19 @@ impl TableDelegate for ResultDelegate {
                         .bg(border),
                 )
             })
-            // The table answers a right click on a cell itself and stops it
-            // there, so the row this one landed on is noted in the capture
-            // phase, before that happens. The menu the grid opens reads it.
+            // A right click on a cell is stopped by the cell's own menu, so
+            // the row it landed on is noted in the capture phase, before that
+            // happens. The menu (`grid_menu`) reads it.
             // Picking rows with the pointer rides along here for the same
             // reason: the table stops a click on a cell before it bubbles.
             .capture_any_mouse_down(cx.listener(move |table, event: &MouseDownEvent, _, cx| {
                 if event.button == MouseButton::Right {
+                    let selected_column = table
+                        .selected_cell()
+                        .and_then(|(_, col)| table.delegate().data_column(col));
                     let delegate = table.delegate_mut();
                     delegate.menu_row = Some(row_ix);
+                    delegate.menu_column = selected_column;
                     // The cell is filled in by the cell's own handler, which
                     // runs after this one. A click beside the cells — the row
                     // header, the space after the last column — leaves it
@@ -340,7 +381,7 @@ impl TableDelegate for ResultDelegate {
                 if event.modifiers.shift {
                     table.delegate_mut().pick(row_ix, true);
                     cx.notify();
-                } else if event.modifiers.secondary() {
+                } else if event.modifiers.secondary(cx) {
                     table.delegate_mut().pick(row_ix, false);
                     cx.notify();
                 }
@@ -361,8 +402,11 @@ impl TableDelegate for ResultDelegate {
         if self.editing == Some((row_ix, col_ix)) {
             // The table paints its selected-cell tint over this, so the editor
             // carries its own background to stay readable underneath it.
+            let pad = cell_padding();
             return div()
                 .size_full()
+                .px(pad.left)
+                .py(pad.top)
                 .bg(cx.theme().background)
                 .child(
                     Input::new(&self.editor)
@@ -375,10 +419,6 @@ impl TableDelegate for ResultDelegate {
                 .into_any_element();
         }
 
-        // The menu is built on the frame after the click, but an event from
-        // the table only reaches its owner after that, so the cell the menu is
-        // about is noted here — in the capture phase, before the table answers
-        // the click itself.
         // Clipped text ends in an ellipsis, so a value that runs on past the
         // column edge does not look like one that stops there; numbers line
         // up on their last digit so magnitudes can be compared down a column.
@@ -390,13 +430,7 @@ impl TableDelegate for ResultDelegate {
             // The gap keeps a right-aligned number off the next column's text.
             .when(numeric, |cell| cell.text_right().pr_2())
             .font_family(self.font.clone())
-            .text_xs()
-            .capture_any_mouse_down(cx.listener(move |table, event: &MouseDownEvent, _, _cx| {
-                if event.button == MouseButton::Right {
-                    table.delegate_mut().menu_cell = Some((row_ix, col_ix));
-                }
-            }))
-            .on_mouse_down(MouseButton::Right, stop_right_click);
+            .text_xs();
         let deleted = self.is_deleted(row_ix);
         let cell = if deleted {
             // A deleted row is going whatever its cells hold, so the value is
@@ -417,40 +451,59 @@ impl TableDelegate for ResultDelegate {
             cell
         };
 
-        // A draft cell nobody has typed into is not NULL: it is whatever the
-        // server puts there, so it says so rather than promising a value.
-        if self.is_untouched_draft(row_ix, col_ix) {
-            return cell
-                .text_color(cx.theme().muted_foreground)
+        let content = if self.is_untouched_draft(row_ix, col_ix) {
+            // A draft cell nobody has typed into is not NULL: it is whatever
+            // the server puts there, so it says so rather than promising a
+            // value.
+            cell.text_color(cx.theme().muted_foreground)
                 .child("default")
-                .into_any_element();
-        }
-
-        match self.cell(row_ix, col_ix) {
-            Some(value) => {
-                // A staged binary value is hex, not the value itself: show
-                // its size, the way the loaded value's own stand-in does,
-                // rather than a wall of hex digits.
-                let staged_binary = self.is_staged(row_ix, col_ix)
-                    && self
-                        .result
-                        .column_types
-                        .get(col_ix)
-                        .is_some_and(|name| query::is_blob_type(name))
-                    && value.len() % 2 == 0
-                    && value.bytes().all(|byte| byte.is_ascii_hexdigit());
-                if staged_binary {
-                    cell.child(format!("<{} bytes>", value.len() / 2))
-                        .into_any_element()
-                } else {
-                    cell.child(value.to_string()).into_any_element()
+        } else {
+            match self.cell(row_ix, col_ix) {
+                Some(value) => {
+                    // A staged binary value is hex, not the value itself: show
+                    // its size, the way the loaded value's own stand-in does,
+                    // rather than a wall of hex digits.
+                    let staged_binary = self.is_staged(row_ix, col_ix)
+                        && self
+                            .result
+                            .column_types
+                            .get(col_ix)
+                            .is_some_and(|name| query::is_blob_type(name))
+                        && value.len() % 2 == 0
+                        && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+                    if staged_binary {
+                        cell.child(format!("<{} bytes>", value.len() / 2))
+                    } else {
+                        cell.child(value.to_string())
+                    }
                 }
+                None => cell.text_color(cx.theme().muted_foreground).child("NULL"),
             }
-            None => cell
-                .text_color(cx.theme().muted_foreground)
-                .child("NULL")
-                .into_any_element(),
-        }
+        };
+
+        // The whole cell, padding included, holds the menu, so a right click
+        // anywhere in it is about this value. The value's own styling stays
+        // on the content: the menu draws inside this element and would
+        // otherwise inherit the value's font, colour, and strike-through.
+        let pad = cell_padding();
+        div()
+            .id(("value", col_ix))
+            .size_full()
+            .pl(pad.left)
+            .pr(pad.right)
+            .pt(pad.top)
+            .pb(pad.bottom)
+            // The menu is built on the frame after the click, but an event
+            // from the table only reaches its owner after that, so the cell
+            // the menu is about is noted here, in the capture phase.
+            .capture_any_mouse_down(cx.listener(move |table, event: &MouseDownEvent, _, _cx| {
+                if event.button == MouseButton::Right {
+                    table.delegate_mut().menu_cell = Some((row_ix, col_ix));
+                }
+            }))
+            .context_menu(grid_menu(cx))
+            .child(content)
+            .into_any_element()
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {
@@ -481,9 +534,13 @@ impl TableDelegate for ResultDelegate {
             let foreign_key = info.is_some_and(|info| info.references.is_some());
             let tooltip = text.tooltip;
             let muted = cx.theme().muted_foreground;
+            // The table leaves room for the sort icon on the right itself.
+            let pad = cell_padding();
             return h_flex()
                 .id(("column-header", data_ix))
                 .size_full()
+                .pl(pad.left)
+                .py(pad.top)
                 .gap_1()
                 .overflow_hidden()
                 .when(self.is_numeric_column(data_ix), |header| {
@@ -519,6 +576,9 @@ impl TableDelegate for ResultDelegate {
 
         div()
             .size_full()
+            // The table keeps a sort icon's width free on the right; the same
+            // on the left keeps the box over the column's own boxes.
+            .pl(cell_padding().right)
             .flex()
             .items_center()
             .justify_center()
@@ -591,15 +651,25 @@ impl ResultDelegate {
             .is_some_and(|draft| !self.drafts[draft].contains_key(&col_ix))
     }
 
+    /// The menu for the row and cell the last right click noted. A click
+    /// that landed on no row has nothing to offer.
+    pub(super) fn menu(
+        &mut self,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(row_ix) = self.menu_row else {
+            return menu;
+        };
+        self.row_menu_items(row_ix, menu, self.menu_column, window, cx)
+    }
+
     /// The items a right click on `row_ix` offers.
     ///
     /// Right-clicking a row outside the sweep acts on that row alone, the way
     /// a file manager does. An empty menu is never shown, so a grid that
     /// cannot be written to simply has none.
-    ///
-    /// This is deliberately not `TableDelegate::context_menu`: the table opens
-    /// a menu of its own for right clicks it handles itself, and leaving that
-    /// one empty is what keeps two menus from appearing at once.
     pub(super) fn row_menu_items(
         &mut self,
         row_ix: usize,
@@ -1096,10 +1166,10 @@ impl ResultDelegate {
             // box's own click is still what answers a plain click, and a drag
             // that ends on another row never produces one.
             .capture_any_mouse_down(cx.listener(
-                move |table, event: &MouseDownEvent, _window, _cx| {
+                move |table, event: &MouseDownEvent, _window, cx| {
                     if event.button != MouseButton::Left
                         || event.modifiers.shift
-                        || event.modifiers.secondary()
+                        || event.modifiers.secondary(cx)
                     {
                         return;
                     }
@@ -1112,7 +1182,6 @@ impl ResultDelegate {
             ))
             // Dragging down the boxes sweeps a range, which is how a run of
             // rows is picked out without counting them first.
-            .on_mouse_down(MouseButton::Right, stop_right_click)
             .on_mouse_move(
                 cx.listener(move |table, event: &MouseMoveEvent, _window, cx| {
                     if event.pressed_button != Some(MouseButton::Left) {
@@ -1134,7 +1203,7 @@ impl ResultDelegate {
                         let modifiers = window.modifiers();
                         // The row's own capture handler has already answered
                         // this one; toggling again here would undo it.
-                        if modifiers.secondary() {
+                        if modifiers.secondary(cx) {
                             return;
                         }
 
@@ -1146,6 +1215,7 @@ impl ResultDelegate {
                         table.focus_handle(cx).focus(window, cx);
                     })),
             )
+            .context_menu(grid_menu(cx))
     }
 
     /// Index into the result's columns of the column shown at `col_ix`.
@@ -1270,6 +1340,7 @@ impl ResultDelegate {
         self.focused_row = self.focused_row.map(follow);
         self.menu_row = None;
         self.menu_cell = None;
+        self.menu_column = None;
 
         self.order = order;
     }

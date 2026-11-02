@@ -31,8 +31,8 @@ use gpui_kit::{
     AnyWindowHandle, App, BorderStyle, Bounds, ContentMask, Context, Corners, Entity, FocusHandle,
     Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
     MouseMoveEvent, ParentElement, PathBuilder, Pixels, Point, Render, Rgba, ScrollDelta,
-    ScrollWheelEvent, SharedString, Size, Styled, TextAlign, TextRun, Window, canvas, div, fill,
-    point, px, quad, size, transparent_black,
+    ScrollEvent, SharedString, Size, Styled, TextAlign, TextRun, Window, canvas, div, fill, point,
+    px, quad, size, transparent_black,
 };
 
 use crate::db::erd::{
@@ -620,7 +620,7 @@ impl ErdView {
                         }
                         this.last_mouse = Some(at);
                     }))
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                    .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
                         let amount = match event.delta {
                             ScrollDelta::Pixels(delta) => delta.y.as_f32() / 48.0,
                             ScrollDelta::Lines(lines) => lines.y,
