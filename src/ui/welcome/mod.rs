@@ -793,12 +793,23 @@ impl Welcome {
             .px_6()
             .pt_3()
             .child(
-                div()
-                    .max_h(px(96.))
-                    .overflow_y_scrollbar()
-                    .text_sm()
-                    .text_color(cx.theme().danger)
-                    .child(format!("Error: {error}")),
+                h_flex()
+                    .items_start()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .max_h(px(96.))
+                            .overflow_y_scrollbar()
+                            .text_sm()
+                            .text_color(cx.theme().danger)
+                            .child(format!("Error: {error}")),
+                    )
+                    .child(
+                        crate::ui::copy_error_button("copy-welcome-error", error.to_string())
+                            .flex_none(),
+                    ),
             )
     }
 

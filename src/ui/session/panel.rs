@@ -1449,10 +1449,21 @@ impl SessionPanel {
             .overflow_y_scroll()
             .p_4()
             .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().danger)
-                    .child(format!("Error: {error}")),
+                h_flex()
+                    .items_start()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .text_color(cx.theme().danger)
+                            .child(format!("Error: {error}")),
+                    )
+                    .child(
+                        crate::ui::copy_error_button("copy-query-error", error.to_string())
+                            .flex_none(),
+                    ),
             )
             .into_any_element()
     }

@@ -164,6 +164,9 @@ impl TableView {
                             .text_color(message.1)
                             .child(message.0.clone())
                             .into_any_element()
+                    })
+                    .when_some(self.error.clone(), |this, error| {
+                        this.child(crate::ui::copy_error_button("copy-table-error", error))
                     }),
             )
             .child(

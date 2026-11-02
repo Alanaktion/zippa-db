@@ -1123,6 +1123,10 @@ impl ConnectionEditor {
         if self.status == Status::ConfirmClose {
             return Some(self.render_confirm_close(cx).into_any_element());
         }
+        let failed = match &self.status {
+            Status::Failed(message) => Some(message.clone()),
+            _ => None,
+        };
         let (icon, color, text) = match &self.status {
             Status::None | Status::ConfirmClose => return None,
             Status::Testing => (
@@ -1154,6 +1158,11 @@ impl ConnectionEditor {
                     Icon::new(icon).flex_none().mt_0p5().into_any_element()
                 })
                 .child(div().flex_1().min_w_0().child(text))
+                .when_some(failed, |this, message| {
+                    this.child(
+                        crate::ui::copy_error_button("copy-editor-error", message).flex_none(),
+                    )
+                })
                 .into_any_element(),
         )
     }
