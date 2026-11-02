@@ -37,7 +37,7 @@ Connections, tabs, settings, and query history live in the OS config dir (`~/Lib
 
 ## Building from source
 
-Requires Rust 1.95+. macOS needs full Xcode (Metal toolchain); on Linux run `./script/linux` for build dependencies.
+Requires Rust 1.98+. macOS needs full Xcode (Metal toolchain); on Linux run `./script/linux` for build dependencies.
 
 ```bash
 git clone https://github.com/Alanaktion/zippa-db.git

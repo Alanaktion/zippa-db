@@ -8,7 +8,7 @@ This file records the architecture and the non-obvious rules; the code is the so
 
 ## Commands
 
-Building needs a recent stable Rust (1.95 or newer — GPUI uses `std::hint::cold_path`); CI tracks the latest stable.
+Building needs a recent stable Rust (1.98 or newer — GPUI uses `Option::map_or_default`); CI tracks the latest stable.
 
 ```bash
 cargo run              # debug build; opt-level=1 for own code, 3 for deps (see Cargo.toml) — GPUI is unusably slow otherwise

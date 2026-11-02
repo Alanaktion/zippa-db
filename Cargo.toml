@@ -2,8 +2,8 @@
 name = "zippa-db"
 version = "0.1.2"
 edition = "2024"
-# GPUI uses `std::hint::cold_path`, stable since 1.95.
-rust-version = "1.95"
+# GPUI uses `Option::map_or_default`, stable since 1.98.
+rust-version = "1.98"
 description = "A fast, lightweight, cross-platform database client for PostgreSQL, MySQL, and SQLite."
 license = "MIT"
 repository = "https://github.com/Alanaktion/zippa-db"
