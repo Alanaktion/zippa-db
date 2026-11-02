@@ -724,6 +724,42 @@ fn right_clicking_a_cell_opens_the_grid_menu_about_that_cell(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
+fn right_clicking_a_later_column_opens_the_menu_about_that_column(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view(cx);
+    cx.run_until_parked();
+    let id_width = view.read_with(cx, |view, cx| {
+        view.grid_for_test().read(cx).column_widths_for_test(cx)[0]
+    });
+
+    // Row 1's name is NULL, so row 0's is the one with something to show.
+    right_click_at(cx, handle, |window| {
+        let row = window.find(("row", 0usize)).bounds();
+        point(row.left() + px(34.) + id_width + px(10.), row.center().y)
+    });
+    let mut window = VisualTestContext::from_window(handle.into(), cx);
+    window.simulate_keystrokes("down enter");
+    window.run_until_parked();
+    assert_eq!(pending_value(cx).text, "alpha");
+}
+
+#[gpui_kit::test]
+fn right_clicking_a_cells_padding_still_opens_the_menu_about_it(cx: &mut TestAppContext) {
+    let (_database, handle, _view) = table_view(cx);
+    cx.run_until_parked();
+
+    // One pixel into the first value cell, past the pick boxes' column: the
+    // gap the table would otherwise pad around the value.
+    right_click_at(cx, handle, |window| {
+        let row = window.find(("row", 1usize)).bounds();
+        point(row.left() + px(34.) + px(1.), row.top() + px(1.))
+    });
+    let mut window = VisualTestContext::from_window(handle.into(), cx);
+    window.simulate_keystrokes("down enter");
+    window.run_until_parked();
+    assert_eq!(pending_value(cx).text, "2");
+}
+
+#[gpui_kit::test]
 fn right_clicking_a_picked_rows_box_offers_to_copy_it(cx: &mut TestAppContext) {
     let (_database, handle, view) = table_view(cx);
     cx.run_until_parked();

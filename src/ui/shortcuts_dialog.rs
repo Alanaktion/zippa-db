@@ -236,13 +236,18 @@ fn row(what: &'static str, keys: &'static [&'static str], os: OperatingSystem) -
                 .children(keys.iter().enumerate().flat_map(|(ix, keys)| {
                     let separator =
                         (ix > 0).then(|| div().text_xs().child("or").into_any_element());
-                    let stroke = Keystroke::parse_with_os(keys, os)
-                        .unwrap_or_else(|_| panic!("bad keystroke {keys:?} in the shortcut list"));
+                    let stroke = keystroke(keys, os);
                     separator
                         .into_iter()
                         .chain([Kbd::new(stroke).into_any_element()])
                 })),
         )
+}
+
+/// A listed keystroke as the keyboard of `os` spells it.
+fn keystroke(keys: &str, os: OperatingSystem) -> Keystroke {
+    Keystroke::parse_with_os(keys, os)
+        .unwrap_or_else(|_| panic!("bad keystroke {keys:?} in the shortcut list"))
 }
 
 #[cfg(test)]
@@ -267,5 +272,13 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn secondary_is_shown_as_each_platforms_own_key() {
+        let mac = keystroke("secondary-k", OperatingSystem::Mac).modifiers;
+        assert!(mac.platform && !mac.control);
+        let linux = keystroke("secondary-k", OperatingSystem::Linux).modifiers;
+        assert!(linux.control && !linux.platform);
     }
 }

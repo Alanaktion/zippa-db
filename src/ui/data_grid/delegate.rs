@@ -14,7 +14,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, h_flex};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, h_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Context, Div, Entity, Focusable as _, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -171,6 +171,16 @@ fn grid_menu(
     }
 }
 
+/// The padding the table gives an `xsmall` cell.
+///
+/// Every column is built with none (`Column::p_0`) and the delegate's own
+/// cells and headers carry this instead, so the whole cell is the element
+/// that holds the grid's menu: left to the table, a right click in the
+/// padding lands on the table's own cell, which stops it before any menu.
+fn cell_padding() -> gpui_kit::Edges<Pixels> {
+    Size::XSmall.table_cell_padding()
+}
+
 /// A theme is free to make its table-selection tint nearly transparent — the
 /// bundled dark themes that set no table colours inherit a list tint of about
 /// an eighth — and over a dark background that leaves a picked row looking
@@ -210,7 +220,10 @@ impl TableDelegate for ResultDelegate {
         let Some(data_ix) = self.data_column(col_ix) else {
             // Picking rows is not a value, so its column neither sorts nor
             // resizes.
-            return Column::new("", "").width(px(PICK_WIDTH)).resizable(false);
+            return Column::new("", "")
+                .width(px(PICK_WIDTH))
+                .resizable(false)
+                .p_0();
         };
 
         let name = self
@@ -235,6 +248,7 @@ impl TableDelegate for ResultDelegate {
             .resizable(true)
             .sortable()
             .sort(sort)
+            .p_0()
     }
 
     /// Answer a header click.
@@ -388,8 +402,11 @@ impl TableDelegate for ResultDelegate {
         if self.editing == Some((row_ix, col_ix)) {
             // The table paints its selected-cell tint over this, so the editor
             // carries its own background to stay readable underneath it.
+            let pad = cell_padding();
             return div()
                 .size_full()
+                .px(pad.left)
+                .py(pad.top)
                 .bg(cx.theme().background)
                 .child(
                     Input::new(&self.editor)
@@ -402,29 +419,18 @@ impl TableDelegate for ResultDelegate {
                 .into_any_element();
         }
 
-        // The menu is built on the frame after the click, but an event from
-        // the table only reaches its owner after that, so the cell the menu is
-        // about is noted here — in the capture phase, before the cell's own
-        // menu answers the click.
         // Clipped text ends in an ellipsis, so a value that runs on past the
         // column edge does not look like one that stops there; numbers line
         // up on their last digit so magnitudes can be compared down a column.
         let numeric = self.is_numeric_column(col_ix);
         let cell = div()
-            .id(("value", col_ix))
             .w_full()
             .min_w_0()
             .truncate()
             // The gap keeps a right-aligned number off the next column's text.
             .when(numeric, |cell| cell.text_right().pr_2())
             .font_family(self.font.clone())
-            .text_xs()
-            .capture_any_mouse_down(cx.listener(move |table, event: &MouseDownEvent, _, _cx| {
-                if event.button == MouseButton::Right {
-                    table.delegate_mut().menu_cell = Some((row_ix, col_ix));
-                }
-            }))
-            .context_menu(grid_menu(cx));
+            .text_xs();
         let deleted = self.is_deleted(row_ix);
         let cell = if deleted {
             // A deleted row is going whatever its cells hold, so the value is
@@ -445,40 +451,59 @@ impl TableDelegate for ResultDelegate {
             cell
         };
 
-        // A draft cell nobody has typed into is not NULL: it is whatever the
-        // server puts there, so it says so rather than promising a value.
-        if self.is_untouched_draft(row_ix, col_ix) {
-            return cell
-                .text_color(cx.theme().muted_foreground)
+        let content = if self.is_untouched_draft(row_ix, col_ix) {
+            // A draft cell nobody has typed into is not NULL: it is whatever
+            // the server puts there, so it says so rather than promising a
+            // value.
+            cell.text_color(cx.theme().muted_foreground)
                 .child("default")
-                .into_any_element();
-        }
-
-        match self.cell(row_ix, col_ix) {
-            Some(value) => {
-                // A staged binary value is hex, not the value itself: show
-                // its size, the way the loaded value's own stand-in does,
-                // rather than a wall of hex digits.
-                let staged_binary = self.is_staged(row_ix, col_ix)
-                    && self
-                        .result
-                        .column_types
-                        .get(col_ix)
-                        .is_some_and(|name| query::is_blob_type(name))
-                    && value.len() % 2 == 0
-                    && value.bytes().all(|byte| byte.is_ascii_hexdigit());
-                if staged_binary {
-                    cell.child(format!("<{} bytes>", value.len() / 2))
-                        .into_any_element()
-                } else {
-                    cell.child(value.to_string()).into_any_element()
+        } else {
+            match self.cell(row_ix, col_ix) {
+                Some(value) => {
+                    // A staged binary value is hex, not the value itself: show
+                    // its size, the way the loaded value's own stand-in does,
+                    // rather than a wall of hex digits.
+                    let staged_binary = self.is_staged(row_ix, col_ix)
+                        && self
+                            .result
+                            .column_types
+                            .get(col_ix)
+                            .is_some_and(|name| query::is_blob_type(name))
+                        && value.len() % 2 == 0
+                        && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+                    if staged_binary {
+                        cell.child(format!("<{} bytes>", value.len() / 2))
+                    } else {
+                        cell.child(value.to_string())
+                    }
                 }
+                None => cell.text_color(cx.theme().muted_foreground).child("NULL"),
             }
-            None => cell
-                .text_color(cx.theme().muted_foreground)
-                .child("NULL")
-                .into_any_element(),
-        }
+        };
+
+        // The whole cell, padding included, holds the menu, so a right click
+        // anywhere in it is about this value. The value's own styling stays
+        // on the content: the menu draws inside this element and would
+        // otherwise inherit the value's font, colour, and strike-through.
+        let pad = cell_padding();
+        div()
+            .id(("value", col_ix))
+            .size_full()
+            .pl(pad.left)
+            .pr(pad.right)
+            .pt(pad.top)
+            .pb(pad.bottom)
+            // The menu is built on the frame after the click, but an event
+            // from the table only reaches its owner after that, so the cell
+            // the menu is about is noted here, in the capture phase.
+            .capture_any_mouse_down(cx.listener(move |table, event: &MouseDownEvent, _, _cx| {
+                if event.button == MouseButton::Right {
+                    table.delegate_mut().menu_cell = Some((row_ix, col_ix));
+                }
+            }))
+            .context_menu(grid_menu(cx))
+            .child(content)
+            .into_any_element()
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, _: &App) -> String {
@@ -509,9 +534,13 @@ impl TableDelegate for ResultDelegate {
             let foreign_key = info.is_some_and(|info| info.references.is_some());
             let tooltip = text.tooltip;
             let muted = cx.theme().muted_foreground;
+            // The table leaves room for the sort icon on the right itself.
+            let pad = cell_padding();
             return h_flex()
                 .id(("column-header", data_ix))
                 .size_full()
+                .pl(pad.left)
+                .py(pad.top)
                 .gap_1()
                 .overflow_hidden()
                 .when(self.is_numeric_column(data_ix), |header| {
@@ -547,6 +576,9 @@ impl TableDelegate for ResultDelegate {
 
         div()
             .size_full()
+            // The table keeps a sort icon's width free on the right; the same
+            // on the left keeps the box over the column's own boxes.
+            .pl(cell_padding().right)
             .flex()
             .items_center()
             .justify_center()
