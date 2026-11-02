@@ -28,6 +28,7 @@ use crate::ui::backup_dialog::BackupView;
 use crate::ui::completion::SharedCatalog;
 use crate::ui::create_database_dialog::CreateDatabaseView;
 use crate::ui::import_dialog::ImportView;
+use crate::ui::layout::{self, Split};
 use crate::ui::variables_dialog::VariablesView;
 use crate::workspace_state::SessionState;
 
@@ -90,6 +91,7 @@ actions!(
         SaveQuery,
         SaveQueryAs,
         UploadFile,
+        ToggleSidebar,
     ]
 );
 
@@ -251,8 +253,8 @@ impl Session {
             active: None,
             opened: 0,
             last_agent_proposal: None,
-            columns: cx.new(|_| ResizableState::default()),
-            agents_columns: cx.new(|_| ResizableState::default()),
+            columns: layout::tracked(Split::Sidebar, cx),
+            agents_columns: layout::tracked(Split::Agents, cx),
             agents,
             agents_open: false,
             databases: Vec::new(),
@@ -623,7 +625,7 @@ impl Session {
 
 impl Session {
     /// The dock, with the Agents panel beside it while that is open.
-    fn render_workspace_area(&self) -> gpui_kit::AnyElement {
+    fn render_workspace_area(&self, cx: &App) -> gpui_kit::AnyElement {
         let dock = div()
             .flex_1()
             .min_w_0()
@@ -638,11 +640,42 @@ impl Session {
             .child(resizable_panel().child(dock))
             .child(
                 resizable_panel()
-                    .size(px(AGENTS_WIDTH))
+                    .size(Split::Agents.size(px(AGENTS_WIDTH), cx))
                     .size_range(px(280.)..px(720.))
                     .child(self.agents.clone()),
             )
             .into_any_element()
+    }
+
+    /// Hide or show the sidebar, in every session: the layout is app-wide.
+    /// Hiding it while it holds the keyboard hands the keyboard to the tab
+    /// in front, so the shortcuts keep answering.
+    fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let hidden = !layout::current(cx).sidebar_hidden;
+        layout::update(cx, |layout| layout.sidebar_hidden = hidden);
+        // Hiding the sidebar while it has the keyboard would leave the keys
+        // with nothing on screen; anywhere else (the editor, the Agents
+        // composer) keeps them.
+        if hidden && !self.focus_outside_sidebar(window, cx) {
+            self.focus(window, cx);
+        }
+        cx.emit(SessionEvent::Changed);
+        cx.notify();
+    }
+
+    /// Whether the keyboard is in the active tab or the Agents panel, rather
+    /// than the sidebar (or nowhere).
+    fn focus_outside_sidebar(&self, window: &Window, cx: &App) -> bool {
+        let in_agents = self.agents_open
+            && self
+                .agents
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx);
+        let in_tab = self
+            .active_panel()
+            .is_some_and(|panel| panel.read(cx).focus_handle(cx).contains_focused(window, cx));
+        in_agents || in_tab
     }
 
     fn toggle_agents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -752,16 +785,27 @@ impl Render for Session {
             .on_action(cx.listener(Self::on_disconnect))
             .on_action(cx.listener(Self::on_reconnect))
             .on_action(cx.listener(Self::on_upload_file))
-            .child(
-                h_resizable("session-columns")
-                    .with_state(&self.columns)
-                    .child(
-                        resizable_panel()
-                            .size(px(SIDEBAR_WIDTH))
-                            .size_range(px(180.)..px(560.))
-                            .child(self.render_sidebar(cx)),
-                    )
-                    .child(resizable_panel().child(self.render_workspace_area())),
-            )
+            .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
+                this.toggle_sidebar(window, cx);
+            }))
+            .map(|this| {
+                // Hidden, the split is left out rather than drawn at zero
+                // width: its state keeps the width for when it comes back,
+                // and no drag handle is left on the window's edge.
+                if layout::current(cx).sidebar_hidden {
+                    return this.child(self.render_workspace_area(cx));
+                }
+                this.child(
+                    h_resizable("session-columns")
+                        .with_state(&self.columns)
+                        .child(
+                            resizable_panel()
+                                .size(Split::Sidebar.size(px(SIDEBAR_WIDTH), cx))
+                                .size_range(px(180.)..px(560.))
+                                .child(self.render_sidebar(cx)),
+                        )
+                        .child(resizable_panel().child(self.render_workspace_area(cx))),
+                )
+            })
     }
 }

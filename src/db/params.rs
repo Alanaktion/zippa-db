@@ -43,9 +43,48 @@ pub fn substitute(
     variables: &[Variable],
     engine: Engine,
 ) -> Result<(String, Vec<Cell>)> {
+    rewrite(sql, variables, engine).map(|rewrite| (rewrite.sql, rewrite.params))
+}
+
+/// What [`substitute`] made of a statement, with where each placeholder went,
+/// so a place in the rewritten SQL (a server's error position) can be found
+/// again in the text the user wrote.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Rewrite {
+    pub sql: String,
+    pub params: Vec<Cell>,
+    /// Each placeholder's byte range in the original, and the range its
+    /// replacement took in `sql`, in order.
+    spans: Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>,
+}
+
+impl Rewrite {
+    /// The byte offset in the original statement of `offset` in the
+    /// rewritten one. Inside a replacement it lands on the placeholder's
+    /// start.
+    pub fn original_offset(&self, offset: usize) -> usize {
+        let mut shift: isize = 0;
+        for (original, replaced) in &self.spans {
+            if offset < replaced.start {
+                break;
+            }
+            if offset < replaced.end {
+                return original.start;
+            }
+            shift = original.end as isize - replaced.end as isize;
+        }
+        (offset as isize + shift).max(0) as usize
+    }
+}
+
+/// [`substitute`], keeping where each placeholder went.
+pub fn rewrite(sql: &str, variables: &[Variable], engine: Engine) -> Result<Rewrite> {
     let placeholders = statement::placeholders(sql, engine);
     if placeholders.is_empty() {
-        return Ok((sql.to_string(), Vec::new()));
+        return Ok(Rewrite {
+            sql: sql.to_string(),
+            ..Rewrite::default()
+        });
     }
 
     let values: HashMap<&str, &str> = variables
@@ -60,9 +99,11 @@ pub fn substitute(
 
     let mut rewritten = String::with_capacity(sql.len());
     let mut params: Vec<Cell> = Vec::new();
+    let mut spans = Vec::with_capacity(placeholders.len());
     let mut cursor = 0;
     for placeholder in &placeholders {
         rewritten.push_str(&sql[cursor..placeholder.start]);
+        let from = rewritten.len();
         let value = values[placeholder.name.as_str()];
         if let Some(keyword) = sql::keyword_literal(value) {
             // `NOW()` and friends evaluate; binding would store the text.
@@ -73,10 +114,15 @@ pub fn substitute(
             params.push(Some(value.to_string()));
             rewritten.push_str(&sql::placeholder(engine, params.len()));
         }
+        spans.push((placeholder.start..placeholder.end, from..rewritten.len()));
         cursor = placeholder.end;
     }
     rewritten.push_str(&sql[cursor..]);
-    Ok((rewritten, params))
+    Ok(Rewrite {
+        sql: rewritten,
+        params,
+        spans,
+    })
 }
 
 /// Whether the placeholder at `pos` sits where a bind parameter cannot go:
@@ -115,6 +161,37 @@ mod tests {
                 value: value.to_string(),
             })
             .collect()
+    }
+
+    #[test]
+    fn an_offset_in_the_rewrite_maps_back_to_what_was_typed() {
+        let typed = "SELECT * FROM t WHERE name = :name AND x frm";
+        let rewrite = rewrite(typed, &variables(&[("name", "a")]), Engine::Postgres).unwrap();
+        assert_eq!(rewrite.sql, "SELECT * FROM t WHERE name = $1 AND x frm");
+        // Before the placeholder nothing moved.
+        assert_eq!(rewrite.original_offset(7), 7);
+        // Inside it, its start.
+        assert_eq!(rewrite.original_offset(29), 29);
+        // After it, shifted by the length it lost.
+        let frm = rewrite.sql.find("frm").unwrap();
+        assert_eq!(rewrite.original_offset(frm), typed.find("frm").unwrap());
+    }
+
+    #[test]
+    fn an_offset_after_a_second_replacement_maps_back() {
+        let typed = "SELECT * FROM t WHERE name = :name AND id = :id AND x frm";
+        let rewrite = rewrite(
+            typed,
+            &variables(&[("name", "a"), ("id", "42")]),
+            Engine::Postgres,
+        )
+        .unwrap();
+        assert_eq!(
+            rewrite.sql,
+            "SELECT * FROM t WHERE name = $1 AND id = $2 AND x frm"
+        );
+        let frm = rewrite.sql.find("frm").unwrap();
+        assert_eq!(rewrite.original_offset(frm), typed.find("frm").unwrap());
     }
 
     #[test]

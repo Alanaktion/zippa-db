@@ -20,13 +20,15 @@ use gpui_kit::base::GlobalState;
 use gpui_kit::base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use gpui_kit::{App, KeyBinding, Menu, MenuItem, OsAction, actions};
 
-use crate::app::{CloseConnection, NewConnection, NextConnection, PreviousConnection};
+use crate::app::{
+    CloseConnection, NewConnection, NextConnection, OpenSqliteFile, PreviousConnection,
+};
 use crate::ui::agents::ToggleAgents;
 use crate::ui::data_grid::{
     ClearRowSelection, CopyValue, CopyWithHeaders, SelectAllRows, ViewCell,
 };
 use crate::ui::query_editor::{
-    EditVariables, Explain, ExplainAnalyze, FormatQuery, RunQuery, RunScript,
+    EditVariables, Explain, ExplainAnalyze, FormatQuery, GoToError, RunQuery, RunScript,
     RunScriptIgnoringErrors, ToggleComment,
 };
 use crate::ui::session::{
@@ -34,7 +36,7 @@ use crate::ui::session::{
     OpenConnectionInfo, OpenConsole, OpenErd, OpenFile, OpenHistory, OpenMaintenance,
     OpenProcessList, OpenQueryDigest, OpenServerVariables, OpenUserManagement, PreviousTab,
     QuickSwitcher, Reconnect, Refresh, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs, SearchSchema,
-    UploadFile,
+    ToggleSidebar, UploadFile,
 };
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
@@ -98,6 +100,7 @@ fn menus() -> Vec<Menu> {
         MenuItem::action("New Query Tab", NewTab),
         MenuItem::separator(),
         MenuItem::action("Open…", OpenFile),
+        MenuItem::action("Open SQLite File…", OpenSqliteFile),
         MenuItem::action("Save", SaveFile),
         MenuItem::action("Save As…", SaveFileAs),
         MenuItem::action("Save to Saved Queries", SaveQuery),
@@ -139,6 +142,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Edit Variables…", EditVariables),
             MenuItem::action("Format Query", FormatQuery),
             MenuItem::action("Toggle Comment", ToggleComment),
+            MenuItem::action("Go to Error", GoToError),
             MenuItem::separator(),
             MenuItem::action("Cancel Query", CancelQuery),
         ]),
@@ -186,6 +190,7 @@ fn menus() -> Vec<Menu> {
         ]),
         Menu::new("View").items(vec![
             MenuItem::action("Quick Switcher…", QuickSwitcher),
+            MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::action("Toggle Row Panel", ToggleRowPanel),
             MenuItem::action("Toggle Agents Panel", ToggleAgents),
             MenuItem::separator(),
@@ -244,6 +249,7 @@ mod tests {
             ("New Connection", TypeId::of::<NewConnection>()),
             ("New Query Tab", TypeId::of::<NewTab>()),
             ("Open", TypeId::of::<OpenFile>()),
+            ("Open SQLite File", TypeId::of::<OpenSqliteFile>()),
             ("Save", TypeId::of::<SaveFile>()),
             ("Save As", TypeId::of::<SaveFileAs>()),
             ("Import SQL Dump", TypeId::of::<ImportSqlDump>()),
@@ -263,6 +269,7 @@ mod tests {
             ("Explain Analyze", TypeId::of::<ExplainAnalyze>()),
             ("Toggle Comment", TypeId::of::<ToggleComment>()),
             ("Format Query", TypeId::of::<FormatQuery>()),
+            ("Go to Error", TypeId::of::<GoToError>()),
             ("Cancel Query", TypeId::of::<CancelQuery>()),
             ("Add Row", TypeId::of::<InsertRow>()),
             ("Set NULL", TypeId::of::<SetNull>()),
@@ -278,6 +285,7 @@ mod tests {
             ("Quick Switcher", TypeId::of::<QuickSwitcher>()),
             ("Search Schema", TypeId::of::<SearchSchema>()),
             ("Refresh", TypeId::of::<Refresh>()),
+            ("Toggle Sidebar", TypeId::of::<ToggleSidebar>()),
             ("Toggle Row Panel", TypeId::of::<ToggleRowPanel>()),
             ("Toggle Agents Panel", TypeId::of::<ToggleAgents>()),
             ("Console", TypeId::of::<OpenConsole>()),

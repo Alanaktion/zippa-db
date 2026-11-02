@@ -50,6 +50,7 @@ pub mod connection;
 pub mod ddl;
 pub(crate) mod dedicated;
 pub mod erd;
+pub mod error_location;
 pub mod export;
 pub mod export_file;
 pub mod health;

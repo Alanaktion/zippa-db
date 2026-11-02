@@ -452,3 +452,234 @@ fn the_null_shortcut_stages_sql_null(cx: &mut TestAppContext) {
         "the null shortcut should stage SQL NULL"
     );
 }
+
+/// The `a`, `b`, and `c` columns of the `sheet` table, row by row.
+async fn sheet_of(database: &TempDatabase) -> Vec<Vec<Option<String>>> {
+    let connection = Connection::open(database.config(), None)
+        .await
+        .expect("could not reopen the test database");
+    let result = connection
+        .run_query("select a, b, c from sheet order by id")
+        .await
+        .expect("could not read the sheet");
+    connection.close().await;
+    result.rows
+}
+
+fn sheet_view(
+    cx: &mut TestAppContext,
+) -> (
+    TempDatabase,
+    gpui_kit::WindowHandle<Session>,
+    gpui_kit::Entity<crate::ui::table_view::TableView>,
+) {
+    let (database, handle, view) = table_view_on(
+        cx,
+        "sheet",
+        "CREATE TABLE sheet (id INTEGER PRIMARY KEY, a TEXT, b TEXT, c TEXT)",
+    );
+    run_external(
+        &database,
+        "INSERT INTO sheet VALUES (1, 'x', 'x', 'x'), (2, 'y', 'y', 'y')",
+    );
+    view.update(cx, |view, cx| view.reload(cx));
+    cx.run_until_parked();
+    (database, handle, view)
+}
+
+#[gpui_kit::test]
+fn typing_on_a_selected_cell_opens_its_editor_with_what_was_typed(cx: &mut TestAppContext) {
+    let (_database, handle, view) = sheet_view(cx);
+    select_cell(cx, &view, 0, 1);
+
+    press(cx, handle, "a");
+    press(cx, handle, "b");
+    press(cx, handle, "c");
+    cx.run_until_parked();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.read_with(cx, |grid, cx| {
+        assert_eq!(grid.editing_for_test(cx), Some((0, 1)));
+        assert_eq!(
+            grid.editor_value_for_test(cx),
+            "abc",
+            "the typed key replaces the value"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn pasting_a_block_stages_every_cell_and_apply_writes_them(cx: &mut TestAppContext) {
+    let (database, handle, view) = sheet_view(cx);
+    select_cell(cx, &view, 0, 1);
+
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+        "1a\t1b\t1c\n2a\t2b\t2c\n".into(),
+    ));
+    press(cx, handle, "secondary-v");
+    cx.run_until_parked();
+
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    let staged = grid.read_with(cx, |grid, cx| grid.staged(cx));
+    assert_eq!(staged.iter().map(|row| row.cells.len()).sum::<usize>(), 6);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test())
+            .as_deref(),
+        Some("Pasted 6 cells")
+    );
+    assert_eq!(
+        runtime::block_on(sheet_of(&database))[0],
+        [Some("x".into()), Some("x".into()), Some("x".into())],
+        "pasting stages; it does not write"
+    );
+
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-s");
+    cx.run_until_parked();
+    assert_eq!(
+        runtime::block_on(sheet_of(&database)),
+        [
+            [Some("1a".into()), Some("1b".into()), Some("1c".into())],
+            [Some("2a".into()), Some("2b".into()), Some("2c".into())],
+        ]
+    );
+}
+
+#[gpui_kit::test]
+fn discarding_drops_a_paste(cx: &mut TestAppContext) {
+    let (database, handle, view) = sheet_view(cx);
+    select_cell(cx, &view, 1, 0);
+
+    // Two rows from the last one, starting on `id`: the second row has
+    // nowhere to go.
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+        "3\tNULL\t\nlost\n".into(),
+    ));
+    press(cx, handle, "secondary-v");
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.notice_for_test())
+            .as_deref(),
+        Some("Pasted 3 cells; 1 cell past the last row or column, left out")
+    );
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.read_with(cx, |grid, cx| {
+        // An empty field is a NULL, the way a copied NULL comes back.
+        assert_eq!(grid.cell_for_test(1, 2, cx), None);
+        // The text NULL is text: it is what the grid copies for a text cell
+        // holding those letters, whatever typing NULL does.
+        assert_eq!(grid.cell_for_test(1, 1, cx).as_deref(), Some("NULL"));
+    });
+
+    press(cx, handle, "secondary-alt-z");
+    cx.run_until_parked();
+    assert!(grid.read_with(cx, |grid, cx| grid.staged(cx).is_empty()));
+    assert_eq!(
+        runtime::block_on(sheet_of(&database))[1],
+        [Some("y".into()), Some("y".into()), Some("y".into())]
+    );
+}
+
+#[gpui_kit::test]
+fn a_query_result_ignores_typing_and_paste(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        init_ui(cx);
+        crate::keymap::bind(cx);
+    });
+    let handle = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
+        crate::ui::data_grid::DataGrid::new(Engine::Sqlite, window, cx)
+    });
+    handle
+        .update(cx, |grid, window, cx| {
+            grid.set_result(result_fixture(), cx);
+            grid.focus_for_test(window, cx);
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    handle
+        .update(cx, |grid, _, cx| grid.select_cell_for_test(0, 0, cx))
+        .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.press("a", cx);
+    })
+    .unwrap();
+    handle
+        .update(cx, |grid, window, cx| {
+            assert_eq!(grid.paste("z", window, cx).staged, 0);
+            assert_eq!(grid.editing_for_test(cx), None);
+            assert!(grid.staged(cx).is_empty());
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_row_menu_edits_nulls_and_reverts_a_cell(cx: &mut TestAppContext) {
+    use crate::ui::data_grid::MenuCommand;
+    let (_database, _handle, view) = sheet_view(cx);
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    let run = |cx: &mut TestAppContext, command| {
+        grid.downgrade()
+            .update_in(cx, |grid, window, cx| {
+                grid.run_menu_command(command, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+    };
+
+    run(cx, MenuCommand::Edit(1, 2));
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.editing_for_test(cx)),
+        Some((1, 2))
+    );
+    focus_grid(cx, &view);
+
+    run(cx, MenuCommand::SetNull(0, 1));
+    run(cx, MenuCommand::SetNull(0, 2));
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.cell_for_test(0, 1, cx)),
+        None
+    );
+
+    // One cell back, the other still staged.
+    run(cx, MenuCommand::Revert(0, 1));
+    grid.read_with(cx, |grid, cx| {
+        assert_eq!(grid.cell_for_test(0, 1, cx).as_deref(), Some("x"));
+        assert_eq!(grid.cell_for_test(0, 2, cx), None);
+    });
+
+    // And the row's lot.
+    run(cx, MenuCommand::RevertRow(0));
+    assert!(grid.read_with(cx, |grid, cx| grid.staged(cx).is_empty()));
+}
+
+#[gpui_kit::test]
+fn duplicating_a_row_stages_a_new_row_without_its_key(cx: &mut TestAppContext) {
+    let (database, handle, view) = sheet_view(cx);
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+
+    grid.downgrade()
+        .update_in(cx, |grid, window, cx| {
+            grid.run_menu_command(crate::ui::data_grid::MenuCommand::Duplicate(1), window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let drafts = grid.read_with(cx, |grid, cx| grid.drafts(cx));
+    assert_eq!(
+        drafts,
+        [vec![
+            (1, Some("y".to_string())),
+            (2, Some("y".to_string())),
+            (3, Some("y".to_string())),
+        ]],
+        "the key column is left for the server to fill"
+    );
+
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-s");
+    cx.run_until_parked();
+    assert_eq!(runtime::block_on(sheet_of(&database)).len(), 3);
+}

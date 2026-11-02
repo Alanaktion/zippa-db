@@ -29,6 +29,7 @@ const GROUPS: &[Group] = &[
             ("Show this list", &["ctrl-/"]),
             ("Quick switcher", &["secondary-k"]),
             ("Search the schema", &["secondary-shift-o"]),
+            ("Show or hide the sidebar", &["secondary-b"]),
             ("Settings", &["secondary-,"]),
             (
                 "Close the settings window",
@@ -66,6 +67,7 @@ const GROUPS: &[Group] = &[
         title: "Files",
         rows: &[
             ("Open a SQL file", &["secondary-o"]),
+            ("Open a SQLite file (from the launcher)", &["secondary-o"]),
             ("Import a SQL dump", &["secondary-shift-i"]),
             ("Save the active tab", &["secondary-s"]),
             (
@@ -102,6 +104,7 @@ const GROUPS: &[Group] = &[
                 &["secondary-shift-e"],
             ),
             ("Stop a running query", &["secondary-."]),
+            ("Go to where the last run failed", &["f8"]),
         ],
     },
     Group {
@@ -160,6 +163,10 @@ const GROUPS: &[Group] = &[
         title: "Editing a table",
         rows: &[
             ("Edit the selected cell", &["enter"]),
+            (
+                "Paste into the cells from the selected one",
+                &["secondary-v"],
+            ),
             ("Set the selected cell to NULL", &["secondary-shift-n"]),
             ("Add a row to fill in", &["secondary-shift-i"]),
             ("Mark rows for deletion", &["secondary-backspace"]),

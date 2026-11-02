@@ -320,3 +320,129 @@ fn filtering_asks_before_it_discards_staged_edits(cx: &mut TestAppContext) {
         "a discarded edit must not reach the server"
     );
 }
+
+/// Run a row-menu command on the open table's grid, as clicking its item does.
+fn menu_command(
+    cx: &mut TestAppContext,
+    view: &gpui_kit::Entity<crate::ui::table_view::TableView>,
+    command: crate::ui::data_grid::MenuCommand,
+) {
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    grid.downgrade()
+        .update_in(cx, |grid, window, cx| {
+            grid.run_menu_command(command, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn filter_by_value_adds_a_filter_for_text_numbers_and_null(cx: &mut TestAppContext) {
+    use crate::ui::data_grid::MenuCommand::Filter;
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    // Row 0 is (1, 'alpha', 1.5, …); row 1 is (2, NULL, NULL, NULL).
+    menu_command(
+        cx,
+        &view,
+        Filter {
+            row: 0,
+            col: 1,
+            exclude: false,
+        },
+    );
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where name = ? limit 500 offset 0"
+        );
+        assert_eq!(view.loaded_rows_for_test(), 1);
+    });
+
+    // A second one is AND'd on, not swapped in.
+    menu_command(
+        cx,
+        &view,
+        Filter {
+            row: 0,
+            col: 2,
+            exclude: false,
+        },
+    );
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where name = ? and score = ? limit 500 offset 0"
+        );
+        assert_eq!(view.loaded_rows_for_test(), 1, "1.5 matches as a number");
+    });
+
+    let filters = view.read_with(cx, |view, _| view.filters_for_test());
+    filters.update(cx, |filters, cx| filters.clear(cx));
+    cx.run_until_parked();
+
+    menu_command(
+        cx,
+        &view,
+        Filter {
+            row: 1,
+            col: 1,
+            exclude: false,
+        },
+    );
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where name is null limit 500 offset 0"
+        );
+        assert_eq!(view.loaded_rows_for_test(), 1);
+    });
+    filters.update(cx, |filters, cx| filters.clear(cx));
+    cx.run_until_parked();
+
+    menu_command(
+        cx,
+        &view,
+        Filter {
+            row: 0,
+            col: 1,
+            exclude: true,
+        },
+    );
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.query(cx),
+            "select * from items where name <> ? limit 500 offset 0"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn filter_by_value_waits_on_the_staged_edit_guard(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view(cx);
+    cx.run_until_parked();
+
+    stage_cell(cx, &view, 0, 1, "renamed");
+    focus_grid(cx, &view);
+    menu_command(
+        cx,
+        &view,
+        crate::ui::data_grid::MenuCommand::Filter {
+            row: 1,
+            col: 0,
+            exclude: false,
+        },
+    );
+    view.update(cx, |view, _| {
+        assert!(
+            view.pending_for_test(),
+            "the re-read should ask about the staged edit first"
+        );
+        assert_eq!(
+            view.loaded_rows_for_test(),
+            2,
+            "nothing is re-read until it is answered"
+        );
+    });
+}

@@ -1095,3 +1095,64 @@ fn escape_closes_an_untouched_editor_and_asks_about_an_edited_one(cx: &mut TestA
     click_workspace(cx, &handle, "editor-discard");
     assert!(!welcome.update(cx, |welcome, _| welcome.editor_open_for_test()));
 }
+
+#[gpui_kit::test]
+fn open_sqlite_file_stays_in_the_launcher_once_a_connection_is_saved(cx: &mut TestAppContext) {
+    let handle = workspace(cx);
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("the active tab should be showing the connection manager");
+    welcome.update(cx, |welcome, cx| {
+        welcome.set_connections_for_test(vec![ConnectionConfig::new(Engine::Postgres)], cx)
+    });
+
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        assert!(window.find("welcome-open-sqlite-file").visible());
+        assert!(window.find("welcome-new-connection").visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_sqlite_path_opens_the_editor_named_after_the_file(cx: &mut TestAppContext) {
+    let (_database, handle, _session) = workspace_session(cx);
+    let tabs = titles(cx, &handle).len();
+
+    // From a session, as the command line or the menu would: a launcher is
+    // opened beside it rather than replacing it.
+    // Through `update_window`: the editor is a dialog, which needs the root
+    // that `WorkspaceWindow::update` would be holding.
+    let workspace = handle.view.clone();
+    cx.update_window(handle.window.into(), |_, window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.open_sqlite_path(PathBuf::from("/data/orders.sqlite3"), window, cx)
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(titles(cx, &handle).len(), tabs + 1);
+    let welcome = handle
+        .update(cx, |workspace, _, _| workspace.active_welcome_for_test())
+        .unwrap()
+        .expect("a launcher should be in front");
+    let config = welcome
+        .read_with(cx, |welcome, cx| welcome.editor_config_for_test(cx))
+        .expect("the editor should be open");
+    assert_eq!(config.engine, Engine::Sqlite);
+    assert_eq!(config.database, "/data/orders.sqlite3");
+    assert_eq!(config.name, "orders");
+}
+
+#[test]
+fn only_database_looking_files_count_as_sqlite() {
+    use crate::ui::welcome::is_sqlite_path;
+    for path in ["a.db", "a.sqlite", "a.SQLITE3", "dir/b.db3"] {
+        assert!(is_sqlite_path(std::path::Path::new(path)), "{path}");
+    }
+    for path in ["a.sql", "a", "a.csv", "db"] {
+        assert!(!is_sqlite_path(std::path::Path::new(path)), "{path}");
+    }
+}

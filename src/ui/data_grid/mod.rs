@@ -7,7 +7,8 @@
 //!
 //! The work is split by concern: [`layout`] sizes the columns, [`format`] lays
 //! one value out for reading, [`delegate`] holds the result together with
-//! everything staged on top of it, and [`clipboard`] decides what a copy takes.
+//! everything staged on top of it, [`clipboard`] decides what a copy takes,
+//! and [`paste`] stages typing and pasting the way a spreadsheet takes them.
 //! What is left here is the view — the events it emits, and the commands its
 //! owner drives it with.
 
@@ -35,6 +36,7 @@ mod clipboard;
 mod delegate;
 mod format;
 mod layout;
+mod paste;
 #[cfg(test)]
 mod test_support;
 
@@ -98,6 +100,46 @@ type ExportReporter = Rc<dyn Fn(Format, &mut App)>;
 /// Asks the grid to copy what the menu is about, in a chosen shape, from the
 /// menu the delegate built.
 type CopyAsReporter = Rc<dyn Fn(CopyAs, &mut App)>;
+
+/// A cell or row command from the menu the delegate built, carried out by the
+/// grid (or handed on to its owner) with the window the click came with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MenuCommand {
+    /// Open the editor on the cell.
+    Edit(usize, usize),
+    /// Stage `NULL` on the cell.
+    SetNull(usize, usize),
+    /// Drop the cell's staged edit.
+    Revert(usize, usize),
+    /// Drop every staged edit on the row.
+    RevertRow(usize),
+    /// Filter the table to rows with (or, excluding, without) the cell's
+    /// value in its column.
+    Filter {
+        row: usize,
+        col: usize,
+        exclude: bool,
+    },
+    /// Start a new row filled in from this one.
+    Duplicate(usize),
+}
+
+/// The `u64` is the result generation the menu was built over.
+type CommandReporter = Rc<dyn Fn(MenuCommand, u64, &mut Window, &mut App)>;
+
+/// Asks the owner to filter the table by a cell's value: `column = value`,
+/// `IS NULL` for a NULL, or the opposite of either when excluding.
+pub struct FilterByValue {
+    pub column: String,
+    pub value: Cell,
+    pub exclude: bool,
+}
+
+/// Asks the owner to start a new row from the row shown at `row`: the owner
+/// knows which columns are its key, and leaves those for the server to fill.
+pub struct DuplicateRow {
+    pub row: usize,
+}
 
 /// Emitted when the user clicks a column header on a [`Sorting::Delegated`]
 /// grid.
@@ -185,6 +227,12 @@ pub struct Copied {
     pub message: String,
 }
 
+/// What a paste staged, and what it had to leave out, for the owner's status
+/// line.
+pub struct Pasted {
+    pub message: String,
+}
+
 /// One row's staged cells, by column index, for the owner to turn into SQL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedRow {
@@ -226,6 +274,9 @@ impl EventEmitter<GridNavigate> for DataGrid {}
 impl EventEmitter<BinaryPreviewRequested> for DataGrid {}
 impl EventEmitter<ExportRequested> for DataGrid {}
 impl EventEmitter<Copied> for DataGrid {}
+impl EventEmitter<Pasted> for DataGrid {}
+impl EventEmitter<FilterByValue> for DataGrid {}
+impl EventEmitter<DuplicateRow> for DataGrid {}
 
 impl DataGrid {
     pub fn new(engine: Engine, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -312,6 +363,22 @@ impl DataGrid {
             }
         });
 
+        let report_command: CommandReporter = Rc::new({
+            let grid = cx.weak_entity();
+            move |command: MenuCommand, generation: u64, window: &mut Window, cx: &mut App| {
+                let Some(grid) = grid.upgrade() else {
+                    return;
+                };
+                grid.update(cx, |grid, cx| {
+                    // The rows the menu was opened over were replaced while
+                    // it stayed open; its row index now means another row.
+                    if grid.result_generation == generation {
+                        grid.run_menu_command(command, window, cx);
+                    }
+                });
+            }
+        });
+
         let editor = cx.new(|cx| InputState::new(window, cx));
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
@@ -341,6 +408,8 @@ impl DataGrid {
                     report_copy,
                     report_export,
                     report_copy_as,
+                    report_command,
+                    generation: 0,
                     engine,
                     table: None,
                     foreign_keys: HashSet::new(),
@@ -580,6 +649,19 @@ impl DataGrid {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.begin_edit_seeded(row_ix, col_ix, None, window, cx);
+    }
+
+    /// Open the editor on a cell holding `seed` in place of its value, or the
+    /// value as it stands when there is none.
+    pub(super) fn begin_edit_seeded(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        seed: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.commit_editor(cx);
 
         if !self.table.read(cx).delegate().is_editable(row_ix, col_ix) {
@@ -588,13 +670,14 @@ impl DataGrid {
 
         // A NULL opens empty: there is no text to put in front of the cursor,
         // and leaving it empty stores an empty string rather than a NULL.
-        let value = self
-            .table
-            .read(cx)
-            .delegate()
-            .cell(row_ix, col_ix)
-            .clone()
-            .unwrap_or_default();
+        let value = seed.unwrap_or_else(|| {
+            self.table
+                .read(cx)
+                .delegate()
+                .cell(row_ix, col_ix)
+                .clone()
+                .unwrap_or_default()
+        });
 
         self.editor
             .update(cx, |editor, cx| editor.set_value(value, window, cx));
@@ -633,6 +716,83 @@ impl DataGrid {
         self.table.update(cx, |table, cx| {
             table.delegate_mut().stage(row_ix, col_ix, None);
             cx.notify();
+        });
+        cx.emit(GridEdit::Staged);
+    }
+
+    /// Carry out a command from the row menu, on the cell or row it was
+    /// opened on rather than wherever the selection happens to be.
+    pub(crate) fn run_menu_command(
+        &mut self,
+        command: MenuCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match command {
+            MenuCommand::Edit(row, col) => self.begin_edit(row, col, window, cx),
+            MenuCommand::SetNull(row, col) => {
+                if !self.table.read(cx).delegate().is_editable(row, col) {
+                    return;
+                }
+                self.cancel_editor(window, cx);
+                self.table.update(cx, |table, cx| {
+                    table.delegate_mut().stage(row, col, None);
+                    cx.notify();
+                });
+                cx.emit(GridEdit::Staged);
+            }
+            MenuCommand::Revert(..) | MenuCommand::RevertRow(_) => {
+                let (row, col) = match command {
+                    MenuCommand::Revert(row, col) => (row, Some(col)),
+                    MenuCommand::RevertRow(row) => (row, None),
+                    _ => return,
+                };
+                self.commit_editor(cx);
+                self.table.update(cx, |table, cx| {
+                    table.delegate_mut().revert(row, col);
+                    cx.notify();
+                });
+                cx.emit(GridEdit::Staged);
+            }
+            MenuCommand::Filter { row, col, exclude } => {
+                let delegate = self.table.read(cx).delegate();
+                let Some(column) = delegate.result.columns.get(col).cloned() else {
+                    return;
+                };
+                // The value as the server has it: filtering on a staged edit
+                // would look for a row that does not exist yet.
+                let value = delegate.baseline(row, col).clone();
+                cx.emit(FilterByValue {
+                    column,
+                    value,
+                    exclude,
+                });
+            }
+            MenuCommand::Duplicate(row) => cx.emit(DuplicateRow { row }),
+        }
+    }
+
+    /// Start a new row holding `cells` (by result column), as typed into it,
+    /// with the editor left closed. Values the grid only describes are left
+    /// out, so the server fills those columns as it would any untyped one.
+    pub fn add_draft_from(&mut self, row: usize, skip: &HashSet<usize>, cx: &mut Context<Self>) {
+        if !self.table.read(cx).delegate().editable {
+            return;
+        }
+        self.commit_editor(cx);
+        self.table.update(cx, |table, cx| {
+            let delegate = table.delegate_mut();
+            let draft: HashMap<usize, Cell> = (0..delegate.result.columns.len())
+                .filter(|col| !skip.contains(col))
+                .filter(|col| {
+                    let value = delegate.cell(row, *col);
+                    let type_name = delegate.column_type(*col);
+                    !query::is_binary_type(type_name) && !query::is_placeholder(value, type_name)
+                })
+                .map(|col| (col, delegate.cell(row, col).clone()))
+                .collect();
+            delegate.drafts.push(draft);
+            table.refresh(cx);
         });
         cx.emit(GridEdit::Staged);
     }
@@ -1310,8 +1470,10 @@ impl DataGrid {
     ) {
         self.result_generation += 1;
         self.has_result = true;
+        let generation = self.result_generation;
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
+            delegate.generation = generation;
             delegate.widths = measure_columns(&result);
             delegate.order = (0..result.rows.len()).collect();
             delegate.result = result;
@@ -1429,6 +1591,8 @@ impl Render for DataGrid {
             .on_action(cx.listener(Self::on_toggle_row))
             .on_action(cx.listener(Self::on_extend_up))
             .on_action(cx.listener(Self::on_extend_down))
+            .on_action(cx.listener(Self::on_paste))
+            .on_key_down(cx.listener(Self::on_key_down))
             // Releasing the button ends a sweep across the pick boxes, so a
             // later drag that happens to pass over them picks nothing up.
             // Captured, since the table stops a click on a cell before it

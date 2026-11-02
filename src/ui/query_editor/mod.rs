@@ -12,7 +12,7 @@ use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, EventEmitter, KeyDownEvent, SharedString, Window, actions, px};
 
-use gpui_kit::base::input::{Copy, Cut, Paste, SelectAll};
+use gpui_kit::base::input::{Copy, Cut, Paste, RangeDecorationCollection, SelectAll};
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -25,6 +25,7 @@ use crate::settings::{self, CompletionKey, Settings};
 use crate::ui::completion::{SharedCatalog, SqlCompletions};
 use crate::ui::session::{CancelQuery, OpenFile, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs};
 
+mod diagnostics;
 mod editing;
 #[cfg(test)]
 mod test_support;
@@ -52,6 +53,8 @@ actions!(
         SelectLine,
         SmartHome,
         EditVariables,
+        /// Put the caret where the last run failed.
+        GoToError,
     ]
 );
 
@@ -116,6 +119,18 @@ pub struct QueryEditor {
     /// only holds text for an owner that has its own Save, such as a
     /// dashboard widget's dialog.
     toolbar: bool,
+    /// What the last run sent, so its failure can be marked in the buffer.
+    sent: Option<diagnostics::Sent>,
+    /// What a run asked for is about to send, until the session starts it:
+    /// a run that is refused or whose confirmation is cancelled leaves the
+    /// last error marked.
+    pending: Option<diagnostics::Sent>,
+    /// Where the last run failed, in the buffer, while that is marked.
+    error_at: Option<usize>,
+    /// The frame around the statement a run would send.
+    statement_mark: Option<RangeDecorationCollection>,
+    /// The range that frame was last put on.
+    statement_mark_range: Option<std::ops::Range<usize>>,
 }
 
 /// What the toolbar reads off the whole buffer.
@@ -126,12 +141,17 @@ struct BufferCache {
     blocker: Option<Blocker>,
     /// How many distinct `:name`/`$name` variables the buffer uses.
     variables: usize,
+    /// How many statements the buffer holds.
+    statements: usize,
 }
 
 struct StatementCache {
     key: u64,
     statement: Option<String>,
     writes: bool,
+    /// The statement's range in the buffer, when it is the one the caret
+    /// is in rather than a selection.
+    range: Option<std::ops::Range<usize>>,
 }
 
 impl EventEmitter<QueryEditorEvent> for QueryEditor {}
@@ -172,6 +192,11 @@ impl QueryEditor {
             buffer_cache: RefCell::new(None),
             saved_name: None,
             toolbar: true,
+            sent: None,
+            pending: None,
+            error_at: None,
+            statement_mark: None,
+            statement_mark_range: None,
         }
     }
 
@@ -225,6 +250,9 @@ impl QueryEditor {
 
     pub fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
         self.running = running;
+        if running {
+            self.start_sent(cx);
+        }
         cx.notify();
     }
 
@@ -332,6 +360,8 @@ impl QueryEditor {
         let Some(sql) = self.statement(cx) else {
             return;
         };
+        let range = self.single_range(cx);
+        self.note_sent(range.into_iter().collect(), cx);
         cx.emit(QueryEditorEvent::Run(sql));
     }
 
@@ -347,6 +377,8 @@ impl QueryEditor {
         if sql.trim().is_empty() {
             return;
         }
+        let ranges = self.script_ranges(cx);
+        self.note_sent(ranges, cx);
 
         cx.emit(if ignoring_errors {
             QueryEditorEvent::RunScriptIgnoringErrors(sql)
@@ -367,6 +399,8 @@ impl QueryEditor {
         let Some(sql) = self.statement(cx) else {
             return;
         };
+        // A plan's failure is not marked in the buffer.
+        self.forget_pending();
         cx.emit(QueryEditorEvent::Explain { sql, analyze });
     }
 
@@ -393,7 +427,10 @@ impl QueryEditor {
     /// hitch on every render with a multi-MB buffer. The key hashes the
     /// buffer's chunks (borrowed, never copied) together with the cursor
     /// and selection, so an untouched buffer answers from the cache.
-    fn cached_statement(&self, cx: &gpui_kit::App) -> (Option<String>, bool) {
+    fn cached_statement(
+        &self,
+        cx: &gpui_kit::App,
+    ) -> (Option<String>, bool, Option<std::ops::Range<usize>>) {
         let key = {
             let state = self.state.read(cx);
             let mut hasher = DefaultHasher::new();
@@ -407,9 +444,13 @@ impl QueryEditor {
         if let Some(cached) = self.statement_cache.borrow().as_ref()
             && cached.key == key
         {
-            return (cached.statement.clone(), cached.writes);
+            return (
+                cached.statement.clone(),
+                cached.writes,
+                cached.range.clone(),
+            );
         }
-        let statement = self.compute_statement(cx);
+        let (statement, range) = self.compute_statement(cx);
         let writes = statement.as_ref().is_some_and(|sql| {
             // A statement with its own `EXPLAIN` header is judged by what it
             // explains, so `EXPLAIN ANALYZE SELECT` still reads as a read.
@@ -422,8 +463,9 @@ impl QueryEditor {
             key,
             statement: statement.clone(),
             writes,
+            range: range.clone(),
         });
-        (statement, writes)
+        (statement, writes, range)
     }
 
     /// The statement that would keep a script run of the whole buffer out of
@@ -454,7 +496,8 @@ impl QueryEditor {
             return cached.clone();
         }
         let sql = self.state.read(cx).value().to_string();
-        let blocker = transaction_blocker(self.engine, &statement::split(&sql, self.engine));
+        let statements = statement::split(&sql, self.engine);
+        let blocker = transaction_blocker(self.engine, &statements);
         let names: std::collections::HashSet<String> = statement::placeholders(&sql, self.engine)
             .into_iter()
             .map(|placeholder| placeholder.name)
@@ -463,6 +506,7 @@ impl QueryEditor {
             key,
             blocker,
             variables: names.len(),
+            statements: statements.len(),
         };
         *self.buffer_cache.borrow_mut() = Some(facts.clone());
         facts
@@ -470,16 +514,22 @@ impl QueryEditor {
 
     /// The uncached statement: the selection verbatim, else the statement
     /// the caret is in.
-    fn compute_statement(&self, cx: &gpui_kit::App) -> Option<String> {
+    fn compute_statement(
+        &self,
+        cx: &gpui_kit::App,
+    ) -> (Option<String>, Option<std::ops::Range<usize>>) {
         let state = self.state.read(cx);
 
         let selected = state.selected_value().to_string();
         if !selected.trim().is_empty() {
-            return Some(selected);
+            return (Some(selected), None);
         }
 
         let sql = state.value().to_string();
-        statement::at_cursor(&sql, state.cursor(), self.engine).map(|statement| statement.text)
+        match statement::at_cursor(&sql, state.cursor(), self.engine) {
+            Some(statement) => (Some(statement.text), Some(statement.start..statement.end)),
+            None => (None, None),
+        }
     }
 }
 
@@ -506,6 +556,7 @@ impl QueryEditor {
         let running = self.running;
         let saved_name = self.saved_name.clone();
         let variables = self.variable_count(cx);
+        let error_line = self.error_line(cx);
 
         // A buffer a transaction cannot hold says so before it is run, in
         // words and with its own icon rather than a colour.
@@ -654,6 +705,25 @@ impl QueryEditor {
             .child(
                 h_flex()
                     .gap_1()
+                    // The last run's failure, in words and with its line, so
+                    // it is found without reading the colour of a squiggle.
+                    .when_some(error_line, |this, line| {
+                        this.child(
+                            Button::new("go-to-error")
+                                .ghost()
+                                .small()
+                                .icon(IconName::CircleX)
+                                .label(format!("Error on line {line}"))
+                                .tooltip_with_action(
+                                    "Put the caret where the last run failed",
+                                    &GoToError,
+                                    Some("QueryEditor"),
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.move_to_error(window, cx)
+                                })),
+                        )
+                    })
                     // Only a buffer that uses variables needs a way to fill
                     // them in on sight; the menu still offers it otherwise.
                     .when(variables > 0, |this| {
@@ -767,7 +837,8 @@ impl QueryEditor {
 }
 
 impl Render for QueryEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_statement_mark(window, cx);
         let writes = self.statement_writes(cx);
         let can_analyze = self.analyze_supported();
         let blocker = self.transaction_blocker(cx);
@@ -793,6 +864,7 @@ impl Render for QueryEditor {
             .on_action(cx.listener(Self::select_previous_occurrence))
             .on_action(cx.listener(Self::select_line))
             .on_action(cx.listener(Self::smart_home))
+            .on_action(cx.listener(Self::go_to_error))
             .capture_key_down(cx.listener(Self::on_key_down))
             .capture_action(cx.listener(Self::accept_with_tab))
             .capture_action(cx.listener(Self::enter_with_menu_open))

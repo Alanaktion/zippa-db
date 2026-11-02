@@ -1,6 +1,7 @@
 //! Running SQL: one statement, a selection, a whole script.
 
 use super::*;
+use crate::ui::query_editor::QueryEditor;
 
 #[gpui_kit::test]
 fn the_run_shortcut_sends_only_the_statement_the_caret_is_in(cx: &mut TestAppContext) {
@@ -523,5 +524,91 @@ fn a_script_after_a_limited_run_is_not_labelled_limited(cx: &mut TestAppContext)
     assert!(
         status.starts_with("2 rows in") && !status.contains("limited"),
         "a script is never limited, so it should not say so: {status}"
+    );
+}
+
+/// The active tab's editor.
+fn editor_of(cx: &mut TestAppContext, handle: WindowHandle<Session>) -> Entity<QueryEditor> {
+    handle
+        .update(cx, |session, _, cx| session.active_editor_for_test(cx))
+        .unwrap()
+        .expect("a query tab has an editor")
+}
+
+#[gpui_kit::test]
+fn a_syntax_error_is_marked_where_the_server_says(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    let sql = "select 1;\nselect * frm items;";
+    prepare_editor(cx, handle, sql, sql.len());
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    let editor = editor_of(cx, handle);
+    let frm = sql.find("frm").unwrap();
+    editor.read_with(cx, |editor, cx| {
+        assert_eq!(editor.error_offset(cx), Some(frm));
+        assert_eq!(
+            editor.error_marks_for_test(cx),
+            vec![frm..frm + 3],
+            "the word is underlined"
+        );
+    });
+
+    // Go to error puts the caret there.
+    editor.update(cx, |editor, cx| editor.set_cursor_for_test(0, cx));
+    press(cx, handle, "f8");
+    assert_eq!(
+        editor.read_with(cx, |editor, cx| editor.cursor_for_test(cx)),
+        frm
+    );
+
+    // The next edit clears it.
+    handle
+        .update(cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| editor.set_sql("select 2", window, cx))
+        })
+        .unwrap();
+    assert_eq!(
+        editor.read_with(cx, |editor, cx| editor.error_offset(cx)),
+        None
+    );
+}
+
+#[gpui_kit::test]
+fn a_failing_script_statement_is_marked_without_a_position(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    // "no such column" names no place, so the whole statement is marked.
+    let sql = "select 1;\nselect nope from items;\nselect 3;";
+    prepare_editor(cx, handle, sql, 0);
+    press(cx, handle, "secondary-alt-shift-enter");
+    cx.run_until_parked();
+
+    let editor = editor_of(cx, handle);
+    let start = sql.find("select nope").unwrap();
+    let end = start + "select nope from items".len();
+    editor.read_with(cx, |editor, cx| {
+        assert_eq!(editor.error_offset(cx), Some(start));
+        assert_eq!(editor.error_marks_for_test(cx), vec![start..end]);
+    });
+}
+
+#[gpui_kit::test]
+fn the_statement_a_run_would_send_is_framed_when_there_are_several(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+    let editor = editor_of(cx, handle);
+
+    prepare_editor(cx, handle, "select 1;\nselect 2;", 12);
+    assert_eq!(
+        editor.read_with(cx, |editor, cx| editor.current_statement_range(cx)),
+        Some(10..18)
+    );
+
+    // One statement needs no telling apart.
+    prepare_editor(cx, handle, "select 1", 0);
+    assert_eq!(
+        editor.read_with(cx, |editor, cx| editor.current_statement_range(cx)),
+        None
     );
 }
