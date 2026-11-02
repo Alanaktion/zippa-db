@@ -253,12 +253,14 @@ pub(crate) fn primary_key_sql(schema: &str, table: &str) -> String {
 }
 
 /// The planner's row estimate for a table, as of its last `ANALYZE`:
-/// `-1` for a table never analyzed, `0` for a view.
+/// `-1` for a table never analyzed, `0` for a view. A table with
+/// inheritance children or partitions answers no row: its own `reltuples`
+/// leaves out the children's rows, which reading it includes.
 pub(crate) fn estimated_rows_sql(schema: &str, table: &str) -> String {
     format!(
         "SELECT c.reltuples::bigint FROM pg_class c \
          JOIN pg_namespace n ON n.oid = c.relnamespace \
-         WHERE n.nspname = {} AND c.relname = {}",
+         WHERE n.nspname = {} AND c.relname = {} AND NOT c.relhassubclass",
         quote_literal(schema),
         quote_literal(table)
     )

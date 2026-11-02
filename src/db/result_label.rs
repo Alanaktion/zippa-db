@@ -44,16 +44,18 @@ impl ResultLabel {
         Self { label, tooltip }
     }
 
-    /// The tab a script's skipped failures are listed in, said in words so
-    /// it is not told apart by colour alone.
-    pub fn for_failures(failures: usize) -> Self {
+    /// The tab a script's failures are listed in, said in words so it is
+    /// not told apart by colour alone. `stopped` when a failure ended the
+    /// run (rolled back or stopped) rather than being skipped past.
+    pub fn for_failures(failures: usize, stopped: bool) -> Self {
         let label = match failures {
             1 => "Error".to_string(),
             count => format!("{count} errors"),
         };
-        let tooltip = match failures {
-            1 => "The statement that failed and was skipped".to_string(),
-            _ => "The statements that failed and were skipped".to_string(),
+        let tooltip = match (failures, stopped) {
+            (_, true) => "The statement that failed and stopped the run".to_string(),
+            (1, false) => "The statement that failed and was skipped".to_string(),
+            (_, false) => "The statements that failed and were skipped".to_string(),
         };
         Self { label, tooltip }
     }
@@ -64,9 +66,11 @@ impl ResultLabel {
 fn count_label(result: &QueryResult, verb: Option<&str>) -> String {
     let changed = match verb {
         Some("UPDATE") => Some("updated"),
-        Some("INSERT") | Some("REPLACE") => Some("inserted"),
+        Some("INSERT") => Some("inserted"),
         Some("DELETE") => Some("deleted"),
-        Some("MERGE") => Some("affected"),
+        // MySQL counts a `REPLACE` that replaces a row twice (the delete and
+        // the insert), so the count is of rows affected, not inserted.
+        Some("MERGE") | Some("REPLACE") => Some("affected"),
         _ => None,
     };
     if result.rows.is_empty()
@@ -179,6 +183,19 @@ mod tests {
             Engine::Postgres,
         );
         assert_eq!(returning.label, "items · 2 rows");
+        // One row replaced is a delete and an insert to MySQL.
+        let replace = ResultLabel::for_result(
+            &result(0, 0, Some(2)),
+            Some("replace into items values (1, 'x')"),
+            Engine::MySql,
+        );
+        assert_eq!(replace.label, "items · 2 affected");
+        let with_insert = ResultLabel::for_result(
+            &result(0, 0, Some(4)),
+            Some("with src as (select 1) insert into target select * from src"),
+            Engine::Postgres,
+        );
+        assert_eq!(with_insert.label, "target · 4 inserted");
     }
 
     #[test]
@@ -196,8 +213,18 @@ mod tests {
 
     #[test]
     fn failures_say_error_in_words() {
-        assert_eq!(ResultLabel::for_failures(1).label, "Error");
-        assert_eq!(ResultLabel::for_failures(3).label, "3 errors");
+        assert_eq!(ResultLabel::for_failures(1, false).label, "Error");
+        assert_eq!(ResultLabel::for_failures(3, false).label, "3 errors");
+        assert!(
+            ResultLabel::for_failures(1, true)
+                .tooltip
+                .contains("stopped the run")
+        );
+        assert!(
+            ResultLabel::for_failures(1, false)
+                .tooltip
+                .contains("skipped")
+        );
     }
 
     #[test]

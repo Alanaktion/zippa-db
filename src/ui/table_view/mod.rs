@@ -529,7 +529,14 @@ impl TableView {
     /// foreign key target, nullability, default — from whichever of the key,
     /// foreign key, and column reads have landed.
     fn sync_column_info(&mut self, cx: &mut Context<Self>) {
+        let own_schema = match self.connection.config.engine {
+            _ if self.object.schema.is_some() => self.object.schema.clone(),
+            crate::db::Engine::Postgres => Some("public".to_string()),
+            crate::db::Engine::MySql => Some(self.connection.config.database.clone()),
+            crate::db::Engine::Sqlite => None,
+        };
         let info = column_infos(
+            own_schema.as_deref(),
             self.row_key.as_ref(),
             self.foreign_keys.as_deref().unwrap_or_default(),
             self.column_defs.as_deref().unwrap_or_default(),
@@ -607,6 +614,11 @@ impl TableView {
         // the rows do not answer to.
         let searched = !self.search.trim().is_empty() && !self.columns.is_empty();
         let keep = std::mem::take(&mut self.keep_count);
+        // New filters, a search, or a refresh: a count still on its way is
+        // about the rows as they were, so it must not land beside these.
+        if !keep {
+            self.forget_count();
+        }
         let (sql, params) = self.query_with_params(cx);
         let connection = self.connection.clone();
         let task = runtime::spawn(async move { connection.run_query_with(&sql, params).await });
@@ -703,7 +715,7 @@ impl TableView {
         // Nothing is staged now, so these run straight through their own
         // guard rather than asking again.
         match action {
-            Pending::Reload => self.reload(cx),
+            Pending::Reload => self.reread(cx),
             Pending::Page(page) => self.go(page, cx),
             Pending::Sort(sort) => self.apply_sort(sort, cx),
             Pending::Limit(limit) => self.set_limit(limit, cx),
@@ -738,6 +750,13 @@ impl TableView {
         if self.hold(Pending::Reload, cx) {
             return;
         }
+        self.reread(cx);
+    }
+
+    /// A refresh: the rows, and the column definitions the headers show,
+    /// which a schema change may have altered since the table was opened.
+    fn reread(&mut self, cx: &mut Context<Self>) {
+        self.load_column_defs(cx);
         self.reload(cx);
     }
 
@@ -968,9 +987,16 @@ impl TableView {
                         } else {
                             this.grid
                                 .update(cx, |grid, cx| grid.apply_staged(&written, cx));
+                            // An edit can move a row out of the filters, so
+                            // the total is asked for again; the page itself
+                            // has not changed, so it cannot answer.
+                            this.count_rows(false, cx);
                         }
                     }
                     Ok(Err(error)) => {
+                        // The statements before the one that failed were
+                        // kept, so the total may have moved.
+                        this.count_rows(false, cx);
                         let message = crate::db::health::describe(&error);
                         this.error = Some(message.clone());
                         crate::ui::notify_error(window, cx, format!("Error: {message}"));
@@ -1508,9 +1534,11 @@ impl TableView {
 }
 
 /// What the schema says about each column, by name: the primary key's
-/// columns, single-column foreign keys' targets (`table.column`), and each
-/// column's declared type, nullability, and default.
+/// columns, foreign keys' targets (`table.column`, with the schema when it is
+/// not the table's own, `own_schema`), and each column's declared type,
+/// nullability, and default.
 fn column_infos(
+    own_schema: Option<&str>,
     row_key: Option<&RowKey>,
     foreign_keys: &[ForeignKeyDef],
     columns: &[ColumnDef],
@@ -1533,13 +1561,24 @@ fn column_infos(
         }
     }
     for fk in foreign_keys {
+        let table = match fk.referenced_schema.as_deref() {
+            Some(schema) if Some(schema) != own_schema => {
+                format!("{schema}.{}", fk.referenced_table)
+            }
+            _ => fk.referenced_table.clone(),
+        };
         // A composite key names its whole column list on each of its columns.
         let target = match fk.referenced_columns.as_slice() {
-            [target] => format!("{}.{target}", fk.referenced_table),
-            targets => format!("{} ({})", fk.referenced_table, targets.join(", ")),
+            [target] => format!("{table}.{target}"),
+            targets => format!("{table} ({})", targets.join(", ")),
         };
+        // A column in two foreign keys lists both.
         for column in &fk.columns {
-            info.entry(column.clone()).or_default().references = Some(target.clone());
+            let references = &mut info.entry(column.clone()).or_default().references;
+            *references = Some(match references.take() {
+                Some(earlier) => format!("{earlier}, {target}"),
+                None => target.clone(),
+            });
         }
     }
     info
@@ -1591,5 +1630,38 @@ impl Render for TableView {
                 this.child(self.render_confirm(cx))
             })
             .child(self.render_footer(cx))
+    }
+}
+
+#[cfg(test)]
+mod column_info_tests {
+    use super::*;
+    use crate::db::ReferentialAction;
+
+    fn fk(column: &str, schema: &str, table: &str, target: &str) -> ForeignKeyDef {
+        ForeignKeyDef {
+            name: format!("{column}_{table}"),
+            columns: vec![column.into()],
+            referenced_schema: Some(schema.into()),
+            referenced_table: table.into(),
+            referenced_columns: vec![target.into()],
+            on_delete: ReferentialAction::NoAction,
+            on_update: ReferentialAction::NoAction,
+        }
+    }
+
+    #[test]
+    fn a_foreign_key_names_another_schema_and_every_target() {
+        let keys = [
+            fk("race_id", "public", "races", "id"),
+            fk("owner", "billing", "accounts", "id"),
+            fk("owner", "public", "people", "id"),
+        ];
+        let info = column_infos(Some("public"), None, &keys, &[]);
+        assert_eq!(info["race_id"].references.as_deref(), Some("races.id"));
+        assert_eq!(
+            info["owner"].references.as_deref(),
+            Some("billing.accounts.id, people.id")
+        );
     }
 }

@@ -922,18 +922,20 @@ impl SessionPanel {
 
     /// Put a finished run's results in this tab.
     pub(crate) fn show_results(&mut self, results: Vec<QueryResult>, cx: &mut Context<Self>) {
-        self.show_script_results(results, &[], 0, cx);
+        self.show_script_results(results, &[], 0, false, cx);
     }
 
     /// [`Self::show_results`] for a run that knows the statement behind each
     /// result, so the result tabs can say what each one is. `statements`
     /// covers the results at the same index; when `failures` is not zero,
-    /// the result after them is the list of statements that failed.
+    /// the result after them is the list of statements that failed, and
+    /// `stopped` says whether a failure ended the run.
     pub(crate) fn show_script_results(
         &mut self,
         results: Vec<QueryResult>,
         statements: &[String],
         failures: usize,
+        stopped: bool,
         cx: &mut Context<Self>,
     ) {
         let TabContent::Query {
@@ -959,7 +961,7 @@ impl SessionPanel {
             .map(|(index, shown)| match statements.get(index) {
                 Some(statement) => ResultLabel::for_result(shown, Some(statement), *engine),
                 None if failures > 0 && index == statements.len() => {
-                    ResultLabel::for_failures(failures)
+                    ResultLabel::for_failures(failures, stopped)
                 }
                 None => ResultLabel::for_result(shown, None, *engine),
             })

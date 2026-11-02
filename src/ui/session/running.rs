@@ -517,7 +517,7 @@ impl Session {
         results.extend(failures);
 
         panel.update(cx, |panel, cx| {
-            panel.show_script_results(results, &statements, failed_count, cx);
+            panel.show_script_results(results, &statements, failed_count, failed, cx);
             if let Some(summary) = summary {
                 panel.set_status(if failed {
                     Status::Error(summary)

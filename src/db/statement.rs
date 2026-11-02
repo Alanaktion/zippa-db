@@ -609,31 +609,64 @@ fn outermost_words(sql: &str, engine: Engine) -> (Vec<OuterWord>, usize) {
 /// statement has no words at all.
 pub fn verb_and_table(sql: &str, engine: Engine) -> Option<(String, Option<String>)> {
     let (words, _) = outermost_words(sql, engine);
-    let verb = words.first()?.word.clone();
-    let after = |keyword: &str| {
-        words
+    let first = words.first()?;
+    // A `WITH` names its CTEs first; the statement it leads into is the
+    // first outer write after them, or a query when there is none.
+    let (verb_at, verb) = match first.word.as_str() {
+        "WITH" => words
             .iter()
-            .position(|word| word.word == keyword)
-            .map(|index| words[index].end)
+            .enumerate()
+            .find(|(_, word)| {
+                matches!(word.word.as_str(), "INSERT" | "UPDATE" | "DELETE" | "MERGE")
+            })
+            .map_or((0, "SELECT".to_string()), |(at, word)| {
+                (at, word.word.clone())
+            }),
+        verb => (0, verb.to_string()),
     };
+    let rest = &words[verb_at..];
+    let position = |keyword: &str| rest.iter().position(|word| word.word == keyword);
+    // The end of the first word at or after `from` that is none of `skip`.
+    let past = |from: usize, skip: &[&str]| {
+        let skipped = rest
+            .iter()
+            .skip(from + 1)
+            .take_while(|word| skip.contains(&word.word.as_str()))
+            .count();
+        rest[from + skipped].end
+    };
+
     let at = match verb.as_str() {
-        "SELECT" | "WITH" | "DELETE" => after("FROM"),
-        "INSERT" | "REPLACE" => after("INTO"),
-        "UPDATE" => {
-            // `UPDATE ONLY t` (Postgres) and MySQL's modifiers come before
-            // the name.
-            let modifiers = words
-                .iter()
-                .skip(1)
-                .take_while(|word| matches!(word.word.as_str(), "ONLY" | "LOW_PRIORITY" | "IGNORE"))
-                .count();
-            Some(words[modifiers].end)
+        // `SELECT … INTO new_table FROM …` (Postgres) names the table it
+        // makes; MySQL's `INTO @var` and `INTO OUTFILE` name none.
+        "SELECT"
+            if matches!(
+                (position("INTO"), position("FROM")),
+                (Some(into), from) if from.is_none_or(|from| into < from)
+            ) =>
+        {
+            let into = position("INTO").unwrap_or_default();
+            let next = rest.get(into + 1).map(|word| word.word.as_str());
+            match next {
+                Some("OUTFILE" | "DUMPFILE") => None,
+                _ => Some(past(into, &["TEMP", "TEMPORARY", "UNLOGGED", "TABLE"])),
+            }
         }
+        // `FROM ONLY t` and `FROM LATERAL f(…)` name the table after the
+        // modifier.
+        "SELECT" | "DELETE" => position("FROM").map(|from| past(from, &["ONLY", "LATERAL"])),
+        "INSERT" | "REPLACE" | "MERGE" => position("INTO").map(|into| past(into, &[])),
+        // `UPDATE ONLY t` (Postgres) and MySQL's modifiers come before the
+        // name.
+        "UPDATE" => Some(past(0, &["ONLY", "LOW_PRIORITY", "IGNORE"])),
         _ => None,
     };
     // After `FROM`, a name followed by `(` is a function call
     // (`FROM generate_series(…)`); after `INTO` it is the column list.
-    let from = matches!(verb.as_str(), "SELECT" | "WITH" | "DELETE");
+    let from = matches!(verb.as_str(), "SELECT" | "DELETE")
+        && !rest
+            .iter()
+            .any(|word| word.word == "INTO" && Some(word.end) == at);
     let table = at.and_then(|at| table_name_at(&sql[at..], from, engine));
     Some((verb, table))
 }
@@ -677,11 +710,12 @@ fn table_name_at(text: &str, refuse_call: bool, engine: Engine) -> Option<String
         if part.is_empty() {
             return None;
         }
-        if characters.get(index) == Some(&'.') {
-            index += 1;
+        // Blank space may sit either side of the dot: `public . users`.
+        let rest = skip_trivia(&characters, index, engine);
+        if characters.get(rest) == Some(&'.') {
+            index = skip_trivia(&characters, rest + 1, engine);
             continue;
         }
-        let rest = skip_trivia(&characters, index, engine);
         if refuse_call && characters.get(rest) == Some(&'(') {
             return None;
         }
@@ -1090,6 +1124,38 @@ mod tests {
         assert_eq!(table("select * from (select 1) s", pg), None);
         assert_eq!(table("select * from generate_series(1, 3)", pg), None);
         assert_eq!(table("select 1", pg), None);
+        assert_eq!(
+            table("select * from only items", pg).as_deref(),
+            Some("items")
+        );
+        assert_eq!(
+            table("select * from lateral generate_series(1, 3)", pg),
+            None
+        );
+        assert_eq!(
+            table("select * from public . \"Users\"", pg).as_deref(),
+            Some("Users")
+        );
+        assert_eq!(
+            verb_and_table(
+                "with src as (select 1) insert into target select * from src",
+                pg
+            ),
+            Some(("INSERT".to_string(), Some("target".to_string())))
+        );
+        assert_eq!(
+            verb_and_table("with recent as (select * from b) select * from recent", pg),
+            Some(("SELECT".to_string(), Some("recent".to_string())))
+        );
+        assert_eq!(
+            table("select * into temp copied from original", pg).as_deref(),
+            Some("copied")
+        );
+        assert_eq!(
+            table("select * from t into outfile '/tmp/x'", Engine::MySql).as_deref(),
+            Some("t")
+        );
+        assert_eq!(table("select 1 into outfile '/tmp/x'", Engine::MySql), None);
         assert_eq!(
             verb_and_table("create table x (a int)", pg),
             Some(("CREATE".to_string(), None))
