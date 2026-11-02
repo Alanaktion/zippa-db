@@ -144,6 +144,28 @@ fn a_failed_run_shows_its_error_in_the_result_pane(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_result_pane_copies_a_failed_runs_whole_error(cx: &mut TestAppContext) {
+    let (_database, handle) = session_with_objects(cx);
+
+    prepare_editor(cx, handle, "select * from not_a_table", 0);
+    press(cx, handle, "secondary-enter");
+    cx.run_until_parked();
+
+    let error = handle
+        .update(cx, |session, _, cx| session.active_pane_error_for_test(cx))
+        .unwrap()
+        .expect("a failed run should leave its error in the result pane");
+
+    click_in_session(cx, handle, "copy-query-error");
+    assert_eq!(
+        clipboard(cx),
+        Some(error.clone()),
+        "Copy should take the message as the pane holds it, without the Error: prefix"
+    );
+    assert!(!error.starts_with("Error"), "{error}");
+}
+
+#[gpui_kit::test]
 fn a_failed_run_keeps_its_error_in_its_own_tab(cx: &mut TestAppContext) {
     let (_database, handle) = session_with_objects(cx);
 
@@ -323,6 +345,41 @@ fn skipping_a_failure_finishes_the_script_and_lists_it(cx: &mut TestAppContext) 
     assert!(
         status.contains("1 statement failed and skipped"),
         "the status bar should count the failures: {status}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_failing_script_of_reads_lists_the_failure_without_asking(cx: &mut TestAppContext) {
+    let (_database, handle, session) = workspace_session_with_safety(cx, SafetyMode::Staged);
+
+    prepare_workspace_editor(
+        cx,
+        &handle,
+        &session,
+        "select name from items;\nselect * from itemz;",
+    );
+    press_workspace(cx, &handle, "secondary-shift-enter");
+    cx.run_until_parked();
+
+    assert!(
+        !workspace_dialog_open(cx, &handle),
+        "a script that only reads has nothing to roll back, so nothing to ask"
+    );
+    let (results, _) = session.read_with(cx, |session, cx| session.results_for_test(cx));
+    assert_eq!(results, 2, "the first statement's rows, then the failure");
+    assert_eq!(
+        transaction(cx, &session),
+        TxnState::Idle,
+        "no transaction should be left open for a script of reads"
+    );
+    let status = workspace_status(cx, &session);
+    assert!(
+        status.contains("1 statement failed and skipped"),
+        "the status bar should count the failure: {status}"
+    );
+    assert!(
+        !session.read_with(cx, |session, cx| session.active_is_running(cx)),
+        "the tab should be free to run again"
     );
 }
 

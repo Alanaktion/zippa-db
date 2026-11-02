@@ -64,6 +64,11 @@ impl Session {
     /// first whether to run it without one. `ignoring_errors` runs it
     /// without a transaction and past every failure, for a migration that
     /// was partly applied before.
+    ///
+    /// A script the classifier reads as nothing but reads runs the same way
+    /// as `ignoring_errors`: there is nothing to roll back, so a wrapping
+    /// transaction and a roll-back question would only be noise. A failure
+    /// is listed after the results that ran, which stay in view.
     pub(super) fn run_script(
         &mut self,
         panel: &Entity<SessionPanel>,
@@ -72,10 +77,13 @@ impl Session {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let confirm = self.connection.config.safety.confirms_writes()
-            && statement::first_write(&sql, self.connection.config.engine).is_some();
+        let writes = statement::first_write(&sql, self.connection.config.engine).is_some();
+        let confirm = self.connection.config.safety.confirms_writes() && writes;
 
-        let (mode, on_failure, blocker) = if ignoring_errors {
+        // A run inside the tab's open transaction still joins it, and
+        // `ScriptRun::start` refuses a blocker there, so no blocker is
+        // looked for here.
+        let (mode, on_failure, blocker) = if ignoring_errors || !writes {
             (ScriptMode::Autocommit, OnFailure::Skip, None)
         } else {
             match transaction_blocker(
@@ -411,6 +419,7 @@ impl Session {
             }
         );
 
+        let message = failure.message.clone();
         let session = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let answer = |decision: Decision| {
@@ -436,6 +445,10 @@ impl Session {
                 .description(description.clone())
                 .footer(
                     DialogFooter::new()
+                        .child(crate::ui::copy_error_button(
+                            "script-copy-error",
+                            message.clone(),
+                        ))
                         .child(
                             Button::new("script-skip-all")
                                 .label("Skip all errors")

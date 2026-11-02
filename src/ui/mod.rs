@@ -41,11 +41,13 @@ pub mod welcome;
 #[cfg(test)]
 mod tests;
 
-use gpui_kit::component::button::ButtonCustomVariant;
+use gpui_kit::assets::IconName;
+use gpui_kit::component::Sizable;
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{ActiveTheme, Root, Theme, WindowExt};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Hsla, SharedString, Window, div, rgb};
+use gpui_kit::{App, ClipboardItem, ElementId, Hsla, SharedString, Window, div, rgb};
 
 use crate::db::TagColor;
 
@@ -70,6 +72,35 @@ pub fn notify_info(window: &mut Window, cx: &mut App, message: impl Into<SharedS
     if window.root::<Root>().flatten().is_some() {
         window.push_notification(Notification::info(message.into()), cx);
     }
+}
+
+/// A small Copy button beside an error, putting `message` on the clipboard
+/// as the server or the app said it: the whole text, never the shown
+/// excerpt, and without the `Error: ` the display adds. Error text is drawn
+/// as plain text that cannot be selected, so this is the way to get it into
+/// a search, a ticket, or the Agents panel.
+pub fn copy_error_button(id: impl Into<ElementId>, message: impl Into<SharedString>) -> Button {
+    let message: SharedString = message.into();
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .icon(IconName::Copy)
+        .accessibility_label("Copy error")
+        .tooltip("Copy the error message")
+        .on_click(move |_, window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(copied_error(&message)));
+            notify_info(window, cx, "Copied the error message");
+        })
+}
+
+/// What [`copy_error_button`] copies: the message less any `Error: ` a
+/// caller already put in front of it.
+pub(crate) fn copied_error(message: &str) -> String {
+    message
+        .strip_prefix("Error: ")
+        .unwrap_or(message)
+        .trim()
+        .to_string()
 }
 
 /// A ghost button whose text is the theme's muted colour: it reads as chrome
@@ -170,4 +201,16 @@ pub(crate) fn contrast(a: Hsla, b: Hsla) -> f64 {
         (b, a)
     };
     (relative_luminance(lighter) + 0.05) / (relative_luminance(darker) + 0.05)
+}
+
+#[cfg(test)]
+mod copy_error_tests {
+    use super::copied_error;
+
+    #[test]
+    fn a_copied_error_leaves_the_display_prefix_behind() {
+        assert_eq!(copied_error("Error: no such table: x"), "no such table: x");
+        assert_eq!(copied_error("no such table: x\n"), "no such table: x");
+        assert_eq!(copied_error("Errors: 3"), "Errors: 3");
+    }
 }
