@@ -121,6 +121,10 @@ pub struct QueryEditor {
     toolbar: bool,
     /// What the last run sent, so its failure can be marked in the buffer.
     sent: Option<diagnostics::Sent>,
+    /// What a run asked for is about to send, until the session starts it:
+    /// a run that is refused or whose confirmation is cancelled leaves the
+    /// last error marked.
+    pending: Option<diagnostics::Sent>,
     /// Where the last run failed, in the buffer, while that is marked.
     error_at: Option<usize>,
     /// The frame around the statement a run would send.
@@ -189,6 +193,7 @@ impl QueryEditor {
             saved_name: None,
             toolbar: true,
             sent: None,
+            pending: None,
             error_at: None,
             statement_mark: None,
             statement_mark_range: None,
@@ -245,6 +250,9 @@ impl QueryEditor {
 
     pub fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
         self.running = running;
+        if running {
+            self.start_sent(cx);
+        }
         cx.notify();
     }
 
@@ -391,6 +399,8 @@ impl QueryEditor {
         let Some(sql) = self.statement(cx) else {
             return;
         };
+        // A plan's failure is not marked in the buffer.
+        self.forget_pending();
         cx.emit(QueryEditorEvent::Explain { sql, analyze });
     }
 

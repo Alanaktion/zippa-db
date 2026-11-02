@@ -107,6 +107,9 @@ struct FilterRow {
     value: Entity<InputState>,
     /// Hint the value box is showing, so it is only set when it changes.
     hint: &'static str,
+    /// The value is a cell's text, taken as it is: leading and trailing
+    /// spaces are part of it, where a typed value has them trimmed.
+    verbatim: bool,
 }
 
 pub struct FilterBar {
@@ -272,6 +275,7 @@ impl FilterBar {
             operator: operator_state,
             value: value_state,
             hint,
+            verbatim: false,
         }
     }
 
@@ -303,7 +307,8 @@ impl FilterBar {
             vec![SharedString::from(column)]
         };
         let column_index = items.iter().position(|name| name == column).unwrap_or(0);
-        let row = Self::build_row(items, column_index, operator, value, window, cx);
+        let mut row = Self::build_row(items, column_index, operator, value, window, cx);
+        row.verbatim = true;
         self.rows.push(row);
         cx.notify();
         self.apply(cx);
@@ -337,7 +342,8 @@ impl FilterBar {
         };
         let column_index = items.iter().position(|name| name == column).unwrap_or(0);
 
-        let row = Self::build_row(items, column_index, operator, value, window, cx);
+        let mut row = Self::build_row(items, column_index, operator, value, window, cx);
+        row.verbatim = true;
         self.rows.push(row);
         self.apply(cx);
     }
@@ -408,7 +414,13 @@ impl FilterBar {
             .filter_map(|row| {
                 let column = row.column.read(cx).selected_value()?.to_string();
                 let operator = Operator::from_label(row.operator.read(cx).selected_value()?)?;
-                let value = row.value.read(cx).value().trim().to_string();
+                let value = row.value.read(cx).value();
+                let value = if row.verbatim {
+                    &value[..]
+                } else {
+                    value.trim()
+                }
+                .to_string();
 
                 // A filter with nothing to compare against is still being
                 // written, so it does not narrow anything yet.

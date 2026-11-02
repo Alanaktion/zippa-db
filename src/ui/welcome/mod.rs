@@ -654,7 +654,18 @@ impl Welcome {
         cx.spawn(async move |this, cx| {
             let paths = match prompt.await {
                 Ok(Some(paths)) => paths,
-                _ => return,
+                Ok(None) => return,
+                // No picker to show (a Linux desktop with no portal, say):
+                // said, rather than the command doing nothing.
+                Err(error) => {
+                    let message = format!(
+                        "could not show a file picker: {}",
+                        crate::db::health::describe(&error)
+                    );
+                    this.update_in(cx, |this, window, cx| this.show_error(message, window, cx))
+                        .ok();
+                    return;
+                }
             };
             let Some(path) = paths.into_iter().next() else {
                 return;
@@ -677,7 +688,29 @@ impl Welcome {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_editor(Some(sqlite_config(&path)), window, cx);
+        // One editor at a time; the file chosen must not just vanish.
+        if self.editor.is_some() {
+            notify_error(
+                window,
+                cx,
+                format!(
+                    "Error: {} was not opened: close the connection editor first",
+                    path.display()
+                ),
+            );
+            return;
+        }
+        match sqlite_config(&path) {
+            Ok(config) => self.open_editor(Some(config), window, cx),
+            Err(message) => self.show_error(message, window, cx),
+        }
+    }
+
+    /// Show `message` in the launcher's banner, and raise it as a toast.
+    fn show_error(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
+        notify_error(window, cx, format!("Error: {message}"));
+        self.error = Some(message);
+        cx.notify();
     }
 
     /// A SQLite file dropped on the launcher: the first one that looks like
@@ -688,7 +721,11 @@ impl Welcome {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(path) = paths.paths().iter().find(|path| is_sqlite_path(path)) {
+        if let Some(path) = paths
+            .paths()
+            .iter()
+            .find(|path| path.is_file() && is_sqlite_path(path))
+        {
             self.open_sqlite_path(path.clone(), window, cx);
         }
     }
@@ -1102,13 +1139,26 @@ pub(crate) fn is_sqlite_path(path: &std::path::Path) -> bool {
 }
 
 /// A new SQLite connection to `path`, named after the file.
-fn sqlite_config(path: &std::path::Path) -> ConnectionConfig {
+fn sqlite_config(path: &std::path::Path) -> Result<ConnectionConfig, String> {
+    // Absolute, so a connection saved from `zippa-db data/orders.db` still
+    // finds the file when the app is next started from somewhere else.
+    let path = std::fs::canonicalize(path)
+        .or_else(|_| std::path::absolute(path))
+        .unwrap_or_else(|_| path.to_path_buf());
+    // A connection keeps its file as text, so a name that is not valid
+    // UTF-8 cannot be kept without changing it into another file's.
+    let Some(database) = path.to_str() else {
+        return Err(format!(
+            "{} cannot be opened: its name is not valid UTF-8",
+            path.display()
+        ));
+    };
     let mut config = ConnectionConfig::new(Engine::Sqlite);
-    config.database = path.to_string_lossy().into_owned();
+    config.database = database.to_string();
     if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
         config.name = stem.to_string();
     }
-    config
+    Ok(config)
 }
 
 /// Saved connections, most recently connected first, then by name.

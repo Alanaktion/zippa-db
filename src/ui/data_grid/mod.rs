@@ -124,7 +124,8 @@ pub(crate) enum MenuCommand {
     Duplicate(usize),
 }
 
-type CommandReporter = Rc<dyn Fn(MenuCommand, &mut Window, &mut App)>;
+/// The `u64` is the result generation the menu was built over.
+type CommandReporter = Rc<dyn Fn(MenuCommand, u64, &mut Window, &mut App)>;
 
 /// Asks the owner to filter the table by a cell's value: `column = value`,
 /// `IS NULL` for a NULL, or the opposite of either when excluding.
@@ -364,11 +365,17 @@ impl DataGrid {
 
         let report_command: CommandReporter = Rc::new({
             let grid = cx.weak_entity();
-            move |command: MenuCommand, window: &mut Window, cx: &mut App| {
+            move |command: MenuCommand, generation: u64, window: &mut Window, cx: &mut App| {
                 let Some(grid) = grid.upgrade() else {
                     return;
                 };
-                grid.update(cx, |grid, cx| grid.run_menu_command(command, window, cx));
+                grid.update(cx, |grid, cx| {
+                    // The rows the menu was opened over were replaced while
+                    // it stayed open; its row index now means another row.
+                    if grid.result_generation == generation {
+                        grid.run_menu_command(command, window, cx);
+                    }
+                });
             }
         });
 
@@ -402,6 +409,7 @@ impl DataGrid {
                     report_export,
                     report_copy_as,
                     report_command,
+                    generation: 0,
                     engine,
                     table: None,
                     foreign_keys: HashSet::new(),
@@ -1462,8 +1470,10 @@ impl DataGrid {
     ) {
         self.result_generation += 1;
         self.has_result = true;
+        let generation = self.result_generation;
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
+            delegate.generation = generation;
             delegate.widths = measure_columns(&result);
             delegate.order = (0..result.rows.len()).collect();
             delegate.result = result;

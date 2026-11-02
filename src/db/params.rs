@@ -178,6 +178,23 @@ mod tests {
     }
 
     #[test]
+    fn an_offset_after_a_second_replacement_maps_back() {
+        let typed = "SELECT * FROM t WHERE name = :name AND id = :id AND x frm";
+        let rewrite = rewrite(
+            typed,
+            &variables(&[("name", "a"), ("id", "42")]),
+            Engine::Postgres,
+        )
+        .unwrap();
+        assert_eq!(
+            rewrite.sql,
+            "SELECT * FROM t WHERE name = $1 AND id = $2 AND x frm"
+        );
+        let frm = rewrite.sql.find("frm").unwrap();
+        assert_eq!(rewrite.original_offset(frm), typed.find("frm").unwrap());
+    }
+
+    #[test]
     fn a_statement_without_placeholders_is_untouched() {
         let (sql, params) =
             substitute("SELECT 1", &variables(&[("x", "1")]), Engine::Postgres).unwrap();

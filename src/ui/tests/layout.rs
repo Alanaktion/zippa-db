@@ -208,21 +208,32 @@ fn dragging_the_divider_resizes_the_sidebar(cx: &mut TestAppContext) {
         })
     };
 
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.draw(cx).clear(cx);
+    let after = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
 
-        let before = window.find("sidebar").bounds().size.width;
-        let divider = point(before + px(2.), px(WINDOW.1 / 2.));
-        window.drag(divider, point(before + px(120.), px(WINDOW.1 / 2.)), cx);
-        window.render_frame(cx);
+            let before = window.find("sidebar").bounds().size.width;
+            let divider = point(before + px(2.), px(WINDOW.1 / 2.));
+            window.drag(divider, point(before + px(120.), px(WINDOW.1 / 2.)), cx);
+            window.render_frame(cx);
 
-        let after = window.find("sidebar").bounds().size.width;
-        assert!(
-            after > before,
-            "dragging the divider right did not widen the sidebar: {before:?} -> {after:?}"
-        );
-    })
-    .unwrap();
+            let after = window.find("sidebar").bounds().size.width;
+            assert!(
+                after > before,
+                "dragging the divider right did not widen the sidebar: {before:?} -> {after:?}"
+            );
+            after
+        })
+        .unwrap();
+    cx.run_until_parked();
+    // A finished drag is remembered for the next session to open with.
+    let saved = cx
+        .update(|cx| crate::ui::layout::current(cx).sidebar)
+        .expect("the width is saved");
+    assert!(
+        (saved - f32::from(after)).abs() < 2.,
+        "saved {saved}, drawn {after:?}"
+    );
 }
 
 /// Frames must not get more expensive as the result set grows: the grid

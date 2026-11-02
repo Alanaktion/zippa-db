@@ -31,21 +31,36 @@ pub(super) struct Sent {
 impl QueryEditor {
     /// A hash of the buffer's text alone.
     fn buffer_key(&self, cx: &gpui_kit::App) -> u64 {
-        use std::hash::{Hash, Hasher};
+        use std::hash::Hasher;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // The bytes alone, so where the rope happens to split its chunks
+        // does not change the key.
         for chunk in self.state.read(cx).text().chunks() {
-            chunk.hash(&mut hasher);
+            hasher.write(chunk.as_bytes());
         }
         hasher.finish()
     }
 
-    /// Note what a run is about to send, clearing the last run's error.
+    /// Note what a run is about to send. The last run's error stays marked
+    /// until the session starts this one ([`Self::set_running`]).
     pub(super) fn note_sent(&mut self, ranges: Vec<Range<usize>>, cx: &mut Context<Self>) {
-        self.clear_error(cx);
-        self.sent = Some(Sent {
+        self.pending = Some(Sent {
             key: self.buffer_key(cx),
             ranges,
         });
+    }
+
+    /// A run has started: what it sends is what a failure is marked against,
+    /// and the last run's error goes. A run the editor did not ask for (the
+    /// status bar's Commit) has nothing noted, so its failure marks nothing.
+    pub(super) fn start_sent(&mut self, cx: &mut Context<Self>) {
+        self.sent = self.pending.take();
+        self.clear_error(cx);
+    }
+
+    /// Drop what a run asked for, for a send the buffer did not start.
+    pub(crate) fn forget_pending(&mut self) {
+        self.pending = None;
     }
 
     /// The buffer range a single run sends: the selection, or the statement
@@ -109,7 +124,10 @@ impl QueryEditor {
                     } else {
                         at
                     };
+                    // A selection run can start or end inside a word; mark
+                    // only the part of it that was sent.
                     text.word_range(at)
+                        .map(|word| word.start.max(range.start)..word.end.min(range.end))
                         .filter(|word| !word.is_empty())
                         .unwrap_or_else(|| {
                             let width = sql[at..].chars().next().map(char::len_utf8).unwrap_or(0);

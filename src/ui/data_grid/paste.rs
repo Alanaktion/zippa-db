@@ -11,9 +11,8 @@ use gpui_kit::base::input::Paste;
 use gpui_kit::{Context, Focusable, KeyDownEvent, Keystroke, Window};
 
 use crate::db::query::Cell;
-use crate::settings::Settings;
 
-use super::{DataGrid, GridEdit, Pasted, staged_value};
+use super::{DataGrid, GridEdit, Pasted};
 
 /// What a paste did, counted for the owner's status line.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -91,11 +90,11 @@ pub(crate) fn typed_text(keystroke: &Keystroke) -> Option<&str> {
 /// A pasted field as a staged value. An empty field is `NULL`: the grid copies
 /// a `NULL` as nothing, so pasting a copied row back puts it back as it was,
 /// and an empty spreadsheet cell means no value rather than an empty string.
-fn pasted_value(field: &str, coerce_null: bool) -> Cell {
-    if field.is_empty() {
-        return None;
-    }
-    staged_value(field.to_string(), coerce_null)
+/// Anything else is staged as written — the text `NULL` included, which is
+/// what the grid copies for a text cell holding those four letters, so the
+/// typed-`NULL` setting does not apply.
+fn pasted_value(field: &str) -> Cell {
+    (!field.is_empty()).then(|| field.to_string())
 }
 
 impl DataGrid {
@@ -164,7 +163,6 @@ impl DataGrid {
         }
 
         self.cancel_editor(window, cx);
-        let coerce = Settings::global(cx).coerce_null_literal;
         self.table.update(cx, |table, cx| {
             let delegate = table.delegate_mut();
             let rows = delegate.rows();
@@ -177,7 +175,7 @@ impl DataGrid {
                     } else if !delegate.is_editable(row_ix, col_ix) {
                         outcome.read_only += 1;
                     } else {
-                        delegate.stage(row_ix, col_ix, pasted_value(field, coerce));
+                        delegate.stage(row_ix, col_ix, pasted_value(field));
                         outcome.staged += 1;
                     }
                 }

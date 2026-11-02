@@ -725,6 +725,10 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         let sql = if commit { "COMMIT" } else { "ROLLBACK" };
+        // Not the buffer's statement, so a failure is not marked in it.
+        if let Some((editor, _)) = panel.read(cx).query_parts() {
+            editor.update(cx, |editor, _| editor.forget_pending());
+        }
         self.send(panel, sql.to_string(), cx);
     }
 

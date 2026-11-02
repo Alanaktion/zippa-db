@@ -1009,6 +1009,15 @@ impl TableView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The reload a write or a read ends with replaces the rows, drafts
+        // included, so a row started now would vanish unwritten.
+        if self.committing || self.loading {
+            self.notice = Some(
+                "Row not duplicated: wait for the table to finish loading, then try again".into(),
+            );
+            cx.notify();
+            return;
+        }
         let skip: HashSet<usize> = match &self.row_key {
             Some(RowKey::Columns(key)) => self
                 .columns

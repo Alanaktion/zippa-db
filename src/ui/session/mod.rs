@@ -653,11 +653,29 @@ impl Session {
     fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let hidden = !layout::current(cx).sidebar_hidden;
         layout::update(cx, |layout| layout.sidebar_hidden = hidden);
-        if hidden {
+        // Hiding the sidebar while it has the keyboard would leave the keys
+        // with nothing on screen; anywhere else (the editor, the Agents
+        // composer) keeps them.
+        if hidden && !self.focus_outside_sidebar(window, cx) {
             self.focus(window, cx);
         }
         cx.emit(SessionEvent::Changed);
         cx.notify();
+    }
+
+    /// Whether the keyboard is in the active tab or the Agents panel, rather
+    /// than the sidebar (or nowhere).
+    fn focus_outside_sidebar(&self, window: &Window, cx: &App) -> bool {
+        let in_agents = self.agents_open
+            && self
+                .agents
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx);
+        let in_tab = self
+            .active_panel()
+            .is_some_and(|panel| panel.read(cx).focus_handle(cx).contains_focused(window, cx));
+        in_agents || in_tab
     }
 
     fn toggle_agents(&mut self, window: &mut Window, cx: &mut Context<Self>) {

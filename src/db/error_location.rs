@@ -87,19 +87,27 @@ impl ErrorSpot {
                     return Some(sent.trim_end().len().max(start));
                 }
                 // MySQL cuts the quoted text at 80 characters, so a prefix of
-                // it is what to look for.
+                // it is what to look for. The quoted text runs to the end of
+                // the statement, so it can only start once in what follows
+                // the line's start; where it seems to start more than once
+                // (a prefix cut short), the spot is unknown.
                 let needle: String = near.chars().take(40).collect();
-                Some(
-                    sent[start..]
-                        .find(&needle)
-                        .map(|at| start + at)
-                        .unwrap_or(start),
-                )
+                unique(&sent[start..], &needle).map(|at| start + at)
             }
-            ErrorSpot::Near(near) if !near.is_empty() => sent.find(near.as_str()),
+            // SQLite names only the token. Where it appears more than once,
+            // which one failed is unknown, and marking the first could point
+            // at the wrong place.
+            ErrorSpot::Near(near) if !near.is_empty() => unique(sent, near),
             ErrorSpot::Near(_) => None,
         }
     }
+}
+
+/// Where `needle` is in `haystack`, if it is there exactly once.
+fn unique(haystack: &str, needle: &str) -> Option<usize> {
+    let mut found = haystack.match_indices(needle).map(|(at, _)| at);
+    let first = found.next()?;
+    found.next().is_none().then_some(first)
 }
 
 /// Byte offset of the start of one-based line `line`.
@@ -146,5 +154,19 @@ mod tests {
         assert_eq!(spot, ErrorSpot::Near("frm".into()));
         assert_eq!(spot.resolve("select 1 frm t"), Some(9));
         assert_eq!(from_message("no such table: t"), None);
+        // A token that appears twice could be either.
+        assert_eq!(
+            ErrorSpot::Near("FROM".into()).resolve("SELECT * FROM t FROM u"),
+            None
+        );
+    }
+
+    #[test]
+    fn text_the_server_quotes_but_the_sql_lacks_is_no_spot() {
+        let spot = ErrorSpot::Line {
+            line: 1,
+            near: "nothing like it".into(),
+        };
+        assert_eq!(spot.resolve("select frm t"), None);
     }
 }

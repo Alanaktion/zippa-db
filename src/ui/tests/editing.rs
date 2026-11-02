@@ -552,7 +552,9 @@ fn discarding_drops_a_paste(cx: &mut TestAppContext) {
 
     // Two rows from the last one, starting on `id`: the second row has
     // nowhere to go.
-    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("3\tq\t\nlost\n".into()));
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+        "3\tNULL\t\nlost\n".into(),
+    ));
     press(cx, handle, "secondary-v");
     cx.run_until_parked();
     assert_eq!(
@@ -564,7 +566,9 @@ fn discarding_drops_a_paste(cx: &mut TestAppContext) {
     grid.read_with(cx, |grid, cx| {
         // An empty field is a NULL, the way a copied NULL comes back.
         assert_eq!(grid.cell_for_test(1, 2, cx), None);
-        assert_eq!(grid.cell_for_test(1, 1, cx).as_deref(), Some("q"));
+        // The text NULL is text: it is what the grid copies for a text cell
+        // holding those letters, whatever typing NULL does.
+        assert_eq!(grid.cell_for_test(1, 1, cx).as_deref(), Some("NULL"));
     });
 
     press(cx, handle, "secondary-alt-z");
