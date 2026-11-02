@@ -250,6 +250,16 @@ pub(crate) fn primary_key_sql(table: &str) -> String {
     )
 }
 
+/// InnoDB's row estimate for a table in the current database, from its
+/// statistics; `NULL` for a view.
+pub(crate) fn estimated_rows_sql(table: &str) -> String {
+    format!(
+        "SELECT table_rows FROM information_schema.tables \
+         WHERE table_schema = DATABASE() AND table_name = {}",
+        quote_literal_for(Engine::MySql, table)
+    )
+}
+
 /// Columns of a table in the current database: name, full type spec (as
 /// `COLUMN_TYPE` already spells it, e.g. `varchar(255)`), nullability,
 /// default, then the four MySQL-only properties `schema::parse_columns`

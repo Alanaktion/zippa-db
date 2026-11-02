@@ -390,6 +390,21 @@ impl Session {
             .unwrap_or((0, 0))
     }
 
+    /// What each of the last run's result tabs says: label and tooltip.
+    #[cfg(test)]
+    pub(crate) fn result_labels_for_test(&self, cx: &App) -> Vec<(String, String)> {
+        let Some(panel) = self.active_panel_for_test() else {
+            return Vec::new();
+        };
+        match &panel.read(cx).content {
+            super::tab::TabContent::Query { labels, .. } => labels
+                .iter()
+                .map(|label| (label.label.clone(), label.tooltip.clone()))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Put the active tab into its running state, the way a query in flight
     /// does. Under test a query finishes before anything can be cancelled, so
     /// this is what the cancel path is driven with.

@@ -252,6 +252,18 @@ pub(crate) fn primary_key_sql(schema: &str, table: &str) -> String {
     )
 }
 
+/// The planner's row estimate for a table, as of its last `ANALYZE`:
+/// `-1` for a table never analyzed, `0` for a view.
+pub(crate) fn estimated_rows_sql(schema: &str, table: &str) -> String {
+    format!(
+        "SELECT c.reltuples::bigint FROM pg_class c \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = {} AND c.relname = {}",
+        quote_literal(schema),
+        quote_literal(table)
+    )
+}
+
 /// A view's `CREATE VIEW` statement, reassembled from what the catalog
 /// holds: `pg_get_viewdef` only returns the `SELECT` body.
 pub(crate) fn view_definition_sql(schema: &str, name: &str) -> String {

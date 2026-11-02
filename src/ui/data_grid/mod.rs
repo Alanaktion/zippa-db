@@ -35,15 +35,17 @@ use crate::ui::value_dialog::{self, ValueRequest};
 mod clipboard;
 mod delegate;
 mod format;
+mod header;
 mod layout;
 mod paste;
 #[cfg(test)]
 mod test_support;
 
 use delegate::ResultDelegate;
-use layout::measure_columns;
+use layout::{measure_columns, widen_for_marks};
 
 pub use format::{format_value, needs_a_window};
+pub use header::{ColumnInfo, ColumnInfos, header_text};
 
 actions!(
     zippa_db,
@@ -413,6 +415,7 @@ impl DataGrid {
                     engine,
                     table: None,
                     foreign_keys: HashSet::new(),
+                    column_info: ColumnInfos::new(),
                     drafts: Vec::new(),
                     editing: None,
                     editor: editor.clone(),
@@ -626,6 +629,37 @@ impl DataGrid {
             table.delegate_mut().foreign_keys = columns;
             cx.notify();
         });
+    }
+
+    /// Say what the table's schema holds about its columns — keys,
+    /// nullability, defaults — by column name, for the headers' marks and
+    /// tooltips. Only the table view knows this; a query result's headers
+    /// show the driver's type alone.
+    pub fn set_column_info(&mut self, info: ColumnInfos, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| {
+            if table.delegate().column_info == info {
+                return;
+            }
+            let delegate = table.delegate_mut();
+            delegate.column_info = info;
+            widen_for_marks(
+                &mut delegate.widths,
+                &delegate.result.columns,
+                &delegate.column_info,
+            );
+            table.refresh(cx);
+            cx.notify();
+        });
+    }
+
+    /// What the table's schema holds about column `name`, if anything.
+    pub fn column_info(&self, name: &str, cx: &App) -> Option<ColumnInfo> {
+        self.table
+            .read(cx)
+            .delegate()
+            .column_info
+            .get(name)
+            .cloned()
     }
 
     /// Name the table this result came from — as SQL, quoted and qualified
@@ -1475,6 +1509,7 @@ impl DataGrid {
             let delegate = table.delegate_mut();
             delegate.generation = generation;
             delegate.widths = measure_columns(&result);
+            widen_for_marks(&mut delegate.widths, &result.columns, &delegate.column_info);
             delegate.order = (0..result.rows.len()).collect();
             delegate.result = result;
             delegate.focused_row = None;

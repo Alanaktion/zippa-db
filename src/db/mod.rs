@@ -64,6 +64,7 @@ pub mod postgres;
 pub mod query;
 pub mod query_log;
 pub(crate) mod remote;
+pub mod result_label;
 pub mod runtime;
 pub mod schema;
 pub mod script;

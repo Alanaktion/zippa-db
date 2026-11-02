@@ -6,17 +6,18 @@
 //! edit uses — the grid tints it, and the ordinary apply flow writes it. The
 //! panel never writes anything itself.
 
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, IconName, Sizable, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::{App, Context, Entity, EventEmitter, Focusable, Window, div, px};
 use gpui_kit::{SharedString, prelude::*, rems};
 use regex::Regex;
 
 use crate::db::query::{self, Cell};
 use crate::settings::Settings;
-use crate::ui::data_grid::{DataGrid, GridEdit, RowStatus, needs_a_window};
+use crate::ui::data_grid::{DataGrid, GridEdit, RowStatus, header_text, needs_a_window};
 use crate::ui::text_filter;
 
 pub(crate) enum RowPanelEvent {
@@ -281,6 +282,10 @@ impl RowPanel {
         let big = needs_a_window(&cell, &type_name);
         let staged = self.grid.read(cx).is_field_staged(row_ix, col_ix, cx);
         let draft = status == RowStatus::Draft;
+        let info = self.grid.read(cx).column_info(&column, cx);
+        let primary_key = info.as_ref().is_some_and(|info| info.primary_key);
+        let foreign_key = info.as_ref().is_some_and(|info| info.references.is_some());
+        let header = header_text(&column, &type_name, info.as_ref());
         let grid = self.grid.clone();
         let menu_column = column.clone();
 
@@ -343,15 +348,36 @@ impl RowPanel {
                     .gap_1()
                     .justify_between()
                     .child(
-                        div()
+                        h_flex()
+                            .id(("row-panel-label", col_ix))
+                            .min_w_0()
+                            .gap_0p5()
                             .text_size(px(10.))
                             .line_height(px(12.))
                             .text_color(cx.theme().muted_foreground)
-                            .overflow_x_hidden()
-                            .text_overflow(gpui_kit::TextOverflow::Truncate(
-                                SharedString::new_static("…"),
-                            ))
-                            .child(format!("{column} · {type_name}")),
+                            .aria_label(header.label)
+                            .when(primary_key, |label| {
+                                label.child(Icon::new(AssetIcon::Key).xsmall().flex_none())
+                            })
+                            .when(foreign_key, |label| {
+                                label.child(Icon::new(AssetIcon::Link).xsmall().flex_none())
+                            })
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_x_hidden()
+                                    .text_overflow(gpui_kit::TextOverflow::Truncate(
+                                        SharedString::new_static("…"),
+                                    ))
+                                    .child(format!("{column} · {type_name}")),
+                            )
+                            .tooltip({
+                                let tooltip = header.tooltip.clone();
+                                move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(tooltip.clone())
+                                        .build(window, cx)
+                                }
+                            }),
                     )
                     .child(menu),
             )

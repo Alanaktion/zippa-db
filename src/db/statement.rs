@@ -597,6 +597,98 @@ fn outermost_words(sql: &str, engine: Engine) -> (Vec<OuterWord>, usize) {
     (words, code_end)
 }
 
+/// The statement's verb and the table it is about, when that is easy to see:
+/// `SELECT … FROM users` → `("SELECT", Some("users"))`, likewise `INSERT INTO`,
+/// `UPDATE`, `DELETE FROM`, and `REPLACE INTO`. The table is its last name
+/// part with any quotes taken off (`public."Users"` → `Users`), since the
+/// result tabs name it to tell results apart, not to address it.
+///
+/// Only words outside every parenthesis count, so a `WITH` query's own
+/// `FROM` is the main query's, not a CTE's. A subquery, a function, or
+/// anything else that is not a plain name answers no table. `None` when the
+/// statement has no words at all.
+pub fn verb_and_table(sql: &str, engine: Engine) -> Option<(String, Option<String>)> {
+    let (words, _) = outermost_words(sql, engine);
+    let verb = words.first()?.word.clone();
+    let after = |keyword: &str| {
+        words
+            .iter()
+            .position(|word| word.word == keyword)
+            .map(|index| words[index].end)
+    };
+    let at = match verb.as_str() {
+        "SELECT" | "WITH" | "DELETE" => after("FROM"),
+        "INSERT" | "REPLACE" => after("INTO"),
+        "UPDATE" => {
+            // `UPDATE ONLY t` (Postgres) and MySQL's modifiers come before
+            // the name.
+            let modifiers = words
+                .iter()
+                .skip(1)
+                .take_while(|word| matches!(word.word.as_str(), "ONLY" | "LOW_PRIORITY" | "IGNORE"))
+                .count();
+            Some(words[modifiers].end)
+        }
+        _ => None,
+    };
+    // After `FROM`, a name followed by `(` is a function call
+    // (`FROM generate_series(…)`); after `INTO` it is the column list.
+    let from = matches!(verb.as_str(), "SELECT" | "WITH" | "DELETE");
+    let table = at.and_then(|at| table_name_at(&sql[at..], from, engine));
+    Some((verb, table))
+}
+
+/// A plain, possibly qualified and quoted, table name at the start of `text`
+/// (after blank space), as its last part unquoted.
+fn table_name_at(text: &str, refuse_call: bool, engine: Engine) -> Option<String> {
+    let characters: Vec<char> = text.chars().collect();
+    let mut index = skip_trivia(&characters, 0, engine);
+    loop {
+        let part = match characters.get(index).copied()? {
+            quote @ ('"' | '`') => {
+                let mut part = String::new();
+                index += 1;
+                loop {
+                    match characters.get(index).copied() {
+                        None => return None,
+                        // A doubled quote is the quote character itself.
+                        Some(c) if c == quote && characters.get(index + 1) == Some(&quote) => {
+                            part.push(quote);
+                            index += 2;
+                        }
+                        Some(c) if c == quote => {
+                            index += 1;
+                            break;
+                        }
+                        Some(c) => {
+                            part.push(c);
+                            index += 1;
+                        }
+                    }
+                }
+                part
+            }
+            _ => {
+                let (word, next) = word_at(&characters, index)?;
+                index = next;
+                word
+            }
+        };
+        if part.is_empty() {
+            return None;
+        }
+        if characters.get(index) == Some(&'.') {
+            index += 1;
+            continue;
+        }
+        let rest = skip_trivia(&characters, index, engine);
+        if refuse_call && characters.get(rest) == Some(&'(') {
+            return None;
+        }
+        return Some(part);
+    }
+}
+
 /// The first `limit` words of the first statement in `sql`, upper-cased.
 ///
 /// Comments and quoted text are left out the way [`first_write`] leaves them
@@ -956,6 +1048,54 @@ fn dollar_tag(characters: &[char], index: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_statement_names_its_verb_and_table() {
+        let table = |sql: &str, engine| verb_and_table(sql, engine).and_then(|(_, table)| table);
+        let pg = Engine::Postgres;
+        assert_eq!(
+            table("select * from users where id = 1", pg).as_deref(),
+            Some("users")
+        );
+        assert_eq!(
+            table("SELECT a FROM public.\"Race Entries\" r", pg).as_deref(),
+            Some("Race Entries")
+        );
+        assert_eq!(
+            table("select * from `shop`.`orders`", Engine::MySql).as_deref(),
+            Some("orders")
+        );
+        assert_eq!(
+            table("insert into items (name) values ('x')", pg).as_deref(),
+            Some("items")
+        );
+        assert_eq!(
+            table("update only items set a = 1", pg).as_deref(),
+            Some("items")
+        );
+        assert_eq!(
+            table("update \"items\" set a = 1", pg).as_deref(),
+            Some("items")
+        );
+        assert_eq!(
+            table("delete from items where id = 2", pg).as_deref(),
+            Some("items")
+        );
+        assert_eq!(
+            table("with recent as (select * from b) select * from recent", pg).as_deref(),
+            Some("recent")
+        );
+        assert_eq!(table("-- note\nselect 1 from t", pg).as_deref(), Some("t"));
+        // Not a plain name: no table, but still a verb.
+        assert_eq!(table("select * from (select 1) s", pg), None);
+        assert_eq!(table("select * from generate_series(1, 3)", pg), None);
+        assert_eq!(table("select 1", pg), None);
+        assert_eq!(
+            verb_and_table("create table x (a int)", pg),
+            Some(("CREATE".to_string(), None))
+        );
+        assert_eq!(verb_and_table("  -- only a comment", pg), None);
+    }
 
     // The tests below were written before the scanner took an engine, and
     // read the buffer the way MySQL does — the dialect with the most to skip.

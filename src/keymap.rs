@@ -31,8 +31,8 @@ use crate::ui::session::{
 use crate::ui::settings_window::{CloseSettings, OpenSettings};
 use crate::ui::shortcuts_dialog::ShowShortcuts;
 use crate::ui::table_view::{
-    ApplyEdits, CancelEdit, DeleteRows, DiscardEdits, EditCell, InsertRow, RestoreRows, SetNull,
-    ToggleRowPanel,
+    ApplyEdits, CancelEdit, DeleteRows, DiscardEdits, EditCell, FirstPage, InsertRow, LastPage,
+    NextPage, PreviousPage, RestoreRows, SetNull, ToggleRowPanel,
 };
 use crate::ui::user_management::CloseUserDialog;
 use crate::ui::value_dialog::{CloseValue, SaveValue};
@@ -293,6 +293,14 @@ pub fn bind(cx: &mut App) {
         // every staged edit is the opposite of undoing the last one.
         KeyBinding::new("secondary-alt-z", DiscardEdits, Some("TableView")),
         KeyBinding::new("secondary-\\", ToggleRowPanel, Some("TableView")),
+        // Paging, the browser's back/forward keys; with Alt, all the way.
+        // A text box binds the bare keys to outdent/indent, and is the more
+        // specific context, so typing in the filter or search boxes keeps
+        // them. Page Up/Down stay the grid's own, moving within the page.
+        KeyBinding::new("secondary-[", PreviousPage, Some("TableView")),
+        KeyBinding::new("secondary-]", NextPage, Some("TableView")),
+        KeyBinding::new("secondary-alt-[", FirstPage, Some("TableView")),
+        KeyBinding::new("secondary-alt-]", LastPage, Some("TableView")),
         // The table binds the arrows, tab, and escape for its own selection
         // but leaves `enter` free, so that opens the editor. Both are scoped
         // under the table view, leaving query results read-only.

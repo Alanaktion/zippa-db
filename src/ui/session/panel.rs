@@ -28,6 +28,7 @@ use crate::db::Engine;
 use crate::db::Plan;
 use crate::db::export::{self, Format};
 use crate::db::query::QueryResult;
+use crate::db::result_label::ResultLabel;
 use crate::db::runtime;
 use crate::db::{PinnedConnection, ScriptMode, ScriptRun, TxnState};
 use crate::ui::busy::busy_label;
@@ -133,6 +134,10 @@ pub(crate) struct SessionPanel {
     saved_as: Option<String>,
 }
 
+/// Up to this many results get a segment each on the result bar; more are
+/// picked from a menu.
+const RESULT_SEGMENTS: usize = 8;
+
 impl EventEmitter<SessionPanelEvent> for SessionPanel {}
 impl EventEmitter<PanelEvent> for SessionPanel {}
 
@@ -164,6 +169,7 @@ impl SessionPanel {
                 status: Status::Idle,
                 path: None,
                 results: Vec::new(),
+                labels: Vec::new(),
                 result: 0,
                 error: None,
                 engine,
@@ -916,10 +922,26 @@ impl SessionPanel {
 
     /// Put a finished run's results in this tab.
     pub(crate) fn show_results(&mut self, results: Vec<QueryResult>, cx: &mut Context<Self>) {
+        self.show_script_results(results, &[], 0, cx);
+    }
+
+    /// [`Self::show_results`] for a run that knows the statement behind each
+    /// result, so the result tabs can say what each one is. `statements`
+    /// covers the results at the same index; when `failures` is not zero,
+    /// the result after them is the list of statements that failed.
+    pub(crate) fn show_script_results(
+        &mut self,
+        results: Vec<QueryResult>,
+        statements: &[String],
+        failures: usize,
+        cx: &mut Context<Self>,
+    ) {
         let TabContent::Query {
             grid,
             results: slot,
+            labels,
             result,
+            engine,
             error,
             show_plan,
             show_chart,
@@ -931,6 +953,17 @@ impl SessionPanel {
         };
 
         let grid = grid.clone();
+        *labels = results
+            .iter()
+            .enumerate()
+            .map(|(index, shown)| match statements.get(index) {
+                Some(statement) => ResultLabel::for_result(shown, Some(statement), *engine),
+                None if failures > 0 && index == statements.len() => {
+                    ResultLabel::for_failures(failures)
+                }
+                None => ResultLabel::for_result(shown, None, *engine),
+            })
+            .collect();
         *slot = results;
         *result = 0;
         // The run produced rows, so the pane is the grid again, not the
@@ -1600,6 +1633,51 @@ impl SessionPanel {
             )
     }
 
+    /// The results of a long script, as one button naming the result shown
+    /// and a menu of all of them.
+    fn render_result_menu(
+        &self,
+        labels: &[ResultLabel],
+        shown: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let count = labels.len();
+        let current = labels
+            .get(shown)
+            .map(|label| label.label.clone())
+            .unwrap_or_default();
+        let items: Vec<String> = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| format!("{}. {}", index + 1, label.label))
+            .collect();
+        let tooltip = labels
+            .get(shown)
+            .map(|label| label.tooltip.clone())
+            .unwrap_or_default();
+        let panel = cx.entity().downgrade();
+        Button::new("result-menu")
+            .ghost()
+            .xsmall()
+            .label(format!("Result {} of {count}: {current}", shown + 1))
+            .tooltip(tooltip)
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _, _| {
+                items.iter().enumerate().fold(menu, |menu, (index, item)| {
+                    let panel = panel.clone();
+                    menu.item(
+                        PopupMenuItem::new(item.clone())
+                            .checked(index == shown)
+                            .on_click(move |_, _, cx| {
+                                panel
+                                    .update(cx, |panel, cx| panel.show_result(index, cx))
+                                    .ok();
+                            }),
+                    )
+                })
+            })
+    }
+
     /// The bar above the result area: one segment per result the last run
     /// produced, and the Results/Chart/Plan switch for what the pane shows.
     /// Both are choices of what the pane shows, so the chosen one is marked
@@ -1609,6 +1687,7 @@ impl SessionPanel {
     fn render_view_bar(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let TabContent::Query {
             results: all,
+            labels,
             result,
             plan,
             ..
@@ -1656,22 +1735,43 @@ impl SessionPanel {
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().status_bar)
-            // While the plan is showing there is no result to pick between.
-            .when(count > 1 && !showing_plan, |this| {
-                this.child(
-                    TabBar::new("result-tabs")
-                        .segmented()
-                        .xsmall()
-                        .selected_index(shown)
-                        .on_click(cx.listener(|this, index: &usize, _window, cx| {
-                            this.show_result(*index, cx)
-                        }))
-                        .children((0..count).map(|index| {
-                            let label = format!("Result {}", index + 1);
-                            Tab::new().aria_label(label.clone()).label(label)
-                        })),
-                )
+            // Past a handful of results a segment each would run off the
+            // bar, so they are picked from a menu instead.
+            .when(count > RESULT_SEGMENTS && !showing_plan, |this| {
+                this.child(self.render_result_menu(labels, shown, cx))
             })
+            // While the plan is showing there is no result to pick between.
+            .when(
+                count > 1 && count <= RESULT_SEGMENTS && !showing_plan,
+                |this| {
+                    this.child(
+                        TabBar::new("result-tabs")
+                            .segmented()
+                            .xsmall()
+                            .selected_index(shown)
+                            .on_click(cx.listener(|this, index: &usize, _window, cx| {
+                                this.show_result(*index, cx)
+                            }))
+                            .children((0..count).map(|index| {
+                                let (label, tooltip) = match labels.get(index) {
+                                    Some(shown) => (shown.label.clone(), shown.tooltip.clone()),
+                                    None => (format!("Result {}", index + 1), String::new()),
+                                };
+                                Tab::new()
+                                    .aria_label(format!("Result {}: {label}", index + 1))
+                                    .label(label)
+                                    .when(!tooltip.is_empty(), |tab| {
+                                        tab.tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                tooltip.clone(),
+                                            )
+                                            .build(window, cx)
+                                        })
+                                    })
+                            })),
+                    )
+                },
+            )
             .when(chartable || has_plan || has_messages, |this| {
                 this.child(
                     h_flex().flex_none().ml_auto().child(

@@ -21,15 +21,18 @@ use gpui_kit::{
 use std::collections::HashSet;
 
 use crate::db::query::Cell;
+use crate::db::schema::ColumnDef;
 use crate::db::{Connection, DatabaseObject, ForeignKeyDef, ObjectKind, RowKey, runtime};
 use crate::settings::{self, Settings};
 use crate::ui::data_grid::{
-    BinaryPreviewRequested, Copied, DataGrid, DuplicateRow, ExportRequested, FilterByValue,
-    GridEdit, GridNavigate, Pasted, SortRequested, Sorting, StagedRow,
+    BinaryPreviewRequested, ColumnInfo, ColumnInfos, Copied, DataGrid, DuplicateRow,
+    ExportRequested, FilterByValue, GridEdit, GridNavigate, Pasted, SortRequested, Sorting,
+    StagedRow,
 };
 use crate::ui::filter_bar::{FilterBar, FilterSpec, FiltersChanged, Operator};
 use crate::ui::value_dialog;
 
+mod count;
 mod export;
 mod footer;
 mod row_panel;
@@ -38,6 +41,7 @@ mod sql;
 mod test_support;
 mod toolbar;
 
+pub(crate) use count::RowCount;
 pub(crate) use row_panel::RowPanel;
 use row_panel::RowPanelEvent;
 
@@ -52,7 +56,11 @@ actions!(
         InsertRow,
         DeleteRows,
         RestoreRows,
-        ToggleRowPanel
+        ToggleRowPanel,
+        FirstPage,
+        PreviousPage,
+        NextPage,
+        LastPage
     ]
 );
 
@@ -178,6 +186,15 @@ pub struct TableView {
     sort: Option<(String, ColumnSort)>,
     /// Rows the last page returned, used to decide whether there is a next one.
     loaded_rows: usize,
+    /// How many rows the filters and search match, for the footer.
+    total: RowCount,
+    /// The filters and search `total` was counted under (`count_key`).
+    counted_for: Option<String>,
+    /// Counts row counts, so one overtaken by a newer one is dropped.
+    count_read: u64,
+    /// Set by a page turn, sort, or limit change for the read it starts:
+    /// those keep the count, since they do not change which rows match.
+    keep_count: bool,
     loading: bool,
     error: Option<String>,
     /// How a row of this table can be addressed by a write; `None` until the
@@ -193,6 +210,11 @@ pub struct TableView {
     page_read: u64,
     /// The same for the foreign keys, which a database switch reads again.
     foreign_keys_read: u64,
+    /// The same for the column definitions.
+    column_defs_read: u64,
+    /// The table's own column definitions, for the headers' tooltips; `None`
+    /// until the server has answered, and empty when it could not.
+    column_defs: Option<Vec<ColumnDef>>,
     /// Column names and driver type names of the page in the grid, kept so a
     /// write can quote its columns and cast its parameters.
     columns: Vec<String>,
@@ -319,12 +341,18 @@ impl TableView {
             page: 0,
             sort: None,
             loaded_rows: 0,
+            total: RowCount::Unknown,
+            counted_for: None,
+            count_read: 0,
+            keep_count: false,
             loading: false,
             error: None,
             row_key: None,
             row_key_read: 0,
             page_read: 0,
             foreign_keys_read: 0,
+            column_defs_read: 0,
+            column_defs: None,
             columns: Vec::new(),
             column_types: Vec::new(),
             foreign_keys: None,
@@ -340,6 +368,7 @@ impl TableView {
         };
         view.load_row_key(cx);
         view.load_foreign_keys(cx);
+        view.load_column_defs(cx);
         view
     }
 
@@ -397,8 +426,11 @@ impl TableView {
         // file is not written.
         self.cancel_export(cx);
         self.exporting = None;
+        self.column_defs = None;
+        self.forget_count();
         self.load_row_key(cx);
         self.load_foreign_keys(cx);
+        self.load_column_defs(cx);
     }
 
     /// Ask the server how a row of this table can be addressed, then load it.
@@ -431,6 +463,7 @@ impl TableView {
                 });
 
                 this.sync_editable(cx);
+                this.sync_column_info(cx);
                 this.reload(cx);
             })
             .ok();
@@ -458,10 +491,51 @@ impl TableView {
                     Ok(Err(_)) | Err(_) => Vec::new(),
                 });
                 this.sync_foreign_keys(cx);
+                this.sync_column_info(cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Ask the server for this table's column definitions, once per table
+    /// opened, for the headers' tooltips. A failure leaves the headers with
+    /// the driver's type alone.
+    fn load_column_defs(&mut self, cx: &mut Context<Self>) {
+        let connection = self.connection.clone();
+        let object = self.object.clone();
+        let task = runtime::spawn(async move { connection.table_columns(&object).await });
+        self.column_defs_read += 1;
+        let read = self.column_defs_read;
+
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                if this.column_defs_read != read {
+                    return;
+                }
+                this.column_defs = Some(match result {
+                    Ok(Ok(columns)) => columns,
+                    Ok(Err(_)) | Err(_) => Vec::new(),
+                });
+                this.sync_column_info(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Hand the grid what the schema says about each column — primary key,
+    /// foreign key target, nullability, default — from whichever of the key,
+    /// foreign key, and column reads have landed.
+    fn sync_column_info(&mut self, cx: &mut Context<Self>) {
+        let info = column_infos(
+            self.row_key.as_ref(),
+            self.foreign_keys.as_deref().unwrap_or_default(),
+            self.column_defs.as_deref().unwrap_or_default(),
+        );
+        self.grid
+            .update(cx, |grid, cx| grid.set_column_info(info, cx));
     }
 
     /// Tell the grid which of its current columns are backed by a
@@ -532,6 +606,7 @@ impl TableView {
         // read again once they are, or the search box would show a term
         // the rows do not answer to.
         let searched = !self.search.trim().is_empty() && !self.columns.is_empty();
+        let keep = std::mem::take(&mut self.keep_count);
         let (sql, params) = self.query_with_params(cx);
         let connection = self.connection.clone();
         let task = runtime::spawn(async move { connection.run_query_with(&sql, params).await });
@@ -571,10 +646,13 @@ impl TableView {
                         this.apply_reveal(cx);
                         if !searched && !this.search.trim().is_empty() {
                             this.reload(cx);
+                        } else {
+                            this.update_count(keep, cx);
                         }
                     }
                     Ok(Err(error)) => {
                         this.loaded_rows = 0;
+                        this.forget_count();
                         // A failed read does not change the table's shape,
                         // so the last known columns stand: clearing them
                         // would drop the applied search — and the filters'
@@ -702,6 +780,7 @@ impl TableView {
         // Sorting reorders the whole table, so the old page number is
         // meaningless.
         self.page = 0;
+        self.keep_count = true;
         self.reload(cx);
     }
 
@@ -713,6 +792,7 @@ impl TableView {
 
         self.limit = limit;
         self.page = 0;
+        self.keep_count = true;
         self.reload(cx);
     }
 
@@ -1367,9 +1447,20 @@ impl TableView {
         self.page > 0
     }
 
-    /// A full page suggests there is more; a short one means this is the end.
+    /// A full page suggests there is more; a short one means this is the
+    /// end, and so does an exact count that this page reaches.
     fn has_next(&self) -> bool {
         self.loaded_rows >= self.limit
+            && self
+                .total
+                .exact()
+                .is_none_or(|total| ((self.page + 1) * self.limit) < total as usize)
+    }
+
+    /// The last page's index, once the rows have been counted exactly.
+    fn last_page(&self) -> Option<usize> {
+        let total = self.total.exact()? as usize;
+        Some(total.saturating_sub(1) / self.limit.max(1))
     }
 
     fn go(&mut self, page: usize, cx: &mut Context<Self>) {
@@ -1381,8 +1472,77 @@ impl TableView {
         }
 
         self.page = page;
+        self.keep_count = true;
         self.reload(cx);
     }
+
+    fn on_first_page(&mut self, _: &FirstPage, _: &mut Window, cx: &mut Context<Self>) {
+        if self.loading || !self.has_previous() {
+            return;
+        }
+        self.go(0, cx);
+    }
+
+    fn on_previous_page(&mut self, _: &PreviousPage, _: &mut Window, cx: &mut Context<Self>) {
+        if self.loading || !self.has_previous() {
+            return;
+        }
+        self.go(self.page - 1, cx);
+    }
+
+    fn on_next_page(&mut self, _: &NextPage, _: &mut Window, cx: &mut Context<Self>) {
+        if self.loading || !self.has_next() {
+            return;
+        }
+        self.go(self.page + 1, cx);
+    }
+
+    fn on_last_page(&mut self, _: &LastPage, _: &mut Window, cx: &mut Context<Self>) {
+        if self.loading || !self.has_next() {
+            return;
+        }
+        if let Some(last) = self.last_page() {
+            self.go(last, cx);
+        }
+    }
+}
+
+/// What the schema says about each column, by name: the primary key's
+/// columns, single-column foreign keys' targets (`table.column`), and each
+/// column's declared type, nullability, and default.
+fn column_infos(
+    row_key: Option<&RowKey>,
+    foreign_keys: &[ForeignKeyDef],
+    columns: &[ColumnDef],
+) -> ColumnInfos {
+    let mut info = ColumnInfos::new();
+    for column in columns {
+        info.insert(
+            column.name.clone(),
+            ColumnInfo {
+                nullable: Some(column.nullable),
+                default: column.default.clone(),
+                declared_type: column.type_name.clone(),
+                ..ColumnInfo::default()
+            },
+        );
+    }
+    if let Some(RowKey::Columns(key)) = row_key {
+        for name in key {
+            info.entry(name.clone()).or_default().primary_key = true;
+        }
+    }
+    for fk in foreign_keys {
+        // A composite key names its whole column list on each of its columns.
+        let target = match fk.referenced_columns.as_slice() {
+            [target] => format!("{}.{target}", fk.referenced_table),
+            targets => format!("{} ({})", fk.referenced_table, targets.join(", ")),
+        };
+        for column in &fk.columns {
+            info.entry(column.clone()).or_default().references = Some(target.clone());
+        }
+    }
+    info
 }
 
 impl Focusable for TableView {
@@ -1408,6 +1568,10 @@ impl Render for TableView {
             .on_action(cx.listener(Self::on_delete_rows))
             .on_action(cx.listener(Self::on_restore_rows))
             .on_action(cx.listener(Self::on_toggle_row_panel))
+            .on_action(cx.listener(Self::on_first_page))
+            .on_action(cx.listener(Self::on_previous_page))
+            .on_action(cx.listener(Self::on_next_page))
+            .on_action(cx.listener(Self::on_last_page))
             .child(self.render_toolbar(cx))
             .child(div().flex_1().min_h_0().child(if self.row_panel_visible {
                 h_resizable("table-view-columns")

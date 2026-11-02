@@ -263,6 +263,21 @@ impl Connection {
             })
     }
 
+    /// Just `object`'s columns — name, declared type, nullability, default —
+    /// in one round trip, for a table tab's headers. Keys are not filled in
+    /// here: the tab already reads them on their own.
+    pub async fn table_columns(&self, object: &DatabaseObject) -> Result<Vec<ColumnDef>> {
+        let schema = object.schema.as_deref().unwrap_or("public");
+        let table = object.name.as_str();
+        let sql = match self.config.engine {
+            Engine::Postgres => postgres::columns_sql(schema, table),
+            Engine::MySql => mysql::columns_sql(table),
+            Engine::Sqlite => sqlite::columns_sql(table),
+        };
+        let result = self.run_query(&sql).await?;
+        Ok(parse_columns(&result))
+    }
+
     /// Just `object`'s foreign keys — one round trip, for callers that don't
     /// need the rest of [`table_schema`](Self::table_schema).
     pub async fn foreign_keys(&self, object: &DatabaseObject) -> Result<Vec<ForeignKeyDef>> {
