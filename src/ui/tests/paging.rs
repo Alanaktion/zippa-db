@@ -1,6 +1,7 @@
 //! Paging, refreshing and sorting a table view, and the edits they would lose.
 
 use super::*;
+use crate::ui::table_view::RowCount;
 
 #[gpui_kit::test]
 fn the_table_view_pages_through_rows(cx: &mut TestAppContext) {
@@ -139,4 +140,82 @@ fn sorting_asks_and_puts_the_header_back_when_it_is_refused(cx: &mut TestAppCont
         );
         assert_eq!(view.grid_for_test().read(cx).staged(cx).len(), 1);
     });
+}
+
+/// Five races, for paging two at a time.
+const FIVE_RACES: &str = "create table races (id integer primary key, name text); \
+     insert into races (id, name) values \
+     (1, 'city 10k'), (2, 'trail 50k'), (3, 'marathon'), (4, 'half'), (5, 'mile');";
+
+#[gpui_kit::test]
+fn the_footer_counts_the_rows_and_says_which_page(cx: &mut TestAppContext) {
+    let (_database, _handle, view) = table_view_on(cx, "races", FIVE_RACES);
+    cx.run_until_parked();
+
+    view.update(cx, |view, cx| view.set_limit_for_test(2, cx));
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.total_for_test(), RowCount::Exact(5));
+        assert_eq!(view.position_for_test(), "Rows 1–2 of 5 · page 1 of 3");
+    });
+
+    view.update(cx, |view, cx| view.go_for_test(1, cx));
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.position_for_test(), "Rows 3–4 of 5 · page 2 of 3");
+    });
+
+    // A filter changes which rows match, so the total follows it.
+    add_filter(cx, &view, "id", Operator::GreaterOrEqual, "2");
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.total_for_test(), RowCount::Exact(4));
+        assert_eq!(view.position_for_test(), "Rows 1–2 of 4 · page 1 of 2");
+    });
+
+    // So does a search.
+    view.downgrade()
+        .update_in(cx, |view, window, cx| {
+            view.set_search_for_test("k", window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.total_for_test(), RowCount::Exact(1));
+        assert_eq!(view.position_for_test(), "Rows 1–1 of 1 · page 1 of 1");
+    });
+}
+
+#[gpui_kit::test]
+fn paging_keys_turn_the_page_from_the_grid(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view_on(cx, "races", FIVE_RACES);
+    cx.run_until_parked();
+    view.update(cx, |view, cx| view.set_limit_for_test(2, cx));
+    cx.run_until_parked();
+
+    let page = |cx: &mut TestAppContext| view.read_with(cx, |view, _| view.page_for_test());
+
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-]");
+    cx.run_until_parked();
+    assert_eq!(page(cx), 1, "next page");
+
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-alt-]");
+    cx.run_until_parked();
+    assert_eq!(page(cx), 2, "the last page, once the rows are counted");
+
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-]");
+    cx.run_until_parked();
+    assert_eq!(page(cx), 2, "nothing past the last page");
+
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-[");
+    cx.run_until_parked();
+    assert_eq!(page(cx), 1, "previous page");
+
+    focus_grid(cx, &view);
+    press(cx, handle, "secondary-alt-[");
+    cx.run_until_parked();
+    assert_eq!(page(cx), 0, "the first page");
 }

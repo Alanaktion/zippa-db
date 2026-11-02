@@ -51,6 +51,7 @@ mod explain;
 mod export;
 mod files;
 mod filters;
+mod headers;
 mod history;
 mod import;
 mod layout;

@@ -511,11 +511,13 @@ impl Session {
         let failed = outcome.rolled_back || outcome.stopped;
         let refresh = writes && outcome.applied_anything();
         let failures = outcome.failures_result();
+        let failed_count = outcome.failures.len();
+        let statements = outcome.statements;
         let mut results = outcome.results;
         results.extend(failures);
 
         panel.update(cx, |panel, cx| {
-            panel.show_results(results, cx);
+            panel.show_script_results(results, &statements, failed_count, failed, cx);
             if let Some(summary) = summary {
                 panel.set_status(if failed {
                     Status::Error(summary)

@@ -9,11 +9,12 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme, Sizable};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, h_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Context, Div, Entity, Focusable as _, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -96,6 +97,9 @@ pub(super) struct ResultDelegate {
     /// table view once it has read the table's own schema. Empty for an
     /// ad-hoc query result, which has no owner that could look one up.
     pub(super) foreign_keys: HashSet<usize>,
+    /// What the table's schema says about each column, by name, for the
+    /// headers. Empty for a query result.
+    pub(super) column_info: super::ColumnInfos,
     /// Rows the user is building by hand, each one the cells typed into it so
     /// far. They sit after the result's own rows and are written by an
     /// `INSERT`, so a column nobody typed into is left out and takes whatever
@@ -464,12 +468,49 @@ impl TableDelegate for ResultDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         if let Some(data_ix) = self.data_column(col_ix) {
-            return div()
+            let name = self.column(col_ix, cx).name.clone();
+            let type_name = self
+                .result
+                .column_types
+                .get(data_ix)
+                .cloned()
+                .unwrap_or_default();
+            let info = self.column_info.get(name.as_ref());
+            let text = super::header_text(&name, &type_name, info);
+            let primary_key = info.is_some_and(|info| info.primary_key);
+            let foreign_key = info.is_some_and(|info| info.references.is_some());
+            let tooltip = text.tooltip;
+            let muted = cx.theme().muted_foreground;
+            return h_flex()
+                .id(("column-header", data_ix))
                 .size_full()
+                .gap_1()
+                .overflow_hidden()
                 .when(self.is_numeric_column(data_ix), |header| {
-                    header.text_right()
+                    header.justify_end()
                 })
-                .child(self.column(col_ix, cx).name.clone())
+                .aria_label(text.label)
+                .aria_description(tooltip.clone())
+                .when(primary_key, |header| {
+                    header.child(
+                        Icon::new(IconName::Key)
+                            .xsmall()
+                            .flex_none()
+                            .text_color(muted),
+                    )
+                })
+                .when(foreign_key, |header| {
+                    header.child(
+                        Icon::new(IconName::Link)
+                            .xsmall()
+                            .flex_none()
+                            .text_color(muted),
+                    )
+                })
+                .child(div().min_w_0().truncate().child(name))
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                })
                 .into_any_element();
         }
 

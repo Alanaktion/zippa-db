@@ -104,6 +104,9 @@ impl ScriptFailure {
 pub struct ScriptOutcome {
     /// One result per statement that ran, in order.
     pub results: Vec<QueryResult>,
+    /// The statement behind each of `results`, as typed, at the same index:
+    /// what the result tabs name each result by.
+    pub statements: Vec<String>,
     /// Every statement that failed, in order.
     pub failures: Vec<ScriptFailure>,
     pub total: usize,
@@ -232,6 +235,8 @@ pub struct ScriptRun {
     mode: ScriptMode,
     on_failure: OnFailure,
     results: Vec<QueryResult>,
+    /// The statement behind each of `results`, as typed.
+    ran: Vec<String>,
     failures: Vec<ScriptFailure>,
     /// The failure the run is paused on.
     pending: Option<ScriptFailure>,
@@ -333,6 +338,7 @@ impl ScriptRun {
             mode,
             on_failure,
             results: Vec::new(),
+            ran: Vec::new(),
             failures: Vec::new(),
             pending: None,
             started: Instant::now(),
@@ -419,7 +425,10 @@ impl ScriptRun {
             self.next += 1;
 
             match self.run_one(index).await? {
-                Ok(result) => self.results.push(result),
+                Ok(result) => {
+                    self.results.push(result);
+                    self.ran.push(self.statements[index].text.clone());
+                }
                 Err((message, offset)) => {
                     let failure = ScriptFailure {
                         index,
@@ -538,6 +547,7 @@ impl ScriptRun {
         }
         ScriptOutcome {
             results: std::mem::take(&mut self.results),
+            statements: std::mem::take(&mut self.ran),
             failures: std::mem::take(&mut self.failures),
             total: self.statements.len(),
             mode: self.mode,
@@ -766,6 +776,7 @@ mod tests {
         };
         let outcome = |failures, rolled_back, stopped, results: usize| ScriptOutcome {
             results: vec![QueryResult::default(); results],
+            statements: vec![String::new(); results],
             failures,
             total: 4,
             mode: ScriptMode::Transaction,

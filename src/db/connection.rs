@@ -1239,6 +1239,30 @@ impl Connection {
         })
     }
 
+    /// The server's own estimate of how many rows `object` holds, without
+    /// counting them: Postgres' `pg_class.reltuples`, MySQL's
+    /// `information_schema.tables.table_rows`. `None` where there is no
+    /// estimate to be had — SQLite keeps none, a view has none, and a
+    /// Postgres table never analyzed says `-1` — so the caller counts.
+    pub async fn estimated_rows(&self, object: &DatabaseObject) -> Result<Option<u64>> {
+        let sql = match self.config.engine {
+            Engine::Postgres => postgres::estimated_rows_sql(
+                object.schema.as_deref().unwrap_or("public"),
+                &object.name,
+            ),
+            Engine::MySql => mysql::estimated_rows_sql(&object.name),
+            Engine::Sqlite => return Ok(None),
+        };
+        let result = self.run_query(&sql).await?;
+        Ok(first_count(&result).filter(|rows| *rows > 0))
+    }
+
+    /// Run a `count(*)` and read its one number back.
+    pub async fn count_rows(&self, sql: &str, params: Vec<Cell>) -> Result<u64> {
+        let result = self.run_query_with(sql, params).await?;
+        first_count(&result).context("the server did not return a row count")
+    }
+
     /// Refuse anything on a read-only connection, saying what did not happen:
     /// "this connection is read-only, so {consequence}". Every write entry
     /// point goes through this, so the refusals read alike.
@@ -1812,4 +1836,15 @@ where
 
     tx.commit().await.context("could not commit the change")?;
     Ok(())
+}
+
+/// The first cell of a result read as a whole number of rows. A negative or
+/// fractional estimate is not a count.
+fn first_count(result: &QueryResult) -> Option<u64> {
+    result
+        .rows
+        .first()
+        .and_then(|row| row.first())
+        .and_then(|cell| cell.as_deref())
+        .and_then(|text| text.trim().parse::<u64>().ok())
 }

@@ -41,7 +41,8 @@ use crate::ui::session::{
 use crate::ui::settings_window::OpenSettings;
 use crate::ui::shortcuts_dialog::ShowShortcuts;
 use crate::ui::table_view::{
-    ApplyEdits, DeleteRows, DiscardEdits, InsertRow, RestoreRows, SetNull, ToggleRowPanel,
+    ApplyEdits, DeleteRows, DiscardEdits, FirstPage, InsertRow, LastPage, NextPage, PreviousPage,
+    RestoreRows, SetNull, ToggleRowPanel,
 };
 
 // Not bound by the keymap: nothing else in the app reaches for the app-level
@@ -162,6 +163,11 @@ fn menus() -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Select All Rows", SelectAllRows),
             MenuItem::action("Clear Row Selection", ClearRowSelection),
+            MenuItem::separator(),
+            MenuItem::action("First Page", FirstPage),
+            MenuItem::action("Previous Page", PreviousPage),
+            MenuItem::action("Next Page", NextPage),
+            MenuItem::action("Last Page", LastPage),
         ]),
         // The open connection and what is in it: the commands that used to
         // be icons in the title bar and beside the sidebar's filter, and the
@@ -282,6 +288,10 @@ mod tests {
             ("View Value", TypeId::of::<ViewCell>()),
             ("Select All Rows", TypeId::of::<SelectAllRows>()),
             ("Clear Row Selection", TypeId::of::<ClearRowSelection>()),
+            ("First Page", TypeId::of::<FirstPage>()),
+            ("Previous Page", TypeId::of::<PreviousPage>()),
+            ("Next Page", TypeId::of::<NextPage>()),
+            ("Last Page", TypeId::of::<LastPage>()),
             ("Quick Switcher", TypeId::of::<QuickSwitcher>()),
             ("Search Schema", TypeId::of::<SearchSchema>()),
             ("Refresh", TypeId::of::<Refresh>()),

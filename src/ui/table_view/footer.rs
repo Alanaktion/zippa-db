@@ -11,7 +11,13 @@ use gpui_kit::{Context, div, px};
 
 use crate::ui::busy::busy_label;
 
-use super::{ApplyEdits, DiscardEdits, InsertRow, Pending, TableView, change_summary};
+use crate::db::result_label::grouped;
+
+use super::count::RowCount;
+use super::{
+    ApplyEdits, DiscardEdits, FirstPage, InsertRow, LastPage, NextPage, Pending, PreviousPage,
+    TableView, change_summary,
+};
 
 impl TableView {
     /// The changes waiting for an answer, above the footer.
@@ -61,12 +67,11 @@ impl TableView {
     }
 
     pub(super) fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let first_row = self.page * self.limit;
-        let range = if self.loaded_rows == 0 {
-            "No rows".to_string()
-        } else {
-            format!("Rows {}–{}", first_row + 1, first_row + self.loaded_rows)
-        };
+        // Kept beside whatever the status says — staged changes, a notice —
+        // so where the page is in the table is never lost. Left out while
+        // the first page is still on its way, when there is no position yet.
+        let position = (self.error.is_none() && !(self.loading && self.loaded_rows == 0))
+            .then(|| position_label(self.page, self.limit, self.loaded_rows, self.total));
 
         let (edited, inserted, deleted) = self.grid.read(cx).pending_counts(cx);
         let staged = edited + inserted + deleted;
@@ -102,7 +107,7 @@ impl TableView {
                 ),
                 (None, Some(changed), _) => (changed.clone(), cx.theme().warning),
                 (None, None, Some(notice)) => (notice.clone(), cx.theme().muted_foreground),
-                (None, None, None) => (range, cx.theme().muted_foreground),
+                (None, None, None) => (String::new(), cx.theme().muted_foreground),
             },
         };
 
@@ -116,15 +121,31 @@ impl TableView {
             .border_color(cx.theme().border)
             .bg(cx.theme().status_bar)
             .child(
+                // The status side gives way when the line is short of room:
+                // its text is cut rather than the commands on the right
+                // being pushed out of the window.
                 h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
                     .gap_2()
+                    .child(
+                        Button::new("first-page")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::ChevronFirst)
+                            .accessibility_label("First page")
+                            .tooltip_with_action("First page", &FirstPage, Some("TableView"))
+                            .disabled(!self.has_previous() || self.loading)
+                            .on_click(cx.listener(|this, _, _window, cx| this.go(0, cx))),
+                    )
                     .child(
                         Button::new("previous-page")
                             .ghost()
                             .xsmall()
                             .icon(IconName::ChevronLeft)
                             .accessibility_label("Previous page")
-                            .tooltip("Previous page")
+                            .tooltip_with_action("Previous page", &PreviousPage, Some("TableView"))
                             .disabled(!self.has_previous() || self.loading)
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.go(this.page.saturating_sub(1), cx)
@@ -136,11 +157,31 @@ impl TableView {
                             .xsmall()
                             .icon(IconName::ChevronRight)
                             .accessibility_label("Next page")
-                            .tooltip("Next page")
+                            .tooltip_with_action("Next page", &NextPage, Some("TableView"))
                             .disabled(!self.has_next() || self.loading)
                             .on_click(
                                 cx.listener(|this, _, _window, cx| this.go(this.page + 1, cx)),
                             ),
+                    )
+                    .child(
+                        Button::new("last-page")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::ChevronLast)
+                            .accessibility_label("Last page")
+                            .tooltip_with_action(
+                                "Last page (once the rows are counted)",
+                                &LastPage,
+                                Some("TableView"),
+                            )
+                            .disabled(
+                                !self.has_next() || self.loading || self.last_page().is_none(),
+                            )
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                if let Some(last) = this.last_page() {
+                                    this.go(last, cx);
+                                }
+                            })),
                     )
                     .child(
                         div()
@@ -153,6 +194,30 @@ impl TableView {
                             .w(px(88.))
                             .child(NumberInput::new(&self.limit_input).xsmall()),
                     )
+                    .when_some(position, |this, position| {
+                        this.child(
+                            div()
+                                .id("table-position")
+                                .flex_shrink(1.)
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(position),
+                        )
+                    })
+                    .when(self.total.can_count() && !self.loading, |this| {
+                        this.child(
+                            Button::new("count-rows")
+                                .ghost()
+                                .xsmall()
+                                .label("Count")
+                                .tooltip("Count the matching rows exactly; on a large table this can take a while")
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.count_rows(true, cx)
+                                })),
+                        )
+                    })
                     .child(if busy {
                         div()
                             .text_xs()
@@ -171,6 +236,7 @@ impl TableView {
             )
             .child(
                 h_flex()
+                    .flex_none()
                     .gap_2()
                     .when_some(self.read_only_reason(), |this, reason| {
                         this.child(
@@ -279,5 +345,98 @@ fn exporting_label(rows: usize) -> String {
         0 => "Exporting…".to_string(),
         1 => "Exporting… 1 row written".to_string(),
         rows => format!("Exporting… {rows} rows written"),
+    }
+}
+
+/// `Rows 501–1,000 of 48,210 · page 2 of 97`, with as much of it as is
+/// known: an estimate reads `of ~48k · page 2 of ~97`, and no count at all
+/// leaves the total out rather than guessing.
+pub(super) fn position_label(page: usize, limit: usize, loaded: usize, total: RowCount) -> String {
+    let limit = limit.max(1);
+    if loaded == 0 && page == 0 {
+        return "No rows".to_string();
+    }
+    let first = page * limit;
+    let range = match loaded {
+        0 => format!("Past row {}", grouped(first as u64)),
+        _ => format!(
+            "Rows {}–{}",
+            grouped(first as u64 + 1),
+            grouped((first + loaded) as u64)
+        ),
+    };
+    let pages = |total: u64| total.div_ceil(limit as u64).max(1);
+    let shown = page as u64 + 1;
+    match total {
+        RowCount::Exact(total) => format!(
+            "{range} of {} · page {} of {}",
+            grouped(total),
+            grouped(shown),
+            grouped(pages(total))
+        ),
+        RowCount::Estimated(total) => format!(
+            "{range} of ~{} · page {} of ~{}",
+            approximately(total),
+            grouped(shown),
+            approximately(pages(total))
+        ),
+        RowCount::Unknown | RowCount::Counting | RowCount::NotCounted => {
+            format!("{range} · page {}", grouped(shown))
+        }
+    }
+}
+
+/// An estimate to two significant figures, so it does not read as exact:
+/// `48k`, `1.2M`.
+fn approximately(count: u64) -> String {
+    let scaled = |value: u64, unit: u64, suffix: &str| {
+        let whole = value as f64 / unit as f64;
+        if whole < 10.0 {
+            format!("{:.1}{suffix}", whole).replace(".0", "")
+        } else {
+            format!("{:.0}{suffix}", whole)
+        }
+    };
+    match count {
+        0..1_000 => count.to_string(),
+        1_000..1_000_000 => scaled(count, 1_000, "k"),
+        1_000_000..1_000_000_000 => scaled(count, 1_000_000, "M"),
+        _ => scaled(count, 1_000_000_000, "B"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_position_says_as_much_as_is_known() {
+        assert_eq!(
+            position_label(1, 500, 500, RowCount::Exact(48_210)),
+            "Rows 501–1,000 of 48,210 · page 2 of 97"
+        );
+        assert_eq!(
+            position_label(0, 500, 500, RowCount::Estimated(48_210)),
+            "Rows 1–500 of ~48k · page 1 of ~97"
+        );
+        assert_eq!(
+            position_label(2, 100, 100, RowCount::Unknown),
+            "Rows 201–300 · page 3"
+        );
+        assert_eq!(
+            position_label(0, 500, 3, RowCount::Exact(3)),
+            "Rows 1–3 of 3 · page 1 of 1"
+        );
+        assert_eq!(position_label(0, 500, 0, RowCount::Exact(0)), "No rows");
+    }
+
+    #[test]
+    fn an_estimate_reads_as_one() {
+        assert_eq!(approximately(950), "950");
+        assert_eq!(approximately(1_000), "1k");
+        assert_eq!(approximately(1_250), "1.2k");
+        assert_eq!(approximately(48_210), "48k");
+        assert_eq!(approximately(1_200_000), "1.2M");
+        assert_eq!(approximately(3_000_000_000), "3B");
     }
 }

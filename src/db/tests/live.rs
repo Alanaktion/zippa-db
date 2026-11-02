@@ -1926,3 +1926,95 @@ async fn live_mysql_describe_shows_the_error_number() {
     );
     connection.close().await;
 }
+
+/// The planner's estimate a table tab shows before counting: a table
+/// `ANALYZE` has seen answers with its row count, and `count_rows` reads a
+/// `count(*)` back as a number. Against `compose.yaml`'s `postgres` service.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see live_postgres_processes_lists_and_kills_another_connection"]
+async fn live_postgres_estimates_and_counts_a_tables_rows() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    let table = format!("zippa_count_{}", Uuid::new_v4().simple());
+    connection
+        .run_query(&format!(
+            "CREATE TABLE {table} AS SELECT generate_series(1, 250) AS id"
+        ))
+        .await
+        .expect("creating the table failed");
+    connection
+        .run_query(&format!("ANALYZE {table}"))
+        .await
+        .expect("analyzing the table failed");
+
+    let object = DatabaseObject {
+        schema: None,
+        name: table.clone(),
+        kind: ObjectKind::Table,
+    };
+    let estimate = connection
+        .estimated_rows(&object)
+        .await
+        .expect("reading the estimate failed");
+    assert_eq!(estimate, Some(250));
+    let counted = connection
+        .count_rows(
+            &format!("select count(*) from {table} where id > $1::int"),
+            vec![Some("200".into())],
+        )
+        .await
+        .expect("counting failed");
+    assert_eq!(counted, 50);
+
+    connection
+        .run_query(&format!("DROP TABLE {table}"))
+        .await
+        .expect("dropping the table failed");
+    connection.close().await;
+}
+
+/// The same for MySQL, whose `table_rows` is InnoDB's estimate: present and
+/// not negative is all that can be promised for a fresh table.
+#[tokio::test]
+#[ignore = "needs a live MySQL server; see live_mysql_routines_carry_their_argument_types"]
+async fn live_mysql_estimates_and_counts_a_tables_rows() {
+    let (connection, _pool) = live_mysql().await;
+    let table = format!("zippa_count_{}", Uuid::new_v4().simple());
+    connection
+        .run_query(&format!("CREATE TABLE {table} (id INTEGER PRIMARY KEY)"))
+        .await
+        .expect("creating the table failed");
+    connection
+        .run_query(&format!("INSERT INTO {table} VALUES (1), (2), (3)"))
+        .await
+        .expect("filling the table failed");
+    connection
+        .run_query(&format!("ANALYZE TABLE {table}"))
+        .await
+        .expect("analyzing the table failed");
+
+    let object = DatabaseObject {
+        schema: None,
+        name: table.clone(),
+        kind: ObjectKind::Table,
+    };
+    // Read without error; `None` is a fair answer for a table InnoDB has
+    // not sampled yet.
+    connection
+        .estimated_rows(&object)
+        .await
+        .expect("reading the estimate failed");
+    let counted = connection
+        .count_rows(
+            &format!("select count(*) from {table} where id > ?"),
+            vec![Some("1".into())],
+        )
+        .await
+        .expect("counting failed");
+    assert_eq!(counted, 2);
+
+    connection
+        .run_query(&format!("DROP TABLE {table}"))
+        .await
+        .expect("dropping the table failed");
+    connection.close().await;
+}

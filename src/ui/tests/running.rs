@@ -672,3 +672,34 @@ fn the_statement_a_run_would_send_is_framed_when_there_are_several(cx: &mut Test
         None
     );
 }
+
+#[gpui_kit::test]
+fn a_scripts_result_tabs_say_what_each_result_is(cx: &mut TestAppContext) {
+    let (_database, handle, session) = workspace_session_with_safety(cx, SafetyMode::AutoApply);
+
+    prepare_workspace_editor(
+        cx,
+        &handle,
+        &session,
+        "select name from items;\n\
+         update items set name = name where id = 1;\n\
+         select * from itemz;",
+    );
+    press_workspace(cx, &handle, "secondary-alt-shift-enter");
+    cx.run_until_parked();
+
+    let labels = session.read_with(cx, |session, cx| session.result_labels_for_test(cx));
+    let names: Vec<&str> = labels.iter().map(|(label, _)| label.as_str()).collect();
+    assert_eq!(
+        names,
+        ["items · 2 rows", "items · 1 updated", "Error"],
+        "each tab names its table and count, and a skipped failure says so"
+    );
+    assert!(
+        labels[1]
+            .1
+            .starts_with("update items set name = name where id = 1"),
+        "the tooltip carries the statement: {:?}",
+        labels[1].1
+    );
+}

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use gpui_kit::Entity;
 
 use crate::db::query::QueryResult;
+use crate::db::result_label::ResultLabel;
 use crate::db::{Engine, PinnedConnection, ScriptRun};
 use crate::ui::data_grid::DataGrid;
 use crate::ui::plan_view::PlanView;
@@ -67,6 +68,9 @@ pub(crate) enum TabContent {
         /// Every result the last run produced. A script that selects twice
         /// leaves two here, and the grid shows one of them at a time.
         results: Vec<QueryResult>,
+        /// What each result's tab says, at the same index: built once when
+        /// the results arrive, from the statement behind each.
+        labels: Vec<ResultLabel>,
         /// Which of them the grid is showing.
         result: usize,
         /// The error the result pane shows, from a run that failed outright.

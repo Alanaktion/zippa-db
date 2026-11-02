@@ -105,8 +105,23 @@ impl TableView {
         self.grid.clone()
     }
 
+    /// Pretend a page of `rows` landed, with nothing yet known of the total.
     pub(crate) fn set_loaded_rows_for_test(&mut self, rows: usize) {
         self.loaded_rows = rows;
+        self.forget_count();
+    }
+
+    /// What the footer says about where the page is.
+    pub(crate) fn position_for_test(&self) -> String {
+        super::footer::position_label(self.page, self.limit, self.loaded_rows, self.total)
+    }
+
+    pub(crate) fn total_for_test(&self) -> super::count::RowCount {
+        self.total
+    }
+
+    pub(crate) fn set_limit_for_test(&mut self, limit: usize, cx: &mut Context<Self>) {
+        self.set_limit(limit, cx);
     }
 
     pub(crate) fn loaded_rows_for_test(&self) -> usize {

@@ -93,6 +93,28 @@ impl TableView {
         (sql, params)
     }
 
+    /// A `count(*)` over the same rows the page reads: the same table,
+    /// filters, and search, with no sort or paging.
+    pub(super) fn count_sql(&self, cx: &gpui_kit::App) -> (String, Vec<Cell>) {
+        let mut sql = format!("select count(*) from {}", self.target());
+        let (conditions, params) = self.where_clause(cx);
+        if !conditions.is_empty() {
+            sql.push_str(&format!(" where {}", conditions.join(" and ")));
+        }
+        (sql, params)
+    }
+
+    /// What the rows on view are narrowed by, as one comparable key: a count
+    /// taken under one key is still right for any page or sort under it.
+    pub(super) fn count_key(&self, cx: &gpui_kit::App) -> String {
+        format!("{:?}", self.where_clause(cx))
+    }
+
+    /// Whether anything narrows the rows: a filter or a search.
+    pub(super) fn is_narrowed(&self, cx: &gpui_kit::App) -> bool {
+        !self.where_clause(cx).0.is_empty()
+    }
+
     /// The filter bar's lines as SQL conditions, and the values to bind.
     fn where_clause(&self, cx: &gpui_kit::App) -> (Vec<String>, Vec<Cell>) {
         let engine = self.connection.config.engine;

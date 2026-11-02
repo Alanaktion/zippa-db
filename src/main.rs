@@ -71,6 +71,9 @@ gpui_kit::assets::icon_assets!(
         ZoomOut,
         SendHorizontal,
         Clock,
+        Link,
+        ChevronFirst,
+        ChevronLast,
     ]
 );
 

@@ -50,9 +50,55 @@ pub(super) fn measure_columns(result: &QueryResult) -> Vec<Pixels> {
         .collect()
 }
 
+/// Room one key or link mark takes in a header, gap included.
+const MARK_WIDTH: f32 = 16.;
+
+/// Widen any column whose header carries a key or link mark, so the marks do
+/// not cut the name short. Only ever widens, so it can be applied again when
+/// the schema read lands after the rows.
+pub(super) fn widen_for_marks(
+    widths: &mut [Pixels],
+    columns: &[String],
+    info: &super::ColumnInfos,
+) {
+    for (width, name) in widths.iter_mut().zip(columns) {
+        let Some(info) = info.get(name) else {
+            continue;
+        };
+        let marks = usize::from(info.primary_key) + usize::from(info.references.is_some());
+        if marks == 0 {
+            continue;
+        }
+        let header = name.chars().count() as f32 * CHARACTER_WIDTH
+            + marks as f32 * MARK_WIDTH
+            + CELL_PADDING;
+        *width = (*width).max(px(header.clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_marked_header_is_widened_for_its_marks() {
+        let columns = vec!["race_id".to_string(), "runner".to_string()];
+        let mut widths = vec![px(MIN_COLUMN_WIDTH), px(MIN_COLUMN_WIDTH)];
+        let mut info = super::super::ColumnInfos::new();
+        info.insert(
+            "race_id".into(),
+            super::super::ColumnInfo {
+                references: Some("races.id".into()),
+                ..Default::default()
+            },
+        );
+        widen_for_marks(&mut widths, &columns, &info);
+        let expected = 7. * CHARACTER_WIDTH + MARK_WIDTH + CELL_PADDING;
+        assert_eq!(widths, [px(expected), px(MIN_COLUMN_WIDTH)]);
+        // Applying it again changes nothing.
+        widen_for_marks(&mut widths, &columns, &info);
+        assert_eq!(widths, [px(expected), px(MIN_COLUMN_WIDTH)]);
+    }
 
     fn result(columns: &[&str], rows: Vec<Vec<Option<&str>>>) -> QueryResult {
         QueryResult {
