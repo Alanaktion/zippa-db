@@ -363,7 +363,11 @@ fn provider_field(field: ProviderField, settings: &Settings) -> SharedString {
             match field {
                 ProviderField::Name => preset.name.into(),
                 ProviderField::BaseUrl => match choice {
-                    Some(choice) if preset.local => choice.base_url.clone().into(),
+                    // An entry made by editing the model has no address of its
+                    // own; show the one requests go to, as `resolve` does.
+                    Some(choice) if preset.local && !choice.base_url.trim().is_empty() => {
+                        choice.base_url.clone().into()
+                    }
                     _ => preset.base_url.into(),
                 },
                 ProviderField::Model => choice
