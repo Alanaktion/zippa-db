@@ -34,7 +34,8 @@ use gpui_kit::{
 
 use crate::db::agent::compaction;
 use crate::db::agent::context::{self, ContextInfo};
-use crate::db::agent::provider::{Endpoint, HttpProvider, Message, ProviderError};
+use crate::db::agent::presets::{self, Resolved};
+use crate::db::agent::provider::{self, Endpoint, Message, ProviderError};
 use crate::db::agent::threads;
 use crate::db::agent::tools::{Approver, LiveModes, ToolContext, UiAction, WriteRequest};
 use crate::db::agent::turn::{self, TurnEvent, TurnOutcome};
@@ -180,6 +181,9 @@ pub struct AgentPanel {
     /// that falls back to whole replies sets this false, so later turns do
     /// not waste a request asking for a stream that will be refused.
     stream_supported: bool,
+    /// The provider `tools_supported` and `stream_supported` were learned
+    /// from; a turn to another one starts over.
+    learned_for: Option<Resolved>,
     pending: Option<Pending>,
     focus: FocusHandle,
     /// The messages area's scroll state, so new output can follow the
@@ -234,6 +238,7 @@ impl AgentPanel {
             abort: None,
             tools_supported: true,
             stream_supported: true,
+            learned_for: None,
             pending: None,
             focus: cx.focus_handle(),
             messages_scroll: ScrollHandle::default(),
@@ -293,18 +298,39 @@ impl AgentPanel {
         // Sending is the user's own move to the bottom of the thread.
         self.messages_scroll.scroll_to_bottom();
 
-        let settings = Settings::global(cx);
-        let (base_url, model) = (
-            settings.agent_base_url.clone(),
-            settings.agent_model.clone(),
-        );
-        if base_url.is_empty() || model.is_empty() {
+        let provider = Settings::global(cx).agent_choices().resolve();
+        if let Some(missing) = presets::missing_setting(provider.as_ref()) {
+            self.notice(&missing, true);
+            cx.notify();
+            return;
+        }
+        let Some(provider) = provider else {
+            return;
+        };
+        // Read here rather than on the runtime so a missing key is said at
+        // once, like any other missing setting, before the thread moves on.
+        let api_key = store::api_key(&provider.key.as_string(), provider.legacy_key)
+            .ok()
+            .flatten()
+            .filter(|key| !key.trim().is_empty());
+        if provider.key_required && api_key.is_none() {
             self.notice(
-                "Set the model endpoint and model name in Settings › Agents first.",
+                &format!(
+                    "Add an API key for {} in Settings › Agents first.",
+                    provider.name
+                ),
                 true,
             );
             cx.notify();
             return;
+        }
+        // What the panel learned about one endpoint (no tools, no
+        // streaming) says nothing about another, so a provider switch
+        // starts from the assumption that both work.
+        if self.learned_for.as_ref() != Some(&provider) {
+            self.tools_supported = true;
+            self.stream_supported = true;
+            self.learned_for = Some(provider.clone());
         }
 
         let catalog = self.catalog.get();
@@ -365,11 +391,11 @@ impl AgentPanel {
         self.running = true;
 
         let task = runtime::spawn(async move {
-            let api_key = store::api_key().ok().flatten();
-            let provider = match HttpProvider::new(Endpoint {
-                base_url,
-                model,
+            let provider = match provider::connect(Endpoint {
+                base_url: provider.base_url,
+                model: provider.model,
                 api_key,
+                protocol: provider.protocol,
             }) {
                 Ok(provider) => provider,
                 Err(error) => {
@@ -380,7 +406,7 @@ impl AgentPanel {
                 }
             };
             turn::run_with_events(
-                &provider,
+                provider.as_ref(),
                 &tool_context,
                 &Bridge(asks),
                 &history,
