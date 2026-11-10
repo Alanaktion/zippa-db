@@ -5,6 +5,7 @@
 //! survive a restart. [`update`] is the only way to change them: it writes the
 //! file, puts the new theme into effect, and redraws every window.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{LazyLock, OnceLock};
@@ -15,9 +16,14 @@ use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, AppContext as _, Global, SharedString, Window, WindowAppearance};
 use serde::{Deserialize, Serialize};
 
+use crate::db::agent::presets::{self, Choices, CustomProvider, PresetChoice, ProviderKey};
 use crate::db::{history, store};
 
 const FILE_NAME: &str = "settings.json";
+
+/// The provider picked out of the box. Nothing is sent to it until the user
+/// gives it a key and sends a message.
+const DEFAULT_AGENT_PROVIDER: &str = "openai";
 
 /// Directory under the config dir that extra theme files are read from.
 const THEMES_DIR: &str = "themes";
@@ -170,10 +176,20 @@ pub struct Settings {
     pub implicit_limit: bool,
     /// The rows that limit asks for.
     pub implicit_limit_rows: usize,
-    /// The OpenAI-compatible endpoint the Agents panel talks to, up to but
-    /// not including `/chat/completions`. Empty until the user sets one.
+    /// The model provider the Agents panel talks to: a built-in preset's
+    /// key or `custom:<uuid>` (see `db::agent::presets`).
+    pub agent_provider: String,
+    /// What the user changed about each built-in provider, by its key.
+    pub agent_presets: BTreeMap<String, PresetChoice>,
+    /// The OpenAI-compatible endpoints the user saved, in the order they
+    /// were added.
+    pub agent_custom_providers: Vec<CustomProvider>,
+    /// Older versions' single OpenAI-compatible endpoint. Read once, moved
+    /// into a custom provider by [`Settings::migrate`], and never written.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub agent_base_url: String,
-    /// The model name sent with each request.
+    /// The model older versions sent to that endpoint; see `agent_base_url`.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub agent_model: String,
     /// Whether Agents threads are saved on this machine, one `.jsonl` file
     /// per thread under the config dir, so a conversation can be reopened
@@ -209,6 +225,9 @@ impl Default for Settings {
             parallel_dashboard_queries: false,
             implicit_limit: true,
             implicit_limit_rows: DEFAULT_PAGE_SIZE,
+            agent_provider: DEFAULT_AGENT_PROVIDER.into(),
+            agent_presets: BTreeMap::new(),
+            agent_custom_providers: Vec::new(),
             agent_base_url: String::new(),
             agent_model: String::new(),
             agent_save_threads: false,
@@ -222,6 +241,35 @@ impl Default for Settings {
 impl Global for Settings {}
 
 impl Settings {
+    /// The Agents panel's provider settings, as `db::agent::presets` reads
+    /// them.
+    pub fn agent_choices(&self) -> Choices<'_> {
+        Choices {
+            selected: &self.agent_provider,
+            presets: &self.agent_presets,
+            custom: &self.agent_custom_providers,
+        }
+    }
+
+    /// Move an older version's single endpoint into a custom provider of its
+    /// own, selected, so an upgrade keeps talking to the same server. Its key
+    /// stays where it was until a new one is saved (`legacy_key`). Returns
+    /// whether anything moved, so the caller can save the result.
+    pub fn migrate(&mut self) -> bool {
+        let base_url = std::mem::take(&mut self.agent_base_url);
+        let model = std::mem::take(&mut self.agent_model);
+        if base_url.trim().is_empty() && model.trim().is_empty() {
+            return false;
+        }
+        let mut custom = CustomProvider::new(presets::name_for_url(&base_url));
+        custom.base_url = base_url.trim().to_string();
+        custom.model = model.trim().to_string();
+        custom.legacy_key = true;
+        self.agent_provider = ProviderKey::Custom(custom.id).as_string();
+        self.agent_custom_providers.push(custom);
+        true
+    }
+
     /// What the query history keeps, as `db::history` takes it.
     pub fn history_retention(&self) -> history::Retention {
         history::Retention {
@@ -261,11 +309,18 @@ impl Settings {
 
 /// Read the settings file and put it in force. Call once at startup.
 pub fn init(cx: &mut App) {
-    let settings = load().unwrap_or_else(|error| {
+    let mut settings = load().unwrap_or_else(|error| {
         // A file we cannot read should not keep the app from starting.
         eprintln!("could not read the settings: {error:#}");
         Settings::default()
     });
+    // Saved at once, so the moved endpoint keeps the id its key and
+    // selection now hang on rather than getting a new one each launch.
+    if settings.migrate()
+        && let Err(error) = save(&settings, store::ticket())
+    {
+        eprintln!("could not save the settings: {error:#}");
+    }
 
     let reduce_motion = settings.reduce_motion;
     history::configure(settings.history_retention());
@@ -558,6 +613,38 @@ mod tests {
             history::Retention::default(),
             "a file written before query history existed should keep it on disk, capped"
         );
+    }
+
+    #[test]
+    fn an_older_single_endpoint_becomes_a_selected_custom_provider() {
+        let mut settings: Settings = serde_json::from_str(
+            r#"{"agent_base_url": "http://localhost:11434/v1", "agent_model": "llama3"}"#,
+        )
+        .expect("the file should still parse");
+        assert!(settings.migrate());
+        let resolved = settings
+            .agent_choices()
+            .resolve()
+            .expect("the moved endpoint should be selected");
+        assert_eq!(resolved.base_url, "http://localhost:11434/v1");
+        assert_eq!(resolved.model, "llama3");
+        assert!(
+            resolved.legacy_key,
+            "its key is still under the old account"
+        );
+        assert!(settings.agent_base_url.is_empty());
+
+        // Saved and read again, it is not moved twice.
+        let written = serde_json::to_string(&settings).expect("settings should serialize");
+        assert!(!written.contains("agent_base_url"));
+        let mut read: Settings = serde_json::from_str(&written).expect("settings should parse");
+        assert!(!read.migrate());
+        assert_eq!(read, settings);
+
+        // A file that never set an endpoint has nothing to move.
+        let mut fresh = Settings::default();
+        assert!(!fresh.migrate());
+        assert_eq!(fresh.agent_provider, "openai");
     }
 
     #[test]

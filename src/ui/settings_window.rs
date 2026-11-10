@@ -9,6 +9,8 @@
 //! so there is nothing to apply or confirm: the change is saved and in effect
 //! as soon as it is made.
 
+use std::collections::HashMap;
+
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogButtonProps;
@@ -16,13 +18,16 @@ use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage,
     Settings as SettingsElement,
 };
-use gpui_kit::component::{ActiveTheme, IconName, Root, Sizable, Theme, ThemeMode, WindowExt as _};
+use gpui_kit::component::{
+    ActiveTheme, Disableable, IconName, Root, Sizable, Theme, ThemeMode, WindowExt as _, h_flex,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Bounds, Context, FocusHandle, Global, SharedString, TitlebarOptions, Window, WindowBounds,
     WindowHandle, WindowOptions, actions, div, px, size,
 };
 
+use crate::db::agent::presets::{self, CustomProvider, ProviderKey, Resolved};
 use crate::db::history::{self, Keep};
 use crate::settings::{self, Appearance, CompletionKey, Settings};
 
@@ -106,7 +111,7 @@ impl Render for SettingsView {
                 editor_page(),
                 data_page(),
                 history_page(),
-                agents_page(),
+                agents_page(cx),
             ]))
     }
 }
@@ -316,74 +321,348 @@ fn editor_page() -> SettingPage {
 /// read back into the window.
 const KEY_MASK: &str = "••••••••";
 
-static KEY_SET: std::sync::OnceLock<std::sync::atomic::AtomicBool> = std::sync::OnceLock::new();
+/// Whether each provider has a key in the keychain, by its stored key: read
+/// once per provider, then kept up to date by the key box, so drawing the
+/// page does not ask the keychain every frame.
+static KEYS_SET: std::sync::LazyLock<std::sync::Mutex<HashMap<String, bool>>> =
+    std::sync::LazyLock::new(Default::default);
 
-fn key_set() -> &'static std::sync::atomic::AtomicBool {
-    KEY_SET.get_or_init(|| {
-        std::sync::atomic::AtomicBool::new(matches!(crate::db::store::api_key(), Ok(Some(_))))
+fn key_is_set(provider: &Resolved) -> bool {
+    let account = provider.key.as_string();
+    let Ok(mut known) = KEYS_SET.lock() else {
+        return false;
+    };
+    *known.entry(account.clone()).or_insert_with(|| {
+        matches!(
+            crate::db::store::api_key(&account, provider.legacy_key),
+            Ok(Some(_))
+        )
     })
 }
 
-fn agents_page() -> SettingPage {
+fn note_key_set(account: String, set: bool) {
+    if let Ok(mut known) = KEYS_SET.lock() {
+        known.insert(account, set);
+    }
+}
+
+/// One of the selected provider's text fields.
+#[derive(Clone, Copy)]
+enum ProviderField {
+    Name,
+    BaseUrl,
+    Model,
+}
+
+/// The selected provider's value for `field`, as its box shows it: what the
+/// user typed, or the preset's own value where they have typed nothing.
+fn provider_field(field: ProviderField, settings: &Settings) -> SharedString {
+    match ProviderKey::parse(&settings.agent_provider) {
+        Some(ProviderKey::Preset(preset)) => {
+            let choice = settings.agent_presets.get(preset.key);
+            match field {
+                ProviderField::Name => preset.name.into(),
+                ProviderField::BaseUrl => match choice {
+                    // An entry made by editing the model has no address of its
+                    // own; show the one requests go to, as `resolve` does.
+                    Some(choice) if preset.local && !choice.base_url.trim().is_empty() => {
+                        choice.base_url.clone().into()
+                    }
+                    _ => preset.base_url.into(),
+                },
+                ProviderField::Model => choice
+                    .map_or(preset.model, |choice| choice.model.as_str())
+                    .to_string()
+                    .into(),
+            }
+        }
+        Some(ProviderKey::Custom(id)) => settings
+            .agent_custom_providers
+            .iter()
+            .find(|custom| custom.id == id)
+            .map(|custom| match field {
+                ProviderField::Name => custom.name.clone(),
+                ProviderField::BaseUrl => custom.base_url.clone(),
+                ProviderField::Model => custom.model.clone(),
+            })
+            .unwrap_or_default()
+            .into(),
+        None => SharedString::default(),
+    }
+}
+
+/// Write `field` of whichever provider is selected *now*.
+///
+/// A settings input keeps the setter it was first drawn with, and the same
+/// boxes serve every provider, so the setter must not capture the provider
+/// it was built for: after a switch it would write into the old one.
+fn set_provider_field(field: ProviderField, value: &str, cx: &mut App) {
+    settings::update(cx, |settings| {
+        match ProviderKey::parse(&settings.agent_provider) {
+            Some(ProviderKey::Preset(preset)) => {
+                let value = value.trim();
+                let existing = settings.agent_presets.get(preset.key);
+                // A box showing the preset's own value is not a choice; storing
+                // it would pin today's default.
+                let default = match field {
+                    ProviderField::Model => preset.model,
+                    ProviderField::BaseUrl => preset.base_url,
+                    ProviderField::Name => return,
+                };
+                if existing.is_none() && value == default {
+                    return;
+                }
+                let choice = settings
+                    .agent_presets
+                    .entry(preset.key.to_string())
+                    .or_default();
+                match field {
+                    ProviderField::Model => choice.model = value.to_string(),
+                    ProviderField::BaseUrl if preset.local => choice.base_url = value.to_string(),
+                    _ => {}
+                }
+            }
+            Some(ProviderKey::Custom(id)) => {
+                if let Some(custom) = settings
+                    .agent_custom_providers
+                    .iter_mut()
+                    .find(|custom| custom.id == id)
+                {
+                    match field {
+                        // Kept as typed: trimming here would eat the space
+                        // just typed between two words.
+                        ProviderField::Name => custom.name = value.to_string(),
+                        ProviderField::BaseUrl => custom.base_url = value.trim().to_string(),
+                        ProviderField::Model => custom.model = value.trim().to_string(),
+                    }
+                }
+            }
+            None => {}
+        }
+    })
+}
+
+fn provider_input(field: ProviderField) -> SettingField<SharedString> {
+    SettingField::input(
+        move |cx| provider_field(field, Settings::global(cx)),
+        move |value, cx| set_provider_field(field, &value, cx),
+    )
+}
+
+/// Save a key for whichever provider is selected now (see
+/// [`set_provider_field`] for why it is not captured).
+fn set_selected_key(value: &str, cx: &mut App) {
+    if value == KEY_MASK {
+        return;
+    }
+    let Some(provider) = Settings::global(cx).agent_choices().resolve() else {
+        return;
+    };
+    let key = value.trim();
+    let account = provider.key.as_string();
+    if let Err(error) = crate::db::store::set_api_key(&account, provider.legacy_key, key) {
+        eprintln!("could not save the API key: {error:#}");
+        return;
+    }
+    note_key_set(account, !key.is_empty());
+    // The key now lives under the provider's own account.
+    if provider.legacy_key
+        && let ProviderKey::Custom(id) = provider.key
+    {
+        settings::update(cx, |settings| {
+            if let Some(custom) = settings
+                .agent_custom_providers
+                .iter_mut()
+                .find(|custom| custom.id == id)
+            {
+                custom.legacy_key = false;
+            }
+        });
+    }
+}
+
+/// Save a new custom provider and select it, so the boxes above fill in
+/// for it.
+fn add_custom_provider(cx: &mut App) {
+    settings::update(cx, |settings| {
+        let custom =
+            CustomProvider::new(presets::next_custom_name(&settings.agent_custom_providers));
+        settings.agent_provider = ProviderKey::Custom(custom.id).as_string();
+        settings.agent_custom_providers.push(custom);
+    });
+}
+
+/// Ask before deleting the selected custom provider and its key.
+fn confirm_remove_custom_provider(window: &mut Window, cx: &mut App) {
+    let Some(provider) = Settings::global(cx).agent_choices().resolve() else {
+        return;
+    };
+    let ProviderKey::Custom(id) = provider.key else {
+        return;
+    };
+    let title = format!("Remove {}?", provider.name);
+    window.open_alert_dialog(cx, move |alert, _window, _cx| {
+        let provider = provider.clone();
+        alert
+            .title(title.clone())
+            .description("Its address, model, and saved API key are forgotten.")
+            .button_props(
+                DialogButtonProps::default()
+                    .ok_text("Remove Provider")
+                    .ok_variant(ButtonVariant::Danger)
+                    .cancel_text("Cancel")
+                    .show_cancel(true),
+            )
+            .on_ok(move |_, _window, cx| {
+                let account = provider.key.as_string();
+                if let Err(error) = crate::db::store::set_api_key(&account, provider.legacy_key, "")
+                {
+                    eprintln!("could not forget the API key: {error:#}");
+                }
+                note_key_set(account, false);
+                settings::update(cx, |settings| {
+                    settings
+                        .agent_custom_providers
+                        .retain(|custom| custom.id != id);
+                    if settings.agent_provider == provider.key.as_string() {
+                        // The provider that was picked before it is a
+                        // better guess than none; the first preset will do.
+                        settings.agent_provider = presets::PRESETS[0].key.to_string();
+                    }
+                });
+                true
+            })
+    });
+}
+
+fn agents_page(cx: &App) -> SettingPage {
+    let settings = Settings::global(cx);
+    let choices = settings.agent_choices();
+    let selected = choices.resolve();
+    let preset = match selected.as_ref().map(|provider| provider.key) {
+        Some(ProviderKey::Preset(preset)) => Some(preset),
+        _ => None,
+    };
+    let custom = matches!(
+        selected.as_ref().map(|provider| provider.key),
+        Some(ProviderKey::Custom(_))
+    );
+    let options: Vec<(SharedString, SharedString)> = choices
+        .options()
+        .into_iter()
+        .map(|(key, label)| (key.into(), label.into()))
+        .collect();
+    let key_set = selected.as_ref().is_some_and(key_is_set);
+
+    let base_url_note = match preset {
+        Some(preset) if preset.local => {
+            "Where the server listens on this machine or your network.".to_string()
+        }
+        Some(preset) => format!("{} is always at this address.", preset.name),
+        None => "Up to but not including /chat/completions.".to_string(),
+    };
+    let model_note = match preset {
+        Some(preset) if !preset.model.is_empty() => {
+            format!("Left empty, {} is used.", preset.model)
+        }
+        Some(_) => "The name of a model the server has.".to_string(),
+        None => "Sent with each request as the model name.".to_string(),
+    };
+    let key_note = match preset {
+        Some(preset) if preset.local => "Rarely needed locally. In the OS keychain.",
+        Some(_) => "Kept in the OS keychain.",
+        None => "Optional. Kept in the OS keychain.",
+    };
+
     SettingPage::new("Agents")
         .icon(IconName::Bot)
         .group(
+            // The items keep one order whatever is selected: an input's state
+            // is keyed by its position, so moving a box between providers
+            // would hand it another box's text.
             SettingGroup::new()
-                .title("Model endpoint")
+                .title("Model provider")
                 .description(
-                    "Any OpenAI-compatible chat endpoint. When you send a message in the \
-                     Agents panel, schema names, query text, and result rows go to this \
-                     endpoint. A local one (Ollama, LM Studio) keeps them on this machine; \
-                     a hosted one is a data-sharing choice. Nothing is sent until you do.",
+                    "When you send a message in the Agents panel, schema names, query text, \
+                     and result rows go to this provider. A local one (Ollama, LM Studio) \
+                     keeps them on this machine; a hosted one is a data-sharing choice. \
+                     Nothing is sent until you do.",
                 )
-                .item(SettingItem::new(
-                    "Base URL",
-                    SettingField::input(
-                        |cx| Settings::global(cx).agent_base_url.clone().into(),
-                        |value, cx| {
-                            settings::update(cx, |settings| {
-                                settings.agent_base_url = value.trim().to_string()
-                            })
-                        },
+                .item(
+                    SettingItem::new(
+                        "Provider",
+                        SettingField::scrollable_dropdown(
+                            options,
+                            |cx| Settings::global(cx).agent_provider.clone().into(),
+                            |value, cx| {
+                                settings::update(cx, |settings| {
+                                    settings.agent_provider = value.to_string()
+                                })
+                            },
+                        ),
+                    )
+                    .description(
+                        "Anthropic uses its own API; the rest use the OpenAI-compatible one.",
                     ),
-                ))
-                .item(SettingItem::new(
-                    "Model",
-                    SettingField::input(
-                        |cx| Settings::global(cx).agent_model.clone().into(),
-                        |value, cx| {
-                            settings::update(cx, |settings| {
-                                settings.agent_model = value.trim().to_string()
-                            })
-                        },
-                    ),
-                ))
+                )
+                .item(
+                    SettingItem::new("Name", provider_input(ProviderField::Name))
+                        .disabled(!custom)
+                        .description(if custom {
+                            "How this provider is listed."
+                        } else {
+                            "Built-in providers keep their names."
+                        }),
+                )
+                .item(
+                    SettingItem::new("Base URL", provider_input(ProviderField::BaseUrl))
+                        .disabled(preset.is_some_and(|preset| !preset.local))
+                        .description(base_url_note),
+                )
+                .item(
+                    SettingItem::new("Model", provider_input(ProviderField::Model))
+                        .description(model_note),
+                )
                 .item(
                     SettingItem::new(
                         "API key",
                         SettingField::input(
-                            |_| {
-                                if key_set().load(std::sync::atomic::Ordering::Relaxed) {
-                                    KEY_MASK.into()
-                                } else {
-                                    "".into()
-                                }
+                            move |_| {
+                                if key_set { KEY_MASK.into() } else { "".into() }
                             },
-                            |value, _| {
-                                if value.as_ref() == KEY_MASK {
-                                    return;
-                                }
-                                let key = value.trim();
-                                if crate::db::store::set_api_key(key).is_ok() {
-                                    key_set().store(
-                                        !key.is_empty(),
-                                        std::sync::atomic::Ordering::Relaxed,
-                                    );
-                                }
-                            },
+                            |value: SharedString, cx| set_selected_key(&value, cx),
                         ),
                     )
-                    .description("Kept in the OS keychain, never in a settings file."),
+                    .description(key_note),
+                )
+                .item(
+                    SettingItem::new(
+                        "Custom providers",
+                        SettingField::render(move |_options, _window, _cx| {
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("add-custom-provider")
+                                        .small()
+                                        .outline()
+                                        .label("Add Provider")
+                                        .on_click(|_, _window, cx| add_custom_provider(cx)),
+                                )
+                                .child(
+                                    Button::new("remove-custom-provider")
+                                        .small()
+                                        .danger()
+                                        .label("Remove…")
+                                        .disabled(!custom)
+                                        .on_click(|_, window, cx| {
+                                            confirm_remove_custom_provider(window, cx)
+                                        }),
+                                )
+                        }),
+                    )
+                    .description(
+                        "Save another OpenAI-compatible endpoint, or remove the selected one.",
+                    ),
                 ),
         )
         .group(

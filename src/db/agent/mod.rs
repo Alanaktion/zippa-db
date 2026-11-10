@@ -1,9 +1,11 @@
 //! The Agents panel's database side: what the model may ask for and how it is
 //! checked, with no window and no GPUI.
 
+pub mod anthropic;
 pub mod compaction;
 pub mod context;
 pub mod gate;
+pub mod presets;
 pub mod provider;
 pub mod threads;
 pub mod tools;

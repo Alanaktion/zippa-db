@@ -414,47 +414,69 @@ pub fn credentials(
     Ok(Credentials { password, ssh })
 }
 
-/// The keychain account the Agents panel's API key is kept under. One key for
-/// the whole app, so no connection id: it is the model endpoint's, not a
-/// database's.
+/// The keychain account a model provider's API key is kept under, by the
+/// provider's stored key (`openai`, `custom:<uuid>`, …), so each provider
+/// keeps its own. `legacy` is the one account older versions used for their
+/// single endpoint.
 #[cfg(not(test))]
-fn api_key_entry() -> Result<keyring::Entry> {
-    keyring::Entry::new(SERVICE, "agents/api-key").context("no OS credential store available")
+fn api_key_entry(provider: &str, legacy: bool) -> Result<keyring::Entry> {
+    let account = if legacy {
+        "agents/api-key".to_string()
+    } else {
+        format!("agents/api-key/{provider}")
+    };
+    keyring::Entry::new(SERVICE, &account).context("no OS credential store available")
 }
 
-/// The stored API key for the model endpoint, if any.
-pub fn api_key() -> Result<Option<String>> {
+/// The stored API key for a model provider, if any. A provider made from
+/// an older version's endpoint (`legacy`) reads that endpoint's key until a
+/// key of its own is saved.
+pub fn api_key(provider: &str, legacy: bool) -> Result<Option<String>> {
     #[cfg(not(test))]
     {
-        match api_key_entry()?.get_password() {
+        let read = |legacy| match api_key_entry(provider, legacy)?.get_password() {
             Ok(key) => Ok(Some(key)),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(anyhow::Error::from(error)),
+        };
+        match read(false)? {
+            Some(key) => Ok(Some(key)),
+            None if legacy => read(true),
+            None => Ok(None),
         }
     }
     #[cfg(test)]
     {
+        let _ = (provider, legacy);
         Ok(None)
     }
 }
 
-/// Store the API key; an empty one forgets it.
-pub fn set_api_key(key: &str) -> Result<()> {
+/// Store a model provider's API key; an empty one forgets it. Either way the
+/// older versions' shared key is forgotten too when `legacy` is set, since
+/// the provider now has a key of its own (or none).
+pub fn set_api_key(provider: &str, legacy: bool, key: &str) -> Result<()> {
     #[cfg(not(test))]
     {
+        let forget = |entry: keyring::Entry| match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(anyhow::Error::from(error)),
+        };
         if key.is_empty() {
-            return match api_key_entry()?.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(error) => Err(error.into()),
-            };
+            forget(api_key_entry(provider, false)?)?;
+        } else {
+            api_key_entry(provider, false)?
+                .set_password(key)
+                .context("could not save the API key to the OS credential store")?;
         }
-        api_key_entry()?
-            .set_password(key)
-            .context("could not save the API key to the OS credential store")
+        if legacy {
+            forget(api_key_entry(provider, true)?)?;
+        }
+        Ok(())
     }
     #[cfg(test)]
     {
-        let _ = key;
+        let _ = (provider, legacy, key);
         Ok(())
     }
 }
