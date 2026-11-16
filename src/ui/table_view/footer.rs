@@ -192,7 +192,11 @@ impl TableView {
                     .child(
                         div()
                             .w(px(88.))
-                            .child(NumberInput::new(&self.limit_input).xsmall()),
+                            .child(
+                                NumberInput::new(&self.limit_input)
+                                    .xsmall()
+                                    .accessibility_label("Rows per page"),
+                            ),
                     )
                     .when_some(position, |this, position| {
                         this.child(

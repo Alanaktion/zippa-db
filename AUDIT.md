@@ -75,7 +75,6 @@ The "destructive statement" count only sees the first 64 KiB of the dump (`src/d
 The checklist largely holds: every icon-only button in `app.rs`, `welcome/*`, `session/panel.rs` and `session/sidebar.rs` carries an `accessibility_label`, the sidebar object list is a `Tree`, and shortcuts are discoverable via `tooltip_with_action` in the main chrome. The gaps:
 
 - **[L] New/changed rows in the structure tab are tinted only** (`src/ui/schema_view/columns.rs`, `indexes.rs`, `foreign_keys.rs`, each section's row renderer), whereas dropped rows also get `line_through()`.
-- **[L] The table view's limit `NumberInput` is labelled only by an adjacent `div`** (`src/ui/table_view/footer.rs`); `NumberInput` has no accessible-name setter in `gpui-component` 0.6. ⚠︎ Not verified with a screen reader.
 
 ---
 

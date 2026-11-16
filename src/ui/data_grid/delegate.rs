@@ -572,7 +572,8 @@ impl TableDelegate for ResultDelegate {
         }
 
         let rows = self.rows_count(cx);
-        let all = rows > 0 && self.rows_selected.len() == rows;
+        let picked = self.rows_selected.len();
+        let all = rows > 0 && picked == rows;
 
         div()
             .size_full()
@@ -586,6 +587,8 @@ impl TableDelegate for ResultDelegate {
                 Checkbox::new("pick-all")
                     .accessibility_label("Select every row")
                     .checked(all)
+                    // Some rows picked shows a dash; clicking it picks them all.
+                    .indeterminate(picked > 0 && !all)
                     .on_click(cx.listener(move |table, checked: &bool, window, cx| {
                         table.delegate_mut().pick_all(*checked, rows);
                         cx.notify();

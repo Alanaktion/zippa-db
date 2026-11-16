@@ -240,9 +240,12 @@ impl SessionPanel {
                         })),
                 )
                 .child(
-                    div()
-                        .w(px(88.))
-                        .child(NumberInput::new(&limit.input).xsmall().disabled(!enabled)),
+                    div().w(px(88.)).child(
+                        NumberInput::new(&limit.input)
+                            .xsmall()
+                            .accessibility_label("Row limit")
+                            .disabled(!enabled),
+                    ),
                 )
                 .tooltip(|window, cx| {
                     gpui_kit::component::tooltip::Tooltip::new(
