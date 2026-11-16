@@ -10,7 +10,7 @@ use gpui_kit::component::input::{Editor, EditorState, Enter, IndentInline};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, EventEmitter, KeyDownEvent, SharedString, Window, actions, px};
+use gpui_kit::{Context, Entity, EventEmitter, SharedString, Window, actions, px};
 
 use gpui_kit::base::input::{Copy, Cut, Paste, RangeDecorationCollection, SelectAll};
 
@@ -289,35 +289,6 @@ impl QueryEditor {
     /// Whether the completion menu is on screen.
     fn completion_open(&self, cx: &gpui_kit::App) -> bool {
         self.state.read(cx).completion_menu_state().open
-    }
-
-    /// Every keystroke, seen before the editor.
-    fn on_key_down(&mut self, _: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.follow_caret(window, cx);
-    }
-
-    /// Draw the editor once more after the frame that moves the caret, so
-    /// the completion menu follows it straight away.
-    ///
-    /// The menu places itself from the caret's position in the *last* frame
-    /// painted, and its new items usually land before the keystroke's own
-    /// frame is drawn — so that frame shows it where the caret was, and
-    /// nothing redraws it until the caret next blinks. Next-frame callbacks
-    /// run before that tick's draw, hence the two levels: the outer one runs
-    /// before the keystroke's frame, the inner one after it is painted.
-    fn follow_caret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let editor = cx.entity().downgrade();
-        window.on_next_frame(move |window, _| {
-            window.on_next_frame(move |_, cx| {
-                let Some(editor) = editor.upgrade() else {
-                    return;
-                };
-                let state = editor.read(cx).state.clone();
-                if state.read(cx).completion_menu_state().open {
-                    state.update(cx, |_, cx| cx.notify());
-                }
-            });
-        });
     }
 
     /// `Tab`, seen before the editor indents: with Tab chosen to accept a
@@ -865,7 +836,6 @@ impl Render for QueryEditor {
             .on_action(cx.listener(Self::select_line))
             .on_action(cx.listener(Self::smart_home))
             .on_action(cx.listener(Self::go_to_error))
-            .capture_key_down(cx.listener(Self::on_key_down))
             .capture_action(cx.listener(Self::accept_with_tab))
             .capture_action(cx.listener(Self::enter_with_menu_open))
             .size_full()

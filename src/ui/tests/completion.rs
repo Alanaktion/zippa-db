@@ -161,3 +161,41 @@ fn completion_works_back_on_an_earlier_line(cx: &mut TestAppContext) {
 
     assert_eq!(active_sql(cx, handle), "select score\nfrom items");
 }
+
+/// The menu sits at the caret on the frame that draws the keystroke, not one
+/// frame later: it is anchored to the caret the editor lays out in that same
+/// frame, so the app need not ask for an extra draw.
+#[gpui_kit::test]
+fn the_menu_follows_the_caret_on_the_keystrokes_own_frame(cx: &mut TestAppContext) {
+    let (_database, handle) = session_accepting_with(cx, settings::CompletionKey::Enter);
+    prepare_editor(cx, handle, "select  from items", "select ".len());
+    type_letters(cx, handle, &["s"]);
+
+    let menu = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.find("completion-menu").bounds()
+        })
+        .unwrap()
+    };
+    let before = menu(cx);
+
+    // The keystroke alone, with no draw after it, so the next frame is the
+    // first one that shows it.
+    cx.update_window(handle.into(), |_, window, cx| {
+        let mut key = gpui_kit::Keystroke::parse_with_os("c", gpui_kit::OperatingSystem::Linux)
+            .expect("a keystroke");
+        key.key_char = Some("c".into());
+        window.dispatch_keystroke(key, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let first = menu(cx);
+    let settled = menu(cx);
+
+    assert!(
+        first.origin.x > before.origin.x,
+        "the menu stayed behind the caret: before {before:?}, after {first:?}"
+    );
+    assert_eq!(first, settled, "the menu moved again a frame later");
+}
