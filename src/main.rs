@@ -104,6 +104,10 @@ fn main() {
     // just vanish the window.
     crash_log::install();
 
+    // Syntax highlighting for the query editor uses one tree-sitter grammar
+    // per engine, registered here before any editor exists.
+    ui::sql_highlight::register_dialect_grammars();
+
     gpui_kit::application()
         .with_assets(AppAssets)
         .run(|cx: &mut App| {
