@@ -19,8 +19,10 @@
 //! compiles against the dialect grammar on its own. To regenerate, check
 //! out the polyglot repo at the pinned version, copy
 //! `scripts/bundle-highlights.js` from its main branch into `scripts/`,
-//! run `node scripts/bundle-highlights.js postgres mysql sqlite`, and copy
-//! the three `highlights.bundled.scm` files here. Delete this directory
+//! run `node scripts/bundle-highlights.js postgres mysql sqlite`,
+//! then run `python3 script/normalize-sql-highlights.py /path/to/polyglot`
+//! from this repository to install the queries with Rust regex syntax and
+//! gpui-kit capture names. Delete this directory
 //! once the crate ships bundled queries (expected in 0.1.2) and use the
 //! crate's `HIGHLIGHTS_QUERY_*` constants instead.
 
@@ -170,3 +172,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod capture_tests;
