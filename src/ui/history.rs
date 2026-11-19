@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Local};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogButtonProps;
@@ -414,9 +413,10 @@ fn as_result(entries: &[&HistoryEntry], names: Option<&HashMap<Uuid, String>>) -
     }
 }
 
-fn format_time(at: DateTime<chrono::Utc>) -> String {
-    let local: DateTime<Local> = at.into();
-    local.format("%Y-%m-%d %H:%M:%S").to_string()
+fn format_time(at: jiff::Timestamp) -> String {
+    at.to_zoned_datetime(jiff::tz::TimeZone::system())
+        .strftime("%Y-%m-%d %H:%M:%S")
+        .to_string()
 }
 
 #[cfg(test)]

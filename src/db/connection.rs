@@ -934,7 +934,7 @@ impl Connection {
             source,
             outcome,
             elapsed,
-            at: std::time::SystemTime::now(),
+            at: jiff::Timestamp::now(),
         });
     }
 

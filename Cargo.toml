@@ -35,6 +35,8 @@ futures = "0.3.34"
 # One dependency pulls in GPUI (Zed's preview channel), gpui-base, the styled
 # component library, and the default icon set.
 gpui-kit = { version = "0.10.0", features = ["tree-sitter-sql"] }
+jiff = { version = "1.0.1", features = ["serde"] }
+jiff-sqlx = { version = "1.0.0", features = ["postgres"] }
 keyring = "4"
 # Only for `sqlite3_get_autocommit`, which sqlx does not expose; the version
 # range matches sqlx-sqlite's own so both link the same library.

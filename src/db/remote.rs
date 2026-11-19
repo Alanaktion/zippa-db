@@ -27,7 +27,6 @@ use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use chrono::{DateTime, Utc};
 use russh::client::{Handle, Msg};
 use russh::{ChannelStream, Disconnect};
 use russh_sftp::client::{RawSftpSession, SftpSession};
@@ -48,7 +47,7 @@ pub enum Upload {
     Uploaded,
     /// The server's file changed since it was last downloaded or uploaded,
     /// so nothing was written; `modified` is when, if the server says.
-    ServerChanged { modified: Option<DateTime<Utc>> },
+    ServerChanged { modified: Option<jiff::Timestamp> },
 }
 
 /// What the server says about its file: enough to tell that it changed.
@@ -68,9 +67,9 @@ struct Stamp {
 const HEADER_LEN: u64 = 100;
 
 impl Stamp {
-    fn modified_at(&self) -> Option<DateTime<Utc>> {
+    fn modified_at(&self) -> Option<jiff::Timestamp> {
         self.modified
-            .and_then(|secs| DateTime::from_timestamp(secs.into(), 0))
+            .and_then(|secs| jiff::Timestamp::from_second(i64::from(secs)).ok())
     }
 }
 

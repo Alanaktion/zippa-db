@@ -494,20 +494,25 @@ pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
         "MONEY" => value!(PgMoney, |value: PgMoney| format_money(value, money_scale)),
         "UUID" => value!(sqlx::types::Uuid),
         "JSON" | "JSONB" => value!(sqlx::types::JsonValue),
-        "DATE" => value!(chrono::NaiveDate),
-        "TIME" => value!(chrono::NaiveTime),
+        // Temporal columns decode through jiff-sqlx's wrappers, except
+        // TIMETZ and the ranges below: sqlx has no `Type` for a jiff range
+        // element, and jiff has no time-with-offset type, so those still
+        // decode through chrono. chrono survives only at this boundary.
+        "DATE" => value!(jiff_sqlx::Date, |value| value.to_jiff().to_string()),
+        "TIME" => value!(jiff_sqlx::Time, |value| value.to_jiff().to_string()),
         "TIMETZ" => value!(PgTimeTz<chrono::NaiveTime, chrono::FixedOffset>, format_timetz),
-        "TIMESTAMP" => value!(chrono::NaiveDateTime),
+        "TIMESTAMP" => value!(jiff_sqlx::DateTime, |value| value.to_jiff().to_string()),
         // The driver hands back an instant rather than the text Postgres would
         // have printed, so the offset is ours to pick: show it where the user
         // is, and spell the offset out so the value still means the same
         // instant when it is written back.
-        "TIMESTAMPTZ" => value!(
-            chrono::DateTime<chrono::Local>,
-            |value: chrono::DateTime<chrono::Local>| {
-                value.format("%Y-%m-%d %H:%M:%S%.f%:z").to_string()
-            }
-        ),
+        "TIMESTAMPTZ" => value!(jiff_sqlx::Timestamp, |value: jiff_sqlx::Timestamp| {
+            value
+                .to_jiff()
+                .to_zoned_datetime(jiff::tz::TimeZone::system())
+                .strftime("%Y-%m-%d %H:%M:%S%.f%:z")
+                .to_string()
+        }),
         "INTERVAL" => value!(PgInterval, format_interval),
         "INET" | "CIDR" => value!(sqlx::types::ipnetwork::IpNetwork, |value| {
             format_ip(value, base == "INET")

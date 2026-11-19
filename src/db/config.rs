@@ -5,7 +5,6 @@
 //! how careful it is about writes ([`SafetyMode`]). [`store`](super::store)
 //! persists it; [`Connection`](super::Connection) opens it.
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -495,7 +494,7 @@ pub struct ConnectionConfig {
     pub color: Option<TagColor>,
     /// When this connection was last opened, for most-recent-first ordering.
     #[serde(default)]
-    pub last_connected: Option<DateTime<Utc>>,
+    pub last_connected: Option<jiff::Timestamp>,
     /// How a server connection is encrypted. Absent in files written before
     /// the setting existed, which read back as `Prefer`: what the drivers did
     /// all along.

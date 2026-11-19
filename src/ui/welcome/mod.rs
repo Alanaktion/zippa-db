@@ -9,7 +9,6 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use chrono::Utc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
@@ -541,7 +540,7 @@ impl Welcome {
     fn mark_connected(&mut self, id: &Uuid, cx: &mut Context<Self>) {
         let (connections, ticket) = change_saved(cx, |list| {
             if let Some(config) = list.iter_mut().find(|config| &config.id == id) {
-                config.last_connected = Some(Utc::now());
+                config.last_connected = Some(jiff::Timestamp::now());
             }
         });
 
@@ -1209,7 +1208,7 @@ mod tests {
             host: "db.internal".into(),
             database: "app".into(),
             last_connected: last_connected
-                .map(|when| when.parse::<chrono::DateTime<Utc>>().expect("a timestamp")),
+                .map(|when| when.parse::<jiff::Timestamp>().expect("a timestamp")),
             ..ConnectionConfig::new(Engine::Postgres)
         }
     }

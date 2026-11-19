@@ -404,6 +404,10 @@ pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {
         "DOUBLE" => decode!(row, index, f64),
         "DECIMAL" => decode!(row, index, sqlx::types::BigDecimal),
         "JSON" => decode!(row, index, sqlx::types::JsonValue),
+        // MySQL temporal columns still decode through chrono: sqlx 0.9 has
+        // no jiff support, and jiff-sqlx covers Postgres and SQLite only,
+        // so there is no jiff decode for these. The values are formatted
+        // immediately, so chrono never escapes this function.
         "DATE" => decode!(row, index, chrono::NaiveDate),
         "YEAR" => decode!(row, index, u16),
         // A `BIT(n)` is shown as its digits rather than as a number, which is
