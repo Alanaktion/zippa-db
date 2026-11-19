@@ -30,6 +30,7 @@ pub mod session;
 pub mod settings_window;
 pub mod shortcuts_dialog;
 pub mod sql_file;
+pub mod sql_highlight;
 pub mod sqlite_maintenance;
 pub mod table_view;
 mod text_filter;
