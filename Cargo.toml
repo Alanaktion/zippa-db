@@ -67,6 +67,8 @@ sqlx = { version = "0.9", features = [
 # `process`/`fs`: the database backup runs pg_dump/mysqldump as a child
 # process and streams its output into a file, both asynchronously.
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "net", "io-util", "macros", "process", "fs", "time"] }
+tree-sitter = "0.26"
+tree-sitter-sql-polyglot = { version = "0.1.1", default-features = false, features = ["mysql", "postgres", "sqlite"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 zstd = "0.14"
 
