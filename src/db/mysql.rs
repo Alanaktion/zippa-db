@@ -404,11 +404,12 @@ pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {
         "DOUBLE" => decode!(row, index, f64),
         "DECIMAL" => decode!(row, index, sqlx::types::BigDecimal),
         "JSON" => decode!(row, index, sqlx::types::JsonValue),
-        // MySQL temporal columns still decode through chrono: sqlx 0.9 has
+        // MySQL temporal columns still decode through chrono (via sqlx's
+        // re-export; chrono is not a direct dependency): sqlx 0.9 has
         // no jiff support, and jiff-sqlx covers Postgres and SQLite only,
         // so there is no jiff decode for these. The values are formatted
         // immediately, so chrono never escapes this function.
-        "DATE" => decode!(row, index, chrono::NaiveDate),
+        "DATE" => decode!(row, index, sqlx::types::chrono::NaiveDate),
         "YEAR" => decode!(row, index, u16),
         // A `BIT(n)` is shown as its digits rather than as a number, which is
         // also what `typed_placeholder` converts back on the way in — MySQL
@@ -417,18 +418,18 @@ pub(crate) fn cell(row: &MySqlRow, index: usize) -> Cell {
             .try_get::<u64, _>(index)
             .ok()
             .map(|bits| format!("{bits:b}")),
-        "DATETIME" => decode!(row, index, chrono::NaiveDateTime),
+        "DATETIME" => decode!(row, index, sqlx::types::chrono::NaiveDateTime),
         // A `TIMESTAMP` only decodes through an offset-aware type, but the
         // server sends the same wall clock a `DATETIME` would, so the two are
         // shown alike rather than labelled with an offset the server never
         // gave.
         "TIMESTAMP" => row
-            .try_get::<chrono::DateTime<chrono::Utc>, _>(index)
+            .try_get::<sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>, _>(index)
             .ok()
             .map(|value| value.naive_utc().to_string()),
         // `TIME` is a signed span of up to 838 hours, so it only falls back to
         // the driver's own type when it is outside a clock time.
-        "TIME" => decode!(row, index, chrono::NaiveTime)
+        "TIME" => decode!(row, index, sqlx::types::chrono::NaiveTime)
             .or_else(|| decode!(row, index, sqlx::mysql::types::MySqlTime)),
         // MySQL sets the wire protocol's BINARY column flag — which this
         // display name is derived from — for any `_bin` collation, not just
