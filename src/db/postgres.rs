@@ -494,20 +494,43 @@ pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
         "MONEY" => value!(PgMoney, |value: PgMoney| format_money(value, money_scale)),
         "UUID" => value!(sqlx::types::Uuid),
         "JSON" | "JSONB" => value!(sqlx::types::JsonValue),
-        "DATE" => value!(chrono::NaiveDate),
-        "TIME" => value!(chrono::NaiveTime),
-        "TIMETZ" => value!(PgTimeTz<chrono::NaiveTime, chrono::FixedOffset>, format_timetz),
-        "TIMESTAMP" => value!(chrono::NaiveDateTime),
+        // Temporal columns decode through jiff-sqlx's wrappers, except
+        // TIMETZ, the TIMESTAMPTZ fallback, and the ranges below. sqlx has no
+        // `Type` for a jiff range element, and jiff has no time-with-offset
+        // type. chrono, named via sqlx's re-export, survives at this boundary.
+        "DATE" => value!(jiff_sqlx::Date, |value| value.to_jiff().to_string()),
+        "TIME" => value!(jiff_sqlx::Time, |value| value.to_jiff().to_string()),
+        "TIMETZ" => {
+            value!(PgTimeTz<sqlx::types::chrono::NaiveTime, sqlx::types::chrono::FixedOffset>, format_timetz)
+        }
+        "TIMESTAMP" => value!(jiff_sqlx::DateTime, |value| value.to_jiff().to_string()),
         // The driver hands back an instant rather than the text Postgres would
         // have printed, so the offset is ours to pick: show it where the user
         // is, and spell the offset out so the value still means the same
         // instant when it is written back.
-        "TIMESTAMPTZ" => value!(
-            chrono::DateTime<chrono::Local>,
-            |value: chrono::DateTime<chrono::Local>| {
-                value.format("%Y-%m-%d %H:%M:%S%.f%:z").to_string()
-            }
-        ),
+        "TIMESTAMPTZ" => value!(jiff_sqlx::Timestamp, |value: jiff_sqlx::Timestamp| {
+            value
+                .to_jiff()
+                .to_zoned_datetime(jiff::tz::TimeZone::system())
+                .strftime("%Y-%m-%d %H:%M:%S%.f%:z")
+                .to_string()
+        })
+        // Retry the whole cell through the same checked scalar/array path:
+        // chrono can represent instants outside Jiff's range. For arrays,
+        // one such element makes the initial decode fail for the whole cell.
+        .or_else(|| {
+            value!(
+                sqlx::types::chrono::DateTime<sqlx::types::chrono::Local>,
+                |value: sqlx::types::chrono::DateTime<sqlx::types::chrono::Local>| {
+                    // Postgres rejects chrono's leading `+` on extended years.
+                    value
+                        .format("%Y-%m-%d %H:%M:%S%.f%:z")
+                        .to_string()
+                        .trim_start_matches('+')
+                        .to_owned()
+                }
+            )
+        }),
         "INTERVAL" => value!(PgInterval, format_interval),
         "INET" | "CIDR" => value!(sqlx::types::ipnetwork::IpNetwork, |value| {
             format_ip(value, base == "INET")
@@ -559,11 +582,11 @@ pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
                 bounds
             )
         }
-        "DATERANGE" => range!(chrono::NaiveDate),
-        "TSRANGE" => range!(chrono::NaiveDateTime),
+        "DATERANGE" => range!(sqlx::types::chrono::NaiveDate),
+        "TSRANGE" => range!(sqlx::types::chrono::NaiveDateTime),
         "TSTZRANGE" => range!(
-            chrono::DateTime<chrono::Local>,
-            |value: chrono::DateTime<chrono::Local>| {
+            sqlx::types::chrono::DateTime<sqlx::types::chrono::Local>,
+            |value: sqlx::types::chrono::DateTime<sqlx::types::chrono::Local>| {
                 value.format("%Y-%m-%d %H:%M:%S%.f%:z").to_string()
             }
         ),
@@ -783,9 +806,10 @@ fn unit(count: i32, one: &'static str, many: &'static str) -> &'static str {
 }
 
 /// `03:04:05+02:00`.
-fn format_timetz(value: PgTimeTz<chrono::NaiveTime, chrono::FixedOffset>) -> String {
-    use chrono::Offset as _;
-    format!("{}{}", value.time.format("%H:%M:%S%.f"), value.offset.fix())
+fn format_timetz(
+    value: PgTimeTz<sqlx::types::chrono::NaiveTime, sqlx::types::chrono::FixedOffset>,
+) -> String {
+    format!("{}{}", value.time.format("%H:%M:%S%.f"), value.offset)
 }
 
 /// `12.34`, the way Postgres prints `money` without its currency symbol —

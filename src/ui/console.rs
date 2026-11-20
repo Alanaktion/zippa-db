@@ -8,7 +8,6 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Local};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -195,9 +194,10 @@ pub(crate) fn outcome_label(outcome: &QueryOutcome) -> String {
     }
 }
 
-fn format_time(at: std::time::SystemTime) -> String {
-    let local: DateTime<Local> = at.into();
-    local.format("%H:%M:%S%.3f").to_string()
+fn format_time(at: jiff::Timestamp) -> String {
+    at.to_zoned_datetime(jiff::tz::TimeZone::system())
+        .strftime("%H:%M:%S%.3f")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -211,7 +211,7 @@ mod tests {
             source,
             outcome,
             elapsed: Duration::from_millis(5),
-            at: std::time::SystemTime::now(),
+            at: jiff::Timestamp::now(),
         }
     }
 

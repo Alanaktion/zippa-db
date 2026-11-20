@@ -55,7 +55,7 @@ fn append(info: &std::panic::PanicHookInfo) -> std::io::Result<()> {
         .append(true)
         .open(dir.join(FILE_NAME))?;
 
-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z");
+    let now = jiff::ZonedDateTime::now().strftime("%Y-%m-%d %H:%M:%S %:z");
     writeln!(file, "=== Zippa DB crashed at {now} ===")?;
     let payload = info.payload();
     if let Some(message) = payload.downcast_ref::<&str>() {

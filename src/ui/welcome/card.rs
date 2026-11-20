@@ -5,8 +5,6 @@
 //! a trailing `…` menu for the edit/duplicate/delete commands. The colour's
 //! name is in the card's accessibility label.
 
-use chrono::{DateTime, Utc};
-
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
@@ -127,7 +125,7 @@ fn card_body(config: &ConnectionConfig, connecting: bool, cx: &App) -> impl Into
                             .flex_none()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(connected_label(when, Utc::now())),
+                            .child(connected_label(when, jiff::Timestamp::now())),
                     )
                 }),
         )
@@ -207,8 +205,8 @@ pub(super) fn middle_truncate(path: &str, max_chars: usize) -> String {
 }
 
 /// "Connected 2 h ago", with the unit picked to stay short.
-pub(super) fn connected_label(when: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let minutes = now.signed_duration_since(when).num_minutes();
+pub(super) fn connected_label(when: jiff::Timestamp, now: jiff::Timestamp) -> String {
+    let minutes = (now - when).as_secs() / 60;
     if minutes < 1 {
         "Connected just now".to_string()
     } else if minutes < 60 {
@@ -236,7 +234,7 @@ mod tests {
 
     #[test]
     fn connected_label_picks_a_unit() {
-        let now: DateTime<Utc> = "2024-01-02T03:04:05Z".parse().expect("a timestamp");
+        let now: jiff::Timestamp = "2024-01-02T03:04:05Z".parse().expect("a timestamp");
         assert_eq!(
             connected_label("2024-01-02T03:03:05Z".parse().expect("a timestamp"), now),
             "Connected 1 min ago"
