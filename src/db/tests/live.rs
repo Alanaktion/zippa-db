@@ -419,6 +419,52 @@ async fn live_sqlite_file_on_an_ssh_host_round_trips() {
     remove_for_test(&ssh, &secret, &path).await;
 }
 
+/// TIMESTAMPTZ values outside Jiff's range still round trip, including in
+/// arrays with NULL elements. Against `compose.yaml`'s `postgres` service.
+#[tokio::test]
+#[ignore = "needs a live Postgres server; see the doc comment"]
+async fn live_postgres_timestamptz_fallback_round_trips() {
+    let connection = live_postgres("ZIPPA_TEST_POSTGRES_URL", "app").await;
+    for expression in [
+        "'2024-01-02 03:04:05.123456+00'::timestamptz",
+        "'20000-01-02 03:04:05.123456+00'::timestamptz",
+        "ARRAY['2024-01-02 03:04:05+00'::timestamptz, NULL]",
+        "ARRAY['2024-01-02 03:04:05+00'::timestamptz, NULL, '20000-01-02 03:04:05.123456+00'::timestamptz]",
+        "ARRAY[]::timestamptz[]",
+        "NULL::timestamptz",
+    ] {
+        let result = connection
+            .run_query(&format!("SELECT {expression}"))
+            .await
+            .expect("read timestamp");
+        let round_trip = connection
+            .run_query_with(
+                &format!(
+                    "SELECT {} IS NOT DISTINCT FROM ({expression})",
+                    typed_placeholder(Engine::Postgres, 1, &result.column_types[0])
+                ),
+                vec![result.rows[0][0].clone()],
+            )
+            .await
+            .expect("cast the displayed timestamp back");
+        assert_eq!(round_trip.rows[0][0].as_deref(), Some("1"), "{expression}");
+    }
+
+    // Both attempts retain sqlx's dimension and lower-bound checks for
+    // arrays that cannot be represented by Vec<Option<T>>.
+    for expression in [
+        "ARRAY[['20000-01-01+00'::timestamptz]]",
+        "'[0:0]={\"20000-01-01 00:00:00+00\"}'::timestamptz[]",
+    ] {
+        let unsupported = connection
+            .run_query(&format!("SELECT {expression}"))
+            .await
+            .expect("read an unsupported array shape");
+        assert_eq!(unsupported.rows[0][0].as_deref(), Some("<TIMESTAMPTZ[]>"));
+    }
+    connection.close().await;
+}
+
 /// The types `postgres::cell` decodes field by field — geometry, ranges,
 /// `hstore`, `macaddr8` — read back as the text Postgres itself prints, and
 /// that text casts back to the same value, which is what makes them

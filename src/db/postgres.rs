@@ -495,10 +495,9 @@ pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
         "UUID" => value!(sqlx::types::Uuid),
         "JSON" | "JSONB" => value!(sqlx::types::JsonValue),
         // Temporal columns decode through jiff-sqlx's wrappers, except
-        // TIMETZ and the ranges below: sqlx has no `Type` for a jiff range
-        // element, and jiff has no time-with-offset type, so those still
-        // decode through chrono, named via sqlx's re-export. chrono
-        // survives only at this boundary.
+        // TIMETZ, the TIMESTAMPTZ fallback, and the ranges below. sqlx has no
+        // `Type` for a jiff range element, and jiff has no time-with-offset
+        // type. chrono, named via sqlx's re-export, survives at this boundary.
         "DATE" => value!(jiff_sqlx::Date, |value| value.to_jiff().to_string()),
         "TIME" => value!(jiff_sqlx::Time, |value| value.to_jiff().to_string()),
         "TIMETZ" => {
@@ -515,6 +514,22 @@ pub(crate) fn cell(row: &PgRow, index: usize, money_scale: i64) -> Cell {
                 .to_zoned_datetime(jiff::tz::TimeZone::system())
                 .strftime("%Y-%m-%d %H:%M:%S%.f%:z")
                 .to_string()
+        })
+        // Retry the whole cell through the same checked scalar/array path:
+        // chrono can represent instants outside Jiff's range. For arrays,
+        // one such element makes the initial decode fail for the whole cell.
+        .or_else(|| {
+            value!(
+                sqlx::types::chrono::DateTime<sqlx::types::chrono::Local>,
+                |value: sqlx::types::chrono::DateTime<sqlx::types::chrono::Local>| {
+                    // Postgres rejects chrono's leading `+` on extended years.
+                    value
+                        .format("%Y-%m-%d %H:%M:%S%.f%:z")
+                        .to_string()
+                        .trim_start_matches('+')
+                        .to_owned()
+                }
+            )
         }),
         "INTERVAL" => value!(PgInterval, format_interval),
         "INET" | "CIDR" => value!(sqlx::types::ipnetwork::IpNetwork, |value| {
