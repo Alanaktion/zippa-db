@@ -286,7 +286,7 @@ fn editing_a_connection_keeps_its_last_connected_stamp(cx: &mut TestAppContext) 
         .expect("the active tab should be showing the connection manager");
 
     let when = "2026-01-02T03:04:05Z"
-        .parse::<chrono::DateTime<chrono::Utc>>()
+        .parse::<jiff::Timestamp>()
         .expect("a timestamp");
     let config = ConnectionConfig {
         name: "Prod DB".into(),

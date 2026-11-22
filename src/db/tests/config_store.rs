@@ -59,7 +59,7 @@ fn a_coloured_connection_survives_a_round_trip_through_the_file() {
         color: Some(TagColor::Red),
         last_connected: Some(
             "2024-01-02T03:04:05Z"
-                .parse::<chrono::DateTime<chrono::Utc>>()
+                .parse::<jiff::Timestamp>()
                 .expect("a fixed timestamp"),
         ),
         ..ConnectionConfig::new(Engine::Postgres)

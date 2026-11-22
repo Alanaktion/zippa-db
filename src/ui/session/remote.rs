@@ -4,7 +4,6 @@
 //! one way its changes reach the server, and the one place the user is told
 //! the server's file changed since it was downloaded.
 
-use chrono::{DateTime, Local, Utc};
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::dialog::DialogButtonProps;
@@ -105,7 +104,7 @@ impl Session {
     fn confirm_overwrite(
         &mut self,
         target: &str,
-        modified: Option<DateTime<Utc>>,
+        modified: Option<jiff::Timestamp>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -144,11 +143,13 @@ impl Session {
 }
 
 /// The warning [`Session::confirm_overwrite`] shows.
-pub(crate) fn overwrite_warning(target: &str, modified: Option<DateTime<Utc>>) -> String {
+pub(crate) fn overwrite_warning(target: &str, modified: Option<jiff::Timestamp>) -> String {
     let when = match modified {
         Some(modified) => format!(
             " (last modified {})",
-            modified.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S")
+            modified
+                .to_zoned_datetime(jiff::tz::TimeZone::system())
+                .strftime("%Y-%m-%d %H:%M:%S")
         ),
         None => String::new(),
     };
@@ -170,7 +171,7 @@ mod tests {
             "files:/srv/app.db has changed on the server since it was downloaded. Uploading \
              replaces those changes with your copy."
         );
-        let dated = overwrite_warning("files:/srv/app.db", DateTime::from_timestamp(0, 0));
+        let dated = overwrite_warning("files:/srv/app.db", jiff::Timestamp::from_second(0).ok());
         assert!(dated.contains("(last modified "), "{dated}");
     }
 }

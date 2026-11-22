@@ -25,6 +25,7 @@ ignore = [
     { id = "RUSTSEC-2026-0371", reason = "zbus_names: transitive via the keyring/GPUI Linux stack" },
     { id = "RUSTSEC-2026-0370", reason = "zvariant: transitive via the keyring/GPUI Linux stack" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: transitive via the keyring/GPUI Linux stack" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; app code on jiff in #181 except the sqlx decode boundary (MySQL temporal, PG TIMETZ/ranges); remains transitively via GPUI/russh-sftp/sqlx" },
 ]
 
 [licenses]

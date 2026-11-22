@@ -15,7 +15,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 /// Where a logged statement came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +52,7 @@ pub struct LoggedQuery {
     pub source: QuerySource,
     pub outcome: QueryOutcome,
     pub elapsed: Duration,
-    pub at: SystemTime,
+    pub at: jiff::Timestamp,
 }
 
 /// Entries past this many are dropped, oldest first, so a long session's log
@@ -99,7 +99,7 @@ mod tests {
             source: QuerySource::Internal,
             outcome: QueryOutcome::Rows(0),
             elapsed: Duration::ZERO,
-            at: SystemTime::now(),
+            at: jiff::Timestamp::now(),
         }
     }
 

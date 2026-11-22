@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -131,12 +131,14 @@ impl Default for Retention {
 impl Retention {
     /// One connection's entries, oldest first, less what the caps exclude:
     /// anything older than the age limit, then the oldest past the count.
-    pub fn apply(&self, mut entries: Vec<HistoryEntry>, now: DateTime<Utc>) -> Vec<HistoryEntry> {
+    pub fn apply(&self, mut entries: Vec<HistoryEntry>, now: Timestamp) -> Vec<HistoryEntry> {
         if self.max_age_days > 0 {
             // A limit past what a date can hold (a hand-edited settings
             // file) keeps everything rather than panicking.
-            let cutoff = chrono::Duration::try_days(i64::from(self.max_age_days))
-                .and_then(|age| now.checked_sub_signed(age));
+            let cutoff = i64::from(self.max_age_days)
+                .checked_mul(24)
+                .map(SignedDuration::from_hours)
+                .and_then(|age| now.checked_sub(age).ok());
             if let Some(cutoff) = cutoff {
                 entries.retain(|entry| entry.at >= cutoff);
             }
@@ -162,7 +164,7 @@ impl Retention {
 /// One statement the user ran.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryEntry {
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     /// The saved connection it ran on — also the file it is kept in.
     pub connection: Uuid,
     /// The database the connection was on, as the connection names it (a
@@ -186,7 +188,7 @@ impl HistoryEntry {
         elapsed: Duration,
     ) -> Self {
         Self {
-            at: Utc::now(),
+            at: Timestamp::now(),
             connection,
             database: database.to_string(),
             sql: truncate(sql),
@@ -223,9 +225,9 @@ struct State {
     /// removal is queued behind other disk work, so a read that gives up
     /// waiting for it could still find the file; anything it finds from
     /// before the clear is dropped here instead.
-    cleared: HashMap<Uuid, DateTime<Utc>>,
+    cleared: HashMap<Uuid, Timestamp>,
     /// When every connection's history was last cleared this run.
-    cleared_all: Option<DateTime<Utc>>,
+    cleared_all: Option<Timestamp>,
 }
 
 impl State {
@@ -257,7 +259,7 @@ impl State {
         cutoff.is_some_and(|cutoff| entry.at <= cutoff)
     }
 
-    fn prune_memory(&mut self, now: DateTime<Utc>) {
+    fn prune_memory(&mut self, now: Timestamp) {
         let retention = self.retention;
         for entries in self.memory.values_mut() {
             let kept = retention.apply(entries.drain(..).collect(), now);
@@ -296,7 +298,7 @@ pub fn configure(retention: Retention) {
     // append decided under the old retention can land after it.
     with_state(|state| {
         state.retention = retention;
-        state.prune_memory(Utc::now());
+        state.prune_memory(Timestamp::now());
         if let Ok(dir) = dir {
             submit(Job::CompactAll { dir, retention });
         }
@@ -324,7 +326,7 @@ pub fn record(entry: HistoryEntry) {
             Keep::Memory => {
                 let entries = state.memory.entry(entry.connection).or_default();
                 entries.push_back(entry);
-                let kept = retention.apply(entries.drain(..).collect(), Utc::now());
+                let kept = retention.apply(entries.drain(..).collect(), Timestamp::now());
                 entries.extend(kept);
             }
             Keep::Disk => match path {
@@ -352,7 +354,7 @@ pub fn entries(connection: Uuid) -> Vec<HistoryEntry> {
         .unwrap_or_default();
     entries.extend(memory_entries(Some(connection)));
     drop_cleared(&mut entries);
-    newest_first(retention().apply(oldest_first(entries), Utc::now()))
+    newest_first(retention().apply(oldest_first(entries), Timestamp::now()))
 }
 
 /// Every connection's history merged by time, newest first, each connection
@@ -381,7 +383,7 @@ pub fn all_entries() -> Vec<HistoryEntry> {
         drop_cleared(entries);
     }
     let retention = retention();
-    let now = Utc::now();
+    let now = Timestamp::now();
     let merged = by_connection
         .into_values()
         .flat_map(|entries| retention.apply(oldest_first(entries), now))
@@ -392,7 +394,7 @@ pub fn all_entries() -> Vec<HistoryEntry> {
 /// Forget one connection's history — `None` forgets every connection's —
 /// in memory at once and on disk in the background.
 pub fn clear(connection: Option<Uuid>) {
-    let now = Utc::now();
+    let now = Timestamp::now();
     with_state(|state| match connection {
         Some(id) => {
             state.memory.remove(&id);
@@ -665,7 +667,7 @@ fn compact(path: &Path, retention: Retention) -> Result<()> {
         return Ok(());
     };
     let (entries, lines) = parse_lines(&bytes);
-    let kept = retention.apply(oldest_first(entries), Utc::now());
+    let kept = retention.apply(oldest_first(entries), Timestamp::now());
     if kept.len() == lines {
         return Ok(());
     }
@@ -747,7 +749,7 @@ mod tests {
 
     fn aged(connection: Uuid, sql: &str, days: i64) -> HistoryEntry {
         HistoryEntry {
-            at: Utc::now() - chrono::Duration::days(days),
+            at: Timestamp::now() - SignedDuration::from_hours(days * 24),
             ..entry(connection, sql)
         }
     }
@@ -869,7 +871,7 @@ mod tests {
         let connection = Uuid::new_v4();
         let kept = retention.apply(
             vec![aged(connection, "old", 45), aged(connection, "recent", 2)],
-            Utc::now(),
+            Timestamp::now(),
         );
         assert_eq!(sql_of(&kept), ["recent"]);
     }
@@ -937,7 +939,7 @@ mod tests {
             ..Retention::default()
         };
         let connection = Uuid::new_v4();
-        let kept = retention.apply(vec![aged(connection, "old", 400)], Utc::now());
+        let kept = retention.apply(vec![aged(connection, "old", 400)], Timestamp::now());
         assert_eq!(sql_of(&kept), ["old"]);
     }
 
