@@ -1031,11 +1031,12 @@ impl DataGrid {
             }
             delegate.sweep_to(next, true);
             table.set_selected_cell(next, col_ix, cx);
-            // A shifted arrow is keyboard navigation: bring the row into view
+            // A shifted arrow is keyboard navigation: bring the cell into view
             // as a plain arrow does, which setting the selection does not.
             table
                 .vertical_scroll_handle
                 .scroll_to_item(next, ScrollStrategy::Nearest);
+            table.scroll_to_col(col_ix, cx);
         });
         self.focus_table(window, cx);
     }
