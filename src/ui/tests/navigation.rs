@@ -246,6 +246,43 @@ fn shifted_arrows_take_the_rows_they_pass(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn shifted_arrows_scroll_the_row_they_reach_into_view(cx: &mut TestAppContext) {
+    let (_database, handle, view) = table_view_on(
+        cx,
+        "many",
+        "CREATE TABLE many (id INTEGER PRIMARY KEY); \
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 80) \
+         INSERT INTO many SELECT i FROM n",
+    );
+    cx.run_until_parked();
+    let grid = view.read_with(cx, |view, _| view.grid_for_test());
+    let draw = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    };
+
+    select_cell(cx, &view, 0, 0);
+    focus_grid(cx, &view);
+    draw(cx);
+    assert_eq!(
+        grid.read_with(cx, |grid, cx| grid.rows_scrolled_for_test(cx)),
+        px(0.)
+    );
+
+    // Setting the table's selection does not scroll, so the grid has to.
+    for _ in 0..79 {
+        press(cx, handle, "shift-down");
+        cx.run_until_parked();
+        draw(cx);
+    }
+    assert_eq!(selection(cx, &view).1, Some((79, 0)));
+    assert!(
+        grid.read_with(cx, |grid, cx| grid.rows_scrolled_for_test(cx)) > px(0.),
+        "the row the range reached should have been scrolled into view"
+    );
+}
+
+#[gpui_kit::test]
 fn escape_clears_both_the_selection_and_the_picked_rows(cx: &mut TestAppContext) {
     let (_database, handle, view) = table_view(cx);
     cx.run_until_parked();

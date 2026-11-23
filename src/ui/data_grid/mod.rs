@@ -20,7 +20,8 @@ use gpui_kit::component::table::{ColumnSort, DataTable, TableEvent, TableState};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseUpEvent, Window, actions, div,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseUpEvent, ScrollStrategy,
+    Window, actions, div,
 };
 
 use crate::db::Engine;
@@ -491,7 +492,12 @@ impl DataGrid {
             let row_ix = *row_ix;
             if !self.is_empty(cx) {
                 let first = ResultDelegate::shown_column(0);
-                table.update(cx, |table, cx| table.set_selected_cell(row_ix, first, cx));
+                table.update(cx, |table, cx| {
+                    table.set_selected_cell(row_ix, first, cx);
+                    // `set_selected_cell` does not scroll; the key that
+                    // led here already revealed the row.
+                    table.scroll_to_col(first, cx);
+                });
             }
             return;
         }
@@ -503,7 +509,12 @@ impl DataGrid {
             let row_ix = *row_ix;
             if !self.is_empty(cx) {
                 let first = ResultDelegate::shown_column(0);
-                table.update(cx, |table, cx| table.set_selected_cell(row_ix, first, cx));
+                table.update(cx, |table, cx| {
+                    table.set_selected_cell(row_ix, first, cx);
+                    // `set_selected_cell` does not scroll; the key that
+                    // led here already revealed the row.
+                    table.scroll_to_col(first, cx);
+                });
             }
             return;
         }
@@ -1020,6 +1031,11 @@ impl DataGrid {
             }
             delegate.sweep_to(next, true);
             table.set_selected_cell(next, col_ix, cx);
+            // A shifted arrow is keyboard navigation: bring the row into view
+            // as a plain arrow does, which setting the selection does not.
+            table
+                .vertical_scroll_handle
+                .scroll_to_item(next, ScrollStrategy::Nearest);
         });
         self.focus_table(window, cx);
     }
@@ -1438,6 +1454,7 @@ impl DataGrid {
             // cannot be selected where there is no row.
             if has_row {
                 table.set_selected_cell(0, shown, cx);
+                table.scroll_to_row(0, cx);
             }
             table.scroll_to_col(shown, cx);
         });

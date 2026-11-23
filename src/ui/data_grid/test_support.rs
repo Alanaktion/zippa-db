@@ -3,7 +3,7 @@
 use gpui_kit::component::table::ColumnSort;
 #[cfg(test)]
 use gpui_kit::component::table::TableDelegate;
-use gpui_kit::{App, Context, Focusable, Window};
+use gpui_kit::{App, Context, Focusable, Pixels, Window};
 
 use crate::db::query::Cell;
 
@@ -151,6 +151,19 @@ impl DataGrid {
         let col_ix = ResultDelegate::shown_column(col_ix);
         self.table
             .update(cx, |table, cx| table.set_selected_cell(row_ix, col_ix, cx));
+    }
+
+    /// How far the rows are scrolled down, in pixels.
+    pub(crate) fn rows_scrolled_for_test(&self, cx: &App) -> Pixels {
+        -self
+            .table
+            .read(cx)
+            .vertical_scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .offset()
+            .y
     }
 
     /// The row currently highlighted, and the cell the selection sits on.
