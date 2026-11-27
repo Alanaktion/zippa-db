@@ -18,7 +18,13 @@ for dialect in ('postgres', 'mysql', 'sqlite'):
     }.items():
         query = re.sub(r'@' + old + r'\b', '@' + new, query)
     query = query.replace('%d', '[0-9]').replace(r'\.', '[.]')
+    # The generic (literal) @string rule matches every literal, so exclude
+    # the values the specific rules below already capture: booleans and
+    # unquoted numbers. Quoted strings keep the @string capture.
     query = query.replace('(literal) @string',
-                          '((literal) @string\n  (#not-match? @string "^(?i:true|false)$"))')
+                          '((literal) @string\n'
+                          '  (#not-match? @string "^(?i:true|false)$")\n'
+                          '  (#not-match? @string "^[-+]?[0-9]+$")\n'
+                          '  (#not-match? @string "^[-+]?[0-9]*[.][0-9]*$"))')
     header = '; Generated from zippa-db-tree-sitter 0.1.1; adapted by script/normalize-sql-highlights.py. See ui::sql_highlight.\n'
     (destination / f'{dialect}.scm').write_text(header + query)

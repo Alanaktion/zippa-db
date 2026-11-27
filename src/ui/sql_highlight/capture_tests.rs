@@ -54,11 +54,13 @@ fn dialect_literal_and_conditional_captures() {
     for dialect in ["postgres", "mysql", "sqlite"] {
         let captures = captures(
             dialect,
-            "SELECT 42, 3.14, 'hello', 'true', 'false', TRUE, FALSE, true, false, CASE WHEN TRUE THEN 1 ELSE 0 END;",
+            "SELECT 42, 3.14, -7, +8, 'hello', 'true', 'false', TRUE, FALSE, true, false, CASE WHEN TRUE THEN 1 ELSE 0 END;",
         );
         for (name, text) in [
             ("number", "42"),
             ("number", "3.14"),
+            ("number", "-7"),
+            ("number", "+8"),
             ("string", "'hello'"),
             ("string", "'true'"),
             ("string", "'false'"),
@@ -81,6 +83,13 @@ fn dialect_literal_and_conditional_captures() {
                 !(name == "string"
                     && matches!(text.to_ascii_lowercase().as_str(), "true" | "false")),
                 "{dialect}: boolean captured as string"
+            );
+            // The generic (literal) @string rule matches every literal, so
+            // without the number exclusions an unquoted number also carries
+            // a string capture alongside its number one.
+            assert!(
+                !(name == "string" && text.parse::<f64>().is_ok()),
+                "{dialect}: unquoted number {text} captured as string"
             );
         }
     }

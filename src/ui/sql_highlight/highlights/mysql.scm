@@ -33,7 +33,9 @@
     parameter: [(literal)]?)))
 
 ((literal) @string
-  (#not-match? @string "^(?i:true|false)$"))
+  (#not-match? @string "^(?i:true|false)$")
+  (#not-match? @string "^[-+]?[0-9]+$")
+  (#not-match? @string "^[-+]?[0-9]*[.][0-9]*$"))
 
 (comment) @comment @spell
 
