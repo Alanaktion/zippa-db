@@ -259,6 +259,7 @@
       }
       .win-tab svg { width: 0.85rem; height: 0.85rem; }
       .win-tab.active { background: var(--win-side); color: var(--win-text); font-weight: 500; }
+      .win-tab .unsaved { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--win-text); flex: none; }
       .win-tabs .spacer { margin-left: auto; display: flex; align-items: center; gap: 0.1rem; padding: 0 0.5rem; color: var(--win-muted); }
       .win-tabs .spacer span { padding: 0.4rem; display: inline-flex; }
       .win-tabs .spacer svg { width: 1rem; height: 1rem; }
@@ -296,25 +297,31 @@
       .sql-line .kw { color: var(--sql-kw); }
       .sql-line .str { color: var(--sql-str); }
       .sql-caret { display: inline-block; width: 0.5rem; height: 0.95rem; background: var(--win-muted); opacity: 0.5; vertical-align: -0.15rem; margin-left: 0.15rem; }
-      .run-chip {
-        position: absolute; right: 0.75rem; bottom: 0.65rem;
-        display: inline-flex; align-items: center; gap: 0.45rem;
+      .win-qtoolbar {
+        display: flex; align-items: center; gap: 1rem;
+        padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--win-line); user-select: none;
+      }
+      .win-qtoolbar .run-btn {
+        display: inline-flex; align-items: center; gap: 0.4rem;
         padding: 0.32rem 0.7rem; border-radius: 0.45rem;
         background: var(--accent); color: var(--btn-ink);
-        font-family: var(--sans); font-size: 0.75rem; font-weight: 600;
+        font-size: 0.78rem; font-weight: 600;
       }
-      .run-chip svg { width: 0.8rem; height: 0.8rem; }
-      .run-chip .hint { font-family: var(--mono); font-weight: 400; font-size: 0.7rem; opacity: 0.75; }
-      @media (max-width: 560px) { .run-chip .hint { display: none; } }
+      .win-qtoolbar .run-btn svg { width: 0.8rem; height: 0.8rem; }
+      .win-qtoolbar .qtool-btn { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.82rem; white-space: nowrap; }
+      .win-qtoolbar .qtool-btn svg { width: 0.85rem; height: 0.85rem; }
+      .win-qtoolbar .qtool-more { margin-left: auto; color: var(--win-muted); display: inline-flex; padding: 0.35rem; }
+      .win-qtoolbar .qtool-more svg { width: 1rem; height: 1rem; }
 
-      /* Results strip between editor and grid */
-      .win-results {
-        display: flex; align-items: center; gap: 0.6rem;
-        padding: 0.45rem 0.75rem; border-bottom: 1px solid var(--win-line);
-        background: var(--win-side); font-size: 0.78rem; user-select: none;
+      /* Results header between editor and grid */
+      .win-reshead {
+        display: flex; align-items: center; justify-content: flex-end;
+        padding: 0.35rem 0.75rem; border-bottom: 1px solid var(--win-line);
+        background: var(--win-side); user-select: none;
       }
-      .win-results .r-title { font-weight: 600; }
-      .win-results .r-meta { color: var(--win-muted); font-family: var(--mono); font-size: 0.72rem; }
+      .res-toggle { display: flex; border-radius: 0.5rem; background: var(--panel-2); padding: 0.15rem; font-size: 0.75rem; font-weight: 500; }
+      .res-toggle span { padding: 0.25rem 0.7rem; border-radius: 0.35rem; color: var(--win-muted); }
+      .res-toggle span.on { background: var(--win-field); color: var(--win-text); box-shadow: 0 1px 2px rgba(0,0,0,0.12); }
       .win-grid { flex: 1; overflow: hidden; }
       .win-grid table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
       .win-grid th {
@@ -343,6 +350,9 @@
       .win-status .right { color: var(--win-text); }
       .win-status .right svg { color: var(--win-muted); }
       @media (max-width: 640px) { .win-status .right { display: none; } }
+      .limit-check { width: 0.95rem; height: 0.95rem; border-radius: 0.25rem; border: 1px solid var(--win-line); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+      .limit-check.on { background: var(--accent); border-color: var(--accent); color: var(--btn-ink); }
+      .limit-check svg { width: 0.7rem; height: 0.7rem; }
       .limit-chip {
         display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.15rem 0.45rem;
         border: 1px solid var(--win-line); border-radius: 0.4rem; color: var(--win-text);
@@ -530,7 +540,7 @@
               <div class="side-search">
                 <span class="side-filter"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>Filter tables</span>
               </div>
-              <div class="side-label"><span>Tables &amp; Views (5/5)</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
+              <div class="side-label"><span>Tables &amp; Views</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
               <ul class="side-tables">
                 <li>categories</li>
                 <li>customers</li>
@@ -548,13 +558,21 @@
             <!-- Main: tabs + data grid -->
             <div class="win-main">
               <div class="win-tabs">
-                <div class="win-tab active"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 11 2-2-2-2" /><path d="M11 13h4" /><rect width="18" height="18" x="3" y="3" rx="2" ry="2" /></svg><span>Query 1</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg></div>
+                <div class="win-tab active"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 11 2-2-2-2" /><path d="M11 13h4" /><rect width="18" height="18" x="3" y="3" rx="2" ry="2" /></svg><span class="unsaved"></span><span>Query 1</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg></div>
                 <div class="win-tab"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 3v18" /><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M3 9h18" /><path d="M3 15h18" /></svg><span>orders</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg></div>
                 <div class="spacer" aria-hidden="true">
                   <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /><path d="M12 5v14" /></svg></span>
                   <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" x2="14" y1="3" y2="10" /><line x1="3" x2="10" y1="21" y2="14" /></svg></span>
                   <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></span>
                 </div>
+              </div>
+
+              <!-- Query toolbar -->
+              <div class="win-qtoolbar">
+                <span class="run-btn"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.8v14.4c0 .8.9 1.3 1.6.9l11-7.2c.6-.4.6-1.4 0-1.8l-11-7.2c-.7-.4-1.6.1-1.6.9z" /></svg>Run</span>
+                <span class="qtool-btn">Run all queries <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg></span>
+                <span class="qtool-btn">Explain <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg></span>
+                <span class="qtool-more"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></span>
               </div>
 
               <!-- Query editor -->
@@ -564,10 +582,10 @@
                 <div class="sql-line"><span class="ln">3</span><code><span class="kw">FROM</span> orders</code></div>
                 <div class="sql-line"><span class="ln">4</span><code><span class="kw">ORDER BY</span> id</code></div>
                 <div class="sql-line"><span class="ln">5</span><code><span class="kw">LIMIT</span> <span class="str">5</span>;<span class="sql-caret"></span></code></div>
-                <span class="run-chip"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.8v14.4c0 .8.9 1.3 1.6.9l11-7.2c.6-.4.6-1.4 0-1.8l-11-7.2c-.7-.4-1.6.1-1.6.9z" /></svg>Run<span class="hint">⌘↵</span></span>
+
               </div>
 
-              <div class="win-results"><span class="r-title">Results</span><span class="r-meta">5 rows</span></div>
+              <div class="win-reshead"><span class="res-toggle"><span class="on">Results</span><span>Chart</span></span></div>
 
               <div class="win-toolbar">
                 <span class="tb-filter"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /><path d="M12 5v14" /></svg>Filter</span>
@@ -623,16 +641,13 @@
 
               <div class="win-status">
                 <div class="left">
-                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><polygon points="19 20 9 12 19 4 19 20" /><line x1="5" x2="5" y1="19" y2="5" /></svg>
-                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m15 18-6-6 6-6" /></svg>
-                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m9 18 6-6-6-6" /></svg>
-                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><polygon points="5 4 15 12 5 20 5 4" /><line x1="19" x2="19" y1="5" y2="19" /></svg>
+                  <span class="limit-check on"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" ><path d="M20 6 9 17l-5-5" /></svg></span>
                   <span>Limit</span>
-                  <span class="limit-chip"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /></svg>300<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /><path d="M12 5v14" /></svg></span>
-                  <span>Rows 1–5 of 5 · page 1 of 1</span>
+                  <span class="limit-chip"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /></svg>500<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /><path d="M12 5v14" /></svg></span>
+                  <span>5 rows in 7 ms</span>
                 </div>
                 <div class="right">
-                  <span>New row</span>
+                  <span>Export <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg></span>
                 </div>
               </div>
             </div>
