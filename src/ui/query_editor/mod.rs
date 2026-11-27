@@ -24,6 +24,7 @@ use crate::db::{Blocker, Engine, statement, transaction_blocker};
 use crate::settings::{self, CompletionKey, Settings};
 use crate::ui::completion::{SharedCatalog, SqlCompletions};
 use crate::ui::session::{CancelQuery, OpenFile, SaveFile, SaveFileAs, SaveQuery, SaveQueryAs};
+use crate::ui::sql_highlight;
 
 mod diagnostics;
 mod editing;
@@ -171,7 +172,7 @@ impl QueryEditor {
         let completions = Rc::new(SqlCompletions { catalog, engine });
         let state = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
-                .language("sql")
+                .language(sql_highlight::language_name(engine))
                 .placeholder("SELECT * FROM …")
                 .default_value(sql);
             let lsp = state.lsp_mut();
