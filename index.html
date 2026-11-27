@@ -263,23 +263,6 @@
       .win-tabs .spacer { margin-left: auto; display: flex; align-items: center; gap: 0.1rem; padding: 0 0.5rem; color: var(--win-muted); }
       .win-tabs .spacer span { padding: 0.4rem; display: inline-flex; }
       .win-tabs .spacer svg { width: 1rem; height: 1rem; }
-      .win-toolbar {
-        display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
-        padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--win-line); user-select: none;
-      }
-      .win-toolbar .tb-filter { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.82rem; white-space: nowrap; }
-      .win-toolbar .tb-filter svg { width: 0.85rem; height: 0.85rem; }
-      .win-toolbar .tb-right { display: flex; align-items: center; gap: 0.9rem; margin-left: auto; }
-      .win-toolbar .tb-search {
-        padding: 0.32rem 0.65rem; border-radius: 0.5rem; font-size: 0.78rem;
-        background: var(--win-field); border: 1px solid var(--win-line); color: var(--win-muted); white-space: nowrap;
-      }
-      .win-toolbar .tb-btn { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.82rem; white-space: nowrap; }
-      .win-toolbar .tb-btn svg { width: 0.85rem; height: 0.85rem; }
-      .win-toolbar .tb-panel { display: inline-flex; padding: 0.35rem; border-radius: 0.45rem; color: var(--win-muted); }
-      .win-toolbar .tb-panel svg { width: 1rem; height: 1rem; }
-      .win-toolbar .tb-panel.on { background: var(--win-field); border: 1px solid var(--win-line); color: var(--win-text); }
-      @media (max-width: 640px) { .win-toolbar .tb-search { display: none; } }
 
       /* Query editor pane */
       .win-query {
@@ -587,15 +570,6 @@
 
               <div class="win-reshead"><span class="res-toggle"><span class="on">Results</span><span>Chart</span></span></div>
 
-              <div class="win-toolbar">
-                <span class="tb-filter"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /><path d="M12 5v14" /></svg>Filter</span>
-                <span class="tb-right">
-                  <span class="tb-search">Search all columns…</span>
-                  <span class="tb-btn">Structure</span>
-                  <span class="tb-btn">Export <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg></span>
-                  <span class="tb-panel on"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" /></svg></span>
-                </span>
-              </div>
 
               <div class="win-grid">
                 <table>
