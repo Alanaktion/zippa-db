@@ -2,29 +2,26 @@
 //!
 //! Highlighting comes from gpui-kit's `LanguageRegistry`, which ships one
 //! permissive SQL grammar (tree-sitter-sequel) under the name `"sql"`.
-//! Zippa-db registers one grammar per engine from tree-sitter-sql-polyglot
-//! instead, and the query editor picks its language from the connection's
-//! engine, so dialect syntax highlights — and parses — as that dialect. The
-//! built-in `"sql"` stays registered as the fallback for editors that do
-//! not know their engine.
+//! Zippa-db registers one grammar per engine from zippa-db-tree-sitter —
+//! the narrow fork of tree-sitter-sql-polyglot kept for this project
+//! (base plus MySQL, MariaDB, PostgreSQL, SQLite) — instead, and the query
+//! editor picks its language from the connection's engine, so dialect
+//! syntax highlights — and parses — as that dialect. The built-in `"sql"`
+//! stays registered as the fallback for editors that do not know their
+//! engine.
 //!
 //! The highlights query for each dialect is vendored in `highlights/`,
-//! generated from the polyglot 0.1.1 sources with the project's own
-//! `scripts/bundle-highlights.js` (main branch): the ANSI base query plus
-//! the dialect's additions, with every pattern naming a node the dialect's
-//! parser pruned dropped. The 0.1.1 release ships no bundled queries — its
-//! per-dialect queries are only the dialect's additions, and the full base
-//! query names keywords some dialects dropped (`keyword_leading` in
-//! postgres/mysql, `keyword_grant` in sqlite, ...), so neither file
-//! compiles against the dialect grammar on its own. To regenerate, check
-//! out the polyglot repo at the pinned version, copy
-//! `scripts/bundle-highlights.js` from its main branch into `scripts/`,
-//! run `node scripts/bundle-highlights.js postgres mysql sqlite`,
-//! then run `python3 script/normalize-sql-highlights.py /path/to/polyglot`
-//! from this repository to install the queries with Rust regex syntax and
-//! gpui-kit capture names. Delete this directory
-//! once the crate ships bundled queries (expected in 0.1.2) and use the
-//! crate's `HIGHLIGHTS_QUERY_*` constants instead.
+//! generated from the fork's sources with its `scripts/bundle-highlights.js`:
+//! the ANSI base query plus the dialect's additions, with every pattern
+//! naming a node the dialect's parser pruned dropped. The fork ships the
+//! same bundles as its `HIGHLIGHTS_QUERY_*` constants, but those are the
+//! raw bundles: they name captures gpui-kit rejects (`@field`, ...), so
+//! the queries stay vendored and normalized instead of using the constants
+//! directly. To regenerate, check out the fork, run
+//! `node scripts/bundle-highlights.js postgres mysql sqlite` there, then
+//! run `python3 script/normalize-sql-highlights.py /path/to/fork` from
+//! this repository to install the queries with Rust regex syntax and
+//! gpui-kit capture names.
 
 use gpui_kit::component::highlighter::{GrammarConfig, LanguageRegistry};
 
@@ -50,7 +47,7 @@ pub fn register_dialect_grammars() {
         "postgres",
         &grammar(
             "postgres",
-            tree_sitter::Language::new(tree_sitter_sql_polyglot::LANGUAGE_POSTGRES),
+            tree_sitter::Language::new(zippa_db_tree_sitter::LANGUAGE_POSTGRES),
             include_str!("highlights/postgres.scm"),
         ),
     );
@@ -58,7 +55,7 @@ pub fn register_dialect_grammars() {
         "mysql",
         &grammar(
             "mysql",
-            tree_sitter::Language::new(tree_sitter_sql_polyglot::LANGUAGE_MYSQL),
+            tree_sitter::Language::new(zippa_db_tree_sitter::LANGUAGE_MYSQL),
             include_str!("highlights/mysql.scm"),
         ),
     );
@@ -66,7 +63,7 @@ pub fn register_dialect_grammars() {
         "sqlite",
         &grammar(
             "sqlite",
-            tree_sitter::Language::new(tree_sitter_sql_polyglot::LANGUAGE_SQLITE),
+            tree_sitter::Language::new(zippa_db_tree_sitter::LANGUAGE_SQLITE),
             include_str!("highlights/sqlite.scm"),
         ),
     );
@@ -153,21 +150,22 @@ mod tests {
             "postgres #> and ::",
         );
 
-        // MySQL backticks and LIMIT offset, count.
+        // MySQL backticks and LIMIT offset, count, plus a `#` comment,
+        // which the fork's MySQL dialect accepts (upstream polyglot #29).
         let mysql = registered_language("mysql");
         assert_parses(
             &mysql,
-            "SELECT `a`, `b` FROM `t` WHERE x = 1 LIMIT 1, 10;",
-            "mysql backticks and LIMIT offset, count",
+            "SELECT `a`, `b` FROM `t` WHERE x = 1 LIMIT 1, 10; # a comment",
+            "mysql backticks, LIMIT offset, count, and # comment",
         );
 
-        // SQLite pragmas: the no-value form and a numeric value. A keyword
-        // value (`PRAGMA foreign_keys = ON`) does not parse in the 0.1.1
-        // dialect — filed upstream, not asserted here.
+        // SQLite pragmas: the no-value form, a numeric value, and a keyword
+        // value (`PRAGMA foreign_keys = ON`), which the fork accepts
+        // (upstream polyglot #30, fixed in the fork).
         let sqlite = registered_language("sqlite");
         assert_parses(
             &sqlite,
-            "PRAGMA foreign_keys; PRAGMA cache_size = 100; SELECT sql FROM sqlite_master WHERE type = 'table';",
+            "PRAGMA foreign_keys; PRAGMA cache_size = 100; PRAGMA foreign_keys = ON; SELECT sql FROM sqlite_master WHERE type = 'table';",
             "sqlite PRAGMA",
         );
     }

@@ -3,15 +3,15 @@ use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator};
 fn captures(dialect: &str, source: &str) -> Vec<(String, String)> {
     let (language, highlights) = match dialect {
         "postgres" => (
-            tree_sitter_sql_polyglot::LANGUAGE_POSTGRES,
+            zippa_db_tree_sitter::LANGUAGE_POSTGRES,
             include_str!("highlights/postgres.scm"),
         ),
         "mysql" => (
-            tree_sitter_sql_polyglot::LANGUAGE_MYSQL,
+            zippa_db_tree_sitter::LANGUAGE_MYSQL,
             include_str!("highlights/mysql.scm"),
         ),
         "sqlite" => (
-            tree_sitter_sql_polyglot::LANGUAGE_SQLITE,
+            zippa_db_tree_sitter::LANGUAGE_SQLITE,
             include_str!("highlights/sqlite.scm"),
         ),
         _ => unreachable!(),

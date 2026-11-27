@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Adapt polyglot's bundled queries to Rust regex and gpui-kit capture names.
+"""Adapt the fork's bundled queries to Rust regex and gpui-kit capture names.
 
-Usage: python3 script/normalize-sql-highlights.py /path/to/tree-sitter-sql-polyglot
-Run upstream's bundle-highlights.js first, as described in ui::sql_highlight.
+Usage: python3 script/normalize-sql-highlights.py /path/to/zippa-db-tree-sitter
+Run the fork's bundle-highlights.js first, as described in ui::sql_highlight.
 """
 from pathlib import Path
 import re
@@ -20,5 +20,5 @@ for dialect in ('postgres', 'mysql', 'sqlite'):
     query = query.replace('%d', '[0-9]').replace(r'\.', '[.]')
     query = query.replace('(literal) @string',
                           '((literal) @string\n  (#not-match? @string "^(?i:true|false)$"))')
-    header = '; Generated from tree-sitter-sql-polyglot 0.1.1; adapted by script/normalize-sql-highlights.py. See ui::sql_highlight.\n'
+    header = '; Generated from zippa-db-tree-sitter 0.1.1; adapted by script/normalize-sql-highlights.py. See ui::sql_highlight.\n'
     (destination / f'{dialect}.scm').write_text(header + query)
