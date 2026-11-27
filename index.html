@@ -1,748 +1,914 @@
-<!DOCTYPE html>
-<html lang="en" class="dark">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Zippa DB | Multi-Database GUI for Developers</title>
-  <meta name="description" content="Native GPU-accelerated database client for PostgreSQL, MySQL, and SQLite. Built with Rust and GPUI.">
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="Zippa DB — a native, GPU-accelerated database GUI for PostgreSQL, MySQL, and SQLite. Built with Rust and GPUI." />
+    <link rel="icon" type="image/svg+xml" href="zippa-icon.svg" media="(prefers-color-scheme: dark)">
+    <link rel="icon" type="image/svg+xml" href="zippa-icon-light.svg" media="(prefers-color-scheme: light)">
+    <title>Zippa DB — a database GUI that starts instantly</title>
 
-  <link rel="icon" type="image/svg+xml" href="zippa-icon.svg" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/svg+xml" href="zippa-icon-light.svg" media="(prefers-color-scheme: light)">
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@400;500;600&display=swap" rel="stylesheet" />
 
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-  <link href="style.css" rel="stylesheet">
-  <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --paper: #fafafa;
+        --grid: rgba(25, 28, 32, 0.055);
+        --grid-major: rgba(25, 28, 32, 0.09);
+        --ink: #191c20;
+        --muted: #59616e;
+        --faint: #8a919d;
+        --line: #e3e5e9;
+        --accent: #6d3bd1;
+        --accent-soft: rgba(109, 59, 209, 0.08);
+        --panel: #ffffff;
+        --panel-2: #f2f3f5;
+        --btn-ink: #ffffff;
 
-  <style>
-    /* Custom Scrollbar */
-    ::-webkit-scrollbar {
-      width: 6px;
-      height: 6px;
-    }
-    ::-webkit-scrollbar-track {
-      background: transparent;
-    }
-    ::-webkit-scrollbar-thumb {
-      background: rgba(100, 116, 139, 0.3);
-      border-radius: 9999px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-      background: rgba(100, 116, 139, 0.5);
-    }
+        /* App window (the product screenshot, built in code) */
+        --win-bg: #ffffff;
+        --win-chrome: #f4f5f7;
+        --win-side: #fafbfc;
+        --win-line: #e3e5ea;
+        --win-line-soft: #edeef1;
+        --win-text: #23262d;
+        --win-muted: #6e7582;
+        --win-sel: rgba(109, 59, 209, 0.1);
+        --win-field: #ffffff;
+        --sql-kw: #6d3bd1;
+        --sql-str: #1a7f4b;
+        --win-shadow: 0 1px 2px rgba(16, 18, 22, 0.05), 0 12px 32px -8px rgba(16, 18, 22, 0.14), 0 32px 80px -24px rgba(16, 18, 22, 0.18);
 
-    .glass-effect {
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-    }
+        --serif: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+        --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
 
-    .glow-effect {
-      box-shadow: 0 0 50px -10px rgba(187, 154, 247, 0.15);
-    }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --paper: #0e1013;
+          --grid: rgba(231, 234, 239, 0.05);
+          --grid-major: rgba(231, 234, 239, 0.085);
+          --ink: #e7eaef;
+          --muted: #9ba3b0;
+          --faint: #6d7582;
+          --line: #23262d;
+          --accent: #bb9af7;
+          --accent-soft: rgba(187, 154, 247, 0.1);
+          --panel: #14161b;
+          --panel-2: #1a1d23;
+          --btn-ink: #12141a;
 
-    .glow-effect-light {
-      box-shadow: 0 0 50px -10px rgba(124, 77, 255, 0.12);
-    }
-  </style>
-</head>
-<body class="bg-light-base dark:bg-dark-base text-light-text dark:text-dark-text transition-colors duration-300 font-sans antialiased selection:bg-light-violet selection:text-white dark:selection:bg-dark-violet dark:selection:text-dark-base">
+          --win-bg: #171922;
+          --win-chrome: #12141b;
+          --win-side: #13151d;
+          --win-line: #262a36;
+          --win-line-soft: #1f222c;
+          --win-text: #d8dce6;
+          --win-muted: #7e8698;
+          --win-sel: rgba(187, 154, 247, 0.14);
+          --win-field: #1c1f29;
+          --sql-kw: #bb9af7;
+          --sql-str: #9ece6a;
+          --win-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px -8px rgba(0, 0, 0, 0.5), 0 32px 80px -24px rgba(0, 0, 0, 0.6);
+        }
+      }
 
-  <!-- Background Ambient Glow -->
-  <div class="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-[500px] bg-gradient-to-b from-light-violet/10 dark:from-dark-violet/10 via-transparent to-transparent pointer-events-none blur-3xl -z-10"></div>
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 16px;
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+      }
+      h1, h2, h3, p, ul, figure { margin: 0; }
+      ul { padding: 0; list-style: none; }
+      a { color: inherit; }
+      button { font: inherit; }
+      ::selection { background: var(--accent); color: var(--btn-ink); }
 
-  <!-- Navigation Header -->
-  <header class="sticky top-0 z-50 w-full border-b border-light-border dark:border-dark-border bg-light-base/80 dark:bg-dark-base/80 glass-effect transition-colors duration-300">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      .wrap { max-width: 76rem; margin: 0 auto; padding: 0 1.25rem; }
+      @media (min-width: 640px) { .wrap { padding: 0 2rem; } }
 
-      <!-- Brand Logo -->
-      <a href="#" class="flex items-center gap-3 group">
-        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-light-panel dark:from-dark-panel to-light-subtle dark:to-dark-subtle border border-light-border dark:border-dark-border flex items-center justify-center p-1.5 shadow-sm group-hover:scale-105 transition-transform">
-          <!-- Zippa SVG Logo Inline -->
-          <svg viewBox="0 0 512 512" class="w-full h-full">
-            <defs>
-              <linearGradient id="nav-bg" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stop-color="#1A1C25"/>
-                <stop offset="100%" stop-color="#0D0E14"/>
-              </linearGradient>
-              <linearGradient id="nav-bolt" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stop-color="#BB9AF7"/>
-                <stop offset="50%" stop-color="#7AA2F7"/>
-                <stop offset="100%" stop-color="#7DCFFF"/>
-              </linearGradient>
-            </defs>
-            <path d="M 340 80 L 210 245 H 295 L 165 430 L 210 265 H 130 Z" fill="url(#nav-bolt)"/>
-          </svg>
+      /* ---------- Graph-paper canvas (hero region only) ---------- */
+      .canvas {
+        background-image:
+          linear-gradient(var(--grid-major) 1px, transparent 1px),
+          linear-gradient(90deg, var(--grid-major) 1px, transparent 1px),
+          linear-gradient(var(--grid) 1px, transparent 1px),
+          linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+        background-size: 140px 140px, 140px 140px, 28px 28px, 28px 28px;
+        background-position: center top;
+        border-bottom: 1px solid var(--line);
+      }
+
+      /* ---------- Header ---------- */
+      header.site {
+        display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+        padding-top: 0.9rem; padding-bottom: 0.9rem;
+      }
+      .brand { display: flex; align-items: center; gap: 0.6rem; text-decoration: none; min-height: 2.25rem; }
+      .brand .bolt {
+        width: 1.65rem; height: 1.65rem; border-radius: 0.45rem; flex: none;
+        background: linear-gradient(135deg, #1a1c25, #0d0e14);
+        border: 1px solid var(--line);
+        display: flex; align-items: center; justify-content: center; padding: 0.28rem;
+      }
+      .brand .name { font-weight: 600; font-size: 1.05rem; letter-spacing: -0.01em; }
+      .brand .name em { font-style: normal; color: var(--accent); }
+      .ver {
+        font-family: var(--mono); font-size: 0.68rem; font-weight: 500;
+        padding: 0.18rem 0.5rem; border: 1px solid var(--line); border-radius: 999px;
+        color: var(--muted); background: var(--panel);
+      }
+      nav.site { display: none; align-items: center; gap: 0.25rem; }
+      @media (min-width: 760px) { nav.site { display: flex; } }
+      nav.site a {
+        text-decoration: none; font-size: 0.9rem; font-weight: 500; color: var(--muted);
+        padding: 0.55rem 0.7rem; border-radius: 0.45rem;
+      }
+      nav.site a:hover { color: var(--ink); }
+      .head-actions { display: flex; align-items: center; gap: 0.6rem; }
+      .btn {
+        display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+        min-height: 2.5rem; padding: 0.55rem 1.1rem; border-radius: 0.55rem;
+        font-size: 0.92rem; font-weight: 600; text-decoration: none; cursor: pointer;
+        border: 1px solid transparent; white-space: nowrap;
+      }
+      .btn svg { width: 1rem; height: 1rem; }
+      .btn-primary { background: var(--accent); color: var(--btn-ink); }
+      .btn-primary:hover { opacity: 0.88; }
+      .btn-ghost { background: var(--panel); border-color: var(--line); color: var(--ink); }
+      .btn-ghost:hover { border-color: var(--faint); }
+      .head-actions .btn { min-height: 2.25rem; padding: 0.4rem 0.9rem; font-size: 0.88rem; }
+
+      /* ---------- Hero ---------- */
+      .hero { text-align: center; padding: 2.75rem 0 0; }
+      @media (min-width: 760px) { .hero { padding-top: 4rem; } }
+      .hero h1 {
+        font-family: var(--serif); font-weight: 500; letter-spacing: -0.015em;
+        font-size: clamp(2.35rem, 6vw, 4.1rem); line-height: 1.12;
+        max-width: 22ch; margin: 0 auto; text-wrap: balance;
+      }
+      .hero h1 .t { font-family: var(--mono); font-weight: 500; letter-spacing: -0.03em; font-size: 0.92em; }
+      .below-shot {
+        display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+        gap: 1rem 2rem; padding-bottom: 3.5rem; text-align: center;
+      }
+      .below-shot .sub { color: var(--muted); font-size: 1.02rem; }
+      .below-shot .sub strong { color: var(--ink); font-weight: 600; }
+      .cta-row {
+        margin-top: 2rem; display: flex; flex-wrap: wrap; gap: 0.75rem;
+        align-items: center; justify-content: center;
+      }
+      .cta-row .btn { min-height: 2.9rem; padding: 0.7rem 1.4rem; font-size: 0.98rem; }
+      .install {
+        display: inline-flex; align-items: center; gap: 0.6rem;
+        min-height: 2.9rem; padding: 0.45rem 0.5rem 0.45rem 1rem; border-radius: 0.55rem;
+        background: var(--panel); border: 1px solid var(--line);
+        font-family: var(--mono); font-size: 0.85rem; color: var(--muted);
+      }
+      .install button {
+        display: inline-flex; align-items: center; gap: 0.35rem;
+        min-height: 2.25rem; padding: 0.3rem 0.7rem; border: 0; border-radius: 0.4rem;
+        background: var(--panel-2); color: var(--muted); cursor: pointer; font-size: 0.78rem;
+      }
+      .install button:hover { color: var(--ink); }
+      .install button svg { width: 0.9rem; height: 0.9rem; }
+      .hero-note { margin-top: 1rem; font-size: 0.82rem; color: var(--faint); }
+      .hero-note a { color: var(--muted); }
+
+      /* ---------- App window ---------- */
+      .shot { margin: 2.75rem auto 0; max-width: 88rem; padding: 0 0.75rem 2.75rem; }
+      @media (min-width: 640px) { .shot { padding: 0 1.5rem 3rem; } }
+      .window {
+        background: var(--win-bg); color: var(--win-text);
+        border: 1px solid var(--win-line); border-radius: 0.8rem;
+        box-shadow: var(--win-shadow); overflow: hidden; text-align: left;
+        font-size: 13px; line-height: 1.45;
+      }
+      .win-titlebar {
+        height: 2.75rem; padding: 0 1rem; display: flex; align-items: center; gap: 0.75rem;
+        background: var(--win-chrome); border-bottom: 1px solid var(--win-line); user-select: none;
+      }
+      .traffic { display: flex; gap: 0.5rem; }
+      .traffic span { width: 0.75rem; height: 0.75rem; border-radius: 50%; display: block; }
+      .win-conn { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+      .win-conn .cname { font-size: 0.88rem; font-weight: 600; white-space: nowrap; }
+      .win-conn .cdb { display: flex; align-items: center; gap: 0.35rem; font-family: var(--mono); font-size: 0.75rem; color: var(--win-muted); white-space: nowrap; }
+      .win-conn .cdb svg { width: 0.85rem; height: 0.85rem; }
+      .win-tools { margin-left: auto; display: flex; align-items: center; color: var(--win-muted); }
+      .win-tools span { padding: 0.4rem; display: inline-flex; }
+      .win-tools svg { width: 1rem; height: 1rem; }
+      .win-body { display: flex; min-height: 27.5rem; }
+
+      /* Sidebar */
+      .win-side {
+        width: 13rem; flex: none; display: none; flex-direction: column;
+        border-right: 1px solid var(--win-line); background: var(--win-side);
+      }
+      @media (min-width: 820px) { .win-side { display: flex; } }
+      .side-search { padding: 0.6rem; display: flex; align-items: center; gap: 0.5rem; }
+      .side-filter {
+        flex: 1; display: flex; align-items: center; gap: 0.5rem; min-width: 0;
+        padding: 0.4rem 0.6rem; border-radius: 0.5rem; font-size: 0.75rem;
+        background: var(--win-field); border: 1px solid var(--win-line); color: var(--win-muted);
+      }
+      .side-filter svg { width: 0.85rem; height: 0.85rem; flex: none; }
+      .side-search > svg { width: 1rem; height: 1rem; color: var(--win-muted); flex: none; }
+      .side-label {
+        padding: 0.25rem 0.75rem 0.4rem; font-size: 0.62rem; font-weight: 600;
+        letter-spacing: 0.08em; text-transform: uppercase; color: var(--win-muted);
+      }
+      .side-tables { flex: 1; padding: 0 0.35rem; }
+      .side-tables li { padding: 0.28rem 0.5rem; border-radius: 0.4rem; font-size: 0.82rem; }
+      .side-tables li.sel { background: var(--win-sel); font-weight: 500; }
+      .side-foot { padding: 0.5rem; }
+      .side-toggle { display: flex; border-radius: 0.5rem; background: var(--panel-2); padding: 0.15rem; font-size: 0.75rem; font-weight: 500; }
+      @media (prefers-color-scheme: dark) { .side-toggle { background: #1e212b; } }
+      .side-toggle span { flex: 1; text-align: center; padding: 0.28rem 0; border-radius: 0.35rem; color: var(--win-muted); }
+      .side-toggle span.on { background: var(--win-field); color: var(--win-text); box-shadow: 0 1px 2px rgba(0,0,0,0.12); }
+
+      /* Main pane */
+      .win-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+      .win-tabs {
+        display: flex; align-items: stretch; border-bottom: 1px solid var(--win-line);
+        font-size: 0.82rem; user-select: none; overflow: hidden;
+      }
+      .win-tab {
+        display: flex; align-items: center; gap: 0.5rem; padding: 0.55rem 0.9rem;
+        border-right: 1px solid var(--win-line); color: var(--win-muted); white-space: nowrap;
+      }
+      .win-tab svg { width: 0.85rem; height: 0.85rem; }
+      .win-tab.active { background: var(--win-side); color: var(--win-text); font-weight: 500; }
+      .win-tabs .spacer { margin-left: auto; display: flex; align-items: center; gap: 0.1rem; padding: 0 0.5rem; color: var(--win-muted); }
+      .win-tabs .spacer span { padding: 0.4rem; display: inline-flex; }
+      .win-tabs .spacer svg { width: 1rem; height: 1rem; }
+      .win-filterbar { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--win-line); }
+      .win-filterbar span { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.82rem; }
+      .win-filterbar svg { width: 0.85rem; height: 0.85rem; }
+
+      /* Query editor pane */
+      .win-query {
+        position: relative; border-bottom: 1px solid var(--win-line);
+        background: var(--win-bg); padding: 0.7rem 0.9rem 0.8rem 0;
+        font-family: var(--mono); font-size: 0.8rem; line-height: 1.65;
+        overflow: hidden;
+      }
+      .sql-line { display: flex; gap: 0.9rem; white-space: nowrap; }
+      .sql-line .ln {
+        width: 1.9rem; flex: none; text-align: right; user-select: none;
+        color: var(--win-muted); opacity: 0.55; font-size: 0.72rem; line-height: 1.85;
+      }
+      .sql-line code { font: inherit; color: var(--win-text); }
+      .sql-line .kw { color: var(--sql-kw); }
+      .sql-line .str { color: var(--sql-str); }
+      .sql-caret { display: inline-block; width: 0.5rem; height: 0.95rem; background: var(--win-muted); opacity: 0.5; vertical-align: -0.15rem; margin-left: 0.15rem; }
+      .run-chip {
+        position: absolute; right: 0.75rem; bottom: 0.65rem;
+        display: inline-flex; align-items: center; gap: 0.45rem;
+        padding: 0.32rem 0.7rem; border-radius: 0.45rem;
+        background: var(--accent); color: var(--btn-ink);
+        font-family: var(--sans); font-size: 0.75rem; font-weight: 600;
+      }
+      .run-chip svg { width: 0.8rem; height: 0.8rem; }
+      .run-chip .hint { font-family: var(--mono); font-weight: 400; font-size: 0.7rem; opacity: 0.75; }
+      @media (max-width: 560px) { .run-chip .hint { display: none; } }
+
+      /* Results strip between editor and grid */
+      .win-results {
+        display: flex; align-items: center; gap: 0.6rem;
+        padding: 0.45rem 0.75rem; border-bottom: 1px solid var(--win-line);
+        background: var(--win-side); font-size: 0.78rem; user-select: none;
+      }
+      .win-results .r-title { font-weight: 600; }
+      .win-results .r-meta { color: var(--win-muted); font-family: var(--mono); font-size: 0.72rem; }
+      .win-grid { flex: 1; overflow: hidden; }
+      .win-grid table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+      .win-grid th {
+        text-align: left; font-weight: 500; color: var(--win-muted);
+        padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--win-line); white-space: nowrap;
+      }
+      .win-grid th svg { width: 0.75rem; height: 0.75rem; vertical-align: -0.1rem; }
+      .win-grid td {
+        padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--win-line-soft);
+        font-family: var(--mono); font-size: 0.75rem; white-space: nowrap;
+      }
+      .win-grid tr:last-child td { border-bottom: 0; }
+      .win-grid td.sel { background: var(--win-sel); font-family: var(--sans); font-size: 0.8rem; }
+      .cb { width: 0.85rem; height: 0.85rem; border: 1px solid var(--win-line); border-radius: 0.25rem; }
+      th .cb, td .cb { display: block; }
+      @media (max-width: 560px) { .col-created { display: none; } }
+      .win-status {
+        display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+        padding: 0.4rem 0.75rem; border-top: 1px solid var(--win-line);
+        font-size: 0.75rem; color: var(--win-muted); user-select: none;
+      }
+      .win-status .left, .win-status .right { display: flex; align-items: center; gap: 0.9rem; }
+      .win-status svg { width: 0.85rem; height: 0.85rem; }
+      .win-status .right { color: var(--win-text); }
+      .win-status .right svg { color: var(--win-muted); }
+      @media (max-width: 640px) { .win-status .right { display: none; } }
+      .limit-chip {
+        display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.15rem 0.45rem;
+        border: 1px solid var(--win-line); border-radius: 0.4rem; color: var(--win-text);
+        font-family: var(--mono); font-size: 0.72rem;
+      }
+      .limit-chip svg { width: 0.75rem; height: 0.75rem; }
+
+      /* Row editor */
+      .win-editor {
+        width: 18rem; flex: none; display: none; flex-direction: column;
+        border-left: 1px solid var(--win-line); background: var(--win-side);
+      }
+      @media (min-width: 1080px) { .win-editor { display: flex; } }
+      .ed-search { padding: 0.6rem; display: flex; align-items: center; gap: 0.5rem; }
+      .ed-filter {
+        flex: 1; padding: 0.4rem 0.6rem; border-radius: 0.5rem; font-size: 0.75rem;
+        background: var(--win-field); border: 1px solid var(--win-line); color: var(--win-muted);
+      }
+      .ed-search > svg { width: 1rem; height: 1rem; color: var(--win-muted); flex: none; }
+      .ed-fields { flex: 1; overflow: hidden; padding: 0 0.6rem 0.75rem; display: flex; flex-direction: column; gap: 0.65rem; }
+      .ed-field .flabel {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 0 0.1rem; margin-bottom: 0.25rem;
+        font-family: var(--mono); font-size: 0.68rem; color: var(--win-muted);
+      }
+      .ed-field .flabel svg { width: 0.85rem; height: 0.85rem; }
+      .ed-field .fvalue {
+        padding: 0.4rem 0.6rem; border-radius: 0.5rem; font-family: var(--mono); font-size: 0.8rem;
+        background: var(--win-field); border: 1px solid var(--win-line); min-height: 2rem;
+      }
+      .ed-field.dim { opacity: 0.6; }
+
+      /* ---------- Sections ---------- */
+      section.block { padding: 4.5rem 0; }
+      @media (min-width: 760px) { section.block { padding: 6rem 0; } }
+      .sec-head { max-width: 40rem; }
+      .sec-head h2 {
+        font-family: var(--serif); font-weight: 500; letter-spacing: -0.015em;
+        font-size: clamp(1.7rem, 3.6vw, 2.4rem); line-height: 1.2; text-wrap: balance;
+      }
+      .sec-head p { margin-top: 0.9rem; color: var(--muted); max-width: 58ch; text-wrap: pretty; }
+
+      /* Stats */
+      .stats { border-bottom: 1px solid var(--line); }
+      .stats .wrap { padding-top: 3.5rem; padding-bottom: 3.5rem; }
+      .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2.25rem 2rem; }
+      @media (min-width: 900px) { .stats-grid { grid-template-columns: repeat(4, 1fr); } }
+      .stat .num { font-family: var(--mono); font-weight: 500; font-size: clamp(1.9rem, 4vw, 2.6rem); letter-spacing: -0.03em; }
+      .stat .num small { font-size: 0.55em; color: var(--muted); letter-spacing: 0; }
+      .stat .lbl { margin-top: 0.35rem; font-weight: 600; font-size: 0.92rem; }
+      .stat .sub { margin-top: 0.15rem; font-size: 0.83rem; color: var(--muted); }
+      .stats-note { margin-top: 2.5rem; font-size: 0.82rem; color: var(--faint); }
+
+      /* Engines */
+      .engine { border-top: 1px solid var(--line); padding: 2rem 0; display: grid; gap: 1.1rem; }
+      .engine:last-of-type { border-bottom: 1px solid var(--line); }
+      @media (min-width: 900px) {
+        .engine { grid-template-columns: 15rem 1fr 17rem; gap: 2.5rem; align-items: start; }
+      }
+      .engine h3 { font-family: var(--serif); font-weight: 600; font-size: 1.45rem; letter-spacing: -0.01em; }
+      .engine .tag {
+        display: inline-block; margin-top: 0.55rem; font-family: var(--mono); font-size: 0.72rem; font-weight: 500;
+        padding: 0.22rem 0.55rem; border-radius: 0.35rem; background: var(--accent-soft); color: var(--accent);
+      }
+      .engine .desc { color: var(--muted); max-width: 52ch; text-wrap: pretty; }
+      .engine ul { display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.88rem; }
+      .engine ul li { display: flex; gap: 0.55rem; align-items: baseline; }
+      .engine ul svg { width: 0.9rem; height: 0.9rem; color: var(--accent); flex: none; transform: translateY(0.15rem); }
+
+      /* Features */
+      .feat-wrap { background: var(--panel); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+      .feat-grid { display: grid; gap: 0; margin-top: 3rem; }
+      @media (min-width: 820px) { .feat-grid { grid-template-columns: 1fr 1fr; column-gap: 3.5rem; } }
+      .feat { display: flex; gap: 1.1rem; padding: 1.4rem 0; border-top: 1px solid var(--line); }
+      .feat .idx { font-family: var(--mono); font-size: 0.8rem; color: var(--accent); padding-top: 0.2rem; }
+      .feat h3 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
+      .feat p { margin-top: 0.3rem; color: var(--muted); font-size: 0.93rem; max-width: 46ch; text-wrap: pretty; }
+
+      /* Download */
+      .dl-list { margin-top: 3rem; border: 1px solid var(--line); border-radius: 0.8rem; background: var(--panel); overflow: hidden; }
+      .dl-row {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.5rem;
+        padding: 1.4rem 1.5rem;
+      }
+      .dl-row + .dl-row { border-top: 1px solid var(--line); }
+      .dl-row.mine { background: var(--accent-soft); }
+      .dl-os { display: flex; align-items: center; gap: 1rem; min-width: 13rem; }
+      .dl-os > svg { width: 1.7rem; height: 1.7rem; }
+      .dl-os .os-name { font-weight: 600; font-size: 1.05rem; display: flex; align-items: center; gap: 0.6rem; }
+      .dl-os .os-sub { font-size: 0.83rem; color: var(--muted); }
+      .yours {
+        font-family: var(--mono); font-size: 0.66rem; font-weight: 500; color: var(--accent);
+        border: 1px solid currentColor; border-radius: 999px; padding: 0.12rem 0.5rem;
+      }
+      .dl-btns { margin-left: auto; display: flex; flex-wrap: wrap; gap: 0.6rem; }
+      .dl-meta { margin-top: 1.25rem; display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; justify-content: space-between; }
+      .dl-meta .fine { font-size: 0.85rem; color: var(--muted); }
+
+      /* Footer */
+      footer.site { border-top: 1px solid var(--line); }
+      footer.site .wrap {
+        padding-top: 2rem; padding-bottom: 2.5rem;
+        display: flex; flex-wrap: wrap; gap: 1rem 2rem; align-items: center; justify-content: space-between;
+        font-size: 0.85rem; color: var(--muted);
+      }
+      footer.site .fbrand { display: flex; align-items: center; gap: 0.55rem; }
+      footer.site .fbrand .bolt {
+        width: 1.35rem; height: 1.35rem; border-radius: 0.35rem; padding: 0.22rem;
+        background: linear-gradient(135deg, #1a1c25, #0d0e14); border: 1px solid var(--line);
+        display: flex; align-items: center; justify-content: center;
+      }
+      footer.site nav { display: flex; gap: 0.25rem; }
+      footer.site nav a { text-decoration: none; padding: 0.55rem 0.6rem; border-radius: 0.4rem; }
+      footer.site nav a:hover { color: var(--ink); }
+
+      @media (prefers-reduced-motion: reduce) {
+        html { scroll-behavior: auto; }
+      }
+    </style>
+  </head>
+  <body>
+
+    <div class="canvas">
+      <div class="wrap">
+        <header class="site">
+          <a class="brand" href="#top" aria-label="Zippa DB home">
+            <span class="bolt" aria-hidden="true">
+              <svg viewBox="0 0 512 512" width="100%" height="100%">
+                <defs>
+                  <linearGradient id="bolt-a" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#BB9AF7" />
+                    <stop offset="50%" stop-color="#7AA2F7" />
+                    <stop offset="100%" stop-color="#7DCFFF" />
+                  </linearGradient>
+                </defs>
+                <path d="M 340 80 L 210 245 H 295 L 165 430 L 210 265 H 130 Z" fill="url(#bolt-a)" />
+              </svg>
+            </span>
+            <span class="name">Zippa<em>DB</em></span>
+            <span class="ver">v0.1.2</span>
+          </a>
+          <nav class="site" aria-label="Page">
+            <a href="#engines">Engines</a>
+            <a href="#performance">Performance</a>
+            <a href="#features">Features</a>
+            <a href="https://github.com/Alanaktion/zippa-db" target="_blank" rel="noopener">GitHub</a>
+          </nav>
+          <div class="head-actions">
+            <a class="btn btn-primary" href="#download"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></svg>Download</a>
+          </div>
+        </header>
+
+        <div class="hero" id="top">
+          <h1>A database GUI that starts instantly.</h1>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="#download"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></svg><span>Download for <span id="detectedOS">macOS</span></span></a>
+          </div>
         </div>
-        <div class="flex items-center gap-2">
-          <span class="font-bold text-lg tracking-tight text-light-text dark:text-dark-text">Zippa<span class="text-light-violet dark:text-dark-violet">DB</span></span>
-          <span class="px-2 py-0.5 text-[10px] font-mono font-medium rounded-full bg-light-subtle dark:bg-dark-subtle border border-light-border dark:border-dark-border text-light-muted dark:text-dark-muted">v0.1.2</span>
-        </div>
-      </a>
-
-      <!-- Navigation Links -->
-      <nav class="hidden md:flex items-center gap-8 text-sm font-medium text-light-muted dark:text-dark-muted">
-        <a href="#features" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Features</a>
-        <a href="#engines" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Supported Engines</a>
-        <a href="#benchmarks" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Performance</a>
-        <a href="#download" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Download</a>
-        <a href="https://github.com/Alanaktion/zippa-db" target="_blank" class="hover:text-light-text dark:hover:text-dark-text transition-colors flex items-center gap-1">
-          <i data-lucide="github" class="w-4 h-4"></i> GitHub
-        </a>
-      </nav>
-
-      <!-- Header Actions -->
-      <div class="flex items-center gap-3">
-        <!-- Theme Toggle Dropdown/Button -->
-        <button id="themeToggleBtn" title="Toggle Light / Dark Mode" class="p-2 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-light-muted dark:text-dark-muted hover:text-light-text dark:hover:text-dark-text hover:border-light-accent dark:hover:border-dark-accent transition-all">
-          <!-- Sun Icon (for dark mode active) -->
-          <i data-lucide="sun" class="w-4 h-4 hidden dark:block"></i>
-          <!-- Moon Icon (for light mode active) -->
-          <i data-lucide="moon" class="w-4 h-4 block dark:hidden"></i>
-        </button>
-
-        <!-- CTA Download Header Button -->
-        <a href="#download" class="hidden sm:inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base hover:opacity-90 transition-opacity shadow-sm">
-          <i data-lucide="download" class="w-4 h-4"></i> Get Zippa
-        </a>
-      </div>
-    </div>
-  </header>
-
-  <main>
-    <!-- Hero Section -->
-    <section class="pt-16 pb-12 sm:pt-24 sm:pb-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-
-      <!-- Top Badge -->
-      <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs font-mono mb-8 text-light-muted dark:text-dark-muted shadow-sm hover:border-light-violet dark:hover:border-dark-violet transition-colors">
-        <span class="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-        <span>Built with Rust & GPUI</span>
-        <span class="text-light-border dark:text-dark-border">|</span>
-        <span class="text-light-violet dark:text-dark-violet font-semibold">GPU-accelerated native UI</span>
       </div>
 
-      <!-- Main Headline -->
-      <h1 class="text-4xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight max-w-4xl mx-auto leading-[1.15]">
-        The Lightning-Fast <br class="hidden sm:inline">
-        <span class="bg-clip-text text-transparent bg-gradient-to-r from-light-text via-light-violet to-light-accent dark:from-dark-text dark:via-dark-violet dark:to-dark-accent">
-          Multi-Database Client GUI
-        </span>
-      </h1>
-
-      <!-- Subtitle -->
-      <p class="mt-6 text-lg sm:text-xl text-light-muted dark:text-dark-muted max-w-2xl mx-auto font-normal leading-relaxed text-pretty">
-        Engineered for high-density workflows. Fast cold start, a responsive native interface, and direct support for <strong class="text-light-text dark:text-dark-text font-medium">PostgreSQL</strong>, <strong class="text-light-text dark:text-dark-text font-medium">MySQL</strong>, and <strong class="text-light-text dark:text-dark-text font-medium">SQLite</strong>.
-      </p>
-
-      <!-- CTAs -->
-      <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
-        <a href="#download" class="w-full sm:w-auto px-7 py-3.5 rounded-xl bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base font-semibold text-base flex items-center justify-center gap-3 shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all">
-          <i data-lucide="download" class="w-5 h-5"></i>
-          <span>Download for <span id="detectedOS">macOS</span></span>
-        </a>
-
-        <div class="w-full sm:w-auto flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs font-mono text-light-muted dark:text-dark-muted">
-          <span>cargo install zippa-db</span>
-          <button onclick="copyCargoCmd(this)" class="p-1 hover:text-light-text dark:hover:text-dark-text transition-colors" title="Copy command">
-            <i data-lucide="copy" class="w-4 h-4"></i>
-          </button>
-        </div>
-      </div>
-
-            <!-- App window mockup, modeled on the real UI -->
-      <div class="mt-14 sm:mt-20 max-w-6xl mx-auto relative group text-left">
-        <!-- Ambient Backing Glow -->
-        <div class="absolute -inset-1 bg-gradient-to-r from-light-violet/30 via-light-accent/20 to-db-postgres/30 dark:from-dark-violet/20 dark:via-dark-accent/20 dark:to-db-postgres/20 rounded-2xl blur-xl opacity-75 group-hover:opacity-100 transition duration-1000"></div>
-
-        <!-- Main Window Container -->
-        <div class="relative rounded-xl overflow-hidden border border-light-border dark:border-dark-border bg-light-panel dark:bg-dark-panel shadow-2xl">
-
-          <!-- Title Bar -->
-          <div class="h-11 px-4 flex items-center gap-3 bg-light-panel dark:bg-dark-panel border-b border-light-border dark:border-dark-border select-none">
-            <div class="flex items-center gap-2">
-              <div class="w-3 h-3 rounded-full bg-[#FF5F57]"></div>
-              <div class="w-3 h-3 rounded-full bg-[#FEBC2E]"></div>
-              <div class="w-3 h-3 rounded-full bg-[#28C840]"></div>
+      <!-- The app itself: the code-based window from the current site, restyled.
+           Sidebar, query tab, results grid, row editor — as the app renders them. -->
+      <figure class="shot" aria-label="The Zippa DB application window: a table sidebar, a SQL query editor, its results in a data grid below, and a row editor panel.">
+        <div class="window">
+          <div class="win-titlebar">
+            <div class="traffic" aria-hidden="true">
+              <span style="background:#FF5F57"></span><span style="background:#FEBC2E"></span><span style="background:#28C840"></span>
             </div>
-            <div class="flex items-center gap-2.5">
-              <span class="text-sm font-semibold text-light-text dark:text-dark-text">Local</span>
-              <span class="flex items-center gap-1.5 text-xs font-mono text-light-muted dark:text-dark-muted">
-                <i data-lucide="database" class="w-3.5 h-3.5"></i> store
-              </span>
+            <div class="win-conn">
+              <span class="cname">Local</span>
+              <span class="cdb"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5V19A9 3 0 0 0 21 19V5" /><path d="M3 12A9 3 0 0 0 21 12" /></svg>store</span>
             </div>
-            <div class="ml-auto flex items-center gap-0.5 text-light-muted dark:text-dark-muted">
-              <span class="p-1.5"><i data-lucide="search" class="w-4 h-4"></i></span>
-              <span class="p-1.5"><i data-lucide="refresh-cw" class="w-4 h-4"></i></span>
-              <span class="p-1.5"><i data-lucide="file-plus" class="w-4 h-4"></i></span>
-              <span class="p-1.5"><i data-lucide="database" class="w-4 h-4"></i></span>
-              <span class="p-1.5"><i data-lucide="settings" class="w-4 h-4"></i></span>
+            <div class="win-tools" aria-hidden="true">
+              <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg></span>
+              <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></svg></span>
+              <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M9 15h6" /><path d="M12 18v-6" /></svg></span>
+              <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5V19A9 3 0 0 0 21 19V5" /><path d="M3 12A9 3 0 0 0 21 12" /></svg></span>
+              <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg></span>
             </div>
           </div>
 
-          <div class="flex min-h-[440px]">
-
+          <div class="win-body">
             <!-- Sidebar: tables & views -->
-            <div class="w-52 shrink-0 hidden md:flex flex-col border-r border-light-border dark:border-dark-border bg-light-base/60 dark:bg-dark-base/60">
-              <div class="p-2.5 flex items-center gap-2">
-                <div class="flex-1 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs text-light-muted dark:text-dark-muted">
-                  <i data-lucide="search" class="w-3.5 h-3.5"></i> Filter tables
-                </div>
-                <i data-lucide="layout-grid" class="w-4 h-4 text-light-muted dark:text-dark-muted"></i>
-                <i data-lucide="import" class="w-4 h-4 text-light-muted dark:text-dark-muted"></i>
+            <div class="win-side">
+              <div class="side-search">
+                <span class="side-filter"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>Filter tables</span>
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="7" height="7" x="3" y="3" rx="1" /><rect width="7" height="7" x="14" y="3" rx="1" /><rect width="7" height="7" x="14" y="14" rx="1" /><rect width="7" height="7" x="3" y="14" rx="1" /></svg>
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 3v12" /><path d="m8 11 4 4 4-4" /><path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4" /></svg>
               </div>
-              <div class="px-3 pt-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-light-muted dark:text-dark-muted">Tables & Views</div>
-              <div class="flex-1 px-1.5 space-y-px text-[13px]">
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">categories</div>
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">customers</div>
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">order_items</div>
-                <div class="px-2 py-1 rounded-md bg-light-violet/10 dark:bg-dark-violet/10 text-light-text dark:text-dark-text font-medium">orders</div>
-                <div class="px-2 py-1 rounded-md text-light-text dark:text-dark-text hover:bg-light-subtle dark:hover:bg-dark-subtle">products</div>
-              </div>
-              <div class="p-2">
-                <div class="flex rounded-lg bg-light-subtle dark:bg-dark-subtle p-0.5 text-xs font-medium">
-                  <span class="flex-1 text-center py-1 rounded-md bg-light-panel dark:bg-dark-panel shadow-sm text-light-text dark:text-dark-text">Schema</span>
-                  <span class="flex-1 text-center py-1 text-light-muted dark:text-dark-muted">Management</span>
-                </div>
+              <div class="side-label">Tables &amp; Views</div>
+              <ul class="side-tables">
+                <li>categories</li>
+                <li>customers</li>
+                <li>order_items</li>
+                <li class="sel">orders</li>
+                <li>products</li>
+              </ul>
+              <div class="side-foot">
+                <div class="side-toggle"><span class="on">Schema</span><span>Management</span></div>
               </div>
             </div>
 
             <!-- Main: tabs + data grid -->
-            <div class="flex-1 flex flex-col min-w-0">
-              <!-- Tab bar -->
-              <div class="flex items-stretch border-b border-light-border dark:border-dark-border text-[13px] select-none">
-                <div class="flex items-center gap-2 px-3.5 py-2 border-r border-light-border dark:border-dark-border text-light-muted dark:text-dark-muted">
-                  <i data-lucide="square-terminal" class="w-3.5 h-3.5"></i>
-                  <span>Query 1</span>
-                  <i data-lucide="x" class="w-3.5 h-3.5"></i>
-                </div>
-                <div class="flex items-center gap-2 px-3.5 py-2 bg-light-base/70 dark:bg-dark-base/70 text-light-text dark:text-dark-text border-r border-light-border dark:border-dark-border font-medium">
-                  <i data-lucide="table" class="w-3.5 h-3.5"></i>
-                  <span>orders</span>
-                  <i data-lucide="x" class="w-3.5 h-3.5"></i>
-                </div>
-                <div class="ml-auto flex items-center gap-0.5 px-2 text-light-muted dark:text-dark-muted">
-                  <span class="p-1.5"><i data-lucide="plus" class="w-4 h-4"></i></span>
-                  <span class="p-1.5"><i data-lucide="maximize-2" class="w-3.5 h-3.5"></i></span>
-                  <span class="p-1.5"><i data-lucide="more-horizontal" class="w-4 h-4"></i></span>
+            <div class="win-main">
+              <div class="win-tabs">
+                <div class="win-tab active"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 11 2-2-2-2" /><path d="M11 13h4" /><rect width="18" height="18" x="3" y="3" rx="2" ry="2" /></svg><span>Query 1</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg></div>
+                <div class="win-tab"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 3v18" /><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M3 9h18" /><path d="M3 15h18" /></svg><span>orders</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg></div>
+                <div class="spacer" aria-hidden="true">
+                  <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /><path d="M12 5v14" /></svg></span>
+                  <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" x2="14" y1="3" y2="10" /><line x1="3" x2="10" y1="21" y2="14" /></svg></span>
+                  <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></span>
                 </div>
               </div>
 
-              <!-- Filter button -->
-              <div class="px-3 py-2 border-b border-light-border dark:border-dark-border">
-                <span class="inline-flex items-center gap-1.5 text-[13px] text-light-text dark:text-dark-text">
-                  <i data-lucide="plus" class="w-3.5 h-3.5"></i> Filter
-                </span>
+              <!-- Query editor -->
+              <div class="win-query" aria-hidden="true">
+                <div class="sql-line"><span class="ln">1</span><code><span class="kw">SELECT</span> id, customer_id, status,</code></div>
+                <div class="sql-line"><span class="ln">2</span><code style="padding-left:7ch">total, created_at</code></div>
+                <div class="sql-line"><span class="ln">3</span><code><span class="kw">FROM</span> orders</code></div>
+                <div class="sql-line"><span class="ln">4</span><code><span class="kw">ORDER BY</span> id</code></div>
+                <div class="sql-line"><span class="ln">5</span><code><span class="kw">LIMIT</span> <span class="str">5</span>;<span class="sql-caret"></span></code></div>
+                <span class="run-chip"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.8v14.4c0 .8.9 1.3 1.6.9l11-7.2c.6-.4.6-1.4 0-1.8l-11-7.2c-.7-.4-1.6.1-1.6.9z" /></svg>Run<span class="hint">⌘↵</span></span>
               </div>
 
-              <!-- Data grid -->
-              <div class="flex-1 overflow-hidden text-[13px]">
-                <table class="w-full border-collapse">
+              <div class="win-results"><span class="r-title">Results</span><span class="r-meta">5 rows</span></div>
+
+              <div class="win-grid">
+                <table>
                   <thead>
-                    <tr class="border-b border-light-border dark:border-dark-border text-light-muted dark:text-dark-muted text-left">
-                      <th class="w-10 px-3 py-2 font-normal"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></th>
-                      <th class="px-3 py-2 font-medium whitespace-nowrap">id <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
-                      <th class="px-3 py-2 font-medium whitespace-nowrap">customer_id <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
-                      <th class="px-3 py-2 font-medium whitespace-nowrap">status <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
-                      <th class="px-3 py-2 font-medium whitespace-nowrap">total <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
-                      <th class="px-3 py-2 font-medium whitespace-nowrap">created_at <i data-lucide="chevrons-up-down" class="w-3 h-3 inline"></i></th>
+                    <tr>
+                      <th style="width:2.5rem"><span class="cb"></span></th>
+                      <th>id <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 15 5 5 5-5" /><path d="m7 9 5-5 5 5" /></svg></th>
+                      <th>customer_id <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 15 5 5 5-5" /><path d="m7 9 5-5 5 5" /></svg></th>
+                      <th>status <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 15 5 5 5-5" /><path d="m7 9 5-5 5 5" /></svg></th>
+                      <th>total <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 15 5 5 5-5" /><path d="m7 9 5-5 5 5" /></svg></th>
+                      <th class="col-created">created_at <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 15 5 5 5-5" /><path d="m7 9 5-5 5 5" /></svg></th>
                     </tr>
                   </thead>
-                  <tbody class="font-mono text-xs">
-                    <tr class="border-b border-light-border/60 dark:border-dark-border/60 text-light-text dark:text-dark-text">
-                      <td class="px-3 py-2"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></td>
-                      <td class="px-3 py-2">1</td>
-                      <td class="px-3 py-2">42</td>
-                      <td class="px-3 py-2 bg-light-violet/10 dark:bg-dark-violet/15">shipped</td>
-                      <td class="px-3 py-2">129.99</td>
-                      <td class="px-3 py-2">2026-09-20 14:03:11</td>
+                  <tbody>
+                    <tr>
+                      <td><span class="cb"></span></td><td>1</td><td>42</td>
+                      <td class="sel">shipped</td><td>129.99</td>
+                      <td class="col-created">2026-09-20 14:03:11</td>
                     </tr>
-                    <tr class="border-b border-light-border/60 dark:border-dark-border/60 text-light-text dark:text-dark-text">
-                      <td class="px-3 py-2"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></td>
-                      <td class="px-3 py-2">2</td>
-                      <td class="px-3 py-2">17</td>
-                      <td class="px-3 py-2">pending</td>
-                      <td class="px-3 py-2">59.50</td>
-                      <td class="px-3 py-2">2026-09-21 09:41:02</td>
+                    <tr>
+                      <td><span class="cb"></span></td><td>2</td><td>17</td>
+                      <td>pending</td><td>59.50</td>
+                      <td class="col-created">2026-09-21 09:41:02</td>
                     </tr>
-                    <tr class="border-b border-light-border/60 dark:border-dark-border/60 text-light-text dark:text-dark-text">
-                      <td class="px-3 py-2"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></td>
-                      <td class="px-3 py-2">3</td>
-                      <td class="px-3 py-2">42</td>
-                      <td class="px-3 py-2">delivered</td>
-                      <td class="px-3 py-2">24.00</td>
-                      <td class="px-3 py-2">2026-09-22 18:15:47</td>
+                    <tr>
+                      <td><span class="cb"></span></td><td>3</td><td>42</td>
+                      <td>delivered</td><td>24.00</td>
+                      <td class="col-created">2026-09-22 18:15:47</td>
                     </tr>
-                    <tr class="border-b border-light-border/60 dark:border-dark-border/60 text-light-text dark:text-dark-text">
-                      <td class="px-3 py-2"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></td>
-                      <td class="px-3 py-2">4</td>
-                      <td class="px-3 py-2">8</td>
-                      <td class="px-3 py-2">cancelled</td>
-                      <td class="px-3 py-2">199.00</td>
-                      <td class="px-3 py-2">2026-09-23 11:02:36</td>
+                    <tr>
+                      <td><span class="cb"></span></td><td>4</td><td>8</td>
+                      <td>cancelled</td><td>199.00</td>
+                      <td class="col-created">2026-09-23 11:02:36</td>
                     </tr>
-                    <tr class="text-light-text dark:text-dark-text">
-                      <td class="px-3 py-2"><div class="w-3.5 h-3.5 rounded border border-light-border dark:border-dark-border"></div></td>
-                      <td class="px-3 py-2">5</td>
-                      <td class="px-3 py-2">23</td>
-                      <td class="px-3 py-2">shipped</td>
-                      <td class="px-3 py-2">84.75</td>
-                      <td class="px-3 py-2">2026-09-24 16:55:19</td>
+                    <tr>
+                      <td><span class="cb"></span></td><td>5</td><td>23</td>
+                      <td>shipped</td><td>84.75</td>
+                      <td class="col-created">2026-09-24 16:55:19</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
 
-              <!-- Grid status bar -->
-              <div class="flex items-center justify-between px-3 py-1.5 border-t border-light-border dark:border-dark-border text-xs text-light-muted dark:text-dark-muted select-none">
-                <div class="flex items-center gap-2">
-                  <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i>
-                  <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+              <div class="win-status">
+                <div class="left">
+                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m15 18-6-6 6-6" /></svg>
+                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m9 18 6-6-6-6" /></svg>
                   <span>Limit</span>
-                  <span class="flex items-center gap-1.5 px-1.5 py-0.5 rounded-md border border-light-border dark:border-dark-border text-light-text dark:text-dark-text font-mono">
-                    <i data-lucide="minus" class="w-3 h-3"></i> 300 <i data-lucide="plus" class="w-3 h-3"></i>
-                  </span>
+                  <span class="limit-chip"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /></svg>300<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /><path d="M12 5v14" /></svg></span>
                   <span>Rows 1–5</span>
                 </div>
-                <div class="hidden sm:flex items-center gap-4 text-light-text dark:text-dark-text">
+                <div class="right">
                   <span>New row</span>
-                  <span class="flex items-center gap-1">Export <i data-lucide="chevron-down" class="w-3.5 h-3.5"></i></span>
+                  <span style="display:inline-flex;align-items:center;gap:0.25rem">Export <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg></span>
                   <span>View structure</span>
-                  <i data-lucide="panel-right" class="w-4 h-4 text-light-muted dark:text-dark-muted"></i>
+                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" /></svg>
                 </div>
               </div>
             </div>
 
             <!-- Row editor panel -->
-            <div class="w-72 shrink-0 hidden lg:flex flex-col border-l border-light-border dark:border-dark-border bg-light-base/60 dark:bg-dark-base/60">
-              <div class="p-2.5 flex items-center gap-2">
-                <div class="flex-1 px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs text-light-muted dark:text-dark-muted">Filter columns</div>
-                <i data-lucide="x" class="w-4 h-4 text-light-muted dark:text-dark-muted"></i>
+            <div class="win-editor">
+              <div class="ed-search">
+                <span class="ed-filter">Filter columns</span>
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
               </div>
-              <div class="flex-1 overflow-hidden px-2.5 pb-3 space-y-2.5">
-                <div>
-                  <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">id · INT UNSIGNED</span>
-                    <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
-                  </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">1</div>
+              <div class="ed-fields">
+                <div class="ed-field">
+                  <div class="flabel"><span>id · INT UNSIGNED</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
+                  <div class="fvalue">1</div>
                 </div>
-                <div>
-                  <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">customer_id · INT UNSIGNED</span>
-                    <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
-                  </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">42</div>
+                <div class="ed-field">
+                  <div class="flabel"><span>customer_id · INT UNSIGNED</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
+                  <div class="fvalue">42</div>
                 </div>
-                <div>
-                  <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">status · VARCHAR</span>
-                    <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
-                  </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">shipped</div>
+                <div class="ed-field">
+                  <div class="flabel"><span>status · VARCHAR</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
+                  <div class="fvalue">shipped</div>
                 </div>
-                <div>
-                  <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">total · DECIMAL(10,2)</span>
-                    <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
-                  </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">129.99</div>
+                <div class="ed-field">
+                  <div class="flabel"><span>total · DECIMAL(10,2)</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
+                  <div class="fvalue">129.99</div>
                 </div>
-                <div>
-                  <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">created_at · DATETIME</span>
-                    <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
-                  </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">2026-09-20 14:03:11</div>
+                <div class="ed-field">
+                  <div class="flabel"><span>created_at · DATETIME</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
+                  <div class="fvalue">2026-09-20 14:03:11</div>
                 </div>
-                <div class="opacity-60">
-                  <div class="flex items-center justify-between px-0.5 mb-1">
-                    <span class="text-[11px] font-mono text-light-muted dark:text-dark-muted">notes · TEXT</span>
-                    <i data-lucide="more-horizontal" class="w-3.5 h-3.5 text-light-muted dark:text-dark-muted"></i>
-                  </div>
-                  <div class="px-2.5 py-1.5 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-[13px] font-mono text-light-text dark:text-dark-text">&nbsp;</div>
+                <div class="ed-field dim">
+                  <div class="flabel"><span>notes · TEXT</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
+                  <div class="fvalue">&nbsp;</div>
                 </div>
               </div>
             </div>
-
           </div>
         </div>
+      </figure>
+
+      <div class="wrap below-shot">
+        <p class="sub">A native, GPU-accelerated client for <strong>PostgreSQL</strong>, <strong>MySQL</strong>, and <strong>SQLite</strong>, built with Rust and GPUI.</p>
+        <span class="install">
+          <span>cargo install zippa-db</span>
+          <button type="button" id="copyCargo" aria-label="Copy cargo install command"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg><span>Copy</span></button>
+        </span>
       </div>
-
-
-    </section>
-
-    <!-- Performance Metrics / Stats Ribbon -->
-    <section id="benchmarks" class="py-12 border-y border-light-border dark:border-dark-border bg-light-panel/50 dark:bg-dark-panel/50">
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-8 text-center">
-
-          <div class="space-y-1">
-            <div class="text-3xl sm:text-4xl font-extrabold text-light-violet dark:text-dark-violet font-mono">0.16s</div>
-            <div class="text-sm font-medium text-light-text dark:text-dark-text">Cold start</div>
-            <div class="text-xs text-light-muted dark:text-dark-muted">To first complete window render</div>
-          </div>
-
-          <div class="space-y-1">
-            <div class="text-3xl sm:text-4xl font-extrabold text-db-postgresLight dark:text-db-postgres font-mono">65 MB</div>
-            <div class="text-sm font-medium text-light-text dark:text-dark-text">Idle memory</div>
-            <div class="text-xs text-light-muted dark:text-dark-muted">Resident set at rest</div>
-          </div>
-
-          <div class="space-y-1">
-            <div class="text-3xl sm:text-4xl font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">125 MB</div>
-            <div class="text-sm font-medium text-light-text dark:text-dark-text">Peak memory</div>
-            <div class="text-xs text-light-muted dark:text-dark-muted">Max observed, no result set loaded</div>
-          </div>
-
-          <div class="space-y-1">
-            <div class="text-3xl sm:text-4xl font-extrabold text-db-mysqlLight dark:text-db-mysql font-mono">~20 MB</div>
-            <div class="text-sm font-medium text-light-text dark:text-dark-text">Download</div>
-            <div class="text-xs text-light-muted dark:text-dark-muted">~60 MB installed · one native binary</div>
-          </div>
-
-        </div>
-        <p class="mt-8 text-center text-xs text-light-muted dark:text-dark-muted">Measured on a MacBook Air (Apple M4). Your numbers will vary by machine and workload.</p>
-      </div>
-    </section>
-
-    <!-- Database Engines Support Grid -->
-    <section id="engines" class="py-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="text-center max-w-2xl mx-auto mb-16">
-        <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">Engineered for Your Core Stack</h2>
-        <p class="mt-4 text-light-muted dark:text-dark-muted text-balance">Native drivers with zero wrapper overhead. Connect directly to local or cloud-hosted instances.</p>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-
-        <!-- Postgres Card -->
-        <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border hover:border-db-postgresLight dark:hover:border-db-postgres transition-all group shadow-sm">
-          <div class="w-12 h-12 rounded-xl bg-db-postgres/10 text-db-postgresLight dark:text-db-postgres flex items-center justify-center mb-5 group-hover:scale-110 transition-transform">
-            <i data-lucide="database" class="w-6 h-6"></i>
-          </div>
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-xl font-bold">PostgreSQL</h3>
-            <span class="px-2 py-0.5 text-xs font-mono rounded bg-db-postgres/10 text-db-postgresLight dark:text-db-postgres font-semibold">PG v10+</span>
-          </div>
-          <p class="text-sm text-light-muted dark:text-dark-muted mb-4 leading-relaxed">
-            Full support for JSONB value rendering, an EXPLAIN ANALYZE visualizer, and rich display for Postgres types.
-          </p>
-          <ul class="text-xs font-mono text-light-muted dark:text-dark-muted space-y-2">
-            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> Process list with KILL</li>
-            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> Server variables & query digest</li>
-            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> SSH tunneling</li>
-          </ul>
-        </div>
-
-        <!-- MySQL Card -->
-        <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border hover:border-db-mysqlLight dark:hover:border-db-mysql transition-all group shadow-sm">
-          <div class="w-12 h-12 rounded-xl bg-db-mysql/10 text-db-mysqlLight dark:text-db-mysql flex items-center justify-center mb-5 group-hover:scale-110 transition-transform">
-            <i data-lucide="server" class="w-6 h-6"></i>
-          </div>
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-xl font-bold">MySQL / MariaDB</h3>
-            <span class="px-2 py-0.5 text-xs font-mono rounded bg-db-mysql/10 text-db-mysqlLight dark:text-db-mysql font-semibold">MySQL 8.0+</span>
-          </div>
-          <p class="text-sm text-light-muted dark:text-dark-muted mb-4 leading-relaxed">
-            Visual schema editor that generates ALTER statements, with stored routines browsable right in the schema tree.
-          </p>
-          <ul class="text-xs font-mono text-light-muted dark:text-dark-muted space-y-2">
-            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> Process list with KILL</li>
-            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> Server variables & query digest</li>
-            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> SSH tunneling</li>
-          </ul>
-        </div>
-
-        <!-- SQLite Card -->
-        <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border hover:border-db-sqliteLight dark:hover:border-db-sqlite transition-all group shadow-sm">
-          <div class="w-12 h-12 rounded-xl bg-db-sqlite/10 text-db-sqliteLight dark:text-db-sqlite flex items-center justify-center mb-5 group-hover:scale-110 transition-transform">
-            <i data-lucide="file-spreadsheet" class="w-6 h-6"></i>
-          </div>
-          <div class="flex items-center justify-between mb-2">
-            <h3 class="text-xl font-bold">SQLite</h3>
-            <span class="px-2 py-0.5 text-xs font-mono rounded bg-db-sqlite/10 text-db-sqliteLight dark:text-db-sqlite font-semibold">Embedded</span>
-          </div>
-          <p class="text-sm text-light-muted dark:text-dark-muted mb-4 leading-relaxed">
-            Zero-config file opening, plus a maintenance panel for the chores SQLite files need over time.
-          </p>
-          <ul class="text-xs font-mono text-light-muted dark:text-dark-muted space-y-2">
-            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> VACUUM & integrity checks</li>
-            <li class="flex items-center gap-2"><i data-lucide="check" class="w-3.5 h-3.5 text-emerald-500"></i> WAL checkpoint</li>
-          </ul>
-        </div>
-
-      </div>
-    </section>
-
-    <!-- Key Features Grid -->
-    <section id="features" class="py-20 bg-light-subtle/40 dark:bg-dark-subtle/40 border-y border-light-border dark:border-dark-border">
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="text-center max-w-2xl mx-auto mb-16">
-          <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">Designed for Speed & Focus</h2>
-          <p class="mt-4 text-light-muted dark:text-dark-muted text-balance">Everything you need in a modern database tool, stripped of bloated legacy web views.</p>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-
-          <!-- Feature 1 -->
-          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
-            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
-              <i data-lucide="cpu" class="w-5 h-5"></i>
-            </div>
-            <h3 class="font-bold text-lg mb-2">GPU-Accelerated Rendering</h3>
-            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
-              GPUI draws the interface on the graphics processor, so scrolling grids and resizing panes stays smooth.
-            </p>
-          </div>
-
-          <!-- Feature 2 -->
-          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
-            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
-              <i data-lucide="command" class="w-5 h-5"></i>
-            </div>
-            <h3 class="font-bold text-lg mb-2">Quick Switcher</h3>
-            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
-              Fuzzy-find tables, commands, and databases from a single keyboard-driven palette.
-            </p>
-          </div>
-
-          <!-- Feature 3 -->
-          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
-            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
-              <i data-lucide="shield-check" class="w-5 h-5"></i>
-            </div>
-            <h3 class="font-bold text-lg mb-2">Native Enclave Vault</h3>
-            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
-              Credentials and SSH keys are stored in system Keychain / SecretService with zero third-party telemetry.
-            </p>
-          </div>
-
-          <!-- Feature 4 -->
-          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
-            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
-              <i data-lucide="scroll-text" class="w-5 h-5"></i>
-            </div>
-            <h3 class="font-bold text-lg mb-2">Query Console</h3>
-            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
-              Every statement you run is logged to a per-session console, so previous queries are always a scroll away.
-            </p>
-          </div>
-
-          <!-- Feature 5 -->
-          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
-            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
-              <i data-lucide="download" class="w-5 h-5"></i>
-            </div>
-            <h3 class="font-bold text-lg mb-2">Data Export</h3>
-            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
-              Dump result sets or whole tables to CSV, JSON, or SQL with a couple of clicks.
-            </p>
-          </div>
-
-          <!-- Feature 6 -->
-          <div class="p-6 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border">
-            <div class="w-10 h-10 rounded-lg bg-light-violet/10 dark:bg-dark-violet/10 text-light-violet dark:text-dark-violet flex items-center justify-center mb-4">
-              <i data-lucide="moon" class="w-5 h-5"></i>
-            </div>
-            <h3 class="font-bold text-lg mb-2">Light & Dark Themes</h3>
-            <p class="text-sm text-light-muted dark:text-dark-muted leading-relaxed">
-              Polished themes for both modes out of the box, with custom theme files if you want your own palette.
-            </p>
-          </div>
-
-        </div>
-      </div>
-    </section>
-
-    <!-- Download Matrix Section -->
-    <section id="download" class="py-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-      <div class="max-w-3xl mx-auto">
-        <h2 class="text-3xl font-extrabold sm:text-4xl tracking-tight">Get Zippa DB Today</h2>
-        <p class="mt-4 text-light-muted dark:text-dark-muted text-balance">Free and open source under the MIT License. Available on all major platforms.</p>
-        <p class="mt-4 text-sm text-light-muted dark:text-dark-muted">New in v0.1.2: visual ER diagrams, saved queries, query variables, and an implicit row limit for lone SELECTs. <a href="https://github.com/Alanaktion/zippa-db/releases/tag/v0.1.2" class="text-light-violet dark:text-dark-violet hover:text-light-text dark:hover:text-dark-text transition-colors">See the release notes</a>.</p>
-
-        <!-- Platform Tabs / Download Cards -->
-        <div class="mt-12 grid grid-cols-1 sm:grid-cols-3 gap-6 text-left">
-
-          <!-- macOS -->
-          <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border relative flex flex-col justify-between">
-            <div>
-              <div class="flex items-center justify-between mb-4">
-                <i data-lucide="apple" class="w-8 h-8"></i>
-                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">ARM64</span>
-              </div>
-              <h3 class="text-xl font-bold mb-1">macOS</h3>
-              <p class="text-xs text-light-muted dark:text-dark-muted mb-6">Apple Silicon</p>
-            </div>
-            <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.2/Zippa.DB_0.1.2_aarch64.dmg" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors" data-os="mac">
-              <i data-lucide="download" class="w-4 h-4"></i> .dmg (Apple Silicon)
-            </a>
-          </div>
-
-          <!-- Linux -->
-          <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border relative flex flex-col justify-between">
-            <div>
-              <div class="flex items-center justify-between mb-4">
-                <i data-lucide="terminal" class="w-8 h-8"></i>
-                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">x86_64</span>
-              </div>
-              <h3 class="text-xl font-bold mb-1">Linux</h3>
-              <p class="text-xs text-light-muted dark:text-dark-muted mb-6">AppImage & DEB</p>
-            </div>
-            <div class="flex gap-2">
-              <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.2/zippa-db_0.1.2_x86_64.AppImage" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2" data-os="linux">
-                <i data-lucide="download" class="w-4 h-4"></i> AppImage
-              </a>
-              <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.2/zippa-db_0.1.2_amd64.deb" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors">
-                .deb
-              </a>
-            </div>
-          </div>
-
-          <!-- Windows -->
-          <div class="p-6 rounded-2xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border relative flex flex-col justify-between">
-            <div>
-              <div class="flex items-center justify-between mb-4">
-                <i data-lucide="monitor" class="w-8 h-8"></i>
-                <span class="text-xs font-mono px-2 py-0.5 rounded bg-light-subtle dark:bg-dark-subtle">x86_64</span>
-              </div>
-              <h3 class="text-xl font-bold mb-1">Windows</h3>
-              <p class="text-xs text-light-muted dark:text-dark-muted mb-6">Windows 10 / 11 (Vulkan / Direct3D)</p>
-            </div>
-            <a href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.2/zippa-db_0.1.2_x64-setup.exe" class="w-full py-2.5 px-4 rounded-lg bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border font-medium text-xs flex items-center justify-center gap-2 hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors" data-os="win">
-              <i data-lucide="download" class="w-4 h-4"></i> .exe Installer
-            </a>
-          </div>
-
-        </div>
-
-        <!-- Terminal Quick Install -->
-        <!--<div class="mt-8 p-4 rounded-xl bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border text-xs font-mono flex flex-col sm:flex-row items-center justify-between gap-4 text-left">
-          <div class="flex items-center gap-3">
-            <span class="text-light-violet dark:text-dark-violet font-bold">Homebrew:</span>
-            <span class="text-light-muted dark:text-dark-muted">brew install --cask zippa-db</span>
-          </div>
-          <button onclick="copyBrewCmd(this)" class="px-3 py-1.5 rounded bg-light-subtle dark:bg-dark-subtle hover:text-light-text dark:hover:text-dark-text transition-colors flex items-center gap-1.5">
-            <i data-lucide="copy" class="w-3.5 h-3.5"></i> Copy Brew
-          </button>
-        </div>-->
-
-      </div>
-    </section>
-  </main>
-
-  <!-- Footer -->
-  <footer class="border-t border-light-border dark:border-dark-border bg-light-panel dark:bg-dark-panel py-12 transition-colors duration-300">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-6 text-xs text-light-muted dark:text-dark-muted">
-
-      <div class="flex items-center gap-3">
-        <div class="w-6 h-6 rounded-md bg-gradient-to-br from-light-panel dark:from-dark-panel to-light-subtle dark:to-dark-subtle border border-light-border dark:border-dark-border p-1">
-          <svg viewBox="0 0 512 512" class="w-full h-full">
-            <path d="M 340 80 L 210 245 H 295 L 165 430 L 210 265 H 130 Z" fill="#BB9AF7"/>
-          </svg>
-        </div>
-        <span>© 2026. Built with Rust & GPUI. MIT License.</span>
-      </div>
-
-      <div class="flex items-center gap-6">
-        <a href="https://github.com/Alanaktion/zippa-db" target="_blank" class="hover:text-light-text dark:hover:text-dark-text transition-colors">GitHub</a>
-        <a href="https://github.com/Alanaktion/zippa-db" target="_blank" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Documentation</a>
-        <a href="https://github.com/Alanaktion/zippa-db/releases" target="_blank" class="hover:text-light-text dark:hover:text-dark-text transition-colors">Release Notes</a>
-      </div>
-
     </div>
-  </footer>
 
-  <script>
-    // Initialize Lucide Icons
-    lucide.createIcons();
+    <!-- Measured performance -->
+    <section class="stats" id="performance">
+      <div class="wrap">
+        <div class="stats-grid">
+          <div class="stat">
+            <div class="num">0.16<small>s</small></div>
+            <div class="lbl">Cold start</div>
+            <div class="sub">To first complete window render</div>
+          </div>
+          <div class="stat">
+            <div class="num">65<small> MB</small></div>
+            <div class="lbl">Idle memory</div>
+            <div class="sub">Resident set at rest</div>
+          </div>
+          <div class="stat">
+            <div class="num">125<small> MB</small></div>
+            <div class="lbl">Peak memory</div>
+            <div class="sub">Max observed, no result set loaded</div>
+          </div>
+          <div class="stat">
+            <div class="num">~20<small> MB</small></div>
+            <div class="lbl">Download</div>
+            <div class="sub">~60 MB installed · one native binary</div>
+          </div>
+        </div>
+        <p class="stats-note">Measured on a MacBook Air (Apple M4). Your numbers will vary by machine and workload.</p>
+      </div>
+    </section>
 
-    // Theme Management Logic (Supports Media Query + Manual Override)
-    const htmlEl = document.documentElement;
-    const themeToggleBtn = document.getElementById('themeToggleBtn');
+    <!-- Engines -->
+    <section class="block" id="engines">
+      <div class="wrap">
+        <div class="sec-head">
+          <h2>Three engines, connected to directly.</h2>
+          <p>Native drivers with zero wrapper overhead, for local or cloud-hosted instances alike.</p>
+        </div>
 
-    // Function to apply theme
-    function applyTheme(isDark) {
-      if (isDark) {
-        htmlEl.classList.add('dark');
-      } else {
-        htmlEl.classList.remove('dark');
+        <div style="margin-top:3rem">
+          <article class="engine">
+            <div>
+              <h3>PostgreSQL</h3>
+              <span class="tag">PG v10+</span>
+            </div>
+            <p class="desc">Full support for JSONB value rendering, an EXPLAIN ANALYZE visualizer, and rich display for Postgres types.</p>
+            <ul>
+              <li><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M20 6 9 17l-5-5" /></svg>Process list with KILL</li>
+              <li><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M20 6 9 17l-5-5" /></svg>Server variables &amp; query digest</li>
+              <li><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M20 6 9 17l-5-5" /></svg>SSH tunneling</li>
+            </ul>
+          </article>
+
+          <article class="engine">
+            <div>
+              <h3>MySQL / MariaDB</h3>
+              <span class="tag">MySQL 8.0+</span>
+            </div>
+            <p class="desc">Visual schema editor that generates ALTER statements, with stored routines browsable right in the schema tree.</p>
+            <ul>
+              <li><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M20 6 9 17l-5-5" /></svg>Process list with KILL</li>
+              <li><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M20 6 9 17l-5-5" /></svg>Server variables &amp; query digest</li>
+              <li><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M20 6 9 17l-5-5" /></svg>SSH tunneling</li>
+            </ul>
+          </article>
+
+          <article class="engine">
+            <div>
+              <h3>SQLite</h3>
+              <span class="tag">Embedded</span>
+            </div>
+            <p class="desc">Zero-config file opening, plus a maintenance panel for the chores SQLite files need over time.</p>
+            <ul>
+              <li><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M20 6 9 17l-5-5" /></svg>VACUUM &amp; integrity checks</li>
+              <li><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M20 6 9 17l-5-5" /></svg>WAL checkpoint</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="block feat-wrap" id="features">
+      <div class="wrap">
+        <div class="sec-head">
+          <h2>Everything in it is there for the work.</h2>
+          <p>A modern database tool, stripped of bloated legacy web views.</p>
+        </div>
+
+        <div class="feat-grid">
+          <div class="feat">
+            <span class="idx">01</span>
+            <div>
+              <h3>GPU-accelerated rendering</h3>
+              <p>GPUI draws the interface on the graphics processor, so scrolling grids and resizing panes stays smooth.</p>
+            </div>
+          </div>
+          <div class="feat">
+            <span class="idx">02</span>
+            <div>
+              <h3>Quick switcher</h3>
+              <p>Fuzzy-find tables, commands, and databases from a single keyboard-driven palette.</p>
+            </div>
+          </div>
+          <div class="feat">
+            <span class="idx">03</span>
+            <div>
+              <h3>Native enclave vault</h3>
+              <p>Credentials and SSH keys are stored in system Keychain / SecretService, with zero third-party telemetry.</p>
+            </div>
+          </div>
+          <div class="feat">
+            <span class="idx">04</span>
+            <div>
+              <h3>Query console</h3>
+              <p>Every statement you run is logged to a per-session console, so previous queries are always a scroll away.</p>
+            </div>
+          </div>
+          <div class="feat">
+            <span class="idx">05</span>
+            <div>
+              <h3>Data export</h3>
+              <p>Dump result sets or whole tables to CSV, JSON, or SQL with a couple of clicks.</p>
+            </div>
+          </div>
+          <div class="feat">
+            <span class="idx">06</span>
+            <div>
+              <h3>Light &amp; dark themes</h3>
+              <p>Polished themes for both modes out of the box, with custom theme files if you want your own palette.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Download -->
+    <section class="block" id="download">
+      <div class="wrap">
+        <div class="sec-head">
+          <h2>Get Zippa DB.</h2>
+          <p>Version 0.1.2 — free and open source under the MIT License, on all major platforms.</p>
+          <p>New in v0.1.2: visual ER diagrams, saved queries, query variables, and an implicit row limit for lone SELECTs. <a href="https://github.com/Alanaktion/zippa-db/releases/tag/v0.1.2">See the release notes</a>.</p>
+        </div>
+
+        <div class="dl-list">
+          <div class="dl-row" data-os-row="mac">
+            <div class="dl-os">
+              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 20.94c1.5 0 2.75 1.06 4 1.06 3 0 6-8 6-12.22A4.91 4.91 0 0 0 17 5c-2.22 0-4 1.44-5 2-1-.56-2.78-2-5-2a4.9 4.9 0 0 0-5 4.78C2 14 5 22 8 22c1.25 0 2.5-1.06 4-1.06Z" /><path d="M10 2c1 .5 2 2 2 5" /></svg>
+              <div>
+                <div class="os-name">macOS <span class="yours" data-yours hidden>Your OS</span></div>
+                <div class="os-sub">Apple Silicon · ARM64</div>
+              </div>
+            </div>
+            <div class="dl-btns">
+              <a class="btn btn-ghost" href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.2/Zippa.DB_0.1.2_aarch64.dmg"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></svg>.dmg (Apple Silicon)</a>
+            </div>
+          </div>
+
+          <div class="dl-row" data-os-row="linux">
+            <div class="dl-os">
+              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><polyline points="4 17 10 11 4 5" /><line x1="12" x2="20" y1="19" y2="19" /></svg>
+              <div>
+                <div class="os-name">Linux <span class="yours" data-yours hidden>Your OS</span></div>
+                <div class="os-sub">AppImage &amp; DEB · x86_64</div>
+              </div>
+            </div>
+            <div class="dl-btns">
+              <a class="btn btn-ghost" href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.2/zippa-db_0.1.2_x86_64.AppImage"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></svg>AppImage</a>
+              <a class="btn btn-ghost" href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.2/zippa-db_0.1.2_amd64.deb"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></svg>.deb</a>
+            </div>
+          </div>
+
+          <div class="dl-row" data-os-row="win">
+            <div class="dl-os">
+              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="20" height="14" x="2" y="3" rx="2" /><line x1="8" x2="16" y1="21" y2="21" /><line x1="12" x2="12" y1="17" y2="21" /></svg>
+              <div>
+                <div class="os-name">Windows <span class="yours" data-yours hidden>Your OS</span></div>
+                <div class="os-sub">Windows 10 / 11 · x86_64 · Vulkan / Direct3D</div>
+              </div>
+            </div>
+            <div class="dl-btns">
+              <a class="btn btn-ghost" href="https://github.com/Alanaktion/zippa-db/releases/download/v0.1.2/zippa-db_0.1.2_x64-setup.exe"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></svg>.exe installer</a>
+            </div>
+          </div>
+        </div>
+
+        <div class="dl-meta">
+          <span class="install">
+            <span>cargo install zippa-db</span>
+            <button type="button" id="copyCargo2" aria-label="Copy cargo install command"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg><span>Copy</span></button>
+          </span>
+          <span class="fine">All releases on <a href="https://github.com/Alanaktion/zippa-db/releases" target="_blank" rel="noopener">GitHub</a> · Built with Rust &amp; GPUI</span>
+        </div>
+      </div>
+    </section>
+
+    <footer class="site">
+      <div class="wrap">
+        <div class="fbrand">
+          <span class="bolt" aria-hidden="true">
+            <svg viewBox="0 0 512 512" width="100%" height="100%">
+              <path d="M 340 80 L 210 245 H 295 L 165 430 L 210 265 H 130 Z" fill="#BB9AF7" />
+            </svg>
+          </span>
+          <span>© 2026 Zippa DB. Built with Rust &amp; GPUI. MIT License.</span>
+        </div>
+        <nav aria-label="Footer">
+          <a href="https://github.com/Alanaktion/zippa-db" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/Alanaktion/zippa-db" target="_blank" rel="noopener">Documentation</a>
+          <a href="https://github.com/Alanaktion/zippa-db/releases" target="_blank" rel="noopener">Release Notes</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script>
+      // Detect the visitor's OS: label the hero CTA and mark their download row.
+      (function () {
+        var ua = navigator.userAgent.toLowerCase();
+        var os = null, label = null;
+        if (ua.indexOf("mac") !== -1) { os = "mac"; label = "macOS"; }
+        else if (ua.indexOf("win") !== -1) { os = "win"; label = "Windows"; }
+        else if (ua.indexOf("linux") !== -1) { os = "linux"; label = "Linux"; }
+        if (!os) return;
+        document.getElementById("detectedOS").textContent = label;
+        var row = document.querySelector('[data-os-row="' + os + '"]');
+        if (row) {
+          row.classList.add("mine");
+          var tag = row.querySelector("[data-yours]");
+          if (tag) tag.hidden = false;
+          var btn = row.querySelector(".dl-btns .btn");
+          if (btn) { btn.classList.remove("btn-ghost"); btn.classList.add("btn-primary"); }
+        }
+      })();
+
+      // Copy the cargo install command, with in-page feedback.
+      function wireCopy(id) {
+        var btn = document.getElementById(id);
+        if (!btn) return;
+        btn.addEventListener("click", function () {
+          var text = "cargo install zippa-db";
+          function done() {
+            var label = btn.querySelector("span");
+            if (!label) return;
+            var old = label.textContent;
+            label.textContent = "Copied";
+            setTimeout(function () { label.textContent = old; }, 2000);
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, done);
+          } else {
+            var ta = document.createElement("textarea");
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand("copy"); } catch (e) {}
+            document.body.removeChild(ta);
+            done();
+          }
+        });
       }
-    }
-
-    // Check system media query
-    const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)');
-
-    // Check local storage or fallback to media query
-    const savedTheme = localStorage.getItem('zippa-theme');
-    if (savedTheme) {
-      applyTheme(savedTheme === 'dark');
-    } else {
-      applyTheme(systemPrefersDark.matches);
-    }
-
-    // Listen to OS level media query changes automatically if no user override
-    systemPrefersDark.addEventListener('change', (e) => {
-      if (!localStorage.getItem('zippa-theme')) {
-        applyTheme(e.matches);
-      }
-    });
-
-    // Manual Theme Toggle Button Click
-    themeToggleBtn.addEventListener('click', () => {
-      const isCurrentlyDark = htmlEl.classList.contains('dark');
-      const newDarkState = !isCurrentlyDark;
-      applyTheme(newDarkState);
-      localStorage.setItem('zippa-theme', newDarkState ? 'dark' : 'light');
-    });
-
-    // Detect user OS for smart CTA label
-    const detectedOS = document.getElementById('detectedOS');
-    const userAgent = navigator.userAgent.toLowerCase();
-    const otherClass = 'bg-light-panel dark:bg-dark-panel border border-light-border dark:border-dark-border hover:bg-light-subtle dark:hover:bg-dark-subtle transition-colors'.split(' ');
-    const detectedClass = 'bg-light-violet dark:bg-dark-violet text-white dark:text-dark-base hover:opacity-90 transition-opacity'.split(' ');
-    if (userAgent.includes('mac')) {
-      detectedOS.textContent = 'macOS';
-      const cl = document.querySelector('a[data-os="mac"]').classList;
-      cl.remove(...otherClass);
-      cl.add(...detectedClass);
-    } else if (userAgent.includes('win')) {
-      detectedOS.textContent = 'Windows';
-      const cl = document.querySelector('a[data-os="win"]').classList;
-      cl.remove(...otherClass);
-      cl.add(...detectedClass);
-    } else if (userAgent.includes('linux')) {
-      detectedOS.textContent = 'Linux';
-      const cl = document.querySelector('a[data-os="linux"]').classList;
-      cl.remove(...otherClass);
-      cl.add(...detectedClass);
-    }
-
-    // Helper Copy functions
-    function copyCargoCmd(btn) {
-      const text = "cargo install zippa-db";
-      copyToClipboard(text, btn, "Command Copied!");
-    }
-
-    // function copyBrewCmd(btn) {
-    //   const text = "brew install --cask zippa-db";
-    //   copyToClipboard(text, btn, "Brew Copied!");
-    // }
-
-    function copyToClipboard(text, button, successText) {
-      const tempInput = document.createElement("input");
-      tempInput.value = text;
-      document.body.appendChild(tempInput);
-      tempInput.select();
-      document.execCommand("copy");
-      document.body.removeChild(tempInput);
-
-      const originalHTML = button.innerHTML;
-      button.innerText = successText;
-      setTimeout(() => {
-        button.innerHTML = originalHTML;
-        lucide.createIcons();
-      }, 2000);
-    }
-  </script>
-</body>
+      wireCopy("copyCargo");
+      wireCopy("copyCargo2");
+    </script>
+  </body>
 </html>
