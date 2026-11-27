@@ -205,9 +205,18 @@
       .win-conn .cname { font-size: 0.88rem; font-weight: 600; white-space: nowrap; }
       .win-conn .cdb { display: flex; align-items: center; gap: 0.35rem; font-family: var(--mono); font-size: 0.75rem; color: var(--win-muted); white-space: nowrap; }
       .win-conn .cdb svg { width: 0.85rem; height: 0.85rem; }
-      .win-tools { margin-left: auto; display: flex; align-items: center; color: var(--win-muted); }
-      .win-tools span { padding: 0.4rem; display: inline-flex; }
-      .win-tools svg { width: 1rem; height: 1rem; }
+      .win-conn .cdot { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--accent); flex: none; }
+      .win-conn .chev { width: 0.85rem; height: 0.85rem; color: var(--win-muted); flex: none; }
+      .win-conn .csep { color: var(--win-muted); font-size: 0.85rem; }
+      .win-search { flex: 1; display: flex; justify-content: center; min-width: 0; }
+      .win-search .cmdk {
+        display: flex; align-items: center; gap: 0.5rem; width: 100%; max-width: 26rem;
+        padding: 0.35rem 0.75rem; border-radius: 0.5rem; font-size: 0.78rem;
+        background: var(--win-field); border: 1px solid var(--win-line); color: var(--win-muted);
+        white-space: nowrap; overflow: hidden;
+      }
+      .win-search svg { width: 0.9rem; height: 0.9rem; flex: none; }
+      @media (max-width: 640px) { .win-search { display: none; } }
       .win-body { display: flex; min-height: 27.5rem; }
 
       /* Sidebar */
@@ -227,15 +236,16 @@
       .side-label {
         padding: 0.25rem 0.75rem 0.4rem; font-size: 0.62rem; font-weight: 600;
         letter-spacing: 0.08em; text-transform: uppercase; color: var(--win-muted);
+        display: flex; align-items: center; justify-content: space-between;
       }
+      .side-label svg { width: 0.85rem; height: 0.85rem; }
       .side-tables { flex: 1; padding: 0 0.35rem; }
       .side-tables li { padding: 0.28rem 0.5rem; border-radius: 0.4rem; font-size: 0.82rem; }
       .side-tables li.sel { background: var(--win-sel); font-weight: 500; }
-      .side-foot { padding: 0.5rem; }
-      .side-toggle { display: flex; border-radius: 0.5rem; background: var(--panel-2); padding: 0.15rem; font-size: 0.75rem; font-weight: 500; }
-      @media (prefers-color-scheme: dark) { .side-toggle { background: #1e212b; } }
-      .side-toggle span { flex: 1; text-align: center; padding: 0.28rem 0; border-radius: 0.35rem; color: var(--win-muted); }
-      .side-toggle span.on { background: var(--win-field); color: var(--win-text); box-shadow: 0 1px 2px rgba(0,0,0,0.12); }
+      .side-dock { display: flex; gap: 0.25rem; padding: 0.5rem; border-top: 1px solid var(--win-line); }
+      .side-dock span { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0.45rem 0; border-radius: 0.5rem; color: var(--win-muted); }
+      .side-dock span svg { width: 1rem; height: 1rem; }
+      .side-dock span.on { background: var(--win-field); color: var(--win-text); box-shadow: 0 1px 2px rgba(0,0,0,0.12); }
 
       /* Main pane */
       .win-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -252,9 +262,23 @@
       .win-tabs .spacer { margin-left: auto; display: flex; align-items: center; gap: 0.1rem; padding: 0 0.5rem; color: var(--win-muted); }
       .win-tabs .spacer span { padding: 0.4rem; display: inline-flex; }
       .win-tabs .spacer svg { width: 1rem; height: 1rem; }
-      .win-filterbar { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--win-line); }
-      .win-filterbar span { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.82rem; }
-      .win-filterbar svg { width: 0.85rem; height: 0.85rem; }
+      .win-toolbar {
+        display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+        padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--win-line); user-select: none;
+      }
+      .win-toolbar .tb-filter { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.82rem; white-space: nowrap; }
+      .win-toolbar .tb-filter svg { width: 0.85rem; height: 0.85rem; }
+      .win-toolbar .tb-right { display: flex; align-items: center; gap: 0.9rem; margin-left: auto; }
+      .win-toolbar .tb-search {
+        padding: 0.32rem 0.65rem; border-radius: 0.5rem; font-size: 0.78rem;
+        background: var(--win-field); border: 1px solid var(--win-line); color: var(--win-muted); white-space: nowrap;
+      }
+      .win-toolbar .tb-btn { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.82rem; white-space: nowrap; }
+      .win-toolbar .tb-btn svg { width: 0.85rem; height: 0.85rem; }
+      .win-toolbar .tb-panel { display: inline-flex; padding: 0.35rem; border-radius: 0.45rem; color: var(--win-muted); }
+      .win-toolbar .tb-panel svg { width: 1rem; height: 1rem; }
+      .win-toolbar .tb-panel.on { background: var(--win-field); border: 1px solid var(--win-line); color: var(--win-text); }
+      @media (max-width: 640px) { .win-toolbar .tb-search { display: none; } }
 
       /* Query editor pane */
       .win-query {
@@ -303,7 +327,9 @@
         font-family: var(--mono); font-size: 0.75rem; white-space: nowrap;
       }
       .win-grid tr:last-child td { border-bottom: 0; }
-      .win-grid td.sel { background: var(--win-sel); font-family: var(--sans); font-size: 0.8rem; }
+      .win-grid tr.sel td { background: var(--win-sel); }
+      .cb.on { background: var(--accent); border-color: var(--accent); color: var(--btn-ink); display: flex; align-items: center; justify-content: center; }
+      .cb.on svg { width: 0.7rem; height: 0.7rem; }
       .cb { width: 0.85rem; height: 0.85rem; border: 1px solid var(--win-line); border-radius: 0.25rem; }
       th .cb, td .cb { display: block; }
       @media (max-width: 560px) { .col-created { display: none; } }
@@ -343,6 +369,7 @@
         font-family: var(--mono); font-size: 0.68rem; color: var(--win-muted);
       }
       .ed-field .flabel svg { width: 0.85rem; height: 0.85rem; }
+      .ed-field .flabel span { display: inline-flex; align-items: center; gap: 0.3rem; }
       .ed-field .fvalue {
         padding: 0.4rem 0.6rem; border-radius: 0.5rem; font-family: var(--mono); font-size: 0.8rem;
         background: var(--win-field); border: 1px solid var(--win-line); min-height: 2rem;
@@ -486,15 +513,14 @@
               <span style="background:#FF5F57"></span><span style="background:#FEBC2E"></span><span style="background:#28C840"></span>
             </div>
             <div class="win-conn">
+              <span class="cdot" aria-hidden="true"></span>
               <span class="cname">Local</span>
+              <svg class="chev" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg>
+              <span class="csep" aria-hidden="true">/</span>
               <span class="cdb"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5V19A9 3 0 0 0 21 19V5" /><path d="M3 12A9 3 0 0 0 21 12" /></svg>store</span>
             </div>
-            <div class="win-tools" aria-hidden="true">
-              <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg></span>
-              <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></svg></span>
-              <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M9 15h6" /><path d="M12 18v-6" /></svg></span>
-              <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5V19A9 3 0 0 0 21 19V5" /><path d="M3 12A9 3 0 0 0 21 12" /></svg></span>
-              <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg></span>
+            <div class="win-search" aria-hidden="true">
+              <span class="cmdk"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>Search tables, tabs, actions…</span>
             </div>
           </div>
 
@@ -503,10 +529,8 @@
             <div class="win-side">
               <div class="side-search">
                 <span class="side-filter"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>Filter tables</span>
-                <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="7" height="7" x="3" y="3" rx="1" /><rect width="7" height="7" x="14" y="3" rx="1" /><rect width="7" height="7" x="14" y="14" rx="1" /><rect width="7" height="7" x="3" y="14" rx="1" /></svg>
-                <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M12 3v12" /><path d="m8 11 4 4 4-4" /><path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4" /></svg>
               </div>
-              <div class="side-label">Tables &amp; Views</div>
+              <div class="side-label"><span>Tables &amp; Views (5/5)</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
               <ul class="side-tables">
                 <li>categories</li>
                 <li>customers</li>
@@ -514,8 +538,10 @@
                 <li class="sel">orders</li>
                 <li>products</li>
               </ul>
-              <div class="side-foot">
-                <div class="side-toggle"><span class="on">Schema</span><span>Management</span></div>
+              <div class="side-dock">
+                <span class="on"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5V19A9 3 0 0 0 21 19V5" /><path d="M3 12A9 3 0 0 0 21 12" /></svg></span>
+                <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="7" height="7" x="3" y="3" rx="1" /><rect width="7" height="7" x="14" y="3" rx="1" /><rect width="7" height="7" x="14" y="14" rx="1" /><rect width="7" height="7" x="3" y="14" rx="1" /></svg></span>
+                <span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z" /></svg></span>
               </div>
             </div>
 
@@ -543,12 +569,22 @@
 
               <div class="win-results"><span class="r-title">Results</span><span class="r-meta">5 rows</span></div>
 
+              <div class="win-toolbar">
+                <span class="tb-filter"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /><path d="M12 5v14" /></svg>Filter</span>
+                <span class="tb-right">
+                  <span class="tb-search">Search all columns…</span>
+                  <span class="tb-btn">Structure</span>
+                  <span class="tb-btn">Export <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg></span>
+                  <span class="tb-panel on"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" /></svg></span>
+                </span>
+              </div>
+
               <div class="win-grid">
                 <table>
                   <thead>
                     <tr>
                       <th style="width:2.5rem"><span class="cb"></span></th>
-                      <th>id <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 15 5 5 5-5" /><path d="m7 9 5-5 5 5" /></svg></th>
+                      <th><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="7.5" cy="15.5" r="5.5" /><path d="m21 2-9.6 9.6" /><path d="m15.5 7.5 3 3L22 7l-3-3" /></svg> id <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 15 5 5 5-5" /><path d="m7 9 5-5 5 5" /></svg></th>
                       <th>customer_id <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 15 5 5 5-5" /><path d="m7 9 5-5 5 5" /></svg></th>
                       <th>status <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 15 5 5 5-5" /><path d="m7 9 5-5 5 5" /></svg></th>
                       <th>total <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m7 15 5 5 5-5" /><path d="m7 9 5-5 5 5" /></svg></th>
@@ -556,9 +592,9 @@
                     </tr>
                   </thead>
                   <tbody>
-                    <tr>
-                      <td><span class="cb"></span></td><td>1</td><td>42</td>
-                      <td class="sel">shipped</td><td>129.99</td>
+                    <tr class="sel">
+                      <td><span class="cb on"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" ><path d="M20 6 9 17l-5-5" /></svg></span></td><td>1</td><td>42</td>
+                      <td>shipped</td><td>129.99</td>
                       <td class="col-created">2026-09-20 14:03:11</td>
                     </tr>
                     <tr>
@@ -587,17 +623,16 @@
 
               <div class="win-status">
                 <div class="left">
+                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><polygon points="19 20 9 12 19 4 19 20" /><line x1="5" x2="5" y1="19" y2="5" /></svg>
                   <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m15 18-6-6 6-6" /></svg>
                   <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m9 18 6-6-6-6" /></svg>
+                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><polygon points="5 4 15 12 5 20 5 4" /><line x1="19" x2="19" y1="5" y2="19" /></svg>
                   <span>Limit</span>
                   <span class="limit-chip"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /></svg>300<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M5 12h14" /><path d="M12 5v14" /></svg></span>
-                  <span>Rows 1–5</span>
+                  <span>Rows 1–5 of 5 · page 1 of 1</span>
                 </div>
                 <div class="right">
                   <span>New row</span>
-                  <span style="display:inline-flex;align-items:center;gap:0.25rem">Export <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="m6 9 6 6 6-6" /></svg></span>
-                  <span>View structure</span>
-                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><rect width="18" height="18" x="3" y="3" rx="2" /><path d="M15 3v18" /></svg>
                 </div>
               </div>
             </div>
@@ -610,11 +645,11 @@
               </div>
               <div class="ed-fields">
                 <div class="ed-field">
-                  <div class="flabel"><span>id · INT UNSIGNED</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
+                  <div class="flabel"><span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="7.5" cy="15.5" r="5.5" /><path d="m21 2-9.6 9.6" /><path d="m15.5 7.5 3 3L22 7l-3-3" /></svg>id · INT UNSIGNED</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
                   <div class="fvalue">1</div>
                 </div>
                 <div class="ed-field">
-                  <div class="flabel"><span>customer_id · INT UNSIGNED</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
+                  <div class="flabel"><span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>customer_id · INT UNSIGNED</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></svg></div>
                   <div class="fvalue">42</div>
                 </div>
                 <div class="ed-field">
