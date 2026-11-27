@@ -144,10 +144,10 @@
     <circle cx="88" cy="40" r="7" fill="#28C840"/>
     <circle cx="110" cy="40" r="5" fill="var(--violet)"/>
     <text x="122" y="45" class="t-title">Local</text>
-    <g transform="translate(162,40)" style="color:var(--muted)"><use href="#i-chev-d"/></g>
-    <text x="172" y="45" class="t-muted" font-size="15">/</text>
-    <g transform="translate(192,42)" style="color:var(--muted)"><use href="#i-db"/></g>
-    <text x="208" y="46" class="mono t-small">store</text>
+    <g transform="translate(168,40)" style="color:var(--muted)"><use href="#i-chev-d"/></g>
+    <text x="180" y="45" class="t-muted" font-size="15">/</text>
+    <g transform="translate(198,42)" style="color:var(--muted)"><use href="#i-db"/></g>
+    <text x="214" y="46" class="mono t-small">store</text>
     <rect x="460" y="24" width="360" height="32" rx="8" fill="var(--panel)" stroke="var(--border)"/>
     <g transform="translate(480,40)" style="color:var(--muted)"><use href="#i-search"/></g>
     <text x="496" y="45" class="t-small">Search tables, tabs, actions…</text>
@@ -168,10 +168,11 @@
       <text x="42" y="258" font-weight="500">orders</text>
       <text x="42" y="288">products</text>
     </g>
-    <rect x="40" y="716" width="60" height="38" rx="10" fill="var(--panel)" stroke="var(--border)"/>
-    <g transform="translate(70,735)" style="color:var(--text)"><use href="#i-db"/></g>
-    <g transform="translate(130,735)" style="color:var(--muted)"><use href="#i-grid"/></g>
-    <g transform="translate(190,735)" style="color:var(--muted)"><use href="#i-bookmark"/></g>
+    <rect x="30" y="730" width="200" height="38" rx="10" fill="var(--subtle)"/>
+    <rect x="33" y="733" width="64" height="32" rx="8" fill="var(--panel)"/>
+    <g transform="translate(65,749)" style="color:var(--text)"><use href="#i-db"/></g>
+    <g transform="translate(130,749)" style="color:var(--muted)"><use href="#i-grid"/></g>
+    <g transform="translate(195,749)" style="color:var(--muted)"><use href="#i-bookmark"/></g>
 
     <!-- tab bar -->
     <line x1="256" y1="104" x2="1264" y2="104" stroke="var(--border)" stroke-width="1"/>
@@ -188,7 +189,7 @@
     <g transform="translate(508,84)" style="color:var(--muted)"><use href="#i-x"/></g>
     <g style="color:var(--muted)">
       <g transform="translate(1184,84)"><use href="#i-plus"/></g>
-      <g transform="translate(1216,84)"><use href="#i-max"/></g>
+      <g transform="translate(1216,84) scale(0.75)"><use href="#i-max"/></g>
       <g transform="translate(1244,84)"><use href="#i-more"/></g>
     </g>
 
@@ -272,10 +273,10 @@
     <!-- grid status bar -->
     <line x1="256" y1="744" x2="1264" y2="744" stroke="var(--border)" stroke-width="1"/>
     <g style="color:var(--muted)">
-      <g transform="translate(276,764)"><use href="#i-skip-l"/></g>
+      <g transform="translate(276,764) scale(0.75)"><use href="#i-skip-l"/></g>
       <g transform="translate(296,764)"><use href="#i-chev-l"/></g>
       <g transform="translate(316,764)"><use href="#i-chev-r"/></g>
-      <g transform="translate(336,764)"><use href="#i-skip-r"/></g>
+      <g transform="translate(336,764) scale(0.75)"><use href="#i-skip-r"/></g>
     </g>
     <text x="354" y="768" class="t-small">Limit</text>
     <rect x="392" y="754" width="76" height="22" rx="6" fill="none" stroke="var(--border)"/>
